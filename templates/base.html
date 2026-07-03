@@ -65,11 +65,6 @@
       </div>
       <div class="topbar-right">
         <div class="page-actions">{% block topbar_actions %}{% endblock %}</div>
-        <div class="clock">
-          <div class="time" id="clock">--:--:--</div>
-          <div class="date">{% now "l, d.m.Y" %}</div>
-        </div>
-        <div class="topbar-divider"></div>
         <div class="user-chip">
           <span class="avatar sm">{{ user.username|slice:":1"|upper }}</span>
           <div class="meta">
@@ -106,17 +101,6 @@
 
 <script>
   (function () {
-    var clock = document.getElementById('clock');
-    if (clock) {
-      var pad = function (n) { return (n < 10 ? '0' : '') + n; };
-      var tick = function () {
-        var d = new Date();
-        clock.textContent = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
-      };
-      tick();
-      setInterval(tick, 1000);
-    }
-
     var stack = document.getElementById('toast-stack');
     if (stack) {
       var dismiss = function (t) {
