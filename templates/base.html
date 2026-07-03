@@ -71,7 +71,7 @@
         </div>
         <div class="topbar-divider"></div>
         <div class="user-chip">
-          <span class="avatar">{{ user.username|slice:":1"|upper }}</span>
+          <span class="avatar sm">{{ user.username|slice:":1"|upper }}</span>
           <div class="meta">
             <div class="name">{{ user }}</div>
             <div class="role">{{ user.get_role_display }}</div>
@@ -88,29 +88,48 @@
     {% endif %}
 
     <main class="content">
-      {% if messages %}
-        {% for message in messages %}
-          <div class="flash flash-{{ message.tags }}">{{ message }}</div>
-        {% endfor %}
-      {% endif %}
       {% block content %}{% endblock %}
     </main>
   </div>
 </div>
 
-{% if user.is_authenticated %}
+{% if messages %}
+<div class="toast-stack" id="toast-stack">
+  {% for message in messages %}
+  <div class="toast toast-{{ message.tags }}" role="status">
+    <span class="toast-msg">{{ message }}</span>
+    <button type="button" class="toast-close" aria-label="Yopish">&times;</button>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
 <script>
   (function () {
-    var el = document.getElementById('clock');
-    function tick() {
-      var d = new Date();
-      var p = function (n) { return (n < 10 ? '0' : '') + n; };
-      el.textContent = p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    var clock = document.getElementById('clock');
+    if (clock) {
+      var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+      var tick = function () {
+        var d = new Date();
+        clock.textContent = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+      };
+      tick();
+      setInterval(tick, 1000);
     }
-    tick();
-    setInterval(tick, 1000);
+
+    var stack = document.getElementById('toast-stack');
+    if (stack) {
+      var dismiss = function (t) {
+        t.classList.add('hide');
+        setTimeout(function () { t.remove(); }, 260);
+      };
+      Array.prototype.forEach.call(stack.querySelectorAll('.toast'), function (t) {
+        var btn = t.querySelector('.toast-close');
+        if (btn) { btn.addEventListener('click', function () { dismiss(t); }); }
+        setTimeout(function () { dismiss(t); }, 4500);
+      });
+    }
   })();
 </script>
-{% endif %}
 </body>
 </html>

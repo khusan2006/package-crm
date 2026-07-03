@@ -36,11 +36,11 @@
   {% if recent_sales %}
   <div class="table-wrap">
   <table>
-    <tr><th>Sana</th><th>Mijoz</th><th>Mahsulot</th><th class="num">Og'irligi</th><th class="num">Umumiy narx</th><th class="num">Foyda</th><th>To'lov</th></tr>
+    <tr><th>Sana</th><th class="sticky-col">Mijoz</th><th>Mahsulot</th><th class="num">Og'irligi</th><th class="num">Umumiy narx</th><th class="num">Foyda</th><th>To'lov</th></tr>
     {% for sale in recent_sales %}
     <tr>
       <td><a href="{% url 'sale_edit' sale.pk %}">{{ sale.date|date:"Y-m-d" }}</a></td>
-      <td><span class="cell-user">{% include "crm/_avatar.html" with name=sale.client.name %}{{ sale.client.name }}</span></td>
+      <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=sale.client.name %}{{ sale.client.name }}</span></td>
       <td>{{ sale.product.name }}</td>
       <td class="num">{{ sale.weight|floatformat:"-3g" }} {{ sale.dimension }}</td>
       <td class="num">{{ sale.total|floatformat:"0g" }}</td>
@@ -64,10 +64,10 @@
   {% if top_clients %}
   <div class="table-wrap">
   <table>
-    <tr><th>Mijoz</th><th>Kompaniya</th><th class="num">Jami savdo</th><th class="num">Jami foyda</th></tr>
+    <tr><th class="sticky-col">Mijoz</th><th>Kompaniya</th><th class="num">Jami savdo</th><th class="num">Jami foyda</th></tr>
     {% for client in top_clients %}
     <tr>
-      <td><span class="cell-user">{% include "crm/_avatar.html" with name=client.name %}{{ client.name }}</span></td>
+      <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=client.name %}{{ client.name }}</span></td>
       <td>{{ client.company|default:"—" }}</td>
       <td class="num">{{ client.total|floatformat:"0g" }}</td>
       <td class="num">{{ client.profit|floatformat:"0g" }}</td>

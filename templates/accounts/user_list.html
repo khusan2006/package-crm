@@ -5,10 +5,10 @@
 {% block content %}
 <div class="table-wrap">
 <table>
-  <tr><th>Login</th><th>Ismi</th><th>Email</th><th>Rol</th><th>Faol</th></tr>
+  <tr><th class="sticky-col">Login</th><th>Ismi</th><th>Email</th><th>Rol</th><th>Faol</th></tr>
   {% for account in users %}
   <tr>
-    <td>
+    <td class="sticky-col">
       <span class="cell-user">
         {% include "crm/_avatar.html" with name=account.username %}
         <a href="{% url 'user_edit' account.pk %}">{{ account.username }}</a>

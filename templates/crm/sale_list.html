@@ -34,7 +34,7 @@
 <div class="table-wrap">
 <table>
   <tr>
-    <th>Sana</th><th>Mijoz</th><th>Mahsulot</th><th>Sotuvchi</th>
+    <th>Sana</th><th class="sticky-col">Mijoz</th><th>Mahsulot</th><th>Sotuvchi</th>
     <th class="num">Og'irligi</th><th class="num">Narxi</th>
     <th class="num">Umumiy narx</th><th class="num">Tannarx</th><th class="num">Foyda</th>
     <th>To'lov</th><th></th>
@@ -42,7 +42,7 @@
   {% for sale in page %}
   <tr>
     <td>{{ sale.date|date:"Y-m-d" }}</td>
-    <td><span class="cell-user">{% include "crm/_avatar.html" with name=sale.client.name %}{{ sale.client.name }}</span></td>
+    <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=sale.client.name %}{{ sale.client.name }}</span></td>
     <td>{{ sale.product.name }}</td>
     <td>{{ sale.sales_rep }}</td>
     <td class="num">{{ sale.weight|floatformat:"-3g" }} {{ sale.dimension }}</td>

@@ -12,10 +12,10 @@
 {% if page.object_list %}
 <div class="table-wrap">
 <table>
-  <tr><th>Nomi</th><th>SKU</th><th class="num">Tannarx (1 kg)</th><th class="num">Sotish narxi (1 kg)</th><th>Faol</th></tr>
+  <tr><th class="sticky-col">Nomi</th><th>SKU</th><th class="num">Tannarx (1 kg)</th><th class="num">Sotish narxi (1 kg)</th><th>Faol</th></tr>
   {% for product in page %}
   <tr>
-    <td>
+    <td class="sticky-col">
       {% if user.can_see_all_records %}
         <a href="{% url 'product_edit' product.pk %}">{{ product.name }}</a>
       {% else %}{{ product.name }}{% endif %}

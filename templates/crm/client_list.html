@@ -12,10 +12,10 @@
 {% if page.object_list %}
 <div class="table-wrap">
 <table>
-  <tr><th>Ismi</th><th>Kompaniya</th><th>Telefon</th><th>Email</th><th>Mas'ul</th><th class="num">Sotuvlar</th><th></th></tr>
+  <tr><th class="sticky-col">Ismi</th><th>Kompaniya</th><th>Telefon</th><th>Email</th><th>Mas'ul</th><th class="num">Sotuvlar</th><th></th></tr>
   {% for client in page %}
   <tr>
-    <td>
+    <td class="sticky-col">
       <span class="cell-user">
         {% include "crm/_avatar.html" with name=client.name %}
         <a href="{% url 'client_edit' client.pk %}">{{ client.name }}</a>
