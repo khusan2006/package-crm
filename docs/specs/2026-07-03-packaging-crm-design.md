@@ -79,6 +79,24 @@ replaced with a flat `Sale` model, and the whole UI was translated to Uzbek.
 - `LANGUAGE_CODE = "uz"`, `USE_THOUSAND_SEPARATOR = True`; all labels,
   messages, and templates in Uzbek.
 
+## v3 (2026-07-04, stock / ombor)
+
+Warehouse stock tracking, in **kg** (base sale unit):
+
+- `StockEntry` (kirim): product, date, quantity_kg, note, created_by. An
+  append-only log of received stock.
+- `Product.low_stock_threshold` (kg) for the "Kam qoldi" flag.
+- **Current stock = Σ kirim − Σ sold**, where each sale's weight is converted
+  to kg (gram sales ÷ 1000). Computed via `Product.current_stock` (single
+  object) and `Product.objects.with_stock()` (annotated list, subquery-based).
+- Selling **auto-decrements** stock (implicitly, since stock is derived from
+  sales). A sale is **allowed even without stock** but the view flags a
+  warning toast when the balance goes negative.
+- Kirim is added via `/products/<pk>/kirim/` (admin/manager only). Product
+  detail page `/products/<pk>/` shows current stock, totals, kirim history,
+  and recent sales.
+- Dashboard shows a "Kam qolgan mahsulot" count (stock ≤ threshold).
+
 ## Out of scope (v1)
 
 Invoicing/PDF, email notifications, lead pipeline/kanban, multi-currency,

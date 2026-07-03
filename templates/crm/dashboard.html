@@ -29,6 +29,11 @@
     <div class="label">Mijozlar</div>
     <div class="value">{{ client_count }}</div>
   </div>
+  <div class="stat">
+    <div class="label">Kam qolgan mahsulot</div>
+    <div class="value">{{ low_stock_count }}</div>
+    {% if low_stock_count %}<div class="sub" style="color: var(--warning);"><a href="{% url 'product_list' %}">Omborni ko'rish</a></div>{% endif %}
+  </div>
 </div>
 
 <div class="card">

@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Client, Product, Sale
+from .models import Client, Product, Sale, StockEntry
 
 
 @admin.register(Client)
@@ -12,9 +12,17 @@ class ClientAdmin(admin.ModelAdmin):
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ["name", "sku", "cost_price", "price", "is_active"]
+    list_display = ["name", "sku", "cost_price", "price", "low_stock_threshold", "is_active"]
     search_fields = ["name", "sku"]
     list_filter = ["is_active"]
+
+
+@admin.register(StockEntry)
+class StockEntryAdmin(admin.ModelAdmin):
+    list_display = ["product", "date", "quantity_kg", "created_by", "note"]
+    list_filter = ["date", "created_by"]
+    search_fields = ["product__name", "product__sku"]
+    date_hierarchy = "date"
 
 
 @admin.register(Sale)

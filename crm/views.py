@@ -9,7 +9,7 @@ from django.utils import timezone
 from accounts.decorators import role_required
 from accounts.models import User
 
-from .forms import ClientForm, ProductForm, SaleForm
+from .forms import ClientForm, ProductForm, SaleForm, StockEntryForm
 from .models import COST, PROFIT, REVENUE, Client, Product, Sale
 
 
@@ -20,6 +20,16 @@ def _visible_clients(user):
 
 def _sale_totals(qs):
     return qs.aggregate(revenue=Sum(REVENUE), cost=Sum(COST), profit=Sum(PROFIT))
+
+
+def _warn_if_negative_stock(request, product):
+    """Sales are allowed even without stock, but flag it so it's visible."""
+    stock = product.current_stock
+    if stock < 0:
+        messages.warning(
+            request,
+            f"Diqqat: “{product.name}” ombori yetarli emas — qoldiq {stock:.3f} kg.",
+        )
 
 
 def _parse_date(value):
@@ -58,6 +68,13 @@ def dashboard(request):
         is_debt=True, debt_deadline__lt=timezone.localdate()
     ).count()
 
+    low_stock_count = (
+        Product.objects.filter(is_active=True)
+        .with_stock()
+        .filter(stock__lte=F("low_stock_threshold"))
+        .count()
+    )
+
     context = {
         "month": month,
         "all_time": all_time,
@@ -67,6 +84,7 @@ def dashboard(request):
         "client_count": _visible_clients(request.user).count(),
         "debt_total": debt_total,
         "overdue_count": overdue_count,
+        "low_stock_count": low_stock_count,
     }
     return render(request, "crm/dashboard.html", context)
 
@@ -129,12 +147,29 @@ def client_delete(request, pk):
 # --- Products -----------------------------------------------------------------
 
 def product_list(request):
-    products = Product.objects.all()
+    products = Product.objects.with_stock().order_by("name")
     q = request.GET.get("q", "").strip()
     if q:
         products = products.filter(Q(name__icontains=q) | Q(sku__icontains=q))
     page = Paginator(products, 25).get_page(request.GET.get("page"))
     return render(request, "crm/product_list.html", {"page": page, "q": q})
+
+
+def product_detail(request, pk):
+    product = get_object_or_404(Product, pk=pk)
+    entries = product.stock_entries.select_related("created_by")[:50]
+    recent_sales = (
+        product.sales.select_related("client", "sales_rep").with_totals()[:10]
+    )
+    context = {
+        "product": product,
+        "current_stock": product.current_stock,
+        "total_received": product.total_received,
+        "total_sold": product.total_sold,
+        "entries": entries,
+        "recent_sales": recent_sales,
+    }
+    return render(request, "crm/product_detail.html", context)
 
 
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
@@ -143,7 +178,7 @@ def product_create(request):
     if request.method == "POST" and form.is_valid():
         product = form.save()
         messages.success(request, f"“{product.name}” mahsuloti qo'shildi.")
-        return redirect("product_list")
+        return redirect("product_detail", pk=product.pk)
     return render(request, "crm/form.html", {"form": form, "title": "Yangi mahsulot"})
 
 
@@ -154,9 +189,29 @@ def product_edit(request, pk):
     if request.method == "POST" and form.is_valid():
         form.save()
         messages.success(request, f"“{product.name}” mahsuloti yangilandi.")
-        return redirect("product_list")
+        return redirect("product_detail", pk=product.pk)
     return render(
         request, "crm/form.html", {"form": form, "title": f"Tahrirlash: {product.name}"}
+    )
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def stock_entry_create(request, pk):
+    product = get_object_or_404(Product, pk=pk)
+    form = StockEntryForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        entry = form.save(commit=False)
+        entry.product = product
+        entry.created_by = request.user
+        entry.save()
+        messages.success(
+            request, f"“{product.name}” omboriga {entry.quantity_kg} kg kirim qilindi."
+        )
+        return redirect("product_detail", pk=product.pk)
+    return render(
+        request,
+        "crm/form.html",
+        {"form": form, "title": f"Kirim qo'shish: {product.name}"},
     )
 
 
@@ -198,6 +253,7 @@ def sale_create(request):
         sale.sales_rep = request.user
         sale.save()
         messages.success(request, "Sotuv qo'shildi.")
+        _warn_if_negative_stock(request, sale.product)
         return redirect("sale_list")
     return render(request, "crm/form.html", {"form": form, "title": "Yangi sotuv"})
 
@@ -206,8 +262,9 @@ def sale_edit(request, pk):
     sale = get_object_or_404(Sale.objects.visible_to(request.user), pk=pk)
     form = SaleForm(request.POST or None, instance=sale, user=request.user)
     if request.method == "POST" and form.is_valid():
-        form.save()
+        sale = form.save()
         messages.success(request, "Sotuv yangilandi.")
+        _warn_if_negative_stock(request, sale.product)
         return redirect("sale_list")
     return render(request, "crm/form.html", {"form": form, "title": "Sotuvni tahrirlash"})
 

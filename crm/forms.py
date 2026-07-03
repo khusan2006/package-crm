@@ -1,6 +1,6 @@
 from django import forms
 
-from .models import Client, Product, Sale
+from .models import Client, Product, Sale, StockEntry
 
 
 class ClientForm(forms.ModelForm):
@@ -13,8 +13,15 @@ class ClientForm(forms.ModelForm):
 class ProductForm(forms.ModelForm):
     class Meta:
         model = Product
-        fields = ["name", "sku", "description", "cost_price", "price", "is_active"]
+        fields = ["name", "sku", "description", "cost_price", "price", "low_stock_threshold", "is_active"]
         widgets = {"description": forms.Textarea(attrs={"rows": 3})}
+
+
+class StockEntryForm(forms.ModelForm):
+    class Meta:
+        model = StockEntry
+        fields = ["date", "quantity_kg", "note"]
+        widgets = {"date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d")}
 
 
 class SaleForm(forms.ModelForm):

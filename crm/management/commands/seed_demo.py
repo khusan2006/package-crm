@@ -9,7 +9,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from accounts.models import User
-from crm.models import Client, Product, Sale
+from crm.models import Client, Product, Sale, StockEntry
 
 DEMO_USERS = [
     ("admin", "Admin", "User", User.Role.ADMIN),
@@ -18,14 +18,14 @@ DEMO_USERS = [
     ("sales2", "Dilnoza", "Yusupova", User.Role.SALES),
 ]
 
-# (name, sku, tannarx per kg, sotish narxi per kg)
+# (name, sku, tannarx per kg, sotish narxi per kg, low-stock threshold kg)
 DEMO_PRODUCTS = [
-    ("Polietilen paket 24×37", "PKT-2437", "18000", "24000"),
-    ("Polietilen paket 30×40", "PKT-3040", "19000", "26000"),
-    ("Polietilen paket 40×50", "PKT-4050", "20000", "27500"),
-    ("Mayka paket 28×50", "MYK-2850", "17000", "23000"),
-    ("Rulonli paket 25×35", "RUL-2535", "21000", "28000"),
-    ("Zip paket 15×20", "ZIP-1520", "35000", "48000"),
+    ("Polietilen paket 24×37", "PKT-2437", "18000", "24000", "300"),
+    ("Polietilen paket 30×40", "PKT-3040", "19000", "26000", "300"),
+    ("Polietilen paket 40×50", "PKT-4050", "20000", "27500", "300"),
+    ("Mayka paket 28×50", "MYK-2850", "17000", "23000", "200"),
+    ("Rulonli paket 25×35", "RUL-2535", "21000", "28000", "200"),
+    ("Zip paket 15×20", "ZIP-1520", "35000", "48000", "100"),
 ]
 
 DEMO_CLIENTS = [
@@ -65,10 +65,31 @@ class Command(BaseCommand):
 
         products = [
             Product.objects.create(
-                name=name, sku=sku, cost_price=Decimal(cost), price=Decimal(price)
+                name=name,
+                sku=sku,
+                cost_price=Decimal(cost),
+                price=Decimal(price),
+                low_stock_threshold=Decimal(threshold),
             )
-            for name, sku, cost, price in DEMO_PRODUCTS
+            for name, sku, cost, price, threshold in DEMO_PRODUCTS
         ]
+
+        # Opening stock (kirim) per product so warehouse balances start positive
+        for product in products:
+            StockEntry.objects.create(
+                product=product,
+                date=today - timedelta(days=55),
+                quantity_kg=Decimal(rng.randint(2000, 3500)),
+                note="Boshlang'ich qoldiq",
+                created_by=users["admin"],
+            )
+            StockEntry.objects.create(
+                product=product,
+                date=today - timedelta(days=rng.randint(5, 25)),
+                quantity_kg=Decimal(rng.randint(400, 900)),
+                note="To'ldirish",
+                created_by=users["manager"],
+            )
 
         reps = [users["sales1"], users["sales2"]]
         clients = [
@@ -107,5 +128,5 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(
             "Yaratildi: 4 foydalanuvchi (admin/manager/sales1/sales2, parol demo1234), "
-            f"{len(products)} mahsulot, {len(clients)} mijoz, 30 sotuv."
+            f"{len(products)} mahsulot (ombor kirimlari bilan), {len(clients)} mijoz, 30 sotuv."
         ))

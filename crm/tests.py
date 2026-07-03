@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from accounts.models import User
 
-from .models import Client, Product, Sale
+from .models import Client, Product, Sale, StockEntry
 
 
 def make_sale(client, rep, product, weight="10", price="24000", **kwargs):
@@ -194,3 +194,72 @@ class DateFilterTests(BaseSetup):
         sales = list(response.context["page"].object_list)
         self.assertIn(self.sale1, sales)
         self.assertNotIn(old, sales)
+
+
+class StockTests(BaseSetup):
+    def setUp(self):
+        # BaseSetup already created sale1 (10 kg) + sale2 for self.product
+        StockEntry.objects.create(
+            product=self.product, quantity_kg=Decimal("100"), created_by=self.admin
+        )
+
+    def test_current_stock_is_received_minus_sold(self):
+        # 100 kg in; two 10 kg sales out (sale1 + sale2) => 80 kg
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.total_received, Decimal("100"))
+        self.assertEqual(self.product.total_sold, Decimal("20"))
+        self.assertEqual(self.product.current_stock, Decimal("80"))
+
+    def test_gram_sale_converts_to_kg(self):
+        make_sale(self.client1, self.sales1, self.product, weight="500", dimension="g")
+        # 500 g = 0.5 kg extra sold => 20.5 kg out; 100 - 20.5 = 79.5
+        self.assertEqual(self.product.total_sold, Decimal("20.500"))
+        self.assertEqual(self.product.current_stock, Decimal("79.500"))
+
+    def test_with_stock_annotation_matches_property(self):
+        annotated = Product.objects.with_stock().get(pk=self.product.pk)
+        self.assertEqual(annotated.stock, self.product.current_stock)
+
+    def test_manager_can_add_kirim(self):
+        self.client.force_login(self.manager)
+        response = self.client.post(
+            reverse("stock_entry_create", args=[self.product.pk]),
+            {"date": timezone.localdate().isoformat(), "quantity_kg": "250", "note": "Yangi partiya"},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.product.total_received, Decimal("350"))
+        entry = StockEntry.objects.latest("created_at")
+        self.assertEqual(entry.created_by, self.manager)
+
+    def test_sales_cannot_add_kirim(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("stock_entry_create", args=[self.product.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_sale_beyond_stock_warns_but_saves(self):
+        self.client.force_login(self.sales1)
+        data = {
+            "date": timezone.localdate().isoformat(),
+            "client": self.client1.pk,
+            "product": self.product.pk,
+            "dimension": "kg",
+            "weight": "500",  # far beyond the 80 kg on hand
+            "price": "24000",
+            "cost_price": "",
+        }
+        response = self.client.post(reverse("sale_create"), data, follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(Sale.objects.filter(weight=Decimal("500")).exists())
+        msgs = [m.message for m in response.context["messages"]]
+        self.assertTrue(any("yetarli emas" in m for m in msgs))
+
+    def test_low_stock_flag(self):
+        self.product.low_stock_threshold = Decimal("90")
+        self.product.save()
+        # current stock 80 <= threshold 90 => low
+        self.assertTrue(self.product.is_low_stock)
+
+    def test_product_detail_accessible_to_sales(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("product_detail", args=[self.product.pk]))
+        self.assertEqual(response.status_code, 200)

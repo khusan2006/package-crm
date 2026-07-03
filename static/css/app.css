@@ -306,9 +306,9 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
   background: currentColor;
   opacity: 0.9;
 }
-.badge-paid, .badge-confirmed { background: var(--success-soft); color: var(--success); }
-.badge-shipped { background: var(--warning-soft); color: var(--warning); }
-.badge-cancelled, .badge-draft { background: var(--danger-soft); color: var(--danger); }
+.badge-paid, .badge-confirmed, .badge-ok { background: var(--success-soft); color: var(--success); }
+.badge-shipped, .badge-warning { background: var(--warning-soft); color: var(--warning); }
+.badge-cancelled, .badge-danger { background: var(--danger-soft); color: var(--danger); }
 .badge-neutral { background: var(--surface-2); color: var(--text-muted); }
 .badge-draft { background: var(--surface-2); color: var(--text-muted); }
 
@@ -441,6 +441,7 @@ ul.errorlist li::before { content: "⚠ "; }
 }
 .toast-success { border-left-color: var(--success); }
 .toast-error { border-left-color: var(--danger); }
+.toast-warning { border-left-color: var(--warning); }
 .toast-msg { flex: 1; }
 .toast-close {
   flex-shrink: 0;

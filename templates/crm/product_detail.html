@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}{{ product.name }} · Paket CRM{% endblock %}
+{% block topbar_title %}{{ product.name }}{% endblock %}
+{% block topbar_actions %}
+{% if user.can_see_all_records %}
+<a class="btn" href="{% url 'stock_entry_create' product.pk %}">+ Kirim qo'shish</a>
+<a class="btn btn-ghost" href="{% url 'product_edit' product.pk %}">Tahrirlash</a>
+{% endif %}
+{% endblock %}
+{% block content %}
+
+<div class="stat-grid">
+  <div class="stat">
+    <div class="label">Joriy qoldiq</div>
+    <div class="value">{{ current_stock|floatformat:"-3g" }} kg</div>
+    {% if current_stock <= 0 %}
+      <div class="sub danger">Tugagan</div>
+    {% elif product.low_stock_threshold > 0 and current_stock <= product.low_stock_threshold %}
+      <div class="sub" style="color: var(--warning);">Kam qoldi (chegara {{ product.low_stock_threshold|floatformat:"-3g" }} kg)</div>
+    {% endif %}
+  </div>
+  <div class="stat">
+    <div class="label">Jami kirim</div>
+    <div class="value">{{ total_received|floatformat:"-3g" }} kg</div>
+  </div>
+  <div class="stat">
+    <div class="label">Jami sotilgan</div>
+    <div class="value">{{ total_sold|floatformat:"-3g" }} kg</div>
+  </div>
+  <div class="stat">
+    <div class="label">Sotish narxi (1 kg)</div>
+    <div class="value">{{ product.price|floatformat:"0g" }} so'm</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Ombor kirimlari</h2>
+  {% if entries %}
+  <div class="table-wrap">
+  <table>
+    <tr><th>Sana</th><th class="num">Miqdori (kg)</th><th>Izoh</th><th>Kim qo'shdi</th></tr>
+    {% for entry in entries %}
+    <tr>
+      <td>{{ entry.date|date:"Y-m-d" }}</td>
+      <td class="num">+{{ entry.quantity_kg|floatformat:"-3g" }}</td>
+      <td>{{ entry.note|default:"—" }}</td>
+      <td>{{ entry.created_by }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}<p class="muted">Hozircha kirim yo'q.</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>So'nggi sotuvlar</h2>
+  {% if recent_sales %}
+  <div class="table-wrap">
+  <table>
+    <tr><th>Sana</th><th>Mijoz</th><th class="num">Og'irligi</th><th class="num">Umumiy narx</th><th>To'lov</th></tr>
+    {% for sale in recent_sales %}
+    <tr>
+      <td>{{ sale.date|date:"Y-m-d" }}</td>
+      <td>{{ sale.client.name }}</td>
+      <td class="num">{{ sale.weight|floatformat:"-3g" }} {{ sale.dimension }}</td>
+      <td class="num">{{ sale.total|floatformat:"0g" }}</td>
+      <td>
+        {% if sale.is_debt %}
+          <span class="badge {% if sale.is_overdue %}badge-cancelled{% else %}badge-shipped{% endif %}">Qarz</span>
+        {% else %}
+          <span class="badge badge-paid">To'langan</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}<p class="muted">Hozircha sotuv yo'q.</p>{% endif %}
+</div>
+{% endblock %}

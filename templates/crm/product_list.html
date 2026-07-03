@@ -12,20 +12,28 @@
 {% if page.object_list %}
 <div class="table-wrap">
 <table>
-  <tr><th class="sticky-col">Nomi</th><th>SKU</th><th class="num">Tannarx (1 kg)</th><th class="num">Sotish narxi (1 kg)</th><th>Faol</th></tr>
+  <tr>
+    <th class="sticky-col">Nomi</th><th>SKU</th>
+    <th class="num">Tannarx (1 kg)</th><th class="num">Sotish narxi (1 kg)</th>
+    <th class="num">Ombor (kg)</th><th>Holati</th><th>Faol</th>
+  </tr>
   {% for product in page %}
   <tr>
-    <td class="sticky-col">
-      {% if user.can_see_all_records %}
-        <a href="{% url 'product_edit' product.pk %}">{{ product.name }}</a>
-      {% else %}{{ product.name }}{% endif %}
-    </td>
+    <td class="sticky-col"><a href="{% url 'product_detail' product.pk %}">{{ product.name }}</a></td>
     <td>{{ product.sku }}</td>
     <td class="num">{{ product.cost_price|floatformat:"0g" }}</td>
     <td class="num">{{ product.price|floatformat:"0g" }}</td>
+    <td class="num">{{ product.stock|floatformat:"-3g" }}</td>
     <td>
-      {% if product.is_active %}<span class="badge badge-paid">Faol</span>{% else %}<span class="badge badge-neutral">Faol emas</span>{% endif %}
+      {% if product.stock <= 0 %}
+        <span class="badge badge-danger">Tugagan</span>
+      {% elif product.low_stock_threshold > 0 and product.stock <= product.low_stock_threshold %}
+        <span class="badge badge-warning">Kam qoldi</span>
+      {% else %}
+        <span class="badge badge-ok">Yetarli</span>
+      {% endif %}
     </td>
+    <td>{{ product.is_active|yesno:"Ha,Yo'q" }}</td>
   </tr>
   {% endfor %}
 </table>
