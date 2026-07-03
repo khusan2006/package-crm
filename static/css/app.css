@@ -1,0 +1,121 @@
+:root {
+  --bg: #f5f6f8;
+  --card: #ffffff;
+  --ink: #1c2430;
+  --muted: #67707e;
+  --line: #e3e6ea;
+  --accent: #1f6feb;
+  --accent-dark: #1758bd;
+  --danger: #c73f3f;
+  --ok: #1f7a3d;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.topnav {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  background: #101826;
+  color: #dbe2ea;
+  padding: 0 24px;
+  height: 52px;
+}
+.topnav a { color: #dbe2ea; text-decoration: none; padding: 4px 2px; }
+.topnav a:hover { color: #fff; }
+.topnav .brand { font-weight: 700; margin-right: 12px; }
+.topnav .spacer { flex: 1; }
+.topnav .who { color: #93a1b3; font-size: 13px; }
+
+.container { max-width: 1080px; margin: 28px auto; padding: 0 20px; }
+
+h1 { font-size: 22px; margin: 0 0 18px; }
+h2 { font-size: 16px; margin: 0 0 10px; }
+
+.page-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+.page-head h1 { margin: 0; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px 20px;
+  margin-bottom: 18px;
+}
+
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 18px; }
+.stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+.stat .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.stat .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+
+table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+th { background: #fafbfc; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+tr:last-child td { border-bottom: none; }
+td.num, th.num { text-align: right; }
+
+a { color: var(--accent); }
+
+.btn {
+  display: inline-block;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 7px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  text-decoration: none;
+  background: var(--accent);
+  color: #fff;
+}
+.btn:hover { background: var(--accent-dark); }
+.btn-ghost { background: transparent; color: inherit; border-color: #3a4a60; }
+.btn-ghost:hover { background: rgba(255,255,255,.08); }
+.btn-danger { background: var(--danger); }
+.btn-sm { padding: 4px 10px; font-size: 13px; }
+
+.inline-form { display: inline; margin: 0; }
+
+form.stacked p { margin: 0 0 12px; }
+form.stacked label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+input[type=text], input[type=email], input[type=password], input[type=number], select, textarea {
+  width: 100%;
+  max-width: 460px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font: inherit;
+  background: #fff;
+}
+input:focus, select:focus, textarea:focus { outline: 2px solid #bcd3f7; border-color: var(--accent); }
+
+.errorlist { color: var(--danger); margin: 4px 0; padding-left: 18px; font-size: 13px; }
+
+.flash { padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; font-size: 14px; }
+.flash-success { background: #e6f4ea; color: var(--ok); border: 1px solid #bfe3cb; }
+.flash-error { background: #fbe9e9; color: var(--danger); border: 1px solid #f0c6c6; }
+
+.badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.badge-draft { background: #eef0f3; color: #5b6572; }
+.badge-confirmed { background: #e2edff; color: #1758bd; }
+.badge-shipped { background: #fff2dd; color: #955d0a; }
+.badge-paid { background: #e6f4ea; color: var(--ok); }
+.badge-cancelled { background: #fbe9e9; color: var(--danger); }
+
+.searchbar { display: flex; gap: 8px; margin-bottom: 14px; }
+.searchbar input { max-width: 280px; }
+
+.formset-table input, .formset-table select { max-width: none; }
+
+.pagination { margin-top: 14px; color: var(--muted); font-size: 14px; display: flex; gap: 12px; }
+
+.login-wrap { max-width: 380px; margin: 90px auto; }
+.login-wrap .brand-big { font-size: 20px; font-weight: 700; text-align: center; margin-bottom: 18px; }
+
+.muted { color: var(--muted); }

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Orders · Packaging CRM{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Orders</h1>
+  <a class="btn" href="{% url 'order_create' %}">+ New order</a>
+</div>
+
+<form method="get" class="searchbar">
+  <select name="status" onchange="this.form.submit()">
+    <option value="">All statuses</option>
+    {% for choice in statuses %}
+    <option value="{{ choice.value }}" {% if status == choice.value %}selected{% endif %}>{{ choice.label }}</option>
+    {% endfor %}
+  </select>
+</form>
+
+{% if page.object_list %}
+<table>
+  <tr><th>Order</th><th>Client</th><th>Rep</th><th>Status</th><th class="num">Total</th><th>Date</th></tr>
+  {% for order in page %}
+  <tr>
+    <td><a href="{% url 'order_detail' order.pk %}">{{ order.number }}</a></td>
+    <td>{{ order.client.name }}</td>
+    <td>{{ order.sales_rep }}</td>
+    <td><span class="badge badge-{{ order.status }}">{{ order.get_status_display }}</span></td>
+    <td class="num">{{ order.total|default:0|floatformat:2 }}</td>
+    <td>{{ order.created_at|date:"Y-m-d H:i" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% include "crm/_pagination.html" %}
+{% else %}
+<p class="muted">No orders yet.</p>
+{% endif %}
+{% endblock %}

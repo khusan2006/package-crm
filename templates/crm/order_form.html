@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · Packaging CRM{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<div class="card">
+  <form method="post" class="stacked">
+    {% csrf_token %}
+    {{ form.as_p }}
+
+    <h2>Items</h2>
+    {{ formset.management_form }}
+    {% if formset.non_form_errors %}
+      <div class="flash flash-error">{{ formset.non_form_errors.0 }}</div>
+    {% endif %}
+    <table class="formset-table">
+      <tr><th>Product</th><th>Quantity</th><th>Unit price</th><th>Remove</th></tr>
+      {% for item_form in formset %}
+      <tr>
+        <td>{{ item_form.id }}{{ item_form.product }}{{ item_form.product.errors }}</td>
+        <td>{{ item_form.quantity }}{{ item_form.quantity.errors }}</td>
+        <td>{{ item_form.unit_price }}{{ item_form.unit_price.errors }}</td>
+        <td>{% if item_form.instance.pk %}{{ item_form.DELETE }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    <p class="muted">Leave unit price empty to use the product's current price.</p>
+    <button type="submit" class="btn">Save order</button>
+    <a class="btn btn-ghost" style="color: var(--ink); border-color: var(--line);" href="{% url 'order_list' %}">Cancel</a>
+  </form>
+</div>
+{% endblock %}

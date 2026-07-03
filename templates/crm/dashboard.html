@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Packaging CRM{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+
+<div class="stat-grid">
+  <div class="stat">
+    <div class="label">Sales this month</div>
+    <div class="value">{{ month_sales|floatformat:2 }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">All-time sales</div>
+    <div class="value">{{ all_time_sales|floatformat:2 }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Clients</div>
+    <div class="value">{{ client_count }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Orders</div>
+    <div class="value">{{ order_count }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Orders by status</h2>
+  {% for value, label, count in status_summary %}
+    <span class="badge badge-{{ value }}">{{ label }}: {{ count }}</span>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <h2>Recent orders</h2>
+  {% if recent_orders %}
+  <table>
+    <tr><th>Order</th><th>Client</th><th>Rep</th><th>Status</th><th class="num">Total</th><th>Date</th></tr>
+    {% for order in recent_orders %}
+    <tr>
+      <td><a href="{% url 'order_detail' order.pk %}">{{ order.number }}</a></td>
+      <td>{{ order.client.name }}</td>
+      <td>{{ order.sales_rep }}</td>
+      <td><span class="badge badge-{{ order.status }}">{{ order.get_status_display }}</span></td>
+      <td class="num">{{ order.total|default:0|floatformat:2 }}</td>
+      <td>{{ order.created_at|date:"Y-m-d" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No orders yet.</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Top clients</h2>
+  {% if top_clients %}
+  <table>
+    <tr><th>Client</th><th>Company</th><th class="num">Total sales</th></tr>
+    {% for client in top_clients %}
+    <tr>
+      <td>{{ client.name }}</td>
+      <td>{{ client.company|default:"—" }}</td>
+      <td class="num">{{ client.total|floatformat:2 }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No sales yet.</p>{% endif %}
+</div>
+{% endblock %}

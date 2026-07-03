@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Clients · Packaging CRM{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Clients</h1>
+  <a class="btn" href="{% url 'client_create' %}">+ New client</a>
+</div>
+
+<form method="get" class="searchbar">
+  <input type="text" name="q" value="{{ q }}" placeholder="Search name, company, phone…">
+  <button type="submit" class="btn btn-sm">Search</button>
+</form>
+
+{% if page.object_list %}
+<table>
+  <tr><th>Name</th><th>Company</th><th>Phone</th><th>Email</th><th>Owner</th><th class="num">Orders</th><th></th></tr>
+  {% for client in page %}
+  <tr>
+    <td><a href="{% url 'client_edit' client.pk %}">{{ client.name }}</a></td>
+    <td>{{ client.company|default:"—" }}</td>
+    <td>{{ client.phone|default:"—" }}</td>
+    <td>{{ client.email|default:"—" }}</td>
+    <td>{{ client.owner }}</td>
+    <td class="num">{{ client.order_count }}</td>
+    <td><a class="btn btn-sm btn-danger" href="{% url 'client_delete' client.pk %}">Delete</a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% include "crm/_pagination.html" %}
+{% else %}
+<p class="muted">No clients{% if q %} matching “{{ q }}”{% endif %}.</p>
+{% endif %}
+{% endblock %}

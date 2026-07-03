@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Products · Packaging CRM{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Products</h1>
+  {% if user.can_see_all_records %}
+  <a class="btn" href="{% url 'product_create' %}">+ New product</a>
+  {% endif %}
+</div>
+
+<form method="get" class="searchbar">
+  <input type="text" name="q" value="{{ q }}" placeholder="Search name or SKU…">
+  <button type="submit" class="btn btn-sm">Search</button>
+</form>
+
+{% if page.object_list %}
+<table>
+  <tr><th>Name</th><th>SKU</th><th>Unit</th><th class="num">Price</th><th class="num">Stock</th><th>Active</th></tr>
+  {% for product in page %}
+  <tr>
+    <td>
+      {% if user.can_see_all_records %}
+        <a href="{% url 'product_edit' product.pk %}">{{ product.name }}</a>
+      {% else %}{{ product.name }}{% endif %}
+    </td>
+    <td>{{ product.sku }}</td>
+    <td>{{ product.get_unit_display }}</td>
+    <td class="num">{{ product.price|floatformat:2 }}</td>
+    <td class="num">{{ product.stock }}</td>
+    <td>{{ product.is_active|yesno:"Yes,No" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% include "crm/_pagination.html" %}
+{% else %}
+<p class="muted">No products{% if q %} matching “{{ q }}”{% endif %}.</p>
+{% endif %}
+{% endblock %}
