@@ -1,10 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Mijozlar · Paket CRM{% endblock %}
+{% block topbar_title %}Mijozlar{% endblock %}
+{% block topbar_actions %}<a class="btn" href="{% url 'client_create' %}">+ Yangi mijoz</a>{% endblock %}
 {% block content %}
-<div class="page-head">
-  <h1>Mijozlar</h1>
-  <a class="btn" href="{% url 'client_create' %}">+ Yangi mijoz</a>
-</div>
 
 <form method="get" class="searchbar">
   <input type="text" name="q" value="{{ q }}" placeholder="Ism, kompaniya yoki telefon bo'yicha qidirish…">
@@ -12,11 +10,17 @@
 </form>
 
 {% if page.object_list %}
+<div class="table-wrap">
 <table>
   <tr><th>Ismi</th><th>Kompaniya</th><th>Telefon</th><th>Email</th><th>Mas'ul</th><th class="num">Sotuvlar</th><th></th></tr>
   {% for client in page %}
   <tr>
-    <td><a href="{% url 'client_edit' client.pk %}">{{ client.name }}</a></td>
+    <td>
+      <span class="cell-user">
+        {% include "crm/_avatar.html" with name=client.name %}
+        <a href="{% url 'client_edit' client.pk %}">{{ client.name }}</a>
+      </span>
+    </td>
     <td>{{ client.company|default:"—" }}</td>
     <td>{{ client.phone|default:"—" }}</td>
     <td>{{ client.email|default:"—" }}</td>
@@ -26,6 +30,7 @@
   </tr>
   {% endfor %}
 </table>
+</div>
 {% include "crm/_pagination.html" %}
 {% else %}
 <p class="muted">Mijozlar topilmadi{% if q %} (“{{ q }}” bo'yicha){% endif %}.</p>

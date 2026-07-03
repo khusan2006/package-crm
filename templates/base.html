@@ -8,29 +8,109 @@
   <link rel="stylesheet" href="{% static 'css/app.css' %}">
 </head>
 <body>
+<div class="app-shell">
 {% if user.is_authenticated %}
-<nav class="topnav">
-  <span class="brand">📦 Paket CRM</span>
-  <a href="{% url 'dashboard' %}">Asosiy</a>
-  <a href="{% url 'client_list' %}">Mijozlar</a>
-  <a href="{% url 'product_list' %}">Mahsulotlar</a>
-  <a href="{% url 'sale_list' %}">Sotuvlar</a>
-  {% if user.is_admin_role %}<a href="{% url 'user_list' %}">Foydalanuvchilar</a>{% endif %}
-  <span class="spacer"></span>
-  <span class="who">{{ user }} · {{ user.get_role_display }}</span>
-  <form method="post" action="{% url 'logout' %}" class="inline-form">
-    {% csrf_token %}
-    <button type="submit" class="btn btn-ghost">Chiqish</button>
-  </form>
-</nav>
+  {% with url_name=request.resolver_match.url_name|default:'' %}
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
+      </span>
+      <span class="brand-text">Paket CRM</span>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-group">
+        <a class="nav-item {% if url_name == 'dashboard' %}active{% endif %}" href="{% url 'dashboard' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg></span>
+          <span>Asosiy</span>
+        </a>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-label">Savdo</div>
+        <a class="nav-item {% if 'sale' in url_name %}active{% endif %}" href="{% url 'sale_list' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span>
+          <span>Sotuvlar</span>
+        </a>
+        <a class="nav-item {% if 'client' in url_name %}active{% endif %}" href="{% url 'client_list' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+          <span>Mijozlar</span>
+        </a>
+        <a class="nav-item {% if 'product' in url_name %}active{% endif %}" href="{% url 'product_list' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg></span>
+          <span>Mahsulotlar</span>
+        </a>
+      </div>
+
+      {% if user.is_admin_role %}
+      <div class="nav-group">
+        <div class="nav-group-label">Boshqaruv</div>
+        <a class="nav-item {% if 'user' in url_name %}active{% endif %}" href="{% url 'user_list' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/></svg></span>
+          <span>Foydalanuvchilar</span>
+        </a>
+      </div>
+      {% endif %}
+    </nav>
+  </aside>
+  {% endwith %}
 {% endif %}
-<main class="container">
-  {% if messages %}
-    {% for message in messages %}
-      <div class="flash flash-{{ message.tags }}">{{ message }}</div>
-    {% endfor %}
-  {% endif %}
-  {% block content %}{% endblock %}
-</main>
+
+  <div class="main{% if not user.is_authenticated %} main--auth{% endif %}">
+    {% if user.is_authenticated %}
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="topbar-title">{% block topbar_title %}Paket CRM{% endblock %}</span>
+      </div>
+      <div class="topbar-right">
+        <div class="page-actions">{% block topbar_actions %}{% endblock %}</div>
+        <div class="clock">
+          <div class="time" id="clock">--:--:--</div>
+          <div class="date">{% now "l, d.m.Y" %}</div>
+        </div>
+        <div class="topbar-divider"></div>
+        <div class="user-chip">
+          <span class="avatar">{{ user.username|slice:":1"|upper }}</span>
+          <div class="meta">
+            <div class="name">{{ user }}</div>
+            <div class="role">{{ user.get_role_display }}</div>
+          </div>
+        </div>
+        <form method="post" action="{% url 'logout' %}" class="inline-form">
+          {% csrf_token %}
+          <button type="submit" class="icon-btn" title="Chiqish">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          </button>
+        </form>
+      </div>
+    </header>
+    {% endif %}
+
+    <main class="content">
+      {% if messages %}
+        {% for message in messages %}
+          <div class="flash flash-{{ message.tags }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+
+{% if user.is_authenticated %}
+<script>
+  (function () {
+    var el = document.getElementById('clock');
+    function tick() {
+      var d = new Date();
+      var p = function (n) { return (n < 10 ? '0' : '') + n; };
+      el.textContent = p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    }
+    tick();
+    setInterval(tick, 1000);
+  })();
+</script>
+{% endif %}
 </body>
 </html>

@@ -1,12 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Mahsulotlar · Paket CRM{% endblock %}
+{% block topbar_title %}Mahsulotlar{% endblock %}
+{% block topbar_actions %}{% if user.can_see_all_records %}<a class="btn" href="{% url 'product_create' %}">+ Yangi mahsulot</a>{% endif %}{% endblock %}
 {% block content %}
-<div class="page-head">
-  <h1>Mahsulotlar</h1>
-  {% if user.can_see_all_records %}
-  <a class="btn" href="{% url 'product_create' %}">+ Yangi mahsulot</a>
-  {% endif %}
-</div>
 
 <form method="get" class="searchbar">
   <input type="text" name="q" value="{{ q }}" placeholder="Nomi yoki SKU bo'yicha qidirish…">
@@ -14,6 +10,7 @@
 </form>
 
 {% if page.object_list %}
+<div class="table-wrap">
 <table>
   <tr><th>Nomi</th><th>SKU</th><th class="num">Tannarx (1 kg)</th><th class="num">Sotish narxi (1 kg)</th><th>Faol</th></tr>
   {% for product in page %}
@@ -26,10 +23,13 @@
     <td>{{ product.sku }}</td>
     <td class="num">{{ product.cost_price|floatformat:"0g" }}</td>
     <td class="num">{{ product.price|floatformat:"0g" }}</td>
-    <td>{{ product.is_active|yesno:"Ha,Yo'q" }}</td>
+    <td>
+      {% if product.is_active %}<span class="badge badge-paid">Faol</span>{% else %}<span class="badge badge-neutral">Faol emas</span>{% endif %}
+    </td>
   </tr>
   {% endfor %}
 </table>
+</div>
 {% include "crm/_pagination.html" %}
 {% else %}
 <p class="muted">Mahsulotlar topilmadi{% if q %} (“{{ q }}” bo'yicha){% endif %}.</p>

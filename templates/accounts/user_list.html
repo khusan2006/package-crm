@@ -1,20 +1,27 @@
 {% extends "base.html" %}
 {% block title %}Foydalanuvchilar · Paket CRM{% endblock %}
+{% block topbar_title %}Foydalanuvchilar{% endblock %}
+{% block topbar_actions %}<a class="btn" href="{% url 'user_create' %}">+ Yangi foydalanuvchi</a>{% endblock %}
 {% block content %}
-<div class="page-head">
-  <h1>Foydalanuvchilar</h1>
-  <a class="btn" href="{% url 'user_create' %}">+ Yangi foydalanuvchi</a>
-</div>
+<div class="table-wrap">
 <table>
   <tr><th>Login</th><th>Ismi</th><th>Email</th><th>Rol</th><th>Faol</th></tr>
   {% for account in users %}
   <tr>
-    <td><a href="{% url 'user_edit' account.pk %}">{{ account.username }}</a></td>
+    <td>
+      <span class="cell-user">
+        {% include "crm/_avatar.html" with name=account.username %}
+        <a href="{% url 'user_edit' account.pk %}">{{ account.username }}</a>
+      </span>
+    </td>
     <td>{{ account.get_full_name|default:"—" }}</td>
     <td>{{ account.email|default:"—" }}</td>
-    <td>{{ account.get_role_display }}</td>
-    <td>{{ account.is_active|yesno:"Ha,Yo'q" }}</td>
+    <td><span class="badge badge-neutral">{{ account.get_role_display }}</span></td>
+    <td>
+      {% if account.is_active %}<span class="badge badge-paid">Faol</span>{% else %}<span class="badge badge-cancelled">Faol emas</span>{% endif %}
+    </td>
   </tr>
   {% endfor %}
 </table>
+</div>
 {% endblock %}

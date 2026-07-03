@@ -1,13 +1,14 @@
 {% extends "base.html" %}
 {% block title %}O'chirishni tasdiqlash · Paket CRM{% endblock %}
+{% block topbar_title %}O'chirish{% endblock %}
 {% block content %}
-<h1>“{{ object }}” o'chirilsinmi?</h1>
-<div class="card">
-  <p>Bu amalni qaytarib bo'lmaydi.</p>
-  <form method="post">
+<div class="card" style="max-width: 480px;">
+  <h2>“{{ object }}” o'chirilsinmi?</h2>
+  <p class="muted">Bu amalni qaytarib bo'lmaydi.</p>
+  <form method="post" style="margin-top: 16px;">
     {% csrf_token %}
     <button type="submit" class="btn btn-danger">Ha, o'chirish</button>
-    <a class="btn btn-ghost" style="color: var(--ink); border-color: var(--line);" href="{% url back %}">Bekor qilish</a>
+    <a class="btn btn-ghost" href="{% url back %}">Bekor qilish</a>
   </form>
 </div>
 {% endblock %}

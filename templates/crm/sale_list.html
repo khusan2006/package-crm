@@ -1,16 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Sotuvlar · Paket CRM{% endblock %}
+{% block topbar_title %}Sotuvlar{% endblock %}
+{% block topbar_actions %}<a class="btn" href="{% url 'sale_create' %}">+ Yangi sotuv</a>{% endblock %}
 {% block content %}
-<div class="page-head">
-  <h1>Sotuvlar</h1>
-  <a class="btn" href="{% url 'sale_create' %}">+ Yangi sotuv</a>
-</div>
 
 <form method="get" class="searchbar">
-  <label class="muted">dan <input type="date" name="dan" value="{{ date_from|date:'Y-m-d' }}"></label>
-  <label class="muted">gacha <input type="date" name="gacha" value="{{ date_to|date:'Y-m-d' }}"></label>
+  <label>dan <input type="date" name="dan" value="{{ date_from|date:'Y-m-d' }}"></label>
+  <label>gacha <input type="date" name="gacha" value="{{ date_to|date:'Y-m-d' }}"></label>
   <button type="submit" class="btn btn-sm">Filtrlash</button>
-  {% if date_from or date_to %}<a class="btn btn-sm btn-ghost" style="color: var(--ink); border-color: var(--line);" href="{% url 'sale_list' %}">Tozalash</a>{% endif %}
+  {% if date_from or date_to %}<a class="btn btn-sm btn-ghost" href="{% url 'sale_list' %}">Tozalash</a>{% endif %}
 </form>
 
 <div class="stat-grid">
@@ -33,6 +31,7 @@
 </div>
 
 {% if page.object_list %}
+<div class="table-wrap">
 <table>
   <tr>
     <th>Sana</th><th>Mijoz</th><th>Mahsulot</th><th>Sotuvchi</th>
@@ -43,7 +42,7 @@
   {% for sale in page %}
   <tr>
     <td>{{ sale.date|date:"Y-m-d" }}</td>
-    <td>{{ sale.client.name }}</td>
+    <td><span class="cell-user">{% include "crm/_avatar.html" with name=sale.client.name %}{{ sale.client.name }}</span></td>
     <td>{{ sale.product.name }}</td>
     <td>{{ sale.sales_rep }}</td>
     <td class="num">{{ sale.weight|floatformat:"-3g" }} {{ sale.dimension }}</td>
@@ -59,12 +58,15 @@
       {% endif %}
     </td>
     <td>
-      <a class="btn btn-sm" href="{% url 'sale_edit' sale.pk %}">Tahrirlash</a>
-      <a class="btn btn-sm btn-danger" href="{% url 'sale_delete' sale.pk %}">O'chirish</a>
+      <div class="row-actions">
+        <a class="btn btn-sm btn-ghost" href="{% url 'sale_edit' sale.pk %}">Tahrirlash</a>
+        <a class="btn btn-sm btn-danger" href="{% url 'sale_delete' sale.pk %}">O'chirish</a>
+      </div>
     </td>
   </tr>
   {% endfor %}
 </table>
+</div>
 {% include "crm/_pagination.html" %}
 {% else %}
 <p class="muted">Sotuvlar topilmadi.</p>
