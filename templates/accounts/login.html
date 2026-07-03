@@ -1,17 +1,17 @@
 {% extends "base.html" %}
-{% block title %}Log in · Packaging CRM{% endblock %}
+{% block title %}Kirish · Paket CRM{% endblock %}
 {% block content %}
 <div class="login-wrap">
-  <div class="brand-big">📦 Packaging CRM</div>
+  <div class="brand-big">📦 Paket CRM</div>
   <div class="card">
-    <h1>Log in</h1>
+    <h1>Kirish</h1>
     {% if form.non_field_errors %}
       <div class="flash flash-error">{{ form.non_field_errors.0 }}</div>
     {% endif %}
     <form method="post" class="stacked">
       {% csrf_token %}
       {{ form.as_p }}
-      <button type="submit" class="btn">Log in</button>
+      <button type="submit" class="btn">Kirish</button>
     </form>
   </div>
 </div>

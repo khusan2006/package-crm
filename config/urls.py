@@ -25,10 +25,9 @@ urlpatterns = [
     path("products/", crm_views.product_list, name="product_list"),
     path("products/new/", crm_views.product_create, name="product_create"),
     path("products/<int:pk>/edit/", crm_views.product_edit, name="product_edit"),
-    # orders
-    path("orders/", crm_views.order_list, name="order_list"),
-    path("orders/new/", crm_views.order_create, name="order_create"),
-    path("orders/<int:pk>/", crm_views.order_detail, name="order_detail"),
-    path("orders/<int:pk>/status/", crm_views.order_set_status, name="order_set_status"),
-    path("orders/<int:pk>/delete/", crm_views.order_delete, name="order_delete"),
+    # sales
+    path("sales/", crm_views.sale_list, name="sale_list"),
+    path("sales/new/", crm_views.sale_create, name="sale_create"),
+    path("sales/<int:pk>/edit/", crm_views.sale_edit, name="sale_edit"),
+    path("sales/<int:pk>/delete/", crm_views.sale_delete, name="sale_delete"),
 ]

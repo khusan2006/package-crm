@@ -1,107 +1,134 @@
+from decimal import Decimal
+
 from django.conf import settings
 from django.db import models
-from django.db.models import F, Sum
+from django.db.models import DecimalField, ExpressionWrapper, F
+from django.utils import timezone
+
+MONEY = DecimalField(max_digits=18, decimal_places=2)
+
+# Reusable aggregate expressions for Sale querysets
+REVENUE = ExpressionWrapper(F("weight") * F("price"), output_field=MONEY)
+COST = ExpressionWrapper(F("weight") * F("cost_price"), output_field=MONEY)
+PROFIT = ExpressionWrapper(
+    F("weight") * (F("price") - F("cost_price")), output_field=MONEY
+)
 
 
 class Client(models.Model):
-    name = models.CharField(max_length=200)
-    company = models.CharField(max_length=200, blank=True)
-    email = models.EmailField(blank=True)
-    phone = models.CharField(max_length=30, blank=True)
-    address = models.CharField(max_length=300, blank=True)
-    notes = models.TextField(blank=True)
+    name = models.CharField("Ismi", max_length=200)
+    company = models.CharField("Kompaniya", max_length=200, blank=True)
+    email = models.EmailField("Email", blank=True)
+    phone = models.CharField("Telefon", max_length=30, blank=True)
+    address = models.CharField("Manzil", max_length=300, blank=True)
+    notes = models.TextField("Izoh", blank=True)
     owner = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="clients"
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="clients",
+        verbose_name="Mas'ul sotuvchi",
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["name"]
+        verbose_name = "Mijoz"
+        verbose_name_plural = "Mijozlar"
 
     def __str__(self):
         return self.name
 
 
 class Product(models.Model):
-    class Unit(models.TextChoices):
-        PIECE = "pcs", "Pieces"
-        BOX = "box", "Box"
-        ROLL = "roll", "Roll"
-        KG = "kg", "Kilogram"
-        M2 = "m2", "Square meter"
-
-    name = models.CharField(max_length=200)
-    sku = models.CharField(max_length=50, unique=True)
-    description = models.TextField(blank=True)
-    unit = models.CharField(max_length=10, choices=Unit.choices, default=Unit.PIECE)
-    price = models.DecimalField(max_digits=12, decimal_places=2)
-    stock = models.PositiveIntegerField(default=0)
-    is_active = models.BooleanField(default=True)
+    name = models.CharField("Nomi", max_length=200)
+    sku = models.CharField("Artikul (SKU)", max_length=50, unique=True)
+    description = models.TextField("Tavsif", blank=True)
+    cost_price = models.DecimalField(
+        "Tannarx (1 kg, so'm)", max_digits=14, decimal_places=2, default=0
+    )
+    price = models.DecimalField("Sotish narxi (1 kg, so'm)", max_digits=14, decimal_places=2)
+    is_active = models.BooleanField("Faol", default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["name"]
+        verbose_name = "Mahsulot"
+        verbose_name_plural = "Mahsulotlar"
+
+    def cost_price_for(self, dimension):
+        """Cost price per one unit of the given dimension (product prices are per kg)."""
+        if dimension == Sale.Dimension.G:
+            return self.cost_price / Decimal(1000)
+        return self.cost_price
 
     def __str__(self):
         return f"{self.name} ({self.sku})"
 
 
-class OrderQuerySet(models.QuerySet):
+class SaleQuerySet(models.QuerySet):
     def with_totals(self):
-        return self.annotate(
-            total=Sum(F("items__quantity") * F("items__unit_price"))
-        )
+        return self.annotate(total=REVENUE, cost_total=COST, profit_total=PROFIT)
 
     def visible_to(self, user):
         return self if user.can_see_all_records else self.filter(sales_rep=user)
 
 
-class Order(models.Model):
-    class Status(models.TextChoices):
-        DRAFT = "draft", "Draft"
-        CONFIRMED = "confirmed", "Confirmed"
-        SHIPPED = "shipped", "Shipped"
-        PAID = "paid", "Paid"
-        CANCELLED = "cancelled", "Cancelled"
+class Sale(models.Model):
+    class Dimension(models.TextChoices):
+        KG = "kg", "kg"
+        G = "g", "g"
 
-    client = models.ForeignKey(Client, on_delete=models.PROTECT, related_name="orders")
-    sales_rep = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="orders"
+    date = models.DateField("Sana", default=timezone.localdate)
+    client = models.ForeignKey(
+        Client, on_delete=models.PROTECT, related_name="sales", verbose_name="Mijoz"
     )
-    status = models.CharField(max_length=10, choices=Status.choices, default=Status.DRAFT)
-    notes = models.TextField(blank=True)
+    product = models.ForeignKey(
+        Product, on_delete=models.PROTECT, related_name="sales", verbose_name="Mahsulot"
+    )
+    dimension = models.CharField(
+        "O'lchov birligi", max_length=2, choices=Dimension.choices, default=Dimension.KG
+    )
+    weight = models.DecimalField("Og'irligi", max_digits=12, decimal_places=3)
+    price = models.DecimalField("Narxi (1 birlik, so'm)", max_digits=14, decimal_places=2)
+    cost_price = models.DecimalField(
+        "Tannarxi (1 birlik, so'm)", max_digits=14, decimal_places=2
+    )
+    is_debt = models.BooleanField("Qarzga sotildi", default=False)
+    debt_deadline = models.DateField("Qarz muddati", null=True, blank=True)
+    sales_rep = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="sales",
+        verbose_name="Sotuvchi",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
-    objects = OrderQuerySet.as_manager()
-
-    # Statuses that count toward sales figures
-    SALES_STATUSES = [Status.CONFIRMED, Status.SHIPPED, Status.PAID]
+    objects = SaleQuerySet.as_manager()
 
     class Meta:
-        ordering = ["-created_at"]
+        ordering = ["-date", "-created_at"]
+        verbose_name = "Sotuv"
+        verbose_name_plural = "Sotuvlar"
 
     @property
-    def number(self):
-        return f"ORD-{self.pk:05d}"
+    def total_price(self):
+        return self.weight * self.price
 
     @property
-    def total_amount(self):
-        return sum(item.line_total for item in self.items.all())
+    def total_cost(self):
+        return self.weight * self.cost_price
+
+    @property
+    def profit(self):
+        return self.total_price - self.total_cost
+
+    @property
+    def is_overdue(self):
+        return (
+            self.is_debt
+            and self.debt_deadline is not None
+            and self.debt_deadline < timezone.localdate()
+        )
 
     def __str__(self):
-        return self.number
-
-
-class OrderItem(models.Model):
-    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="items")
-    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="order_items")
-    quantity = models.PositiveIntegerField()
-    unit_price = models.DecimalField(max_digits=12, decimal_places=2)
-
-    @property
-    def line_total(self):
-        return self.quantity * self.unit_price
-
-    def __str__(self):
-        return f"{self.product} × {self.quantity}"
+        return f"{self.date} · {self.client} · {self.product.name}"

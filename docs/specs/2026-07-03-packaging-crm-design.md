@@ -62,6 +62,23 @@ Custom user model from day one — switching later is painful in Django.
 - Django forms handle validation; messages framework for user feedback
 - Tests: model logic (order totals), role scoping (sales can't see others' data), auth redirects
 
+## v2 (2026-07-03, client requirements)
+
+The client sells **plastic bags by weight**. The Order/OrderItem system was
+replaced with a flat `Sale` model, and the whole UI was translated to Uzbek.
+
+- `Sale`: date (Sana), client (Mijoz), product (Mahsulot), dimension kg/g
+  (O'lchov birligi), weight (Og'irligi), price per unit (Narxi),
+  cost_price snapshot (Tannarxi), is_debt (Qarzga sotildi),
+  debt_deadline (Qarz muddati — required when is_debt), sales_rep
+- Computed: umumiy narx (weight × price), umumiy tannarx, foyda (profit)
+- `Product` gains `cost_price` (tannarx per 1 kg); prices are per kg, sale
+  in grams converts cost by /1000. Unit/stock fields removed.
+- Debt sales past their deadline are flagged (muddati o'tgan) on the
+  dashboard and highlighted in the sales list.
+- `LANGUAGE_CODE = "uz"`, `USE_THOUSAND_SEPARATOR = True`; all labels,
+  messages, and templates in Uzbek.
+
 ## Out of scope (v1)
 
 Invoicing/PDF, email notifications, lead pipeline/kanban, multi-currency,

@@ -1,13 +1,13 @@
 {% extends "base.html" %}
-{% block title %}Confirm delete · Packaging CRM{% endblock %}
+{% block title %}O'chirishni tasdiqlash · Paket CRM{% endblock %}
 {% block content %}
-<h1>Delete “{{ object }}”?</h1>
+<h1>“{{ object }}” o'chirilsinmi?</h1>
 <div class="card">
-  <p>This cannot be undone.</p>
+  <p>Bu amalni qaytarib bo'lmaydi.</p>
   <form method="post">
     {% csrf_token %}
-    <button type="submit" class="btn btn-danger">Yes, delete</button>
-    <a class="btn btn-ghost" style="color: var(--ink); border-color: var(--line);" href="{% url back %}">Cancel</a>
+    <button type="submit" class="btn btn-danger">Ha, o'chirish</button>
+    <a class="btn btn-ghost" style="color: var(--ink); border-color: var(--line);" href="{% url back %}">Bekor qilish</a>
   </form>
 </div>
 {% endblock %}

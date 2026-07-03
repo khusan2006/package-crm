@@ -5,11 +5,11 @@ from django.db import models
 class User(AbstractUser):
     class Role(models.TextChoices):
         ADMIN = "admin", "Admin"
-        MANAGER = "manager", "Manager"
-        SALES = "sales", "Sales"
+        MANAGER = "manager", "Menejer"
+        SALES = "sales", "Sotuvchi"
 
-    role = models.CharField(max_length=10, choices=Role.choices, default=Role.SALES)
-    phone = models.CharField(max_length=30, blank=True)
+    role = models.CharField("Rol", max_length=10, choices=Role.choices, default=Role.SALES)
+    phone = models.CharField("Telefon", max_length=30, blank=True)
 
     @property
     def is_admin_role(self):

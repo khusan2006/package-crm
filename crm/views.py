@@ -1,5 +1,6 @@
+from datetime import date
+
 from django.contrib import messages
-from django.core.exceptions import PermissionDenied
 from django.core.paginator import Paginator
 from django.db.models import Count, F, ProtectedError, Q, Sum
 from django.shortcuts import get_object_or_404, redirect, render
@@ -8,8 +9,8 @@ from django.utils import timezone
 from accounts.decorators import role_required
 from accounts.models import User
 
-from .forms import ClientForm, OrderForm, OrderItemFormSet, OrderStatusForm, ProductForm
-from .models import Client, Order, Product
+from .forms import ClientForm, ProductForm, SaleForm
+from .models import COST, PROFIT, REVENUE, Client, Product, Sale
 
 
 def _visible_clients(user):
@@ -17,51 +18,55 @@ def _visible_clients(user):
     return qs if user.can_see_all_records else qs.filter(owner=user)
 
 
-def _get_visible_order(user, pk):
-    return get_object_or_404(
-        Order.objects.visible_to(user).select_related("client", "sales_rep"), pk=pk
-    )
+def _sale_totals(qs):
+    return qs.aggregate(revenue=Sum(REVENUE), cost=Sum(COST), profit=Sum(PROFIT))
+
+
+def _parse_date(value):
+    try:
+        return date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
 
 
 # --- Dashboard ---------------------------------------------------------------
 
 def dashboard(request):
-    orders = Order.objects.visible_to(request.user)
-    sales_orders = orders.filter(status__in=Order.SALES_STATUSES)
+    sales = Sale.objects.visible_to(request.user)
+    month_start = timezone.localdate().replace(day=1)
+    month_sales = sales.filter(date__gte=month_start)
 
-    month_start = timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    revenue = F("items__quantity") * F("items__unit_price")
-
-    month_sales = sales_orders.filter(created_at__gte=month_start).aggregate(
-        total=Sum(revenue)
-    )["total"] or 0
-    all_time_sales = sales_orders.aggregate(total=Sum(revenue))["total"] or 0
-
-    counts_by_status = dict(
-        orders.values_list("status").annotate(n=Count("id")).order_by()
-    )
-    status_summary = [
-        (status.value, status.label, counts_by_status.get(status.value, 0))
-        for status in Order.Status
-    ]
+    month = _sale_totals(month_sales)
+    all_time = _sale_totals(sales)
 
     top_clients = (
         _visible_clients(request.user)
-        .filter(orders__status__in=Order.SALES_STATUSES)
-        .annotate(total=Sum(F("orders__items__quantity") * F("orders__items__unit_price")))
+        .filter(sales__isnull=False)
+        .annotate(
+            total=Sum(F("sales__weight") * F("sales__price")),
+            profit=Sum(F("sales__weight") * (F("sales__price") - F("sales__cost_price"))),
+        )
         .order_by("-total")[:5]
     )
 
-    recent_orders = orders.select_related("client", "sales_rep").with_totals()[:8]
+    recent_sales = (
+        sales.select_related("client", "product", "sales_rep").with_totals()[:8]
+    )
+
+    debt_total = sales.filter(is_debt=True).aggregate(v=Sum(REVENUE))["v"]
+    overdue_count = sales.filter(
+        is_debt=True, debt_deadline__lt=timezone.localdate()
+    ).count()
 
     context = {
-        "month_sales": month_sales,
-        "all_time_sales": all_time_sales,
-        "status_summary": status_summary,
+        "month": month,
+        "all_time": all_time,
+        "month_count": month_sales.count(),
         "top_clients": top_clients,
-        "recent_orders": recent_orders,
+        "recent_sales": recent_sales,
         "client_count": _visible_clients(request.user).count(),
-        "order_count": orders.count(),
+        "debt_total": debt_total,
+        "overdue_count": overdue_count,
     }
     return render(request, "crm/dashboard.html", context)
 
@@ -71,7 +76,7 @@ def dashboard(request):
 def client_list(request):
     clients = (
         _visible_clients(request.user)
-        .annotate(order_count=Count("orders"))
+        .annotate(sale_count=Count("sales"))
         .order_by("name")
     )
     q = request.GET.get("q", "").strip()
@@ -89,9 +94,9 @@ def client_create(request):
         client = form.save(commit=False)
         client.owner = request.user
         client.save()
-        messages.success(request, f"Client “{client.name}” created.")
+        messages.success(request, f"“{client.name}” mijozi qo'shildi.")
         return redirect("client_list")
-    return render(request, "crm/form.html", {"form": form, "title": "New client"})
+    return render(request, "crm/form.html", {"form": form, "title": "Yangi mijoz"})
 
 
 def client_edit(request, pk):
@@ -99,9 +104,11 @@ def client_edit(request, pk):
     form = ClientForm(request.POST or None, instance=client)
     if request.method == "POST" and form.is_valid():
         form.save()
-        messages.success(request, f"Client “{client.name}” updated.")
+        messages.success(request, f"“{client.name}” mijozi yangilandi.")
         return redirect("client_list")
-    return render(request, "crm/form.html", {"form": form, "title": f"Edit {client.name}"})
+    return render(
+        request, "crm/form.html", {"form": form, "title": f"Tahrirlash: {client.name}"}
+    )
 
 
 def client_delete(request, pk):
@@ -109,10 +116,11 @@ def client_delete(request, pk):
     if request.method == "POST":
         try:
             client.delete()
-            messages.success(request, f"Client “{client.name}” deleted.")
+            messages.success(request, f"“{client.name}” mijozi o'chirildi.")
         except ProtectedError:
             messages.error(
-                request, f"Cannot delete “{client.name}” — it has orders. Cancel them first."
+                request,
+                f"“{client.name}” mijozini o'chirib bo'lmaydi — sotuvlari mavjud.",
             )
         return redirect("client_list")
     return render(request, "crm/confirm_delete.html", {"object": client, "back": "client_list"})
@@ -134,9 +142,9 @@ def product_create(request):
     form = ProductForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
         product = form.save()
-        messages.success(request, f"Product “{product.name}” created.")
+        messages.success(request, f"“{product.name}” mahsuloti qo'shildi.")
         return redirect("product_list")
-    return render(request, "crm/form.html", {"form": form, "title": "New product"})
+    return render(request, "crm/form.html", {"form": form, "title": "Yangi mahsulot"})
 
 
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
@@ -145,73 +153,69 @@ def product_edit(request, pk):
     form = ProductForm(request.POST or None, instance=product)
     if request.method == "POST" and form.is_valid():
         form.save()
-        messages.success(request, f"Product “{product.name}” updated.")
+        messages.success(request, f"“{product.name}” mahsuloti yangilandi.")
         return redirect("product_list")
-    return render(request, "crm/form.html", {"form": form, "title": f"Edit {product.name}"})
+    return render(
+        request, "crm/form.html", {"form": form, "title": f"Tahrirlash: {product.name}"}
+    )
 
 
-# --- Orders -------------------------------------------------------------------
+# --- Sales --------------------------------------------------------------------
 
-def order_list(request):
-    orders = (
-        Order.objects.visible_to(request.user)
-        .select_related("client", "sales_rep")
+def sale_list(request):
+    sales = (
+        Sale.objects.visible_to(request.user)
+        .select_related("client", "product", "sales_rep")
         .with_totals()
-        .order_by("-created_at")
+        .order_by("-date", "-created_at")
     )
-    status = request.GET.get("status", "")
-    if status:
-        orders = orders.filter(status=status)
-    page = Paginator(orders, 25).get_page(request.GET.get("page"))
+    date_from = _parse_date(request.GET.get("dan"))
+    date_to = _parse_date(request.GET.get("gacha"))
+    if date_from:
+        sales = sales.filter(date__gte=date_from)
+    if date_to:
+        sales = sales.filter(date__lte=date_to)
+
+    totals = _sale_totals(sales)
+    totals["debt"] = sales.filter(is_debt=True).aggregate(v=Sum(REVENUE))["v"]
+    page = Paginator(sales, 25).get_page(request.GET.get("page"))
     return render(
         request,
-        "crm/order_list.html",
-        {"page": page, "status": status, "statuses": Order.Status},
+        "crm/sale_list.html",
+        {
+            "page": page,
+            "totals": totals,
+            "date_from": date_from,
+            "date_to": date_to,
+        },
     )
 
 
-def order_create(request):
-    form = OrderForm(request.POST or None, user=request.user)
-    formset = OrderItemFormSet(request.POST or None)
-    if request.method == "POST" and form.is_valid() and formset.is_valid():
-        order = form.save(commit=False)
-        order.sales_rep = request.user
-        order.save()
-        formset.instance = order
-        formset.save()
-        messages.success(request, f"Order {order.number} created.")
-        return redirect("order_detail", pk=order.pk)
-    return render(
-        request,
-        "crm/order_form.html",
-        {"form": form, "formset": formset, "title": "New order"},
-    )
+def sale_create(request):
+    form = SaleForm(request.POST or None, user=request.user)
+    if request.method == "POST" and form.is_valid():
+        sale = form.save(commit=False)
+        sale.sales_rep = request.user
+        sale.save()
+        messages.success(request, "Sotuv qo'shildi.")
+        return redirect("sale_list")
+    return render(request, "crm/form.html", {"form": form, "title": "Yangi sotuv"})
 
 
-def order_detail(request, pk):
-    order = _get_visible_order(request.user, pk)
-    status_form = OrderStatusForm(instance=order)
-    return render(request, "crm/order_detail.html", {"order": order, "status_form": status_form})
-
-
-def order_set_status(request, pk):
-    order = _get_visible_order(request.user, pk)
-    if request.method != "POST":
-        return redirect("order_detail", pk=pk)
-    form = OrderStatusForm(request.POST, instance=order)
-    if form.is_valid():
+def sale_edit(request, pk):
+    sale = get_object_or_404(Sale.objects.visible_to(request.user), pk=pk)
+    form = SaleForm(request.POST or None, instance=sale, user=request.user)
+    if request.method == "POST" and form.is_valid():
         form.save()
-        messages.success(request, f"Order {order.number} marked {order.get_status_display()}.")
-    return redirect("order_detail", pk=pk)
+        messages.success(request, "Sotuv yangilandi.")
+        return redirect("sale_list")
+    return render(request, "crm/form.html", {"form": form, "title": "Sotuvni tahrirlash"})
 
 
-def order_delete(request, pk):
-    order = _get_visible_order(request.user, pk)
-    if not request.user.can_see_all_records and order.status != Order.Status.DRAFT:
-        raise PermissionDenied
+def sale_delete(request, pk):
+    sale = get_object_or_404(Sale.objects.visible_to(request.user), pk=pk)
     if request.method == "POST":
-        number = order.number
-        order.delete()
-        messages.success(request, f"Order {number} deleted.")
-        return redirect("order_list")
-    return render(request, "crm/confirm_delete.html", {"object": order, "back": "order_list"})
+        sale.delete()
+        messages.success(request, "Sotuv o'chirildi.")
+        return redirect("sale_list")
+    return render(request, "crm/confirm_delete.html", {"object": sale, "back": "sale_list"})

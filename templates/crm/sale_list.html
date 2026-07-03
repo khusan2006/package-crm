@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Sotuvlar · Paket CRM{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Sotuvlar</h1>
+  <a class="btn" href="{% url 'sale_create' %}">+ Yangi sotuv</a>
+</div>
+
+<form method="get" class="searchbar">
+  <label class="muted">dan <input type="date" name="dan" value="{{ date_from|date:'Y-m-d' }}"></label>
+  <label class="muted">gacha <input type="date" name="gacha" value="{{ date_to|date:'Y-m-d' }}"></label>
+  <button type="submit" class="btn btn-sm">Filtrlash</button>
+  {% if date_from or date_to %}<a class="btn btn-sm btn-ghost" style="color: var(--ink); border-color: var(--line);" href="{% url 'sale_list' %}">Tozalash</a>{% endif %}
+</form>
+
+<div class="stat-grid">
+  <div class="stat">
+    <div class="label">Jami summa</div>
+    <div class="value">{{ totals.revenue|default:0|floatformat:"0g" }} so'm</div>
+  </div>
+  <div class="stat">
+    <div class="label">Jami tannarx</div>
+    <div class="value">{{ totals.cost|default:0|floatformat:"0g" }} so'm</div>
+  </div>
+  <div class="stat">
+    <div class="label">Jami foyda</div>
+    <div class="value">{{ totals.profit|default:0|floatformat:"0g" }} so'm</div>
+  </div>
+  <div class="stat">
+    <div class="label">Jami qarz</div>
+    <div class="value">{{ totals.debt|default:0|floatformat:"0g" }} so'm</div>
+  </div>
+</div>
+
+{% if page.object_list %}
+<table>
+  <tr>
+    <th>Sana</th><th>Mijoz</th><th>Mahsulot</th><th>Sotuvchi</th>
+    <th class="num">Og'irligi</th><th class="num">Narxi</th>
+    <th class="num">Umumiy narx</th><th class="num">Tannarx</th><th class="num">Foyda</th>
+    <th>To'lov</th><th></th>
+  </tr>
+  {% for sale in page %}
+  <tr>
+    <td>{{ sale.date|date:"Y-m-d" }}</td>
+    <td>{{ sale.client.name }}</td>
+    <td>{{ sale.product.name }}</td>
+    <td>{{ sale.sales_rep }}</td>
+    <td class="num">{{ sale.weight|floatformat:"-3g" }} {{ sale.dimension }}</td>
+    <td class="num">{{ sale.price|floatformat:"0g" }}</td>
+    <td class="num">{{ sale.total|floatformat:"0g" }}</td>
+    <td class="num">{{ sale.cost_total|floatformat:"0g" }}</td>
+    <td class="num"><strong>{{ sale.profit_total|floatformat:"0g" }}</strong></td>
+    <td>
+      {% if sale.is_debt %}
+        <span class="badge {% if sale.is_overdue %}badge-cancelled{% else %}badge-shipped{% endif %}">Qarz · {{ sale.debt_deadline|date:"Y-m-d" }}</span>
+      {% else %}
+        <span class="badge badge-paid">To'langan</span>
+      {% endif %}
+    </td>
+    <td>
+      <a class="btn btn-sm" href="{% url 'sale_edit' sale.pk %}">Tahrirlash</a>
+      <a class="btn btn-sm btn-danger" href="{% url 'sale_delete' sale.pk %}">O'chirish</a>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% include "crm/_pagination.html" %}
+{% else %}
+<p class="muted">Sotuvlar topilmadi.</p>
+{% endif %}
+{% endblock %}

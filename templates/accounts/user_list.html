@@ -1,19 +1,19 @@
 {% extends "base.html" %}
-{% block title %}Users · Packaging CRM{% endblock %}
+{% block title %}Foydalanuvchilar · Paket CRM{% endblock %}
 {% block content %}
 <div class="page-head">
-  <h1>Users</h1>
-  <a class="btn" href="{% url 'user_create' %}">+ New user</a>
+  <h1>Foydalanuvchilar</h1>
+  <a class="btn" href="{% url 'user_create' %}">+ Yangi foydalanuvchi</a>
 </div>
 <table>
-  <tr><th>Username</th><th>Name</th><th>Email</th><th>Role</th><th>Active</th></tr>
+  <tr><th>Login</th><th>Ismi</th><th>Email</th><th>Rol</th><th>Faol</th></tr>
   {% for account in users %}
   <tr>
     <td><a href="{% url 'user_edit' account.pk %}">{{ account.username }}</a></td>
     <td>{{ account.get_full_name|default:"—" }}</td>
     <td>{{ account.email|default:"—" }}</td>
     <td>{{ account.get_role_display }}</td>
-    <td>{{ account.is_active|yesno:"Yes,No" }}</td>
+    <td>{{ account.is_active|yesno:"Ha,Yo'q" }}</td>
   </tr>
   {% endfor %}
 </table>

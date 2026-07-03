@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Client, Order, OrderItem, Product
+from .models import Client, Product, Sale
 
 
 @admin.register(Client)
@@ -12,18 +12,13 @@ class ClientAdmin(admin.ModelAdmin):
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ["name", "sku", "unit", "price", "stock", "is_active"]
+    list_display = ["name", "sku", "cost_price", "price", "is_active"]
     search_fields = ["name", "sku"]
-    list_filter = ["unit", "is_active"]
+    list_filter = ["is_active"]
 
 
-class OrderItemInline(admin.TabularInline):
-    model = OrderItem
-    extra = 0
-
-
-@admin.register(Order)
-class OrderAdmin(admin.ModelAdmin):
-    list_display = ["__str__", "client", "sales_rep", "status", "created_at"]
-    list_filter = ["status", "sales_rep"]
-    inlines = [OrderItemInline]
+@admin.register(Sale)
+class SaleAdmin(admin.ModelAdmin):
+    list_display = ["date", "client", "product", "weight", "dimension", "price", "sales_rep"]
+    list_filter = ["dimension", "sales_rep", "date"]
+    date_hierarchy = "date"

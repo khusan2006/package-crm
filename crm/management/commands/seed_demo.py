@@ -1,13 +1,15 @@
-"""Seed demo users, products, clients, and orders for local development."""
+"""Seed demo users, products, clients, and sales for local development."""
 
 import random
+from datetime import timedelta
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
+from django.utils import timezone
 
 from accounts.models import User
-from crm.models import Client, Order, OrderItem, Product
+from crm.models import Client, Product, Sale
 
 DEMO_USERS = [
     ("admin", "Admin", "User", User.Role.ADMIN),
@@ -16,40 +18,41 @@ DEMO_USERS = [
     ("sales2", "Dilnoza", "Yusupova", User.Role.SALES),
 ]
 
+# (name, sku, tannarx per kg, sotish narxi per kg)
 DEMO_PRODUCTS = [
-    ("Corrugated box 40×30×30", "BOX-403030", Product.Unit.PIECE, "4500", 1200),
-    ("Corrugated box 60×40×40", "BOX-604040", Product.Unit.PIECE, "7800", 800),
-    ("Stretch film 500mm 2kg", "FILM-500-2", Product.Unit.ROLL, "58000", 150),
-    ("Bubble wrap 1m×50m", "BUBL-1X50", Product.Unit.ROLL, "95000", 60),
-    ("Kraft paper 80g", "KRFT-80", Product.Unit.KG, "14000", 500),
-    ("Packing tape 48mm brown", "TAPE-48BR", Product.Unit.PIECE, "6500", 2000),
-    ("Zip-lock bag 20×30", "ZIP-2030", Product.Unit.BOX, "42000", 90),
+    ("Polietilen paket 24×37", "PKT-2437", "18000", "24000"),
+    ("Polietilen paket 30×40", "PKT-3040", "19000", "26000"),
+    ("Polietilen paket 40×50", "PKT-4050", "20000", "27500"),
+    ("Mayka paket 28×50", "MYK-2850", "17000", "23000"),
+    ("Rulonli paket 25×35", "RUL-2535", "21000", "28000"),
+    ("Zip paket 15×20", "ZIP-1520", "35000", "48000"),
 ]
 
 DEMO_CLIENTS = [
-    ("Anvar Toshmatov", "Samarqand Sweets LLC", "+998901112233"),
-    ("Gulnora Azimova", "Tashkent Textiles", "+998909876543"),
+    ("Anvar Toshmatov", "Samarqand Shirinliklari MChJ", "+998901112233"),
+    ("Gulnora Azimova", "Toshkent To'qimachilik", "+998909876543"),
     ("Rustam Nazarov", "FreshFruit Export", "+998933334455"),
-    ("Kamola Ergasheva", "Silk Road Ceramics", "+998971234567"),
-    ("Javlon Mirzaev", "Bukhara Bakery Group", "+998935556677"),
+    ("Kamola Ergasheva", "Ipak Yo'li Kulolchilik", "+998971234567"),
+    ("Javlon Mirzaev", "Buxoro Non Guruhi", "+998935556677"),
     ("Nilufar Saidova", "GreenLeaf Pharma", "+998907778899"),
 ]
 
 
 class Command(BaseCommand):
-    help = "Create demo users (password: demo1234), products, clients, and orders."
+    help = "Demo ma'lumotlar: foydalanuvchilar (parol: demo1234), mahsulotlar, mijozlar, sotuvlar."
 
     @transaction.atomic
     def handle(self, *args, **options):
         if User.objects.filter(username="admin").exists():
-            self.stdout.write(self.style.WARNING("Demo data already seeded — skipping."))
+            self.stdout.write(self.style.WARNING("Demo ma'lumotlar allaqachon mavjud."))
             return
 
         rng = random.Random(42)
+        today = timezone.localdate()
 
         users = {}
         for username, first, last, role in DEMO_USERS:
-            user = User.objects.create_user(
+            users[username] = User.objects.create_user(
                 username=username,
                 password="demo1234",
                 first_name=first,
@@ -59,13 +62,12 @@ class Command(BaseCommand):
                 is_staff=(role == User.Role.ADMIN),
                 is_superuser=(role == User.Role.ADMIN),
             )
-            users[username] = user
 
         products = [
             Product.objects.create(
-                name=name, sku=sku, unit=unit, price=Decimal(price), stock=stock
+                name=name, sku=sku, cost_price=Decimal(cost), price=Decimal(price)
             )
-            for name, sku, unit, price, stock in DEMO_PRODUCTS
+            for name, sku, cost, price in DEMO_PRODUCTS
         ]
 
         reps = [users["sales1"], users["sales2"]]
@@ -76,30 +78,34 @@ class Command(BaseCommand):
             for name, company, phone in DEMO_CLIENTS
         ]
 
-        statuses = [
-            Order.Status.DRAFT,
-            Order.Status.CONFIRMED,
-            Order.Status.SHIPPED,
-            Order.Status.PAID,
-            Order.Status.PAID,
-            Order.Status.CANCELLED,
-        ]
-        for _ in range(18):
+        for _ in range(30):
             client = rng.choice(clients)
-            order = Order.objects.create(
+            product = rng.choice(products)
+            dimension = Sale.Dimension.KG if rng.random() < 0.8 else Sale.Dimension.G
+            if dimension == Sale.Dimension.KG:
+                weight = Decimal(rng.randint(5, 300))
+                price = product.price + Decimal(rng.randint(-10, 25)) * 100
+            else:
+                weight = Decimal(rng.randint(200, 900))
+                price = (product.price + Decimal(rng.randint(-10, 25)) * 100) / 1000
+            is_debt = rng.random() < 0.3
+            sale_date = today - timedelta(days=rng.randint(0, 45))
+            Sale.objects.create(
+                date=sale_date,
                 client=client,
+                product=product,
+                dimension=dimension,
+                weight=weight,
+                price=price,
+                cost_price=product.cost_price_for(dimension),
+                is_debt=is_debt,
+                debt_deadline=(
+                    sale_date + timedelta(days=rng.choice([15, 30, 45])) if is_debt else None
+                ),
                 sales_rep=client.owner,
-                status=rng.choice(statuses),
             )
-            for product in rng.sample(products, rng.randint(1, 3)):
-                OrderItem.objects.create(
-                    order=order,
-                    product=product,
-                    quantity=rng.randint(5, 200),
-                    unit_price=product.price,
-                )
 
         self.stdout.write(self.style.SUCCESS(
-            "Seeded: 4 users (admin/manager/sales1/sales2, password demo1234), "
-            f"{len(products)} products, {len(clients)} clients, 18 orders."
+            "Yaratildi: 4 foydalanuvchi (admin/manager/sales1/sales2, parol demo1234), "
+            f"{len(products)} mahsulot, {len(clients)} mijoz, 30 sotuv."
         ))

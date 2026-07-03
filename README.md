@@ -1,7 +1,9 @@
-# Packaging CRM
+# Paket CRM
 
-CRM for a packaging-sales business: clients, products, orders, and a sales
-dashboard, with role-based access control.
+CRM for a plastic-bag (packaging) business: clients, products, weight-based
+sales with cost price (tannarx) and profit (foyda) tracking, debt sales with
+deadlines, and a sales dashboard — with role-based access control. UI is in
+Uzbek.
 
 **Stack:** Django · PostgreSQL (Docker) · server-rendered templates
 

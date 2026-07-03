@@ -1,66 +1,76 @@
 {% extends "base.html" %}
-{% block title %}Dashboard · Packaging CRM{% endblock %}
+{% block title %}Asosiy · Paket CRM{% endblock %}
 {% block content %}
-<h1>Dashboard</h1>
+<h1>Asosiy sahifa</h1>
 
 <div class="stat-grid">
   <div class="stat">
-    <div class="label">Sales this month</div>
-    <div class="value">{{ month_sales|floatformat:2 }}</div>
+    <div class="label">Shu oy savdo</div>
+    <div class="value">{{ month.revenue|default:0|floatformat:"0g" }} so'm</div>
   </div>
   <div class="stat">
-    <div class="label">All-time sales</div>
-    <div class="value">{{ all_time_sales|floatformat:2 }}</div>
+    <div class="label">Shu oy foyda</div>
+    <div class="value">{{ month.profit|default:0|floatformat:"0g" }} so'm</div>
   </div>
   <div class="stat">
-    <div class="label">Clients</div>
+    <div class="label">Jami savdo</div>
+    <div class="value">{{ all_time.revenue|default:0|floatformat:"0g" }} so'm</div>
+  </div>
+  <div class="stat">
+    <div class="label">Jami foyda</div>
+    <div class="value">{{ all_time.profit|default:0|floatformat:"0g" }} so'm</div>
+  </div>
+  <div class="stat">
+    <div class="label">Qarzlar</div>
+    <div class="value">{{ debt_total|default:0|floatformat:"0g" }} so'm</div>
+    {% if overdue_count %}<div class="label" style="color: var(--danger);">{{ overdue_count }} ta muddati o'tgan</div>{% endif %}
+  </div>
+  <div class="stat">
+    <div class="label">Mijozlar</div>
     <div class="value">{{ client_count }}</div>
   </div>
-  <div class="stat">
-    <div class="label">Orders</div>
-    <div class="value">{{ order_count }}</div>
-  </div>
 </div>
 
 <div class="card">
-  <h2>Orders by status</h2>
-  {% for value, label, count in status_summary %}
-    <span class="badge badge-{{ value }}">{{ label }}: {{ count }}</span>
-  {% endfor %}
-</div>
-
-<div class="card">
-  <h2>Recent orders</h2>
-  {% if recent_orders %}
+  <h2>So'nggi sotuvlar</h2>
+  {% if recent_sales %}
   <table>
-    <tr><th>Order</th><th>Client</th><th>Rep</th><th>Status</th><th class="num">Total</th><th>Date</th></tr>
-    {% for order in recent_orders %}
+    <tr><th>Sana</th><th>Mijoz</th><th>Mahsulot</th><th class="num">Og'irligi</th><th class="num">Umumiy narx</th><th class="num">Foyda</th><th>To'lov</th></tr>
+    {% for sale in recent_sales %}
     <tr>
-      <td><a href="{% url 'order_detail' order.pk %}">{{ order.number }}</a></td>
-      <td>{{ order.client.name }}</td>
-      <td>{{ order.sales_rep }}</td>
-      <td><span class="badge badge-{{ order.status }}">{{ order.get_status_display }}</span></td>
-      <td class="num">{{ order.total|default:0|floatformat:2 }}</td>
-      <td>{{ order.created_at|date:"Y-m-d" }}</td>
+      <td><a href="{% url 'sale_edit' sale.pk %}">{{ sale.date|date:"Y-m-d" }}</a></td>
+      <td>{{ sale.client.name }}</td>
+      <td>{{ sale.product.name }}</td>
+      <td class="num">{{ sale.weight|floatformat:"-3g" }} {{ sale.dimension }}</td>
+      <td class="num">{{ sale.total|floatformat:"0g" }}</td>
+      <td class="num">{{ sale.profit_total|floatformat:"0g" }}</td>
+      <td>
+        {% if sale.is_debt %}
+          <span class="badge {% if sale.is_overdue %}badge-cancelled{% else %}badge-shipped{% endif %}">Qarz · {{ sale.debt_deadline|date:"Y-m-d" }}</span>
+        {% else %}
+          <span class="badge badge-paid">To'langan</span>
+        {% endif %}
+      </td>
     </tr>
     {% endfor %}
   </table>
-  {% else %}<p class="muted">No orders yet.</p>{% endif %}
+  {% else %}<p class="muted">Hozircha sotuvlar yo'q.</p>{% endif %}
 </div>
 
 <div class="card">
-  <h2>Top clients</h2>
+  <h2>Top mijozlar</h2>
   {% if top_clients %}
   <table>
-    <tr><th>Client</th><th>Company</th><th class="num">Total sales</th></tr>
+    <tr><th>Mijoz</th><th>Kompaniya</th><th class="num">Jami savdo</th><th class="num">Jami foyda</th></tr>
     {% for client in top_clients %}
     <tr>
       <td>{{ client.name }}</td>
       <td>{{ client.company|default:"—" }}</td>
-      <td class="num">{{ client.total|floatformat:2 }}</td>
+      <td class="num">{{ client.total|floatformat:"0g" }}</td>
+      <td class="num">{{ client.profit|floatformat:"0g" }}</td>
     </tr>
     {% endfor %}
   </table>
-  {% else %}<p class="muted">No sales yet.</p>{% endif %}
+  {% else %}<p class="muted">Hozircha savdo yo'q.</p>{% endif %}
 </div>
 {% endblock %}
