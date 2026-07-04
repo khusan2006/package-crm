@@ -287,7 +287,9 @@ def sale_list(request):
     sales = sales.order_by("-date", "-created_at")
 
     totals = _sale_totals(sales)
-    totals["debt"] = sales.filter(is_debt=True).aggregate(v=Sum(REVENUE))["v"]
+    debt_sales = sales.filter(is_debt=True)
+    totals["debt"] = debt_sales.aggregate(v=Sum(REVENUE))["v"]
+    totals["debtors"] = debt_sales.values("client").distinct().count()
     page = Paginator(sales, 25).get_page(request.GET.get("page"))
     return render(
         request,

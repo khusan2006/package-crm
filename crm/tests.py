@@ -305,6 +305,16 @@ class SaleFilterExportTests(BaseSetup):
         for sale in response.context["page"].object_list:
             self.assertEqual(sale.client, self.client2)
 
+    def test_debtors_count_is_distinct_clients(self):
+        # A second debt sale for the same client must not double-count
+        make_sale(
+            self.client1, self.sales1, self.product,
+            is_debt=True, debt_deadline=timezone.localdate() + timedelta(days=5),
+        )
+        self.client.force_login(self.manager)
+        response = self.client.get(reverse("sale_list"))
+        self.assertEqual(response.context["totals"]["debtors"], 1)
+
     def test_filter_by_status_debt(self):
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("sale_list"), {"status": "debt"})

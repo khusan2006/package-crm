@@ -54,16 +54,16 @@
     <div class="value">{{ totals.revenue|default:0|floatformat:"0g" }} so'm</div>
   </div>
   <div class="stat">
-    <div class="label">Jami tannarx</div>
-    <div class="value">{{ totals.cost|default:0|floatformat:"0g" }} so'm</div>
-  </div>
-  <div class="stat">
     <div class="label">Jami foyda</div>
     <div class="value">{{ totals.profit|default:0|floatformat:"0g" }} so'm</div>
   </div>
   <div class="stat">
     <div class="label">Jami qarz</div>
     <div class="value">{{ totals.debt|default:0|floatformat:"0g" }} so'm</div>
+  </div>
+  <div class="stat">
+    <div class="label">Qarzdor mijozlar</div>
+    <div class="value">{{ totals.debtors }}</div>
   </div>
 </div>
 
