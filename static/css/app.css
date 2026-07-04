@@ -467,6 +467,23 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 
 .row-actions { display: flex; gap: 6px; }
 
+.icon-action {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 7px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.icon-action:hover { background: var(--surface-hover); color: var(--text); }
+.icon-action svg { width: 16px; height: 16px; }
+.icon-action.danger:hover { color: var(--danger); border-color: var(--danger); }
+.icon-action.settle:hover { color: var(--success); border-color: var(--success); }
+
 /* ============================================================
    Floating action button
    ============================================================ */
@@ -545,6 +562,7 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 .modal-x:hover { color: var(--text); }
 .modal form.stacked { padding: 16px 22px 22px; }
 .modal form.stacked p { max-width: none; }
+.modal-confirm { padding: 14px 22px 22px; }
 .modal-actions { display: flex; gap: 10px; margin-top: 8px; }
 
 /* Quick-add customer inside the sale form */

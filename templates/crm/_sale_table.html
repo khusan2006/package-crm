@@ -27,8 +27,17 @@
     </td>
     <td>
       <div class="row-actions">
-        <a class="btn btn-sm btn-ghost" href="{% url 'sale_edit' sale.pk %}">Tahrirlash</a>
-        <a class="btn btn-sm btn-danger" href="{% url 'sale_delete' sale.pk %}">O'chirish</a>
+        {% if sale.is_debt %}
+        <a class="icon-action settle" href="{% url 'sale_settle' sale.pk %}" data-modal title="To'landi deb belgilash">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </a>
+        {% endif %}
+        <a class="icon-action" href="{% url 'sale_edit' sale.pk %}" data-modal title="Tahrirlash">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        </a>
+        <a class="icon-action danger" href="{% url 'sale_delete' sale.pk %}" data-modal title="O'chirish">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+        </a>
       </div>
     </td>
   </tr>

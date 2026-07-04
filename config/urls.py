@@ -35,5 +35,6 @@ urlpatterns = [
     path("debts/", crm_views.debt_list, name="debt_list"),
     path("sales/new/", crm_views.sale_create, name="sale_create"),
     path("sales/<int:pk>/edit/", crm_views.sale_edit, name="sale_edit"),
+    path("sales/<int:pk>/settle/", crm_views.sale_settle, name="sale_settle"),
     path("sales/<int:pk>/delete/", crm_views.sale_delete, name="sale_delete"),
 ]

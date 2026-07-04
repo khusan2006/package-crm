@@ -14,7 +14,7 @@ from accounts.models import User
 
 from .forms import ClientForm, ProductForm, SaleForm, StockAdjustForm, StockEntryForm
 from .models import COST, PROFIT, REVENUE, Client, Product, Sale, StockEntry
-from .utils import form_response, form_success
+from .utils import form_reload, form_response, form_success, render_confirm
 
 
 def _visible_clients(user):
@@ -420,12 +420,31 @@ def sale_create(request):
 def sale_edit(request, pk):
     sale = get_object_or_404(Sale.objects.visible_to(request.user), pk=pk)
     form = SaleForm(request.POST or None, instance=sale, user=request.user)
-    if request.method == "POST" and form.is_valid():
-        sale = form.save()
-        messages.success(request, "Sotuv yangilandi.")
-        _warn_if_negative_stock(request, sale.product)
-        return redirect("sale_list")
-    return render(request, "crm/form.html", {"form": form, "title": "Sotuvni tahrirlash"})
+    if request.method == "POST":
+        if form.is_valid():
+            sale = form.save()
+            messages.success(request, "Sotuv yangilandi.")
+            _warn_if_negative_stock(request, sale.product)
+            return form_reload(request, reverse("sale_list"))
+        return form_response(request, form, "Sotuvni tahrirlash", invalid=True, modal_template="crm/_sale_modal.html")
+    return form_response(request, form, "Sotuvni tahrirlash", modal_template="crm/_sale_modal.html")
+
+
+def sale_settle(request, pk):
+    sale = get_object_or_404(Sale.objects.visible_to(request.user), pk=pk)
+    if request.method == "POST":
+        if sale.is_debt:
+            sale.is_debt = False
+            sale.debt_deadline = None
+            sale.save(update_fields=["is_debt", "debt_deadline"])
+            messages.success(request, "Qarz to'langan deb belgilandi.")
+        return form_reload(request, reverse("sale_list"))
+    return render_confirm(
+        request,
+        "Qarzni yopish",
+        f"“{sale.client.name}” qarzini ({sale.total_price:,.0f} so'm) to'langan deb belgilaysizmi?",
+        "Ha, to'landi",
+    )
 
 
 def sale_delete(request, pk):
@@ -433,5 +452,11 @@ def sale_delete(request, pk):
     if request.method == "POST":
         sale.delete()
         messages.success(request, "Sotuv o'chirildi.")
-        return redirect("sale_list")
-    return render(request, "crm/confirm_delete.html", {"object": sale, "back": "sale_list"})
+        return form_reload(request, reverse("sale_list"))
+    return render_confirm(
+        request,
+        "Sotuvni o'chirish",
+        "Bu sotuv butunlay o'chiriladi. Davom etasizmi?",
+        "Ha, o'chirish",
+        confirm_class="btn-danger",
+    )

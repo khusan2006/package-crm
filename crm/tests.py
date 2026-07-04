@@ -383,6 +383,42 @@ class DebtPageTests(BaseSetup):
         self.assertNotIn(other, ctx["upcoming"])
 
 
+class SettleDebtTests(BaseSetup):
+    def _debt_sale(self):
+        return make_sale(
+            self.client1, self.sales1, self.product,
+            is_debt=True, debt_deadline=timezone.localdate() + timedelta(days=5),
+        )
+
+    def test_settle_marks_debt_paid(self):
+        sale = self._debt_sale()
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("sale_settle", args=[sale.pk]))
+        self.assertEqual(response.status_code, 302)  # non-AJAX redirect
+        sale.refresh_from_db()
+        self.assertFalse(sale.is_debt)
+        self.assertIsNone(sale.debt_deadline)
+
+    def test_settle_ajax_returns_204(self):
+        sale = self._debt_sale()
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("sale_settle", args=[sale.pk]), HTTP_X_REQUESTED_WITH="XMLHttpRequest"
+        )
+        self.assertEqual(response.status_code, 204)
+        sale.refresh_from_db()
+        self.assertFalse(sale.is_debt)
+
+    def test_settle_scoped_to_owner(self):
+        other = make_sale(
+            self.client2, self.sales2, self.product,
+            is_debt=True, debt_deadline=timezone.localdate(),
+        )
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("sale_settle", args=[other.pk]))
+        self.assertEqual(response.status_code, 404)
+
+
 class QuickAddClientTests(BaseSetup):
     def test_creates_client_owned_by_current_user(self):
         self.client.force_login(self.sales1)

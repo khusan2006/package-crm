@@ -24,3 +24,23 @@ def form_success(request, url):
         response["X-Redirect"] = url
         return response
     return redirect(url)
+
+
+def form_reload(request, fallback_url):
+    """For in-place actions (edit/delete/settle): an AJAX modal reloads the page
+    it was opened from (204 with no X-Redirect); otherwise redirect to a fallback."""
+    if is_ajax(request):
+        return HttpResponse(status=204)
+    return redirect(fallback_url)
+
+
+def render_confirm(request, title, message, confirm_label, confirm_class=""):
+    """Render a confirm dialog as a modal partial (AJAX) or a full page."""
+    context = {
+        "title": title,
+        "message": message,
+        "confirm_label": confirm_label,
+        "confirm_class": confirm_class,
+    }
+    template = "_confirm_modal.html" if is_ajax(request) else "crm/confirm.html"
+    return render(request, template, context)
