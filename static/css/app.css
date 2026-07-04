@@ -136,8 +136,9 @@ h2 { font-size: 15px; font-weight: 600; margin: 0 0 14px; letter-spacing: -0.01e
   transition: background 0.12s, color 0.12s;
 }
 .nav-item:hover { background: var(--surface-hover); color: var(--text); }
-.nav-item.active { background: var(--accent-soft); color: #eaf0ff; font-weight: 600; }
-.nav-item.active .ico { color: var(--accent); }
+.nav-item.active { background: #0B3A6A; color: #fff; font-weight: 600; }
+.nav-item.active:hover { background: #0B3A6A; }
+.nav-item.active .ico { color: #fff; }
 .nav-item .ico { width: 20px; height: 20px; flex-shrink: 0; color: inherit; }
 .nav-item .ico svg { width: 100%; height: 100%; display: block; }
 
