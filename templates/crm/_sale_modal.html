@@ -1,0 +1,40 @@
+<div class="modal-head">
+  <h2>{{ title }}</h2>
+  <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
+</div>
+<form method="post" action="{{ request.path }}" class="stacked">
+  {% csrf_token %}
+  {% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
+
+  <p>{{ form.date.label_tag }}{{ form.date }}{{ form.date.errors }}</p>
+
+  <p class="qa-container">
+    {{ form.client.label_tag }}
+    <span class="field-with-add">
+      {{ form.client }}
+      <button type="button" class="btn btn-sm quick-add-toggle"
+              data-quick-url="{% url 'client_quick_create' %}"
+              data-target="{{ form.client.id_for_label }}" title="Yangi mijoz">+</button>
+    </span>
+    <span class="quick-add-panel" hidden>
+      <input type="text" class="qa-name" placeholder="Mijoz ismi">
+      <input type="text" class="qa-phone" placeholder="Telefon (ixtiyoriy)">
+      <button type="button" class="btn btn-sm qa-save">Qo'shish</button>
+      <span class="qa-error"></span>
+    </span>
+    {{ form.client.errors }}
+  </p>
+
+  <p>{{ form.product.label_tag }}{{ form.product }}{{ form.product.errors }}</p>
+  <p>{{ form.dimension.label_tag }}{{ form.dimension }}{{ form.dimension.errors }}</p>
+  <p>{{ form.weight.label_tag }}{{ form.weight }}{{ form.weight.errors }}</p>
+  <p>{{ form.price.label_tag }}{{ form.price }}{{ form.price.errors }}</p>
+  <p>{{ form.cost_price.label_tag }}{{ form.cost_price }}{{ form.cost_price.errors }}</p>
+  <p>{{ form.is_debt.label_tag }}{{ form.is_debt }}{{ form.is_debt.errors }}</p>
+  <p>{{ form.debt_deadline.label_tag }}{{ form.debt_deadline }}{{ form.debt_deadline.errors }}</p>
+
+  <div class="modal-actions">
+    <button type="submit" class="btn">Saqlash</button>
+    <button type="button" class="btn btn-ghost" data-modal-close>Bekor qilish</button>
+  </div>
+</form>

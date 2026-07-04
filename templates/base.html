@@ -43,6 +43,10 @@
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span>
           <span>Sotuvlar</span>
         </a>
+        <a class="nav-item {% if 'overdue' in url_name %}active{% endif %}" href="{% url 'overdue_list' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
+          <span>Qarzlar</span>
+        </a>
         <a class="nav-item {% if 'client' in url_name %}active{% endif %}" href="{% url 'client_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
           <span>Mijozlar</span>
@@ -210,6 +214,52 @@
 
     dlg.addEventListener('click', function (e) { if (e.target === dlg) { dlg.close(); } });
     dlg.addEventListener('close', function () { body.innerHTML = ''; });
+  })();
+
+  // Quick-add customer from inside the sale form (no leaving the form)
+  (function () {
+    function quickAdd(saveBtn) {
+      var container = saveBtn.closest('.qa-container');
+      var panel = saveBtn.closest('.quick-add-panel');
+      var toggle = container.querySelector('.quick-add-toggle');
+      var select = document.getElementById(toggle.getAttribute('data-target'));
+      var nameEl = panel.querySelector('.qa-name');
+      var phoneEl = panel.querySelector('.qa-phone');
+      var errEl = panel.querySelector('.qa-error');
+      var name = nameEl.value.trim();
+      errEl.textContent = '';
+      if (!name) { errEl.textContent = 'Ism kiriting'; nameEl.focus(); return; }
+      var form = saveBtn.closest('form');
+      var token = form.querySelector('[name=csrfmiddlewaretoken]').value;
+      saveBtn.disabled = true;
+      fetch(toggle.getAttribute('data-quick-url'), {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ name: name, phone: phoneEl.value.trim(), csrfmiddlewaretoken: token }),
+      }).then(function (r) {
+        return r.json().then(function (d) { return { ok: r.ok, data: d }; });
+      }).then(function (res) {
+        saveBtn.disabled = false;
+        if (!res.ok) { errEl.textContent = res.data.error || 'Xatolik'; return; }
+        select.add(new Option(res.data.text, res.data.id, true, true));
+        panel.hidden = true;
+        nameEl.value = '';
+        phoneEl.value = '';
+      }).catch(function () { saveBtn.disabled = false; errEl.textContent = 'Xatolik'; });
+    }
+
+    document.addEventListener('click', function (e) {
+      var toggle = e.target.closest('.quick-add-toggle');
+      if (toggle) {
+        e.preventDefault();
+        var panel = toggle.closest('.qa-container').querySelector('.quick-add-panel');
+        panel.hidden = !panel.hidden;
+        if (!panel.hidden) { var n = panel.querySelector('.qa-name'); if (n) { n.focus(); } }
+        return;
+      }
+      var save = e.target.closest('.qa-save');
+      if (save) { e.preventDefault(); quickAdd(save); }
+    });
   })();
 </script>
 </body>

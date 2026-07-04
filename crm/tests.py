@@ -341,6 +341,54 @@ class SaleFilterExportTests(BaseSetup):
         self.assertNotIn(self.client2.name, body)  # client2 belongs to sales2
 
 
+class OverdueTests(BaseSetup):
+    def test_shows_only_past_due_debts(self):
+        overdue = make_sale(
+            self.client1, self.sales1, self.product,
+            is_debt=True, debt_deadline=timezone.localdate() - timedelta(days=1),
+        )
+        future = make_sale(
+            self.client1, self.sales1, self.product,
+            is_debt=True, debt_deadline=timezone.localdate() + timedelta(days=5),
+        )
+        paid = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        rows = list(self.client.get(reverse("overdue_list")).context["page"].object_list)
+        self.assertIn(overdue, rows)
+        self.assertNotIn(future, rows)
+        self.assertNotIn(paid, rows)
+
+    def test_scoped_to_sales_rep(self):
+        other = make_sale(
+            self.client2, self.sales2, self.product,
+            is_debt=True, debt_deadline=timezone.localdate() - timedelta(days=2),
+        )
+        self.client.force_login(self.sales1)
+        rows = list(self.client.get(reverse("overdue_list")).context["page"].object_list)
+        self.assertNotIn(other, rows)
+
+
+class QuickAddClientTests(BaseSetup):
+    def test_creates_client_owned_by_current_user(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("client_quick_create"), {"name": "Tez Mijoz", "phone": "+998900000000"}
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["text"], "Tez Mijoz")
+        self.assertEqual(Client.objects.get(pk=data["id"]).owner, self.sales1)
+
+    def test_requires_name(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("client_quick_create"), {"name": "  "})
+        self.assertEqual(response.status_code, 400)
+
+    def test_get_not_allowed(self):
+        self.client.force_login(self.sales1)
+        self.assertEqual(self.client.get(reverse("client_quick_create")).status_code, 405)
+
+
 class ModalFormTests(BaseSetup):
     def _ajax(self):
         return {"HTTP_X_REQUESTED_WITH": "XMLHttpRequest"}

@@ -4,7 +4,7 @@ from datetime import date
 from django.contrib import messages
 from django.core.paginator import Paginator
 from django.db.models import Count, F, ProtectedError, Q, Sum
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -121,6 +121,19 @@ def client_create(request):
             return form_success(request, reverse("client_list"))
         return form_response(request, form, "Yangi mijoz", invalid=True)
     return form_response(request, form, "Yangi mijoz")
+
+
+def client_quick_create(request):
+    """Create a client inline (from the sale form) and return it as JSON."""
+    if request.method != "POST":
+        return JsonResponse({"error": "POST kerak"}, status=405)
+    name = request.POST.get("name", "").strip()
+    if not name:
+        return JsonResponse({"error": "Ism kiritilishi shart"}, status=400)
+    client = Client.objects.create(
+        name=name, phone=request.POST.get("phone", "").strip(), owner=request.user
+    )
+    return JsonResponse({"id": client.pk, "text": client.name})
 
 
 def client_edit(request, pk):
@@ -319,6 +332,24 @@ def sale_list(request):
     )
 
 
+def overdue_list(request):
+    sales = (
+        Sale.objects.visible_to(request.user)
+        .filter(is_debt=True, debt_deadline__lt=timezone.localdate())
+        .select_related("client", "product", "sales_rep")
+        .with_totals()
+        .order_by("debt_deadline")
+    )
+    overdue_total = sales.aggregate(v=Sum(REVENUE))["v"] or 0
+    debtors = sales.values("client").distinct().count()
+    page = Paginator(sales, 25).get_page(request.GET.get("page"))
+    return render(
+        request,
+        "crm/overdue_list.html",
+        {"page": page, "overdue_total": overdue_total, "debtors": debtors},
+    )
+
+
 def sale_export(request):
     base = Sale.objects.visible_to(request.user).select_related("client", "product", "sales_rep")
     sales, _ = _filter_sales(request, base)
@@ -360,8 +391,8 @@ def sale_create(request):
             messages.success(request, "Sotuv qo'shildi.")
             _warn_if_negative_stock(request, sale.product)
             return form_success(request, reverse("sale_list"))
-        return form_response(request, form, "Yangi sotuv", invalid=True)
-    return form_response(request, form, "Yangi sotuv")
+        return form_response(request, form, "Yangi sotuv", invalid=True, modal_template="crm/_sale_modal.html")
+    return form_response(request, form, "Yangi sotuv", modal_template="crm/_sale_modal.html")
 
 
 def sale_edit(request, pk):

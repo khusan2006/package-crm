@@ -547,6 +547,15 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 .modal form.stacked p { max-width: none; }
 .modal-actions { display: flex; gap: 10px; margin-top: 8px; }
 
+/* Quick-add customer inside the sale form */
+.field-with-add { display: flex; gap: 8px; align-items: center; }
+.field-with-add select { flex: 1; max-width: none; }
+.quick-add-toggle { flex-shrink: 0; font-size: 16px; line-height: 1; padding: 8px 13px; }
+.quick-add-panel { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.quick-add-panel[hidden] { display: none; }
+.quick-add-panel input { flex: 1; min-width: 130px; max-width: none; }
+.qa-error { flex-basis: 100%; color: var(--danger); font-size: 12.5px; }
+
 @media (prefers-reduced-motion: reduce) {
   .modal[open] { animation: none; }
 }

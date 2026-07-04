@@ -8,12 +8,12 @@ def is_ajax(request):
     return request.headers.get("X-Requested-With") == "XMLHttpRequest"
 
 
-def form_response(request, form, title, invalid=False):
+def form_response(request, form, title, invalid=False, modal_template="_modal.html"):
     """Render the modal partial for AJAX requests, otherwise the full page."""
     context = {"form": form, "title": title}
     if is_ajax(request):
         status = 422 if invalid else 200
-        return render(request, "_modal.html", context, status=status)
+        return render(request, modal_template, context, status=status)
     return render(request, "crm/form.html", context)
 
 
