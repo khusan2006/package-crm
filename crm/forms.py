@@ -24,6 +24,15 @@ class StockEntryForm(forms.ModelForm):
         widgets = {"date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d")}
 
 
+class StockAdjustForm(forms.Form):
+    """Set the exact current quantity; the view logs the difference as a movement."""
+
+    quantity = forms.DecimalField(
+        label="Yangi miqdor (kg)", max_digits=12, decimal_places=3
+    )
+    note = forms.CharField(label="Izoh (ixtiyoriy)", max_length=255, required=False)
+
+
 class SaleForm(forms.ModelForm):
     class Meta:
         model = Sale

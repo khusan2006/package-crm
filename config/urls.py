@@ -27,6 +27,7 @@ urlpatterns = [
     path("products/<int:pk>/", crm_views.product_detail, name="product_detail"),
     path("products/<int:pk>/edit/", crm_views.product_edit, name="product_edit"),
     path("products/<int:pk>/kirim/", crm_views.stock_entry_create, name="stock_entry_create"),
+    path("products/<int:pk>/tuzatish/", crm_views.stock_adjust, name="stock_adjust"),
     # sales
     path("sales/", crm_views.sale_list, name="sale_list"),
     path("sales/export/", crm_views.sale_export, name="sale_export"),

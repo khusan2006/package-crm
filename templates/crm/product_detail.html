@@ -3,6 +3,7 @@
 {% block topbar_title %}{{ product.name }}{% endblock %}
 {% block topbar_actions %}
 {% if user.can_see_all_records %}
+<a class="btn btn-ghost" href="{% url 'stock_adjust' product.pk %}" data-modal>Miqdorni tuzatish</a>
 <a class="btn btn-ghost" href="{% url 'product_edit' product.pk %}">Tahrirlash</a>
 {% endif %}
 {% endblock %}
@@ -34,7 +35,7 @@
 </div>
 
 <div class="card">
-  <h2>Ombor kirimlari</h2>
+  <h2>Ombor harakatlari</h2>
   {% if entries %}
   <div class="table-wrap">
   <table>
@@ -42,14 +43,14 @@
     {% for entry in entries %}
     <tr>
       <td>{{ entry.date|date:"Y-m-d" }}</td>
-      <td class="num">+{{ entry.quantity_kg|floatformat:"-3g" }}</td>
+      <td class="num">{% if entry.quantity_kg >= 0 %}<span style="color: var(--success);">+{{ entry.quantity_kg|floatformat:"-3g" }}</span>{% else %}<span style="color: var(--danger);">{{ entry.quantity_kg|floatformat:"-3g" }}</span>{% endif %}</td>
       <td>{{ entry.note|default:"—" }}</td>
       <td>{{ entry.created_by }}</td>
     </tr>
     {% endfor %}
   </table>
   </div>
-  {% else %}<p class="muted">Hozircha kirim yo'q.</p>{% endif %}
+  {% else %}<p class="muted">Hozircha harakat yo'q.</p>{% endif %}
 </div>
 
 <div class="card">

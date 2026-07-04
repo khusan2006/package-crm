@@ -264,6 +264,33 @@ class StockTests(BaseSetup):
         response = self.client.get(reverse("product_detail", args=[self.product.pk]))
         self.assertEqual(response.status_code, 200)
 
+    def test_adjust_sets_exact_quantity(self):
+        # current stock is 80 (100 in - 20 sold)
+        self.client.force_login(self.manager)
+        before = StockEntry.objects.count()
+        response = self.client.post(
+            reverse("stock_adjust", args=[self.product.pk]), {"quantity": "200", "note": ""}
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.product.current_stock, Decimal("200.000"))
+        # exactly one movement logged, holding the +120 delta
+        self.assertEqual(StockEntry.objects.count(), before + 1)
+        self.assertEqual(StockEntry.objects.latest("created_at").quantity_kg, Decimal("120.000"))
+
+    def test_adjust_can_decrease_below_current(self):
+        self.client.force_login(self.manager)
+        self.client.post(
+            reverse("stock_adjust", args=[self.product.pk]), {"quantity": "50"}
+        )
+        self.assertEqual(self.product.current_stock, Decimal("50.000"))
+        self.assertEqual(StockEntry.objects.latest("created_at").quantity_kg, Decimal("-30.000"))
+
+    def test_sales_cannot_adjust(self):
+        self.client.force_login(self.sales1)
+        self.assertEqual(
+            self.client.get(reverse("stock_adjust", args=[self.product.pk])).status_code, 403
+        )
+
 
 class SaleFilterExportTests(BaseSetup):
     def setUp(self):

@@ -546,6 +546,7 @@ ul.errorlist li::before { content: "⚠ "; }
 .toast-success { border-left-color: var(--success); }
 .toast-error { border-left-color: var(--danger); }
 .toast-warning { border-left-color: var(--warning); }
+.toast-info { border-left-color: var(--accent); }
 .toast-msg { flex: 1; }
 .toast-close {
   flex-shrink: 0;

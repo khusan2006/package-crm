@@ -203,7 +203,8 @@ class Sale(models.Model):
 
 
 class StockEntry(models.Model):
-    """A warehouse receipt (kirim) — stock coming in for a product, in kg."""
+    """A warehouse stock movement (kirim / adjustment), in kg. Positive adds stock,
+    negative removes it (write-off or correction)."""
 
     product = models.ForeignKey(
         Product, on_delete=models.CASCADE, related_name="stock_entries", verbose_name="Mahsulot"
@@ -221,8 +222,9 @@ class StockEntry(models.Model):
 
     class Meta:
         ordering = ["-date", "-created_at"]
-        verbose_name = "Ombor kirimi"
-        verbose_name_plural = "Ombor kirimlari"
+        verbose_name = "Ombor harakati"
+        verbose_name_plural = "Ombor harakatlari"
 
     def __str__(self):
-        return f"{self.product.name}: +{self.quantity_kg} kg ({self.date})"
+        sign = "+" if self.quantity_kg >= 0 else ""
+        return f"{self.product.name}: {sign}{self.quantity_kg} kg ({self.date})"

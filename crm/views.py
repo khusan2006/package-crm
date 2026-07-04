@@ -12,8 +12,8 @@ from django.utils import timezone
 from accounts.decorators import role_required
 from accounts.models import User
 
-from .forms import ClientForm, ProductForm, SaleForm, StockEntryForm
-from .models import COST, PROFIT, REVENUE, Client, Product, Sale
+from .forms import ClientForm, ProductForm, SaleForm, StockAdjustForm, StockEntryForm
+from .models import COST, PROFIT, REVENUE, Client, Product, Sale, StockEntry
 from .utils import form_response, form_success
 
 
@@ -219,6 +219,34 @@ def stock_entry_create(request, pk):
             )
             return form_success(request, reverse("product_detail", args=[product.pk]))
         return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def stock_adjust(request, pk):
+    product = get_object_or_404(Product, pk=pk)
+    title = f"Miqdorni tuzatish: {product.name}"
+    if request.method == "POST":
+        form = StockAdjustForm(request.POST)
+        if form.is_valid():
+            current = product.current_stock
+            target = form.cleaned_data["quantity"]
+            delta = target - current
+            if delta != 0:
+                note = form.cleaned_data["note"] or (
+                    f"Miqdor tuzatildi: {current:.3f} → {target:.3f} kg"
+                )
+                StockEntry.objects.create(
+                    product=product, quantity_kg=delta, note=note, created_by=request.user
+                )
+                messages.success(
+                    request, f"“{product.name}” ombori {target:.3f} kg qilib belgilandi."
+                )
+            else:
+                messages.info(request, "Miqdor o'zgarmadi.")
+            return form_success(request, reverse("product_detail", args=[product.pk]))
+        return form_response(request, form, title, invalid=True)
+    form = StockAdjustForm(initial={"quantity": product.current_stock})
     return form_response(request, form, title)
 
 
