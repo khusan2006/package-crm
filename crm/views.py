@@ -290,6 +290,15 @@ def sale_list(request):
     debt_sales = sales.filter(is_debt=True)
     totals["debt"] = debt_sales.aggregate(v=Sum(REVENUE))["v"]
     totals["debtors"] = debt_sales.values("client").distinct().count()
+
+    # Real ratios for the KPI card meta-lines (no fabricated trends)
+    revenue = totals["revenue"] or 0
+    total_clients = _visible_clients(request.user).count()
+    totals["count"] = sales.count()
+    totals["margin"] = (totals["profit"] or 0) / revenue * 100 if revenue else 0
+    totals["debt_share"] = (totals["debt"] or 0) / revenue * 100 if revenue else 0
+    totals["debtor_pct"] = totals["debtors"] / total_clients * 100 if total_clients else 0
+
     page = Paginator(sales, 25).get_page(request.GET.get("page"))
     return render(
         request,

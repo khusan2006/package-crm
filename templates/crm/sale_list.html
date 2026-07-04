@@ -48,22 +48,41 @@
   </div>
 </form>
 
-<div class="stat-grid">
-  <div class="stat">
-    <div class="label">Jami summa</div>
-    <div class="value">{{ totals.revenue|default:0|floatformat:"0g" }} so'm</div>
+<div class="kpi-grid">
+  <div class="kpi kpi--blue">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg></span>
+      <span class="kpi-label">Jami summa</span>
+    </div>
+    <div class="kpi-value">{{ totals.revenue|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{{ totals.count }} ta sotuv</div>
   </div>
-  <div class="stat">
-    <div class="label">Jami foyda</div>
-    <div class="value">{{ totals.profit|default:0|floatformat:"0g" }} so'm</div>
+
+  <div class="kpi kpi--green">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span>
+      <span class="kpi-label">Jami foyda</span>
+    </div>
+    <div class="kpi-value">{{ totals.profit|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta">▲ {{ totals.margin|floatformat:1 }}% foyda ulushi</div>
   </div>
-  <div class="stat">
-    <div class="label">Jami qarz</div>
-    <div class="value">{{ totals.debt|default:0|floatformat:"0g" }} so'm</div>
+
+  <div class="kpi kpi--red">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
+      <span class="kpi-label">Jami qarz</span>
+    </div>
+    <div class="kpi-value">{{ totals.debt|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta">{{ totals.debt_share|floatformat:1 }}% savdo qarzda</div>
   </div>
-  <div class="stat">
-    <div class="label">Qarzdor mijozlar</div>
-    <div class="value">{{ totals.debtors }}</div>
+
+  <div class="kpi kpi--gold">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+      <span class="kpi-label">Qarzdor mijozlar</span>
+    </div>
+    <div class="kpi-value">{{ totals.debtors }}</div>
+    <div class="kpi-meta">{{ totals.debtor_pct|floatformat:1 }}% mijozlar qarzda</div>
   </div>
 </div>
 
