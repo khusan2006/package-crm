@@ -265,7 +265,12 @@ th.sticky-col, td.sticky-col {
   left: 0;
   z-index: 2;
   background: var(--table-bg);
-  box-shadow: 6px 0 10px -6px rgba(0, 0, 0, 0.5);
+  /* inset borders redraw the separators the sticky background would otherwise
+     cover (border-collapse hides them); the drop shadow marks the freeze */
+  box-shadow:
+    inset 1px 0 0 var(--border),
+    inset -1px 0 0 var(--border),
+    5px 0 9px -5px rgba(0, 0, 0, 0.5);
 }
 th.sticky-col { z-index: 3; background: var(--table-head); }
 tbody tr:hover td.sticky-col { background: var(--surface-hover); }
