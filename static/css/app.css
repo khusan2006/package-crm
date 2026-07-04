@@ -6,17 +6,18 @@
   color-scheme: dark;
 
   /* Surfaces (dark → light) */
-  --bg: #0b0d12;
-  --sidebar: #0f1219;
-  --surface: #151922;
-  --surface-2: #1b2029;
-  --surface-hover: #1e2430;
-  --input: #171b24;
-  --table-head: #262d3b;
+  --bg: #252525;
+  --sidebar: #1c1c1c;
+  --surface: #252525;
+  --surface-2: #2e2e2e;
+  --surface-hover: #2a2a2a;
+  --input: #1c1c1c;
+  --table-bg: #1c1c1c;
+  --table-head: #333333;
 
   /* Lines */
-  --border: #232a37;
-  --border-strong: #2e3644;
+  --border: #333333;
+  --border-strong: #3d3d3d;
 
   /* Text */
   --text: #e8ebf2;
@@ -152,7 +153,7 @@ h2 { font-size: 15px; font-weight: 600; margin: 0 0 14px; letter-spacing: -0.01e
   gap: 16px;
   padding: 0 26px;
   border-bottom: 1px solid var(--border);
-  background: rgba(11, 13, 18, 0.85);
+  background: rgba(28, 28, 28, 0.9);
   backdrop-filter: blur(8px);
   position: sticky;
   top: 0;
@@ -230,7 +231,7 @@ h2 { font-size: 15px; font-weight: 600; margin: 0 0 14px; letter-spacing: -0.01e
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   overflow-x: auto;
-  background: var(--surface);
+  background: var(--table-bg);
 }
 table { width: 100%; border-collapse: collapse; }
 .table-wrap table { border: none; }
@@ -262,7 +263,7 @@ th.sticky-col, td.sticky-col {
   position: sticky;
   left: 0;
   z-index: 2;
-  background: var(--surface);
+  background: var(--table-bg);
   box-shadow: 6px 0 10px -6px rgba(0, 0, 0, 0.5);
 }
 th.sticky-col { z-index: 3; background: var(--table-head); }
