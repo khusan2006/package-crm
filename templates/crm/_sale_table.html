@@ -1,4 +1,4 @@
-{% if page.object_list %}
+{% if sales %}
 <div class="table-wrap">
 <table>
   <tr>
@@ -7,7 +7,7 @@
     <th class="num">Umumiy narx</th><th class="num">Tannarx</th><th class="num">Foyda</th>
     <th>To'lov</th><th></th>
   </tr>
-  {% for sale in page %}
+  {% for sale in sales %}
   <tr>
     <td>{{ sale.date|date:"Y-m-d" }}</td>
     <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=sale.client.name %}{{ sale.client.name }}</span></td>
@@ -35,7 +35,6 @@
   {% endfor %}
 </table>
 </div>
-{% include "crm/_pagination.html" %}
 {% else %}
 <p class="muted">{{ empty_text|default:"Sotuvlar topilmadi." }}</p>
 {% endif %}

@@ -86,5 +86,6 @@
   </div>
 </div>
 
-{% include "crm/_sale_table.html" %}
+{% include "crm/_sale_table.html" with sales=page %}
+{% include "crm/_pagination.html" %}
 {% endblock %}

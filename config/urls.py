@@ -32,7 +32,7 @@ urlpatterns = [
     # sales
     path("sales/", crm_views.sale_list, name="sale_list"),
     path("sales/export/", crm_views.sale_export, name="sale_export"),
-    path("debts/", crm_views.overdue_list, name="overdue_list"),
+    path("debts/", crm_views.debt_list, name="debt_list"),
     path("sales/new/", crm_views.sale_create, name="sale_create"),
     path("sales/<int:pk>/edit/", crm_views.sale_edit, name="sale_edit"),
     path("sales/<int:pk>/delete/", crm_views.sale_delete, name="sale_delete"),

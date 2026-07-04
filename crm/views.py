@@ -1,5 +1,5 @@
 import csv
-from datetime import date
+from datetime import date, timedelta
 
 from django.contrib import messages
 from django.core.paginator import Paginator
@@ -332,21 +332,35 @@ def sale_list(request):
     )
 
 
-def overdue_list(request):
-    sales = (
+DEBT_SOON_DAYS = 7
+
+
+def debt_list(request):
+    today = timezone.localdate()
+    base = (
         Sale.objects.visible_to(request.user)
-        .filter(is_debt=True, debt_deadline__lt=timezone.localdate())
+        .filter(is_debt=True)
         .select_related("client", "product", "sales_rep")
         .with_totals()
-        .order_by("debt_deadline")
     )
-    overdue_total = sales.aggregate(v=Sum(REVENUE))["v"] or 0
-    debtors = sales.values("client").distinct().count()
-    page = Paginator(sales, 25).get_page(request.GET.get("page"))
+    overdue = list(base.filter(debt_deadline__lt=today).order_by("debt_deadline"))
+    upcoming = list(
+        base.filter(
+            debt_deadline__gte=today,
+            debt_deadline__lte=today + timedelta(days=DEBT_SOON_DAYS),
+        ).order_by("debt_deadline")
+    )
     return render(
         request,
-        "crm/overdue_list.html",
-        {"page": page, "overdue_total": overdue_total, "debtors": debtors},
+        "crm/debt_list.html",
+        {
+            "overdue": overdue,
+            "upcoming": upcoming,
+            "overdue_total": sum((s.total for s in overdue), 0),
+            "upcoming_total": sum((s.total for s in upcoming), 0),
+            "overdue_debtors": len({s.client_id for s in overdue}),
+            "soon_days": DEBT_SOON_DAYS,
+        },
     )
 
 

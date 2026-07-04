@@ -341,22 +341,36 @@ class SaleFilterExportTests(BaseSetup):
         self.assertNotIn(self.client2.name, body)  # client2 belongs to sales2
 
 
-class OverdueTests(BaseSetup):
-    def test_shows_only_past_due_debts(self):
-        overdue = make_sale(
+class DebtPageTests(BaseSetup):
+    def setUp(self):
+        today = timezone.localdate()
+        self.overdue = make_sale(
             self.client1, self.sales1, self.product,
-            is_debt=True, debt_deadline=timezone.localdate() - timedelta(days=1),
+            is_debt=True, debt_deadline=today - timedelta(days=1),
         )
-        future = make_sale(
+        self.soon = make_sale(
             self.client1, self.sales1, self.product,
-            is_debt=True, debt_deadline=timezone.localdate() + timedelta(days=5),
+            is_debt=True, debt_deadline=today + timedelta(days=3),
         )
-        paid = make_sale(self.client1, self.sales1, self.product)
+        self.far = make_sale(
+            self.client1, self.sales1, self.product,
+            is_debt=True, debt_deadline=today + timedelta(days=30),
+        )
+        self.paid = make_sale(self.client1, self.sales1, self.product)
+
+    def test_overdue_and_upcoming_are_split(self):
         self.client.force_login(self.sales1)
-        rows = list(self.client.get(reverse("overdue_list")).context["page"].object_list)
-        self.assertIn(overdue, rows)
-        self.assertNotIn(future, rows)
-        self.assertNotIn(paid, rows)
+        ctx = self.client.get(reverse("debt_list")).context
+        self.assertIn(self.overdue, ctx["overdue"])
+        self.assertNotIn(self.overdue, ctx["upcoming"])
+        self.assertIn(self.soon, ctx["upcoming"])
+        self.assertNotIn(self.soon, ctx["overdue"])
+        # a debt due far in the future is in neither
+        self.assertNotIn(self.far, ctx["overdue"])
+        self.assertNotIn(self.far, ctx["upcoming"])
+        # a paid sale is in neither
+        self.assertNotIn(self.paid, ctx["overdue"])
+        self.assertNotIn(self.paid, ctx["upcoming"])
 
     def test_scoped_to_sales_rep(self):
         other = make_sale(
@@ -364,8 +378,9 @@ class OverdueTests(BaseSetup):
             is_debt=True, debt_deadline=timezone.localdate() - timedelta(days=2),
         )
         self.client.force_login(self.sales1)
-        rows = list(self.client.get(reverse("overdue_list")).context["page"].object_list)
-        self.assertNotIn(other, rows)
+        ctx = self.client.get(reverse("debt_list")).context
+        self.assertNotIn(other, ctx["overdue"])
+        self.assertNotIn(other, ctx["upcoming"])
 
 
 class QuickAddClientTests(BaseSetup):
