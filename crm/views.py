@@ -1,9 +1,12 @@
+import csv
 from datetime import date
 
 from django.contrib import messages
 from django.core.paginator import Paginator
 from django.db.models import Count, F, ProtectedError, Q, Sum
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
 
 from accounts.decorators import role_required
@@ -11,6 +14,7 @@ from accounts.models import User
 
 from .forms import ClientForm, ProductForm, SaleForm, StockEntryForm
 from .models import COST, PROFIT, REVENUE, Client, Product, Sale
+from .utils import form_response, form_success
 
 
 def _visible_clients(user):
@@ -108,13 +112,15 @@ def client_list(request):
 
 def client_create(request):
     form = ClientForm(request.POST or None)
-    if request.method == "POST" and form.is_valid():
-        client = form.save(commit=False)
-        client.owner = request.user
-        client.save()
-        messages.success(request, f"“{client.name}” mijozi qo'shildi.")
-        return redirect("client_list")
-    return render(request, "crm/form.html", {"form": form, "title": "Yangi mijoz"})
+    if request.method == "POST":
+        if form.is_valid():
+            client = form.save(commit=False)
+            client.owner = request.user
+            client.save()
+            messages.success(request, f"“{client.name}” mijozi qo'shildi.")
+            return form_success(request, reverse("client_list"))
+        return form_response(request, form, "Yangi mijoz", invalid=True)
+    return form_response(request, form, "Yangi mijoz")
 
 
 def client_edit(request, pk):
@@ -175,11 +181,13 @@ def product_detail(request, pk):
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
 def product_create(request):
     form = ProductForm(request.POST or None)
-    if request.method == "POST" and form.is_valid():
-        product = form.save()
-        messages.success(request, f"“{product.name}” mahsuloti qo'shildi.")
-        return redirect("product_detail", pk=product.pk)
-    return render(request, "crm/form.html", {"form": form, "title": "Yangi mahsulot"})
+    if request.method == "POST":
+        if form.is_valid():
+            product = form.save()
+            messages.success(request, f"“{product.name}” mahsuloti qo'shildi.")
+            return form_success(request, reverse("product_detail", args=[product.pk]))
+        return form_response(request, form, "Yangi mahsulot", invalid=True)
+    return form_response(request, form, "Yangi mahsulot")
 
 
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
@@ -198,38 +206,57 @@ def product_edit(request, pk):
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
 def stock_entry_create(request, pk):
     product = get_object_or_404(Product, pk=pk)
+    title = f"Kirim qo'shish: {product.name}"
     form = StockEntryForm(request.POST or None)
-    if request.method == "POST" and form.is_valid():
-        entry = form.save(commit=False)
-        entry.product = product
-        entry.created_by = request.user
-        entry.save()
-        messages.success(
-            request, f"“{product.name}” omboriga {entry.quantity_kg} kg kirim qilindi."
-        )
-        return redirect("product_detail", pk=product.pk)
-    return render(
-        request,
-        "crm/form.html",
-        {"form": form, "title": f"Kirim qo'shish: {product.name}"},
-    )
+    if request.method == "POST":
+        if form.is_valid():
+            entry = form.save(commit=False)
+            entry.product = product
+            entry.created_by = request.user
+            entry.save()
+            messages.success(
+                request, f"“{product.name}” omboriga {entry.quantity_kg} kg kirim qilindi."
+            )
+            return form_success(request, reverse("product_detail", args=[product.pk]))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
 
 
 # --- Sales --------------------------------------------------------------------
 
-def sale_list(request):
-    sales = (
-        Sale.objects.visible_to(request.user)
-        .select_related("client", "product", "sales_rep")
-        .with_totals()
-        .order_by("-date", "-created_at")
-    )
-    date_from = _parse_date(request.GET.get("dan"))
-    date_to = _parse_date(request.GET.get("gacha"))
+def _filter_sales(request, sales):
+    """Apply the advanced sales filters from GET params. Returns (queryset, filters)."""
+    filters = {key: request.GET.get(key, "") for key in ("dan", "gacha", "client", "product", "rep", "status")}
+
+    date_from = _parse_date(filters["dan"])
+    date_to = _parse_date(filters["gacha"])
     if date_from:
         sales = sales.filter(date__gte=date_from)
     if date_to:
         sales = sales.filter(date__lte=date_to)
+    if filters["client"].isdigit():
+        sales = sales.filter(client_id=filters["client"])
+    if filters["product"].isdigit():
+        sales = sales.filter(product_id=filters["product"])
+    if filters["rep"].isdigit() and request.user.can_see_all_records:
+        sales = sales.filter(sales_rep_id=filters["rep"])
+    if filters["status"] == "paid":
+        sales = sales.filter(is_debt=False)
+    elif filters["status"] == "debt":
+        sales = sales.filter(is_debt=True)
+    elif filters["status"] == "overdue":
+        sales = sales.filter(is_debt=True, debt_deadline__lt=timezone.localdate())
+    return sales, filters
+
+
+def sale_list(request):
+    base = (
+        Sale.objects.visible_to(request.user)
+        .select_related("client", "product", "sales_rep")
+        .with_totals()
+    )
+    sales, filters = _filter_sales(request, base)
+    sales = sales.order_by("-date", "-created_at")
 
     totals = _sale_totals(sales)
     totals["debt"] = sales.filter(is_debt=True).aggregate(v=Sum(REVENUE))["v"]
@@ -240,22 +267,62 @@ def sale_list(request):
         {
             "page": page,
             "totals": totals,
-            "date_from": date_from,
-            "date_to": date_to,
+            "filters": filters,
+            "clients": _visible_clients(request.user).order_by("name"),
+            "products": Product.objects.order_by("name"),
+            "reps": (
+                User.objects.filter(is_active=True).order_by("first_name", "username")
+                if request.user.can_see_all_records
+                else None
+            ),
+            "export_qs": request.GET.urlencode(),
         },
     )
 
 
+def sale_export(request):
+    base = Sale.objects.visible_to(request.user).select_related("client", "product", "sales_rep")
+    sales, _ = _filter_sales(request, base)
+    sales = sales.order_by("-date", "-created_at")
+
+    response = HttpResponse(content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = 'attachment; filename="sotuvlar.csv"'
+    response.write("\ufeff")  # UTF-8 BOM so Excel reads Uzbek text correctly
+    writer = csv.writer(response)
+    writer.writerow([
+        "Sana", "Mijoz", "Mahsulot", "Sotuvchi", "O'lchov", "Og'irligi",
+        "Narxi", "Umumiy narx", "Tannarx", "Foyda", "To'lov", "Qarz muddati",
+    ])
+    for s in sales:
+        writer.writerow([
+            s.date.isoformat(),
+            s.client.name,
+            s.product.name,
+            str(s.sales_rep),
+            s.get_dimension_display(),
+            f"{s.weight:.3f}",
+            f"{s.price:.2f}",
+            f"{s.total_price:.2f}",
+            f"{s.total_cost:.2f}",
+            f"{s.profit:.2f}",
+            "Qarz" if s.is_debt else "To'langan",
+            s.debt_deadline.isoformat() if s.debt_deadline else "",
+        ])
+    return response
+
+
 def sale_create(request):
     form = SaleForm(request.POST or None, user=request.user)
-    if request.method == "POST" and form.is_valid():
-        sale = form.save(commit=False)
-        sale.sales_rep = request.user
-        sale.save()
-        messages.success(request, "Sotuv qo'shildi.")
-        _warn_if_negative_stock(request, sale.product)
-        return redirect("sale_list")
-    return render(request, "crm/form.html", {"form": form, "title": "Yangi sotuv"})
+    if request.method == "POST":
+        if form.is_valid():
+            sale = form.save(commit=False)
+            sale.sales_rep = request.user
+            sale.save()
+            messages.success(request, "Sotuv qo'shildi.")
+            _warn_if_negative_stock(request, sale.product)
+            return form_success(request, reverse("sale_list"))
+        return form_response(request, form, "Yangi sotuv", invalid=True)
+    return form_response(request, form, "Yangi sotuv")
 
 
 def sale_edit(request, pk):

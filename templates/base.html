@@ -85,8 +85,15 @@
     <main class="content">
       {% block content %}{% endblock %}
     </main>
+    {% if user.is_authenticated %}{% block fab %}{% endblock %}{% endif %}
   </div>
 </div>
+
+{% if user.is_authenticated %}
+<dialog id="modal" class="modal">
+  <div id="modal-body" class="modal-body"></div>
+</dialog>
+{% endif %}
 
 {% if messages %}
 <div class="toast-stack" id="toast-stack">
@@ -113,6 +120,66 @@
         setTimeout(function () { dismiss(t); }, 4500);
       });
     }
+  })();
+
+  // Modal forms: [data-modal] opens the linked create/edit form in a dialog,
+  // submits it via fetch, shows inline errors, and redirects on success.
+  (function () {
+    var dlg = document.getElementById('modal');
+    if (!dlg) { return; }
+    var body = document.getElementById('modal-body');
+
+    function bindForm(form) {
+      if (!form) { return; }
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var submit = form.querySelector('button[type=submit]');
+        if (submit) { submit.disabled = true; }
+        fetch(form.getAttribute('action') || window.location.href, {
+          method: 'POST',
+          body: new FormData(form),
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        }).then(function (r) {
+          if (r.status === 204) {
+            window.location = r.headers.get('X-Redirect') || window.location.href;
+            return null;
+          }
+          return r.text();
+        }).then(function (html) {
+          if (html === null) { return; }
+          body.innerHTML = html;
+          bindForm(body.querySelector('form'));
+        }).catch(function () {
+          if (submit) { submit.disabled = false; }
+        });
+      });
+    }
+
+    function openModal(url) {
+      fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        .then(function (r) { return r.text(); })
+        .then(function (html) {
+          body.innerHTML = html;
+          if (!dlg.open) { dlg.showModal(); }
+          bindForm(body.querySelector('form'));
+        });
+    }
+
+    document.addEventListener('click', function (e) {
+      var opener = e.target.closest('[data-modal]');
+      if (opener) {
+        e.preventDefault();
+        openModal(opener.getAttribute('href'));
+        return;
+      }
+      if (e.target.closest('[data-modal-close]')) {
+        e.preventDefault();
+        dlg.close();
+      }
+    });
+
+    dlg.addEventListener('click', function (e) { if (e.target === dlg) { dlg.close(); } });
+    dlg.addEventListener('close', function () { body.innerHTML = ''; });
   })();
 </script>
 </body>

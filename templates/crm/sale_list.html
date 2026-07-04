@@ -1,14 +1,51 @@
 {% extends "base.html" %}
 {% block title %}Sotuvlar · Paket CRM{% endblock %}
 {% block topbar_title %}Sotuvlar{% endblock %}
-{% block topbar_actions %}<a class="btn" href="{% url 'sale_create' %}">+ Yangi sotuv</a>{% endblock %}
+{% block fab %}<a class="fab" href="{% url 'sale_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi sotuv</a>{% endblock %}
 {% block content %}
 
-<form method="get" class="searchbar">
-  <label>dan <input type="date" name="dan" value="{{ date_from|date:'Y-m-d' }}"></label>
-  <label>gacha <input type="date" name="gacha" value="{{ date_to|date:'Y-m-d' }}"></label>
-  <button type="submit" class="btn btn-sm">Filtrlash</button>
-  {% if date_from or date_to %}<a class="btn btn-sm btn-ghost" href="{% url 'sale_list' %}">Tozalash</a>{% endif %}
+<form method="get" class="card filter-bar">
+  <div class="filter-grid">
+    <label>Dan<input type="date" name="dan" value="{{ filters.dan }}"></label>
+    <label>Gacha<input type="date" name="gacha" value="{{ filters.gacha }}"></label>
+    <label>Mijoz
+      <select name="client">
+        <option value="">Barchasi</option>
+        {% for c in clients %}<option value="{{ c.pk }}" {% if filters.client == c.pk|stringformat:'s' %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Mahsulot
+      <select name="product">
+        <option value="">Barchasi</option>
+        {% for p in products %}<option value="{{ p.pk }}" {% if filters.product == p.pk|stringformat:'s' %}selected{% endif %}>{{ p.name }}</option>{% endfor %}
+      </select>
+    </label>
+    {% if reps %}
+    <label>Sotuvchi
+      <select name="rep">
+        <option value="">Barchasi</option>
+        {% for r in reps %}<option value="{{ r.pk }}" {% if filters.rep == r.pk|stringformat:'s' %}selected{% endif %}>{{ r }}</option>{% endfor %}
+      </select>
+    </label>
+    {% endif %}
+    <label>To'lov
+      <select name="status">
+        <option value="">Barchasi</option>
+        <option value="paid" {% if filters.status == 'paid' %}selected{% endif %}>To'langan</option>
+        <option value="debt" {% if filters.status == 'debt' %}selected{% endif %}>Qarz</option>
+        <option value="overdue" {% if filters.status == 'overdue' %}selected{% endif %}>Muddati o'tgan</option>
+      </select>
+    </label>
+  </div>
+  <div class="filter-actions">
+    <button type="submit" class="btn btn-sm">Filtrlash</button>
+    <a class="btn btn-sm btn-ghost" href="{% url 'sale_list' %}">Tozalash</a>
+    <span class="spacer"></span>
+    <a class="btn btn-sm btn-ghost" href="{% url 'sale_export' %}{% if export_qs %}?{{ export_qs }}{% endif %}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      CSV yuklab olish
+    </a>
+  </div>
 </form>
 
 <div class="stat-grid">

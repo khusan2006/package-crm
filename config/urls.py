@@ -29,6 +29,7 @@ urlpatterns = [
     path("products/<int:pk>/kirim/", crm_views.stock_entry_create, name="stock_entry_create"),
     # sales
     path("sales/", crm_views.sale_list, name="sale_list"),
+    path("sales/export/", crm_views.sale_export, name="sale_export"),
     path("sales/new/", crm_views.sale_create, name="sale_create"),
     path("sales/<int:pk>/edit/", crm_views.sale_edit, name="sale_edit"),
     path("sales/<int:pk>/delete/", crm_views.sale_delete, name="sale_delete"),

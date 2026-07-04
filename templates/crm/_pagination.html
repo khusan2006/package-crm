@@ -1,7 +1,8 @@
+{% load crm_extras %}
 {% if page.has_other_pages %}
 <div class="pagination">
-  {% if page.has_previous %}<a href="?page={{ page.previous_page_number }}{% if q %}&q={{ q }}{% endif %}">← Oldingi</a>{% endif %}
+  {% if page.has_previous %}<a href="{% page_url page.previous_page_number %}">← Oldingi</a>{% endif %}
   <span>{{ page.number }} / {{ page.paginator.num_pages }}-sahifa</span>
-  {% if page.has_next %}<a href="?page={{ page.next_page_number }}{% if q %}&q={{ q }}{% endif %}">Keyingi →</a>{% endif %}
+  {% if page.has_next %}<a href="{% page_url page.next_page_number %}">Keyingi →</a>{% endif %}
 </div>
 {% endif %}

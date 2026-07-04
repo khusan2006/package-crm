@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Mahsulotlar · Paket CRM{% endblock %}
 {% block topbar_title %}Mahsulotlar{% endblock %}
-{% block topbar_actions %}{% if user.can_see_all_records %}<a class="btn" href="{% url 'product_create' %}">+ Yangi mahsulot</a>{% endif %}{% endblock %}
+{% block fab %}{% if user.can_see_all_records %}<a class="fab" href="{% url 'product_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi mahsulot</a>{% endif %}{% endblock %}
 {% block content %}
 
 <form method="get" class="searchbar">

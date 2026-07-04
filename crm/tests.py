@@ -263,3 +263,74 @@ class StockTests(BaseSetup):
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("product_detail", args=[self.product.pk]))
         self.assertEqual(response.status_code, 200)
+
+
+class SaleFilterExportTests(BaseSetup):
+    def setUp(self):
+        self.debt_sale = make_sale(
+            self.client1, self.sales1, self.product,
+            is_debt=True, debt_deadline=timezone.localdate() + timedelta(days=10),
+        )
+
+    def test_filter_by_client(self):
+        self.client.force_login(self.manager)
+        response = self.client.get(reverse("sale_list"), {"client": self.client2.pk})
+        for sale in response.context["page"].object_list:
+            self.assertEqual(sale.client, self.client2)
+
+    def test_filter_by_status_debt(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_list"), {"status": "debt"})
+        sales = list(response.context["page"].object_list)
+        self.assertIn(self.debt_sale, sales)
+        self.assertTrue(all(s.is_debt for s in sales))
+
+    def test_export_returns_csv_scoped_and_filtered(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_export"), {"status": "debt"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/csv", response["Content-Type"])
+        self.assertIn("attachment", response["Content-Disposition"])
+        body = response.content.decode("utf-8")
+        lines = [ln for ln in body.splitlines() if ln.strip()]
+        # header + exactly the one debt sale owned by sales1
+        self.assertEqual(len(lines), 2)
+        self.assertIn("Mijoz", lines[0])
+
+    def test_sales_export_excludes_other_reps(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_export"))
+        body = response.content.decode("utf-8")
+        self.assertNotIn(self.client2.name, body)  # client2 belongs to sales2
+
+
+class ModalFormTests(BaseSetup):
+    def _ajax(self):
+        return {"HTTP_X_REQUESTED_WITH": "XMLHttpRequest"}
+
+    def test_ajax_get_returns_modal_partial(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_create"), **self._ajax())
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "_modal.html")
+        self.assertNotContains(response, "<aside")  # no full page chrome
+
+    def test_ajax_success_returns_204_with_redirect(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("client_create"), {"name": "Yangi Mijoz"}, **self._ajax()
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response["X-Redirect"], reverse("client_list"))
+
+    def test_ajax_invalid_returns_422_partial(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("client_create"), {"name": ""}, **self._ajax())
+        self.assertEqual(response.status_code, 422)
+        self.assertTemplateUsed(response, "_modal.html")
+
+    def test_non_ajax_get_returns_full_page(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_create"))
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "crm/form.html")
