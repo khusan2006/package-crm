@@ -383,6 +383,19 @@ class DebtPageTests(BaseSetup):
         self.assertNotIn(other, ctx["upcoming"])
 
 
+class SaleDetailTests(BaseSetup):
+    def test_detail_shows_sale_and_payments(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_detail", args=[self.sale1.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["sale"], self.sale1)
+
+    def test_detail_scoped_to_owner(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_detail", args=[self.sale2.pk]))
+        self.assertEqual(response.status_code, 404)
+
+
 class PaymentTests(BaseSetup):
     def _debt_sale(self):
         # 10 kg × 24000 = 240000 total

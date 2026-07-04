@@ -9,8 +9,8 @@
   </tr>
   {% for sale in sales %}
   <tr>
-    <td>{{ sale.date|date:"Y-m-d" }}</td>
-    <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=sale.client.name %}{{ sale.client.name }}</span></td>
+    <td><a href="{% url 'sale_detail' sale.pk %}">{{ sale.date|date:"Y-m-d" }}</a></td>
+    <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=sale.client.name %}<a href="{% url 'sale_detail' sale.pk %}">{{ sale.client.name }}</a></span></td>
     <td>{{ sale.product.name }}</td>
     <td>{{ sale.sales_rep }}</td>
     <td class="num">{{ sale.weight|floatformat:"-3g" }} {{ sale.dimension }}</td>

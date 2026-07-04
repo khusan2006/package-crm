@@ -390,6 +390,23 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 
 .cell-user { display: flex; align-items: center; gap: 11px; }
 
+/* Key-value detail grid (sale detail page) */
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 0 32px;
+}
+.detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border);
+}
+.detail-row .k { color: var(--text-muted); font-size: 13.5px; }
+.detail-row .v { font-weight: 600; text-align: right; }
+
 .avatar {
   display: inline-grid;
   place-items: center;

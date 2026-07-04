@@ -53,7 +53,7 @@
   {% for p in page %}
   <tr>
     <td>{{ p.date|date:"Y-m-d" }}</td>
-    <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=p.sale.client.name %}{{ p.sale.client.name }}</span></td>
+    <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=p.sale.client.name %}<a href="{% url 'sale_detail' p.sale.pk %}">{{ p.sale.client.name }}</a></span></td>
     <td>{{ p.sale.product.name }}</td>
     <td class="num"><strong>{{ p.amount|floatformat:"0g" }}</strong></td>
     <td><span class="badge badge-neutral">{{ p.get_method_display }}</span></td>

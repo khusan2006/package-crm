@@ -446,6 +446,24 @@ def sale_export(request):
     return response
 
 
+def sale_detail(request, pk):
+    sale = get_object_or_404(
+        Sale.objects.visible_to(request.user).select_related("client", "product", "sales_rep"),
+        pk=pk,
+    )
+    payments = sale.payments.select_related("created_by").order_by("-date", "-created_at")
+    return render(
+        request,
+        "crm/sale_detail.html",
+        {
+            "sale": sale,
+            "payments": payments,
+            "paid": sale.paid_amount,
+            "remaining": sale.debt_remaining,
+        },
+    )
+
+
 def sale_create(request):
     form = SaleForm(request.POST or None, user=request.user)
     if request.method == "POST":
