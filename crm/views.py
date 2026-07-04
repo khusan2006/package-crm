@@ -12,9 +12,16 @@ from django.utils import timezone
 from accounts.decorators import role_required
 from accounts.models import User
 
-from .forms import ClientForm, ProductForm, SaleForm, StockAdjustForm, StockEntryForm
-from .models import COST, PROFIT, REVENUE, Client, Product, Sale, StockEntry
-from .utils import form_reload, form_response, form_success, render_confirm
+from .forms import (
+    ClientForm,
+    DebtPaymentForm,
+    ProductForm,
+    SaleForm,
+    StockAdjustForm,
+    StockEntryForm,
+)
+from .models import COST, PROFIT, REVENUE, Client, Payment, Product, Sale, StockEntry
+from .utils import form_reload, form_response, form_success, is_ajax, render_confirm
 
 
 def _visible_clients(user):
@@ -350,11 +357,18 @@ def debt_list(request):
             debt_deadline__lte=today + timedelta(days=DEBT_SOON_DAYS),
         ).order_by("debt_deadline")
     )
+    for sale in overdue + upcoming:
+        sale.remaining = sale.debt_remaining
 
-    # Totals across every outstanding debt (not just overdue/near-due)
-    debts = Sale.objects.visible_to(request.user).filter(is_debt=True)
-    total_debt = debts.aggregate(v=Sum(REVENUE))["v"] or 0
-    total_debtors = debts.values("client").distinct().count()
+    # Totals across every outstanding debt (remaining = full total − payments so far)
+    open_debts = Sale.objects.visible_to(request.user).filter(is_debt=True)
+    total_full = open_debts.aggregate(v=Sum(REVENUE))["v"] or 0
+    total_paid = (
+        Payment.objects.filter(sale__in=open_debts, kind=Payment.Kind.DEBT)
+        .aggregate(v=Sum("amount"))["v"]
+        or 0
+    )
+    total_debtors = open_debts.values("client").distinct().count()
 
     return render(
         request,
@@ -362,13 +376,42 @@ def debt_list(request):
         {
             "overdue": overdue,
             "upcoming": upcoming,
-            "overdue_total": sum((s.total for s in overdue), 0),
-            "upcoming_total": sum((s.total for s in upcoming), 0),
+            "overdue_total": sum((s.remaining for s in overdue), 0),
+            "upcoming_total": sum((s.remaining for s in upcoming), 0),
             "overdue_debtors": len({s.client_id for s in overdue}),
-            "total_debt": total_debt,
+            "total_debt": total_full - total_paid,
             "total_debtors": total_debtors,
             "soon_days": DEBT_SOON_DAYS,
         },
+    )
+
+
+def payment_list(request):
+    payments = Payment.objects.select_related(
+        "sale", "sale__client", "sale__product", "created_by"
+    )
+    if not request.user.can_see_all_records:
+        payments = payments.filter(sale__sales_rep=request.user)
+
+    date_from = _parse_date(request.GET.get("dan"))
+    date_to = _parse_date(request.GET.get("gacha"))
+    if date_from:
+        payments = payments.filter(date__gte=date_from)
+    if date_to:
+        payments = payments.filter(date__lte=date_to)
+    payments = payments.order_by("-date", "-created_at")
+
+    totals = payments.aggregate(
+        total=Sum("amount"),
+        cash=Sum("amount", filter=Q(method=Payment.Method.CASH)),
+        card=Sum("amount", filter=Q(method=Payment.Method.CARD)),
+        debt=Sum("amount", filter=Q(kind=Payment.Kind.DEBT)),
+    )
+    page = Paginator(payments, 30).get_page(request.GET.get("page"))
+    return render(
+        request,
+        "crm/payment_list.html",
+        {"page": page, "totals": totals, "date_from": date_from, "date_to": date_to},
     )
 
 
@@ -410,6 +453,16 @@ def sale_create(request):
             sale = form.save(commit=False)
             sale.sales_rep = request.user
             sale.save()
+            if not sale.is_debt:
+                # Paid at the point of sale — record the transaction
+                Payment.objects.create(
+                    sale=sale,
+                    amount=sale.total_price,
+                    method=form.cleaned_data.get("payment_method") or Payment.Method.CASH,
+                    kind=Payment.Kind.SALE,
+                    date=sale.date,
+                    created_by=request.user,
+                )
             messages.success(request, "Sotuv qo'shildi.")
             _warn_if_negative_stock(request, sale.product)
             return form_success(request, reverse("sale_list"))
@@ -430,21 +483,47 @@ def sale_edit(request, pk):
     return form_response(request, form, "Sotuvni tahrirlash", modal_template="crm/_sale_modal.html")
 
 
-def sale_settle(request, pk):
+def _render_debt_pay(request, sale, form, invalid=False):
+    context = {
+        "form": form,
+        "sale": sale,
+        "remaining": sale.debt_remaining,
+        "title": f"To'lov: {sale.client.name}",
+    }
+    if is_ajax(request):
+        return render(request, "crm/_debt_pay_modal.html", context, status=422 if invalid else 200)
+    return render(request, "crm/_debt_pay_page.html", context)
+
+
+def sale_pay(request, pk):
     sale = get_object_or_404(Sale.objects.visible_to(request.user), pk=pk)
+    if not sale.is_debt:
+        return form_reload(request, reverse("debt_list"))
+    remaining = sale.debt_remaining
     if request.method == "POST":
-        if sale.is_debt:
-            sale.is_debt = False
-            sale.debt_deadline = None
-            sale.save(update_fields=["is_debt", "debt_deadline"])
-            messages.success(request, "Qarz to'langan deb belgilandi.")
-        return form_reload(request, reverse("sale_list"))
-    return render_confirm(
-        request,
-        "Qarzni yopish",
-        f"“{sale.client.name}” qarzini ({sale.total_price:,.0f} so'm) to'langan deb belgilaysizmi?",
-        "Ha, to'landi",
-    )
+        form = DebtPaymentForm(request.POST, max_amount=remaining)
+        if form.is_valid():
+            Payment.objects.create(
+                sale=sale,
+                amount=form.cleaned_data["amount"],
+                method=form.cleaned_data["method"],
+                kind=Payment.Kind.DEBT,
+                date=timezone.localdate(),
+                created_by=request.user,
+            )
+            if sale.debt_remaining <= 0:
+                sale.is_debt = False
+                sale.debt_deadline = None
+                sale.save(update_fields=["is_debt", "debt_deadline"])
+                messages.success(request, "Qarz to'liq to'landi.")
+            else:
+                messages.success(
+                    request, f"To'lov qabul qilindi. Qoldiq: {sale.debt_remaining:,.0f} so'm."
+                )
+            return form_reload(request, reverse("debt_list"))
+        return _render_debt_pay(request, sale, form, invalid=True)
+    form = DebtPaymentForm(initial={"amount": remaining, "method": Payment.Method.CASH})
+    return _render_debt_pay(request, sale, form)
 
 
 def sale_delete(request, pk):

@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from accounts.models import User
 
-from .models import Client, Product, Sale, StockEntry
+from .models import Client, Payment, Product, Sale, StockEntry
 
 
 def make_sale(client, rep, product, weight="10", price="24000", **kwargs):
@@ -383,40 +383,84 @@ class DebtPageTests(BaseSetup):
         self.assertNotIn(other, ctx["upcoming"])
 
 
-class SettleDebtTests(BaseSetup):
+class PaymentTests(BaseSetup):
     def _debt_sale(self):
+        # 10 kg × 24000 = 240000 total
         return make_sale(
             self.client1, self.sales1, self.product,
             is_debt=True, debt_deadline=timezone.localdate() + timedelta(days=5),
         )
 
-    def test_settle_marks_debt_paid(self):
+    def test_non_debt_sale_records_a_payment(self):
+        self.client.force_login(self.sales1)
+        data = {
+            "date": timezone.localdate().isoformat(),
+            "client": self.client1.pk,
+            "product": self.product.pk,
+            "dimension": "kg",
+            "weight": "10",
+            "price": "24000",
+            "cost_price": "",
+            "payment_method": "card",
+        }
+        self.client.post(reverse("sale_create"), data)
+        sale = Sale.objects.latest("created_at")
+        payment = sale.payments.get()
+        self.assertEqual(payment.kind, "sale")
+        self.assertEqual(payment.method, "card")
+        self.assertEqual(payment.amount, Decimal("240000.00"))
+
+    def test_debt_sale_records_no_payment(self):
+        self.client.force_login(self.sales1)
+        data = {
+            "date": timezone.localdate().isoformat(),
+            "client": self.client1.pk,
+            "product": self.product.pk,
+            "dimension": "kg", "weight": "10", "price": "24000", "cost_price": "",
+            "is_debt": "on",
+            "debt_deadline": (timezone.localdate() + timedelta(days=10)).isoformat(),
+        }
+        self.client.post(reverse("sale_create"), data)
+        sale = Sale.objects.latest("created_at")
+        self.assertEqual(sale.payments.count(), 0)
+
+    def test_partial_debt_payment_keeps_debt_open(self):
         sale = self._debt_sale()
         self.client.force_login(self.sales1)
-        response = self.client.post(reverse("sale_settle", args=[sale.pk]))
-        self.assertEqual(response.status_code, 302)  # non-AJAX redirect
+        self.client.post(reverse("sale_pay", args=[sale.pk]), {"amount": "100000", "method": "cash"})
+        sale.refresh_from_db()
+        self.assertTrue(sale.is_debt)  # still owed
+        self.assertEqual(sale.debt_remaining, Decimal("140000"))
+
+    def test_full_debt_payment_closes_debt(self):
+        sale = self._debt_sale()
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("sale_pay", args=[sale.pk]), {"amount": "240000", "method": "card"})
         sale.refresh_from_db()
         self.assertFalse(sale.is_debt)
         self.assertIsNone(sale.debt_deadline)
+        self.assertEqual(sale.payments.get().kind, "debt")
 
-    def test_settle_ajax_returns_204(self):
+    def test_payment_cannot_exceed_remaining(self):
         sale = self._debt_sale()
         self.client.force_login(self.sales1)
         response = self.client.post(
-            reverse("sale_settle", args=[sale.pk]), HTTP_X_REQUESTED_WITH="XMLHttpRequest"
+            reverse("sale_pay", args=[sale.pk]), {"amount": "999999", "method": "cash"}
         )
-        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response.status_code, 200)  # re-rendered with error
         sale.refresh_from_db()
-        self.assertFalse(sale.is_debt)
+        self.assertTrue(sale.is_debt)
+        self.assertEqual(sale.payments.count(), 0)
 
-    def test_settle_scoped_to_owner(self):
-        other = make_sale(
-            self.client2, self.sales2, self.product,
-            is_debt=True, debt_deadline=timezone.localdate(),
-        )
+    def test_ledger_scoped_to_sales_rep(self):
+        mine = self._debt_sale()
+        Payment.objects.create(sale=mine, amount=Decimal("50000"), method="cash", kind="debt", created_by=self.sales1)
+        others = make_sale(self.client2, self.sales2, self.product, is_debt=True, debt_deadline=timezone.localdate())
+        Payment.objects.create(sale=others, amount=Decimal("50000"), method="cash", kind="debt", created_by=self.sales2)
         self.client.force_login(self.sales1)
-        response = self.client.post(reverse("sale_settle", args=[other.pk]))
-        self.assertEqual(response.status_code, 404)
+        rows = list(self.client.get(reverse("payment_list")).context["page"].object_list)
+        self.assertIn(mine, [p.sale for p in rows])
+        self.assertNotIn(others, [p.sale for p in rows])
 
 
 class QuickAddClientTests(BaseSetup):

@@ -1,6 +1,8 @@
+from decimal import Decimal
+
 from django import forms
 
-from .models import Client, Product, Sale, StockEntry
+from .models import Client, Payment, Product, Sale, StockEntry
 
 
 class ClientForm(forms.ModelForm):
@@ -24,6 +26,27 @@ class StockEntryForm(forms.ModelForm):
         widgets = {"date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d")}
 
 
+class DebtPaymentForm(forms.Form):
+    amount = forms.DecimalField(
+        label="Miqdor (so'm)", max_digits=18, decimal_places=2, min_value=Decimal("0.01")
+    )
+    method = forms.ChoiceField(
+        label="To'lov usuli", choices=Payment.Method.choices, initial=Payment.Method.CASH
+    )
+
+    def __init__(self, *args, max_amount=None, **kwargs):
+        self.max_amount = max_amount
+        super().__init__(*args, **kwargs)
+
+    def clean_amount(self):
+        amount = self.cleaned_data["amount"]
+        if self.max_amount is not None and amount > self.max_amount:
+            raise forms.ValidationError(
+                f"Qoldiqdan ({self.max_amount:.0f} so'm) ko'p bo'lishi mumkin emas."
+            )
+        return amount
+
+
 class StockAdjustForm(forms.Form):
     """Set the exact current quantity; the view logs the difference as a movement."""
 
@@ -34,6 +57,13 @@ class StockAdjustForm(forms.Form):
 
 
 class SaleForm(forms.ModelForm):
+    payment_method = forms.ChoiceField(
+        label="To'lov usuli",
+        choices=Payment.Method.choices,
+        initial=Payment.Method.CASH,
+        required=False,
+    )
+
     class Meta:
         model = Sale
         fields = [

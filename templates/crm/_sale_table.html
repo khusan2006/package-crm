@@ -28,8 +28,8 @@
     <td>
       <div class="row-actions">
         {% if sale.is_debt %}
-        <a class="icon-action settle" href="{% url 'sale_settle' sale.pk %}" data-modal title="To'landi deb belgilash">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        <a class="icon-action settle" href="{% url 'sale_pay' sale.pk %}" data-modal title="To'lov qilish">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg>
         </a>
         {% endif %}
         <a class="icon-action" href="{% url 'sale_edit' sale.pk %}" data-modal title="Tahrirlash">

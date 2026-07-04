@@ -9,7 +9,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from accounts.models import User
-from crm.models import Client, Product, Sale, StockEntry
+from crm.models import Client, Payment, Product, Sale, StockEntry
 
 DEMO_USERS = [
     ("admin", "Admin", "User", User.Role.ADMIN),
@@ -111,7 +111,7 @@ class Command(BaseCommand):
                 price = (product.price + Decimal(rng.randint(-10, 25)) * 100) / 1000
             is_debt = rng.random() < 0.3
             sale_date = today - timedelta(days=rng.randint(0, 45))
-            Sale.objects.create(
+            sale = Sale.objects.create(
                 date=sale_date,
                 client=client,
                 product=product,
@@ -125,6 +125,25 @@ class Command(BaseCommand):
                 ),
                 sales_rep=client.owner,
             )
+            if not is_debt:
+                Payment.objects.create(
+                    sale=sale,
+                    amount=sale.total_price,
+                    method=rng.choice([Payment.Method.CASH, Payment.Method.CARD]),
+                    kind=Payment.Kind.SALE,
+                    date=sale_date,
+                    created_by=sale.sales_rep,
+                )
+            elif rng.random() < 0.4:
+                # a partial repayment on some debts, to show running balances
+                Payment.objects.create(
+                    sale=sale,
+                    amount=(sale.total_price * Decimal("0.3")).quantize(Decimal("1")),
+                    method=Payment.Method.CASH,
+                    kind=Payment.Kind.DEBT,
+                    date=sale_date + timedelta(days=rng.randint(1, 10)),
+                    created_by=sale.sales_rep,
+                )
 
         self.stdout.write(self.style.SUCCESS(
             "Yaratildi: 4 foydalanuvchi (admin/manager/sales1/sales2, parol demo1234), "

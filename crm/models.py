@@ -191,6 +191,14 @@ class Sale(models.Model):
         return self.total_price - self.total_cost
 
     @property
+    def paid_amount(self):
+        return self.payments.aggregate(s=Sum("amount"))["s"] or Decimal("0")
+
+    @property
+    def debt_remaining(self):
+        return self.total_price - self.paid_amount
+
+    @property
     def is_overdue(self):
         return (
             self.is_debt
@@ -228,3 +236,40 @@ class StockEntry(models.Model):
     def __str__(self):
         sign = "+" if self.quantity_kg >= 0 else ""
         return f"{self.product.name}: {sign}{self.quantity_kg} kg ({self.date})"
+
+
+class Payment(models.Model):
+    """A money movement (To'lov): either paid at the time of sale, or a debt repayment."""
+
+    class Method(models.TextChoices):
+        CASH = "cash", "Naqd"
+        CARD = "card", "Karta"
+
+    class Kind(models.TextChoices):
+        SALE = "sale", "Sotuvda to'langan"
+        DEBT = "debt", "Qarz to'lovi"
+
+    date = models.DateField("Sana", default=timezone.localdate)
+    amount = models.DecimalField("Miqdor (so'm)", max_digits=18, decimal_places=2)
+    method = models.CharField(
+        "To'lov usuli", max_length=4, choices=Method.choices, default=Method.CASH
+    )
+    kind = models.CharField("Turi", max_length=4, choices=Kind.choices)
+    sale = models.ForeignKey(
+        Sale, on_delete=models.CASCADE, related_name="payments", verbose_name="Sotuv"
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="payments",
+        verbose_name="Kim qabul qildi",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date", "-created_at"]
+        verbose_name = "To'lov"
+        verbose_name_plural = "To'lovlar"
+
+    def __str__(self):
+        return f"{self.get_kind_display()}: {self.amount} so'm ({self.date})"

@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Client, Product, Sale, StockEntry
+from .models import Client, Payment, Product, Sale, StockEntry
 
 
 @admin.register(Client)
@@ -22,6 +22,13 @@ class StockEntryAdmin(admin.ModelAdmin):
     list_display = ["product", "date", "quantity_kg", "created_by", "note"]
     list_filter = ["date", "created_by"]
     search_fields = ["product__name", "product__sku"]
+    date_hierarchy = "date"
+
+
+@admin.register(Payment)
+class PaymentAdmin(admin.ModelAdmin):
+    list_display = ["date", "sale", "amount", "method", "kind", "created_by"]
+    list_filter = ["method", "kind", "date"]
     date_hierarchy = "date"
 
 
