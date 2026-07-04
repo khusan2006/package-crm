@@ -35,8 +35,8 @@
   --success-soft: rgba(62, 207, 142, 0.14);
   --warning: #f5a623;
   --warning-soft: rgba(245, 166, 35, 0.15);
-  --danger: #f26d6d;
-  --danger-soft: rgba(242, 109, 109, 0.14);
+  --danger: #E61918;
+  --danger-soft: #321B1A;
 
   /* Radius */
   --r-sm: 7px;
@@ -512,7 +512,7 @@ ul.errorlist li::before { content: "⚠ "; }
   border: 1px solid transparent;
 }
 .flash-success { background: var(--success-soft); color: var(--success); border-color: rgba(62, 207, 142, 0.25); }
-.flash-error { background: var(--danger-soft); color: var(--danger); border-color: rgba(242, 109, 109, 0.25); }
+.flash-error { background: var(--danger-soft); color: var(--danger); border-color: rgba(230, 25, 24, 0.4); }
 
 /* ============================================================
    Toasts
