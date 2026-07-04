@@ -423,6 +423,44 @@ class PaymentTests(BaseSetup):
         self.assertEqual(payment.method, "card")
         self.assertEqual(payment.amount, Decimal("240000.00"))
 
+    def test_debt_sale_with_down_payment(self):
+        # 10 kg × 24000 = 240000 total; pay 100000 now, rest is debt
+        self.client.force_login(self.sales1)
+        data = {
+            "date": timezone.localdate().isoformat(),
+            "client": self.client1.pk,
+            "product": self.product.pk,
+            "dimension": "kg", "weight": "10", "price": "24000", "cost_price": "",
+            "is_debt": "on",
+            "down_payment": "100000",
+            "payment_method": "cash",
+            "debt_deadline": (timezone.localdate() + timedelta(days=10)).isoformat(),
+        }
+        self.client.post(reverse("sale_create"), data)
+        sale = Sale.objects.latest("created_at")
+        self.assertTrue(sale.is_debt)
+        self.assertEqual(sale.paid_amount, Decimal("100000.00"))
+        self.assertEqual(sale.debt_remaining, Decimal("140000.00"))
+        self.assertEqual(sale.payments.get().kind, "sale")
+
+    def test_down_payment_covering_total_is_not_debt(self):
+        self.client.force_login(self.sales1)
+        data = {
+            "date": timezone.localdate().isoformat(),
+            "client": self.client1.pk,
+            "product": self.product.pk,
+            "dimension": "kg", "weight": "10", "price": "24000", "cost_price": "",
+            "is_debt": "on",
+            "down_payment": "240000",
+            "payment_method": "card",
+            "debt_deadline": (timezone.localdate() + timedelta(days=10)).isoformat(),
+        }
+        self.client.post(reverse("sale_create"), data)
+        sale = Sale.objects.latest("created_at")
+        self.assertFalse(sale.is_debt)
+        self.assertIsNone(sale.debt_deadline)
+        self.assertEqual(sale.paid_amount, Decimal("240000.00"))
+
     def test_debt_sale_records_no_payment(self):
         self.client.force_login(self.sales1)
         data = {

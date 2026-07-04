@@ -471,15 +471,19 @@ def sale_create(request):
             sale = form.save(commit=False)
             sale.sales_rep = request.user
             sale.save()
+            method = form.cleaned_data.get("payment_method") or Payment.Method.CASH
+            down = form.cleaned_data.get("down_payment") or 0
             if not sale.is_debt:
-                # Paid at the point of sale — record the transaction
+                # Paid in full at the point of sale
                 Payment.objects.create(
-                    sale=sale,
-                    amount=sale.total_price,
-                    method=form.cleaned_data.get("payment_method") or Payment.Method.CASH,
-                    kind=Payment.Kind.SALE,
-                    date=sale.date,
-                    created_by=request.user,
+                    sale=sale, amount=sale.total_price, method=method,
+                    kind=Payment.Kind.SALE, date=sale.date, created_by=request.user,
+                )
+            elif down > 0:
+                # Partial down payment now; the remainder stays as debt
+                Payment.objects.create(
+                    sale=sale, amount=down, method=method,
+                    kind=Payment.Kind.SALE, date=sale.date, created_by=request.user,
                 )
             messages.success(request, "Sotuv qo'shildi.")
             _warn_if_negative_stock(request, sale.product)

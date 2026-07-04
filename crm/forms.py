@@ -63,6 +63,14 @@ class SaleForm(forms.ModelForm):
         initial=Payment.Method.CASH,
         required=False,
     )
+    down_payment = forms.DecimalField(
+        label="Boshlang'ich to'lov (so'm)",
+        max_digits=18,
+        decimal_places=2,
+        required=False,
+        min_value=Decimal("0"),
+        help_text="Qarzga sotilganda hozir to'langan qism (bo'lsa)",
+    )
 
     class Meta:
         model = Sale
@@ -92,8 +100,25 @@ class SaleForm(forms.ModelForm):
             cost = product.cost_price_for(dimension)
             cleaned["cost_price"] = cost
             self.instance.cost_price = cost
-        if cleaned.get("is_debt") and not cleaned.get("debt_deadline"):
-            self.add_error("debt_deadline", "Qarzga sotilganda muddat kiritilishi shart.")
+
+        weight = cleaned.get("weight")
+        price = cleaned.get("price")
+        total = weight * price if weight is not None and price is not None else None
+        down = cleaned.get("down_payment") or Decimal("0")
+
+        if cleaned.get("is_debt"):
+            if total is not None and down > total:
+                self.add_error(
+                    "down_payment",
+                    "Boshlang'ich to'lov umumiy narxdan ko'p bo'lishi mumkin emas.",
+                )
+            elif total is not None and down >= total:
+                # Fully covered up front — not a debt after all
+                cleaned["is_debt"] = self.instance.is_debt = False
+                cleaned["debt_deadline"] = self.instance.debt_deadline = None
+            elif not cleaned.get("debt_deadline"):
+                self.add_error("debt_deadline", "Qarzga sotilganda muddat kiritilishi shart.")
+
         if not cleaned.get("is_debt"):
             cleaned["debt_deadline"] = None
             self.instance.debt_deadline = None
