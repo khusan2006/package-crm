@@ -350,6 +350,12 @@ def debt_list(request):
             debt_deadline__lte=today + timedelta(days=DEBT_SOON_DAYS),
         ).order_by("debt_deadline")
     )
+
+    # Totals across every outstanding debt (not just overdue/near-due)
+    debts = Sale.objects.visible_to(request.user).filter(is_debt=True)
+    total_debt = debts.aggregate(v=Sum(REVENUE))["v"] or 0
+    total_debtors = debts.values("client").distinct().count()
+
     return render(
         request,
         "crm/debt_list.html",
@@ -359,6 +365,8 @@ def debt_list(request):
             "overdue_total": sum((s.total for s in overdue), 0),
             "upcoming_total": sum((s.total for s in upcoming), 0),
             "overdue_debtors": len({s.client_id for s in overdue}),
+            "total_debt": total_debt,
+            "total_debtors": total_debtors,
             "soon_days": DEBT_SOON_DAYS,
         },
     )

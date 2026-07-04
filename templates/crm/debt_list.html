@@ -4,6 +4,15 @@
 {% block content %}
 
 <div class="kpi-grid">
+  <div class="kpi kpi--blue">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg></span>
+      <span class="kpi-label">Jami qarz</span>
+    </div>
+    <div class="kpi-value">{{ total_debt|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">barcha muddatlar</div>
+  </div>
+
   <div class="kpi kpi--red">
     <div class="kpi-head">
       <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
@@ -20,6 +29,15 @@
     </div>
     <div class="kpi-value">{{ upcoming_total|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta muted">keyingi {{ soon_days }} kun · {{ upcoming|length }} ta</div>
+  </div>
+
+  <div class="kpi kpi--blue">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+      <span class="kpi-label">Qarzdor mijozlar</span>
+    </div>
+    <div class="kpi-value">{{ total_debtors }}</div>
+    <div class="kpi-meta muted">jami qarzdorlar</div>
   </div>
 </div>
 
