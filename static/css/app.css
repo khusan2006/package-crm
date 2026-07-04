@@ -183,7 +183,7 @@ h2 { font-size: 15px; font-weight: 600; margin: 0 0 14px; letter-spacing: -0.01e
 .icon-btn:hover { background: var(--surface-hover); color: var(--text); border-color: var(--border-strong); }
 .icon-btn svg { width: 18px; height: 18px; }
 
-.content { padding: 26px 28px 48px; max-width: 1320px; width: 100%; margin: 0 auto; }
+.content { padding: 22px 24px 48px; max-width: none; width: 100%; margin: 0; }
 
 .page-actions { display: flex; align-items: center; gap: 10px; }
 
