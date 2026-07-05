@@ -720,6 +720,9 @@ ul.errorlist li::before { content: "⚠ "; }
   gap: 8px;
   min-width: 140px;
   padding: 8px 14px;
+  appearance: none;
+  background: none;
+  border: 0;
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
   font-size: 13.5px;
