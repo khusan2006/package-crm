@@ -93,24 +93,24 @@
     {% elif is_single_day %}{{ date_from|date:"j-F, l" }}
     {% else %}{{ range_days }} kunlik oraliq{% endif %}
   </div>
-  <form method="get" class="toolbar-controls">
-    {% if filters.client %}<input type="hidden" name="client" value="{{ filters.client }}">{% endif %}
-    {% if filters.product %}<input type="hidden" name="product" value="{{ filters.product }}">{% endif %}
-    {% if filters.rep %}<input type="hidden" name="rep" value="{{ filters.rep }}">{% endif %}
-    {% if filters.status %}<input type="hidden" name="status" value="{{ filters.status }}">{% endif %}
-    <div class="datebar">
-      <a class="datebar-btn" href="{% qs_replace dan=prev_from gacha=prev_to %}" title="Oldingi">
+  <div class="toolbar-controls">
+    <div class="daterange" data-from="{{ filters.dan }}" data-to="{{ filters.gacha }}" data-today="{{ today_iso }}">
+      <a class="datebar-btn" href="{% qs_replace dan=prev_from gacha=prev_to %}" title="Oldingi kun">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
       </a>
-      <input type="date" name="dan" value="{{ filters.dan }}" title="Dan" onchange="this.form.submit()">
-      <span class="sep">—</span>
-      <input type="date" name="gacha" value="{{ filters.gacha }}" title="Gacha" onchange="this.form.submit()">
-      <a class="datebar-btn" href="{% qs_replace dan=next_from gacha=next_to %}" title="Keyingi">
+      <button type="button" class="daterange-trigger" aria-haspopup="dialog" aria-expanded="false">
+        <svg class="cal-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        <span class="daterange-text">
+          {% if is_today %}Bugun{% elif is_single_day %}{{ date_from|date:"j-F" }}{% else %}{{ date_from|date:"j-F" }} – {{ date_to|date:"j-F" }}{% endif %}
+        </span>
+      </button>
+      <a class="datebar-btn" href="{% qs_replace dan=next_from gacha=next_to %}" title="Keyingi kun">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
       </a>
+      <div class="daterange-pop" role="dialog" aria-label="Sana tanlash" hidden></div>
     </div>
     {% if not is_today %}<a class="btn btn-sm btn-ghost" href="{% qs_replace dan=today_iso gacha=today_iso %}">Bugun</a>{% endif %}
-  </form>
+  </div>
 </div>
 
 {% include "crm/_sale_table.html" with sales=page %}

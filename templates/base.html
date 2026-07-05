@@ -265,6 +265,131 @@
       if (save) { e.preventDefault(); quickAdd(save); }
     });
   })();
+
+  // Custom dark range calendar for the sales date control (compact ‹ date › bar)
+  (function () {
+    var root = document.querySelector('.daterange');
+    if (!root) { return; }
+    var trigger = root.querySelector('.daterange-trigger');
+    var pop = root.querySelector('.daterange-pop');
+    if (!trigger || !pop) { return; }
+
+    var MONTHS = ['Yanvar', 'Fevral', 'Mart', 'Aprel', 'May', 'Iyun', 'Iyul', 'Avgust', 'Sentabr', 'Oktabr', 'Noyabr', 'Dekabr'];
+    var WD = ['Du', 'Se', 'Ch', 'Pa', 'Ju', 'Sha', 'Ya'];
+    var todayIso = root.getAttribute('data-today') || '';
+
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    function iso(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+    function parseIso(s) {
+      var p = (s || '').split('-');
+      return p.length === 3 ? new Date(+p[0], +p[1] - 1, +p[2]) : null;
+    }
+    function fmt(s) { var d = parseIso(s); return d ? d.getDate() + '-' + MONTHS[d.getMonth()] : ''; }
+    function selLabel() {
+      if (!selStart) { return 'Sana tanlang'; }
+      if (!selEnd || selEnd === selStart) { return fmt(selStart); }
+      return fmt(selStart) + ' – ' + fmt(selEnd);
+    }
+
+    var selStart = root.getAttribute('data-from') || todayIso;
+    var selEnd = root.getAttribute('data-to') || selStart;
+    var view = parseIso(selStart) || new Date();
+    view = new Date(view.getFullYear(), view.getMonth(), 1);
+
+    var CHEV_L = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>';
+    var CHEV_R = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>';
+
+    function render() {
+      var y = view.getFullYear(), m = view.getMonth();
+      var firstWeekday = (new Date(y, m, 1).getDay() + 6) % 7; // Monday-first
+      var days = new Date(y, m + 1, 0).getDate();
+      var hasRange = selStart && selEnd && selEnd !== selStart;
+      var h = '<div class="cal-top">'
+        + '<button type="button" class="cal-nav" data-nav="-1" aria-label="Oldingi oy">' + CHEV_L + '</button>'
+        + '<span class="cal-title">' + MONTHS[m] + ' ' + y + '</span>'
+        + '<button type="button" class="cal-nav" data-nav="1" aria-label="Keyingi oy">' + CHEV_R + '</button>'
+        + '</div><div class="cal-wd">';
+      for (var w = 0; w < 7; w++) { h += '<span>' + WD[w] + '</span>'; }
+      h += '</div><div class="cal-days">';
+      for (var i = 0; i < firstWeekday; i++) { h += '<span></span>'; }
+      for (var d = 1; d <= days; d++) {
+        var ds = y + '-' + pad(m + 1) + '-' + pad(d);
+        var cls = 'cal-day';
+        if (hasRange && ds === selStart) { cls += ' is-sel is-start'; }
+        else if (hasRange && ds === selEnd) { cls += ' is-sel is-end'; }
+        else if (hasRange && ds > selStart && ds < selEnd) { cls += ' is-range'; }
+        else if (!hasRange && ds === selStart) { cls += ' is-sel'; }
+        if (ds === todayIso) { cls += ' is-today'; }
+        h += '<button type="button" class="' + cls + '" data-day="' + ds + '">' + d + '</button>';
+      }
+      h += '</div><div class="cal-foot">'
+        + '<button type="button" class="cal-preset" data-preset="today">Bugun</button>'
+        + '<button type="button" class="cal-preset" data-preset="7">7 kun</button>'
+        + '<button type="button" class="cal-preset" data-preset="30">30 kun</button>'
+        + '<button type="button" class="cal-preset" data-preset="month">Bu oy</button>'
+        + '</div><div class="cal-actions">'
+        + '<span class="cal-sel-label">' + selLabel() + '</span>'
+        + '<button type="button" class="btn btn-sm" data-apply>Tanlash</button>'
+        + '</div>';
+      pop.innerHTML = h;
+    }
+
+    function openPop() {
+      render();
+      pop.classList.remove('is-up');
+      pop.hidden = false;
+      root.classList.add('is-open');
+      trigger.setAttribute('aria-expanded', 'true');
+      if (pop.getBoundingClientRect().bottom > window.innerHeight - 8) { pop.classList.add('is-up'); }
+    }
+    function closePop() { pop.hidden = true; root.classList.remove('is-open'); trigger.setAttribute('aria-expanded', 'false'); }
+
+    function apply(from, to) {
+      if (!from) { return; }
+      if (!to) { to = from; }
+      if (to < from) { var t = from; from = to; to = t; }
+      var u = new URL(window.location.href);
+      u.searchParams.set('dan', from);
+      u.searchParams.set('gacha', to);
+      u.searchParams.delete('page');
+      window.location.assign(u.toString());
+    }
+
+    function applyPreset(kind) {
+      var t = parseIso(todayIso) || new Date();
+      if (kind === 'today') { apply(todayIso, todayIso); return; }
+      if (kind === 'month') { apply(iso(new Date(t.getFullYear(), t.getMonth(), 1)), todayIso); return; }
+      var n = parseInt(kind, 10);
+      var s = new Date(t); s.setDate(s.getDate() - (n - 1));
+      apply(iso(s), todayIso);
+    }
+
+    trigger.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (pop.hidden) { openPop(); } else { closePop(); }
+    });
+
+    pop.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var nav = e.target.closest('[data-nav]');
+      if (nav) { view.setMonth(view.getMonth() + parseInt(nav.getAttribute('data-nav'), 10)); render(); return; }
+      var day = e.target.closest('[data-day]');
+      if (day) {
+        var v = day.getAttribute('data-day');
+        if (selEnd) { selStart = v; selEnd = null; }        // both set → start a fresh range
+        else if (v < selStart) { selEnd = selStart; selStart = v; } // picked earlier → swap
+        else { selEnd = v; }                                 // complete the range
+        render();
+        return;
+      }
+      var preset = e.target.closest('[data-preset]');
+      if (preset) { applyPreset(preset.getAttribute('data-preset')); return; }
+      if (e.target.closest('[data-apply]')) { apply(selStart, selEnd || selStart); }
+    });
+
+    document.addEventListener('click', function () { if (!pop.hidden) { closePop(); } });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !pop.hidden) { closePop(); } });
+  })();
 </script>
 </body>
 </html>
