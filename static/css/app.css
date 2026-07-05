@@ -994,6 +994,24 @@ ul.errorlist li::before { content: "⚠ "; }
 .flash-success { background: var(--success-soft); color: var(--success); border-color: rgba(22, 163, 74, 0.4); }
 .flash-error { background: var(--danger-soft); color: var(--danger); border-color: rgba(230, 25, 24, 0.4); }
 
+/* Overdue-debt alert banner on the dashboard */
+.overdue-banner {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 13px 16px;
+  margin-bottom: 16px;
+  border-radius: var(--r);
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+}
+.overdue-banner .ob-icon { color: var(--danger); flex: 0 0 auto; display: grid; }
+.overdue-banner .ob-icon svg { width: 22px; height: 22px; }
+.overdue-banner .ob-text { flex: 1 1 auto; font-size: 14px; }
+.overdue-banner .ob-text strong { color: var(--danger); }
+.overdue-banner .ob-sum { color: var(--danger); font-weight: 600; }
+.overdue-banner .btn { flex: 0 0 auto; }
+
 /* ============================================================
    Toasts
    ============================================================ */

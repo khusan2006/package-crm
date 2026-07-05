@@ -258,6 +258,17 @@ class AuthTests(BaseSetup):
         self.assertNotRegex(body, r"(?:height|width):\s*\d+,\d")
         self.assertNotRegex(body, r'stroke-dash(?:array|offset)="[^"]*,')
 
+    def test_dashboard_flags_overdue_debt(self):
+        make_sale(
+            self.client1, self.sales1, self.product,
+            is_debt=True, debt_deadline=timezone.localdate() - timedelta(days=3),
+        )
+        self.client.force_login(self.manager)
+        response = self.client.get(reverse("dashboard"))
+        self.assertEqual(response.context["overdue_count"], 1)
+        self.assertEqual(response.context["overdue_total"], Decimal("240000"))
+        self.assertContains(response, "overdue-banner")
+
 
 class DayViewTests(BaseSetup):
     def test_defaults_to_today(self):

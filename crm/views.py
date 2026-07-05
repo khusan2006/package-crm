@@ -215,7 +215,10 @@ def dashboard(request):
 
     open_sales = sales.outstanding()
     debt_total = _outstanding_balance(open_sales)
-    overdue_count = open_sales.filter(debt_deadline__lt=timezone.localdate()).count()
+    overdue_sales = open_sales.filter(debt_deadline__lt=timezone.localdate())
+    overdue_count = overdue_sales.count()
+    overdue_total = _outstanding_balance(overdue_sales)
+    overdue_clients = overdue_sales.values("client").distinct().count()
 
     low_stock_count = (
         Product.objects.filter(is_active=True)
@@ -244,6 +247,8 @@ def dashboard(request):
         "client_count": _visible_clients(request.user).count(),
         "debt_total": debt_total,
         "overdue_count": overdue_count,
+        "overdue_total": overdue_total,
+        "overdue_clients": overdue_clients,
         "low_stock_count": low_stock_count,
     }
     return render(request, "crm/dashboard.html", context)
