@@ -754,6 +754,7 @@ ul.errorlist li::before { content: "⚠ "; }
 .cal-title { font-size: 14px; font-weight: 700; color: var(--text); }
 .cal-nav {
   display: grid; place-items: center; width: 30px; height: 30px;
+  appearance: none; background: none; border: 0;
   border-radius: var(--r-sm); color: var(--text-muted); cursor: pointer;
   transition: background 0.12s, color 0.12s;
 }
@@ -766,6 +767,9 @@ ul.errorlist li::before { content: "⚠ "; }
   aspect-ratio: 1;
   display: grid;
   place-items: center;
+  appearance: none;
+  background: none;
+  border: 0;
   font-size: 13px;
   font-weight: 500;
   color: var(--text);
