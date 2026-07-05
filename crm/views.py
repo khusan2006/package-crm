@@ -20,6 +20,7 @@ from .forms import (
     ClientForm,
     DebtPaymentForm,
     ProductForm,
+    ReturnForm,
     SaleForm,
     SaleItemFormSet,
     StockAdjustForm,
@@ -29,11 +30,13 @@ from .models import (
     COST,
     PAYMENT_NET,
     PROFIT,
+    RETURN_AMOUNT,
     REVENUE,
     AuditLog,
     Client,
     Payment,
     Product,
+    Return,
     Sale,
     SaleItem,
     StockEntry,
@@ -523,14 +526,15 @@ def _active_filter_chips(request, filters, clients, products, reps):
 
 
 def _outstanding_balance(sales):
-    """Total still owed across the given sales: item revenue − net payments.
+    """Total still owed across the given sales: item revenue − returns − net payments.
 
-    Payments are netted of bank fees (amount − commission), matching how each
-    sale's remaining balance is computed."""
+    Payments are netted of bank fees (amount − commission) and returned goods are
+    subtracted, matching how each sale's remaining balance is computed."""
     pks = sales.values("pk")
     revenue = SaleItem.objects.filter(sale__in=pks).aggregate(v=Sum(REVENUE))["v"] or 0
+    returned = Return.objects.filter(sale__in=pks).aggregate(v=Sum(RETURN_AMOUNT))["v"] or 0
     paid = Payment.objects.filter(sale__in=pks).aggregate(v=Sum(PAYMENT_NET))["v"] or 0
-    return revenue - paid
+    return revenue - returned - paid
 
 
 def sale_list(request):
@@ -997,6 +1001,7 @@ def sale_detail(request, pk):
         pk=pk,
     )
     payments = sale.payments.select_related("created_by").order_by("-date", "-created_at")
+    returns = sale.returns.select_related("product", "created_by")
     return render(
         request,
         "crm/sale_detail.html",
@@ -1004,6 +1009,8 @@ def sale_detail(request, pk):
             "sale": sale,
             "items": sale.items.all(),
             "payments": payments,
+            "returns": returns,
+            "returned": sale.returned_amount,
             "paid": sale.paid_amount,
             "remaining": sale.debt_remaining,
         },
@@ -1167,6 +1174,36 @@ def sale_pay(request, pk):
         return _render_debt_pay(request, sale, form, invalid=True)
     form = DebtPaymentForm(initial={"amount": remaining, "method": Payment.Method.CASH})
     return _render_debt_pay(request, sale, form)
+
+
+def _render_return_form(request, sale, form, invalid=False):
+    context = {"form": form, "sale": sale, "title": f"Qaytarish: {sale.client.name}"}
+    if is_ajax(request):
+        return render(request, "crm/_return_modal.html", context, status=422 if invalid else 200)
+    return render(request, "crm/_return_page.html", context)
+
+
+def sale_return(request, pk):
+    sale = get_object_or_404(
+        Sale.objects.visible_to(request.user).prefetch_related("items__product", "returns"),
+        pk=pk,
+    )
+    if request.method == "POST":
+        form = ReturnForm(request.POST, sale=sale)
+        if form.is_valid():
+            ret = form.save(commit=False)
+            ret.sale = sale
+            ret.created_by = request.user
+            ret.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.RETURN, "Qaytarish", sale.pk,
+                f"{sale.client.name} — {ret.amount:,.0f} so'm ({ret.product.name})",
+            )
+            messages.success(request, f"Qaytarish qabul qilindi: {ret.amount:,.0f} so'm.")
+            return form_reload(request, reverse("sale_detail", args=[sale.pk]))
+        return _render_return_form(request, sale, form, invalid=True)
+    form = ReturnForm(sale=sale, initial={"restock": True})
+    return _render_return_form(request, sale, form)
 
 
 def sale_delete(request, pk):

@@ -922,6 +922,54 @@ class ReportTests(BaseSetup):
         self.assertNotIn(self.client2.name, body)   # not another rep's
 
 
+class ReturnTests(BaseSetup):
+    def _return(self, sale, weight, price="24000", restock=True):
+        data = {
+            "product": self.product.pk, "dimension": "kg",
+            "weight": weight, "price": price,
+        }
+        if restock:
+            data["restock"] = "on"
+        return self.client.post(reverse("sale_return", args=[sale.pk]), data)
+
+    def test_return_reduces_debt(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)  # 240000
+        self.client.force_login(self.sales1)
+        self._return(sale, "4")  # 4 × 24000 = 96000
+        sale.refresh_from_db()
+        self.assertEqual(sale.returned_amount, Decimal("96000"))
+        self.assertEqual(sale.debt_remaining, Decimal("144000"))  # 240000 − 96000
+
+    def _stock(self):
+        return Product.objects.get(pk=self.product.pk).current_stock
+
+    def test_restock_return_increases_stock(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True, weight="10")
+        self.client.force_login(self.sales1)
+        before = self._stock()
+        self._return(sale, "3", restock=True)
+        self.assertEqual(self._stock() - before, Decimal("3"))  # 3 kg back in stock
+
+    def test_no_restock_leaves_stock_unchanged(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True, weight="10")
+        self.client.force_login(self.sales1)
+        before = self._stock()
+        self._return(sale, "3", restock=False)
+        self.assertEqual(self._stock() - before, Decimal("0"))  # not restocked
+
+    def test_cannot_return_more_than_sold(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True, weight="10")
+        self.client.force_login(self.sales1)
+        self._return(sale, "15")  # more than the 10 kg sold
+        self.assertEqual(sale.returns.count(), 0)
+
+    def test_return_is_audited(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        self.client.force_login(self.sales1)
+        self._return(sale, "2")
+        self.assertTrue(AuditLog.objects.filter(action="return", target_id=sale.pk).exists())
+
+
 class ModalFormTests(BaseSetup):
     def _ajax(self):
         return {"HTTP_X_REQUESTED_WITH": "XMLHttpRequest"}

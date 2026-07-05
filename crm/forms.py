@@ -5,7 +5,7 @@ from django import forms
 from django.forms import inlineformset_factory
 from django.utils import timezone
 
-from .models import Client, Payment, Product, Sale, SaleItem, StockEntry
+from .models import Client, Payment, Product, Return, Sale, SaleItem, StockEntry
 
 DEFAULT_DEBT_DAYS = 7
 
@@ -196,3 +196,57 @@ SaleItemFormSet = inlineformset_factory(
     validate_min=True,
     can_delete=True,
 )
+
+
+class ReturnForm(forms.ModelForm):
+    """Record goods returned on a sale. Products are limited to those actually on
+    the sale, and the returned quantity can't exceed what was sold (net of prior
+    returns)."""
+
+    class Meta:
+        model = Return
+        fields = ["product", "dimension", "weight", "price", "restock", "note"]
+        widgets = {"note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy"})}
+
+    def __init__(self, *args, sale=None, **kwargs):
+        self.sale = sale
+        super().__init__(*args, **kwargs)
+        if sale is not None:
+            self.fields["product"].queryset = Product.objects.filter(
+                sale_items__sale=sale
+            ).distinct()
+
+    def clean_weight(self):
+        weight = self.cleaned_data.get("weight")
+        if weight is not None and weight <= 0:
+            raise forms.ValidationError("Og'irlik 0 dan katta bo'lishi kerak.")
+        return weight
+
+    def clean_price(self):
+        price = self.cleaned_data.get("price")
+        if price is not None and price <= 0:
+            raise forms.ValidationError("Narx 0 dan katta bo'lishi kerak.")
+        return price
+
+    def clean(self):
+        cleaned = super().clean()
+        product = cleaned.get("product")
+        weight = cleaned.get("weight")
+        dimension = cleaned.get("dimension")
+        if self.sale and product and weight and dimension:
+            weight_kg = (
+                weight / Decimal("1000") if dimension == Sale.Dimension.G else weight
+            )
+            sold_kg = sum(
+                (i.weight_kg for i in self.sale.items.all() if i.product_id == product.pk),
+                Decimal("0"),
+            )
+            already_kg = sum(
+                (r.weight_kg for r in self.sale.returns.all() if r.product_id == product.pk),
+                Decimal("0"),
+            )
+            if weight_kg + already_kg > sold_kg:
+                raise forms.ValidationError(
+                    "Qaytarilayotgan miqdor sotilganidan ko'p bo'lishi mumkin emas."
+                )
+        return cleaned

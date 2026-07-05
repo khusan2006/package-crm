@@ -32,6 +32,14 @@ ITEM_WEIGHT_KG = Case(
     output_field=QTY,
 )
 
+# Same conversions, reused for returned goods
+RETURN_AMOUNT = ExpressionWrapper(F("weight") * F("price"), output_field=MONEY)
+RETURN_WEIGHT_KG = Case(
+    When(dimension="g", then=F("weight") / Value(Decimal("1000"))),
+    default=F("weight"),
+    output_field=QTY,
+)
+
 
 class Client(models.Model):
     name = models.CharField("Ismi", max_length=200)
@@ -86,10 +94,18 @@ class ProductQuerySet(models.QuerySet):
             .values("s"),
             output_field=QTY,
         )
+        returned = Subquery(
+            Return.objects.filter(product=OuterRef("pk"), restock=True)
+            .values("product")
+            .annotate(s=Sum(RETURN_WEIGHT_KG))
+            .values("s"),
+            output_field=QTY,
+        )
         return self.annotate(
             stock_in=Coalesce(received, ZERO_QTY),
             stock_out=Coalesce(sold, ZERO_QTY),
-        ).annotate(stock=F("stock_in") - F("stock_out"))
+            stock_returned=Coalesce(returned, ZERO_QTY),
+        ).annotate(stock=F("stock_in") - F("stock_out") + F("stock_returned"))
 
 
 class Product(models.Model):
@@ -128,8 +144,16 @@ class Product(models.Model):
         return self.sale_items.aggregate(s=Sum(ITEM_WEIGHT_KG))["s"] or Decimal("0")
 
     @property
+    def total_returned(self):
+        """Restocked returns (in kg) that flow back into the warehouse."""
+        return (
+            self.returns.filter(restock=True).aggregate(s=Sum(RETURN_WEIGHT_KG))["s"]
+            or Decimal("0")
+        )
+
+    @property
     def current_stock(self):
-        return self.total_received - self.total_sold
+        return self.total_received - self.total_sold + self.total_returned
 
     @property
     def is_low_stock(self):
@@ -175,6 +199,20 @@ def _sale_paid_sum():
     )
 
 
+def _sale_return_sum():
+    """A subquery summing the value of goods returned on one sale."""
+    return Coalesce(
+        Subquery(
+            Return.objects.filter(sale=OuterRef("pk"))
+            .values("sale")
+            .annotate(s=Sum(RETURN_AMOUNT))
+            .values("s"),
+            output_field=MONEY,
+        ),
+        Value(Decimal("0"), output_field=MONEY),
+    )
+
+
 class SaleQuerySet(models.QuerySet):
     def with_totals(self):
         """Annotate each sale (header) with revenue/cost/profit summed over its items."""
@@ -185,10 +223,12 @@ class SaleQuerySet(models.QuerySet):
         )
 
     def with_balance(self):
-        """with_totals plus paid / remaining, so debt status can be filtered in SQL."""
+        """with_totals plus paid / returned / remaining, so debt status can be
+        filtered in SQL. Returned goods reduce what the client owes."""
         return self.with_totals().annotate(
             paid=_sale_paid_sum(),
-        ).annotate(remaining=F("total") - F("paid"))
+            returned=_sale_return_sum(),
+        ).annotate(remaining=F("total") - F("returned") - F("paid"))
 
     def outstanding(self):
         """Sales that still owe money (a receivable / qarz)."""
@@ -254,8 +294,17 @@ class Sale(models.Model):
         return self.payments.aggregate(s=Sum(PAYMENT_NET))["s"] or Decimal("0")
 
     @property
+    def returned_amount(self):
+        return sum((r.amount for r in self.returns.all()), Decimal("0"))
+
+    @property
+    def net_total(self):
+        """What the client owes before payments: sold value minus returns."""
+        return self.total_price - self.returned_amount
+
+    @property
     def debt_remaining(self):
-        return self.total_price - self.paid_amount
+        return self.net_total - self.paid_amount
 
     @property
     def is_paid(self):
@@ -320,6 +369,51 @@ class SaleItem(models.Model):
 
     def __str__(self):
         return f"{self.product.name}: {self.weight} {self.dimension}"
+
+
+class Return(models.Model):
+    """Goods returned from a sale. Credits the client's debt by the returned
+    value and, when restocked, flows the quantity back into the warehouse."""
+
+    sale = models.ForeignKey(
+        Sale, on_delete=models.CASCADE, related_name="returns", verbose_name="Sotuv"
+    )
+    product = models.ForeignKey(
+        Product, on_delete=models.PROTECT, related_name="returns", verbose_name="Mahsulot"
+    )
+    dimension = models.CharField(
+        "O'lchov birligi", max_length=2, choices=Sale.Dimension.choices, default=Sale.Dimension.KG
+    )
+    weight = models.DecimalField("Og'irligi", max_digits=12, decimal_places=3)
+    price = models.DecimalField("Narxi (1 birlik, so'm)", max_digits=14, decimal_places=2)
+    date = models.DateField("Sana", default=timezone.localdate)
+    restock = models.BooleanField("Omborga qaytarilsin", default=True)
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="returns",
+        verbose_name="Kim qabul qildi",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date", "-created_at"]
+        verbose_name = "Qaytarish"
+        verbose_name_plural = "Qaytarishlar"
+
+    @property
+    def weight_kg(self):
+        if self.dimension == Sale.Dimension.G:
+            return self.weight / Decimal("1000")
+        return self.weight
+
+    @property
+    def amount(self):
+        return self.weight * self.price
+
+    def __str__(self):
+        return f"Qaytarish · {self.product.name}: {self.weight} {self.dimension}"
 
 
 class StockEntry(models.Model):
@@ -414,6 +508,7 @@ class AuditLog(models.Model):
         DELETE = "delete", "O'chirildi"
         VOID = "void", "Bekor qilindi"
         PAYMENT = "payment", "To'lov"
+        RETURN = "return", "Qaytarish"
 
     created_at = models.DateTimeField(auto_now_add=True)
     user = models.ForeignKey(

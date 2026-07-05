@@ -45,6 +45,7 @@ urlpatterns = [
     path("sales/<int:pk>/", crm_views.sale_detail, name="sale_detail"),
     path("sales/<int:pk>/edit/", crm_views.sale_edit, name="sale_edit"),
     path("sales/<int:pk>/pay/", crm_views.sale_pay, name="sale_pay"),
+    path("sales/<int:pk>/return/", crm_views.sale_return, name="sale_return"),
     path("sales/<int:pk>/mark-paid/", crm_views.sale_mark_paid, name="sale_mark_paid"),
     path("sales/<int:pk>/delete/", crm_views.sale_delete, name="sale_delete"),
 ]
