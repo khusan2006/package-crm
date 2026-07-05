@@ -273,15 +273,13 @@ def stock_adjust(request, pk):
 # --- Sales --------------------------------------------------------------------
 
 def _filter_sales(request, sales):
-    """Apply the advanced sales filters from GET params. Returns (queryset, filters)."""
-    filters = {key: request.GET.get(key, "") for key in ("dan", "gacha", "client", "product", "rep", "status")}
+    """Filter sales to a single day (default today) + client/product/rep/status.
+    Returns (queryset, filters, day)."""
+    day = _parse_date(request.GET.get("sana")) or timezone.localdate()
+    sales = sales.filter(date=day)
 
-    date_from = _parse_date(filters["dan"])
-    date_to = _parse_date(filters["gacha"])
-    if date_from:
-        sales = sales.filter(date__gte=date_from)
-    if date_to:
-        sales = sales.filter(date__lte=date_to)
+    filters = {key: request.GET.get(key, "") for key in ("client", "product", "rep", "status")}
+    filters["sana"] = day.isoformat()
     if filters["client"].isdigit():
         sales = sales.filter(client_id=filters["client"])
     if filters["product"].isdigit():
@@ -294,7 +292,7 @@ def _filter_sales(request, sales):
         sales = sales.filter(is_debt=True)
     elif filters["status"] == "overdue":
         sales = sales.filter(is_debt=True, debt_deadline__lt=timezone.localdate())
-    return sales, filters
+    return sales, filters, day
 
 
 def sale_list(request):
@@ -303,8 +301,8 @@ def sale_list(request):
         .select_related("client", "product", "sales_rep")
         .with_totals()
     )
-    sales, filters = _filter_sales(request, base)
-    sales = sales.order_by("-date", "-created_at")
+    sales, filters, day = _filter_sales(request, base)
+    sales = sales.order_by("-created_at")
 
     totals = _sale_totals(sales)
     debt_sales = sales.filter(is_debt=True)
@@ -319,6 +317,7 @@ def sale_list(request):
     totals["debt_share"] = (totals["debt"] or 0) / revenue * 100 if revenue else 0
     totals["debtor_pct"] = totals["debtors"] / total_clients * 100 if total_clients else 0
 
+    today = timezone.localdate()
     page = Paginator(sales, 25).get_page(request.GET.get("page"))
     return render(
         request,
@@ -327,6 +326,11 @@ def sale_list(request):
             "page": page,
             "totals": totals,
             "filters": filters,
+            "day": day,
+            "prev_day": (day - timedelta(days=1)).isoformat(),
+            "next_day": (day + timedelta(days=1)).isoformat(),
+            "today_iso": today.isoformat(),
+            "is_today": day == today,
             "clients": _visible_clients(request.user).order_by("name"),
             "products": Product.objects.order_by("name"),
             "reps": (
@@ -417,8 +421,8 @@ def payment_list(request):
 
 def sale_export(request):
     base = Sale.objects.visible_to(request.user).select_related("client", "product", "sales_rep")
-    sales, _ = _filter_sales(request, base)
-    sales = sales.order_by("-date", "-created_at")
+    sales, _, _ = _filter_sales(request, base)
+    sales = sales.order_by("-created_at")
 
     response = HttpResponse(content_type="text/csv; charset=utf-8")
     response["Content-Disposition"] = 'attachment; filename="sotuvlar.csv"'

@@ -182,18 +182,28 @@ class AuthTests(BaseSetup):
             self.assertEqual(self.client.get(reverse("dashboard")).status_code, 200)
 
 
-class DateFilterTests(BaseSetup):
-    def test_sale_list_date_filter(self):
+class DayViewTests(BaseSetup):
+    def test_defaults_to_today(self):
         old = make_sale(
             self.client1, self.sales1, self.product,
-            date=timezone.localdate() - timedelta(days=90),
+            date=timezone.localdate() - timedelta(days=3),
         )
         self.client.force_login(self.sales1)
-        cutoff = (timezone.localdate() - timedelta(days=30)).isoformat()
-        response = self.client.get(reverse("sale_list"), {"dan": cutoff})
+        response = self.client.get(reverse("sale_list"))
         sales = list(response.context["page"].object_list)
-        self.assertIn(self.sale1, sales)
-        self.assertNotIn(old, sales)
+        self.assertIn(self.sale1, sales)   # today
+        self.assertNotIn(old, sales)       # 3 days ago
+        self.assertTrue(response.context["is_today"])
+
+    def test_shows_selected_day(self):
+        target = timezone.localdate() - timedelta(days=3)
+        old = make_sale(self.client1, self.sales1, self.product, date=target)
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_list"), {"sana": target.isoformat()})
+        sales = list(response.context["page"].object_list)
+        self.assertIn(old, sales)
+        self.assertNotIn(self.sale1, sales)  # today's sale not on the target day
+        self.assertFalse(response.context["is_today"])
 
 
 class StockTests(BaseSetup):
