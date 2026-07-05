@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load crm_extras %}
 {% block title %}Qarzlar · Paket CRM{% endblock %}
 {% block topbar_title %}Qarzlar{% endblock %}
 {% block content %}
@@ -10,7 +11,7 @@
       <span class="kpi-label">Jami qarz</span>
     </div>
     <div class="kpi-value">{{ total_debt|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta muted">barcha muddatlar</div>
+    <div class="kpi-meta muted">{{ total_debtors }} ta qarzdor mijoz</div>
   </div>
 
   <div class="kpi kpi--red">
@@ -19,31 +20,41 @@
       <span class="kpi-label">Muddati o'tgan qarz</span>
     </div>
     <div class="kpi-value">{{ overdue_total|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta">{{ overdue|length }} ta · {{ overdue_debtors }} mijoz</div>
+    <div class="kpi-meta">{{ overdue_debtors }} ta mijoz</div>
   </div>
 
   <div class="kpi kpi--gold">
-    <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg></span>
-      <span class="kpi-label">Muddati yaqin qarz</span>
-    </div>
-    <div class="kpi-value">{{ upcoming_total|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta muted">keyingi {{ soon_days }} kun · {{ upcoming|length }} ta</div>
-  </div>
-
-  <div class="kpi kpi--blue">
     <div class="kpi-head">
       <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
       <span class="kpi-label">Qarzdor mijozlar</span>
     </div>
     <div class="kpi-value">{{ total_debtors }}</div>
-    <div class="kpi-meta muted">jami qarzdorlar</div>
+    <div class="kpi-meta muted">jami</div>
   </div>
 </div>
 
-<h2>Muddati o'tgan</h2>
-{% include "crm/_sale_table.html" with sales=overdue empty_text="Muddati o'tgan qarzlar yo'q." %}
-
-<h2 style="margin-top: 26px;">Muddati yaqinlashgan ({{ soon_days }} kun)</h2>
-{% include "crm/_sale_table.html" with sales=upcoming empty_text="Yaqin muddatli qarzlar yo'q." %}
+{% if debtors %}
+<div class="table-wrap">
+<table>
+  <tr>
+    <th class="sticky-col">Mijoz</th>
+    <th class="num">Ochiq cheklar</th>
+    <th>Eng yaqin muddat</th>
+    <th class="num">Qarz qoldig'i</th>
+    <th></th>
+  </tr>
+  {% for g in debtors %}
+  <tr>
+    <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=g.client.name %}<a href="{% url 'debt_client' g.client.pk %}">{{ g.client.name }}</a></span></td>
+    <td class="num">{{ g.count }}{% if g.overdue_count %} <span class="muted">({{ g.overdue_count }} o'tgan)</span>{% endif %}</td>
+    <td>{{ g.earliest|date:"Y-m-d" }} · {% deadline_badge g.earliest %}</td>
+    <td class="num"><strong>{{ g.remaining|floatformat:"0g" }}</strong> so'm</td>
+    <td><a class="btn btn-sm btn-ghost" href="{% url 'debt_client' g.client.pk %}">Ko'rish</a></td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% else %}
+<p class="muted">Qarzdor mijozlar yo'q. 🎉</p>
+{% endif %}
 {% endblock %}

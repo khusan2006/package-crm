@@ -1,8 +1,13 @@
+from datetime import timedelta
 from decimal import Decimal
 
 from django import forms
+from django.forms import inlineformset_factory
+from django.utils import timezone
 
-from .models import Client, Payment, Product, Sale, StockEntry
+from .models import Client, Payment, Product, Sale, SaleItem, StockEntry
+
+DEFAULT_DEBT_DAYS = 7
 
 
 class ClientForm(forms.ModelForm):
@@ -26,12 +31,23 @@ class StockEntryForm(forms.ModelForm):
         widgets = {"date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d")}
 
 
+TRANSFER_COMMISSION_PCT = Decimal("1")  # default bank fee suggested for transfers
+
+
 class DebtPaymentForm(forms.Form):
     amount = forms.DecimalField(
         label="Miqdor (so'm)", max_digits=18, decimal_places=2, min_value=Decimal("0.01")
     )
     method = forms.ChoiceField(
         label="To'lov usuli", choices=Payment.Method.choices, initial=Payment.Method.CASH
+    )
+    commission = forms.DecimalField(
+        label="Bank komissiyasi (so'm)",
+        max_digits=18,
+        decimal_places=2,
+        required=False,
+        min_value=Decimal("0"),
+        help_text="Faqat bank o'tkazmasi uchun — bank ushlab qolgan haq",
     )
 
     def __init__(self, *args, max_amount=None, **kwargs):
@@ -46,6 +62,18 @@ class DebtPaymentForm(forms.Form):
             )
         return amount
 
+    def clean(self):
+        cleaned = super().clean()
+        commission = cleaned.get("commission") or Decimal("0")
+        # Commission only applies to bank transfers; ignore it otherwise
+        if cleaned.get("method") != Payment.Method.TRANSFER:
+            commission = Decimal("0")
+        amount = cleaned.get("amount")
+        if amount is not None and commission > amount:
+            self.add_error("commission", "Komissiya to'lov summasidan ko'p bo'lishi mumkin emas.")
+        cleaned["commission"] = commission
+        return cleaned
+
 
 class StockAdjustForm(forms.Form):
     """Set the exact current quantity; the view logs the difference as a movement."""
@@ -57,27 +85,12 @@ class StockAdjustForm(forms.Form):
 
 
 class SaleForm(forms.ModelForm):
-    payment_method = forms.ChoiceField(
-        label="To'lov usuli",
-        choices=Payment.Method.choices,
-        initial=Payment.Method.CASH,
-        required=False,
-    )
-    down_payment = forms.DecimalField(
-        label="Boshlang'ich to'lov (so'm)",
-        max_digits=18,
-        decimal_places=2,
-        required=False,
-        min_value=Decimal("0"),
-        help_text="Qarzga sotilganda hozir to'langan qism (bo'lsa)",
-    )
+    """The sale receipt header. Every sale is a receivable; if no deadline is
+    entered it defaults to the sale date + DEFAULT_DEBT_DAYS."""
 
     class Meta:
         model = Sale
-        fields = [
-            "date", "client", "product", "dimension", "weight", "price",
-            "cost_price", "is_debt", "debt_deadline",
-        ]
+        fields = ["date", "client", "debt_deadline"]
         widgets = {
             "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
             "debt_deadline": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
@@ -85,9 +98,30 @@ class SaleForm(forms.ModelForm):
 
     def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields["product"].queryset = Product.objects.filter(is_active=True)
         if user is not None and not user.can_see_all_records:
             self.fields["client"].queryset = Client.objects.filter(owner=user)
+        self.fields["debt_deadline"].required = False
+        self.fields["debt_deadline"].help_text = (
+            f"Bo'sh qolsa — sotuv sanasidan +{DEFAULT_DEBT_DAYS} kun"
+        )
+
+    def clean(self):
+        cleaned = super().clean()
+        if not cleaned.get("debt_deadline"):
+            base_date = cleaned.get("date") or timezone.localdate()
+            cleaned["debt_deadline"] = base_date + timedelta(days=DEFAULT_DEBT_DAYS)
+            self.instance.debt_deadline = cleaned["debt_deadline"]
+        return cleaned
+
+
+class SaleItemForm(forms.ModelForm):
+    class Meta:
+        model = SaleItem
+        fields = ["product", "dimension", "weight", "price", "cost_price"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["product"].queryset = Product.objects.filter(is_active=True)
         self.fields["cost_price"].required = False
         self.fields["cost_price"].widget.attrs["placeholder"] = "Bo'sh qolsa — mahsulot tannarxi"
 
@@ -97,29 +131,16 @@ class SaleForm(forms.ModelForm):
         dimension = cleaned.get("dimension")
         # Empty cost price falls back to the product's cost, converted to the sale unit
         if product and dimension and not cleaned.get("cost_price"):
-            cost = product.cost_price_for(dimension)
-            cleaned["cost_price"] = cost
-            self.instance.cost_price = cost
-
-        weight = cleaned.get("weight")
-        price = cleaned.get("price")
-        total = weight * price if weight is not None and price is not None else None
-        down = cleaned.get("down_payment") or Decimal("0")
-
-        if cleaned.get("is_debt"):
-            if total is not None and down > total:
-                self.add_error(
-                    "down_payment",
-                    "Boshlang'ich to'lov umumiy narxdan ko'p bo'lishi mumkin emas.",
-                )
-            elif total is not None and down >= total:
-                # Fully covered up front — not a debt after all
-                cleaned["is_debt"] = self.instance.is_debt = False
-                cleaned["debt_deadline"] = self.instance.debt_deadline = None
-            elif not cleaned.get("debt_deadline"):
-                self.add_error("debt_deadline", "Qarzga sotilganda muddat kiritilishi shart.")
-
-        if not cleaned.get("is_debt"):
-            cleaned["debt_deadline"] = None
-            self.instance.debt_deadline = None
+            cleaned["cost_price"] = product.cost_price_for(dimension)
         return cleaned
+
+
+SaleItemFormSet = inlineformset_factory(
+    Sale,
+    SaleItem,
+    form=SaleItemForm,
+    extra=1,
+    min_num=1,
+    validate_min=True,
+    can_delete=True,
+)

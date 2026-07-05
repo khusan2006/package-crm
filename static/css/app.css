@@ -337,6 +337,62 @@ html[data-theme="light"] #theme-toggle .ico-moon { display: block; }
 }
 .kpi-meta.muted { color: var(--text-muted); }
 
+/* Compact variant: force every card onto a single row (dashboard) */
+.kpi-grid--compact {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 10px;
+}
+.kpi-grid--compact .kpi { padding: 13px 14px; }
+.kpi-grid--compact .kpi-head { gap: 8px; margin-bottom: 9px; }
+.kpi-grid--compact .kpi-icon { width: 28px; height: 28px; border-radius: 8px; }
+.kpi-grid--compact .kpi-icon svg { width: 15px; height: 15px; }
+.kpi-grid--compact .kpi-label { font-size: 10px; letter-spacing: 0.04em; }
+.kpi-grid--compact .kpi-value { font-size: 18px; white-space: nowrap; }
+.kpi-grid--compact .kpi-value .unit { font-size: 11px; margin-left: 2px; }
+.kpi-grid--compact .kpi-meta { margin-top: 7px; font-size: 11px; }
+@media (max-width: 1100px) {
+  .kpi-grid--compact { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+}
+
+/* Debt deadline "days left / overdue" chip */
+.daybadge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.daybadge.overdue { color: var(--danger); background: color-mix(in srgb, var(--danger) 16%, transparent); }
+.daybadge.today { color: var(--warning); background: color-mix(in srgb, var(--warning) 18%, transparent); }
+.daybadge.soon { color: var(--success); background: color-mix(in srgb, var(--success) 15%, transparent); }
+
+/* Sale form: multi-product line items */
+.items-block { margin: 6px 0 4px; }
+.items-label { font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 6px; }
+.item-rows { display: flex; flex-direction: column; gap: 8px; }
+.item-row {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 8px 10px;
+  background: var(--surface-2, var(--surface));
+}
+.item-fields {
+  display: grid;
+  grid-template-columns: 2fr 0.9fr 1fr 1.1fr 1.1fr auto;
+  gap: 8px;
+  align-items: end;
+}
+.item-fields .if { display: flex; flex-direction: column; gap: 3px; font-size: 10.5px; color: var(--text-muted); font-weight: 600; }
+.item-fields .if input,
+.item-fields .if select { width: 100%; }
+.item-fields .item-remove { align-self: center; margin-top: 12px; }
+.item-add { margin-top: 8px; }
+@media (max-width: 620px) {
+  .item-fields { grid-template-columns: 1fr 1fr; }
+  .item-fields .if-product { grid-column: 1 / -1; }
+}
+
 /* ============================================================
    Tables
    ============================================================ */

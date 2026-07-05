@@ -47,14 +47,14 @@
 <div class="table-wrap">
 <table>
   <tr>
-    <th>Sana</th><th class="sticky-col">Mijoz</th><th>Mahsulot</th>
+    <th>Sana</th><th class="sticky-col">Mijoz</th><th>Mahsulotlar</th>
     <th class="num">Miqdor</th><th>Usul</th><th>Turi</th><th>Qabul qildi</th>
   </tr>
   {% for p in page %}
   <tr>
     <td>{{ p.date|date:"Y-m-d" }}</td>
     <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=p.sale.client.name %}<a href="{% url 'sale_detail' p.sale.pk %}">{{ p.sale.client.name }}</a></span></td>
-    <td>{{ p.sale.product.name }}</td>
+    <td>{{ p.sale.item_summary }}</td>
     <td class="num"><strong>{{ p.amount|floatformat:"0g" }}</strong></td>
     <td><span class="badge badge-neutral">{{ p.get_method_display }}</span></td>
     <td>

@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Client, Payment, Product, Sale, StockEntry
+from .models import Client, Payment, Product, Sale, SaleItem, StockEntry
 
 
 @admin.register(Client)
@@ -32,8 +32,14 @@ class PaymentAdmin(admin.ModelAdmin):
     date_hierarchy = "date"
 
 
+class SaleItemInline(admin.TabularInline):
+    model = SaleItem
+    extra = 1
+
+
 @admin.register(Sale)
 class SaleAdmin(admin.ModelAdmin):
-    list_display = ["date", "client", "product", "weight", "dimension", "price", "sales_rep"]
-    list_filter = ["dimension", "sales_rep", "date"]
+    list_display = ["date", "client", "debt_deadline", "sales_rep"]
+    list_filter = ["sales_rep", "date"]
     date_hierarchy = "date"
+    inlines = [SaleItemInline]

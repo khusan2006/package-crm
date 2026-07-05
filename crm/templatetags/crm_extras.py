@@ -3,8 +3,18 @@ import os
 from django import template
 from django.contrib.staticfiles import finders
 from django.templatetags.static import static
+from django.utils import timezone
 
 register = template.Library()
+
+
+@register.inclusion_tag("crm/_deadline_badge.html")
+def deadline_badge(deadline):
+    """Render a "X kun qoldi / X kun o'tgan / Bugun" chip for a debt deadline."""
+    if not deadline:
+        return {"days": None}
+    days = (deadline - timezone.localdate()).days
+    return {"days": days, "overdue_by": -days if days < 0 else 0}
 
 
 @register.simple_tag

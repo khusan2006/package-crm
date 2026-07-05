@@ -9,7 +9,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from accounts.models import User
-from crm.models import Client, Payment, Product, Sale, StockEntry
+from crm.models import Client, Payment, Product, Sale, SaleItem, StockEntry
 
 DEMO_USERS = [
     ("admin", "Admin", "User", User.Role.ADMIN),
@@ -101,30 +101,35 @@ class Command(BaseCommand):
 
         for _ in range(30):
             client = rng.choice(clients)
-            product = rng.choice(products)
-            dimension = Sale.Dimension.KG if rng.random() < 0.8 else Sale.Dimension.G
-            if dimension == Sale.Dimension.KG:
-                weight = Decimal(rng.randint(5, 300))
-                price = product.price + Decimal(rng.randint(-10, 25)) * 100
-            else:
-                weight = Decimal(rng.randint(200, 900))
-                price = (product.price + Decimal(rng.randint(-10, 25)) * 100) / 1000
             is_debt = rng.random() < 0.3
             sale_date = today - timedelta(days=rng.randint(0, 45))
             sale = Sale.objects.create(
                 date=sale_date,
                 client=client,
-                product=product,
-                dimension=dimension,
-                weight=weight,
-                price=price,
-                cost_price=product.cost_price_for(dimension),
                 is_debt=is_debt,
                 debt_deadline=(
                     sale_date + timedelta(days=rng.choice([15, 30, 45])) if is_debt else None
                 ),
                 sales_rep=client.owner,
             )
+            # Each receipt carries 1–4 product lines
+            for product in rng.sample(products, rng.randint(1, 4)):
+                dimension = Sale.Dimension.KG if rng.random() < 0.8 else Sale.Dimension.G
+                if dimension == Sale.Dimension.KG:
+                    weight = Decimal(rng.randint(5, 300))
+                    price = product.price + Decimal(rng.randint(-10, 25)) * 100
+                else:
+                    weight = Decimal(rng.randint(200, 900))
+                    price = (product.price + Decimal(rng.randint(-10, 25)) * 100) / 1000
+                SaleItem.objects.create(
+                    sale=sale,
+                    product=product,
+                    dimension=dimension,
+                    weight=weight,
+                    price=price,
+                    cost_price=product.cost_price_for(dimension),
+                )
+
             if not is_debt:
                 Payment.objects.create(
                     sale=sale,

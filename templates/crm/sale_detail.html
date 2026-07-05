@@ -1,8 +1,12 @@
 {% extends "base.html" %}
+{% load crm_extras %}
 {% block title %}Sotuv · {{ sale.client.name }} · Paket CRM{% endblock %}
 {% block topbar_title %}Sotuv — {{ sale.client.name }}{% endblock %}
 {% block topbar_actions %}
-{% if sale.is_debt %}<a class="btn" href="{% url 'sale_pay' sale.pk %}" data-modal>To'lov qilish</a>{% endif %}
+{% if sale.is_outstanding %}
+<a class="btn" href="{% url 'sale_mark_paid' sale.pk %}" data-modal>To'landi</a>
+<a class="btn btn-ghost" href="{% url 'sale_pay' sale.pk %}" data-modal>Qisman to'lov</a>
+{% endif %}
 <a class="btn btn-ghost" href="{% url 'sale_edit' sale.pk %}" data-modal>Tahrirlash</a>
 {% endblock %}
 {% block content %}
@@ -21,7 +25,7 @@
     <div class="kpi-head"><span class="kpi-label">Tannarx</span></div>
     <div class="kpi-value">{{ sale.total_cost|floatformat:"0g" }}<span class="unit">so'm</span></div>
   </div>
-  {% if sale.is_debt %}
+  {% if sale.is_outstanding %}
   <div class="kpi kpi--red">
     <div class="kpi-head"><span class="kpi-label">Qarz qoldig'i</span></div>
     <div class="kpi-value">{{ remaining|floatformat:"0g" }}<span class="unit">so'm</span></div>
@@ -31,29 +35,51 @@
 </div>
 
 <div class="card">
+  <h2>Mahsulotlar</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Mahsulot</th><th class="num">Og'irligi</th><th class="num">Narxi</th><th class="num">Umumiy narx</th><th class="num">Tannarx</th><th class="num">Foyda</th></tr>
+    {% for item in items %}
+    <tr>
+      <td><a href="{% url 'product_detail' item.product.pk %}">{{ item.product.name }}</a></td>
+      <td class="num">{{ item.weight|floatformat:"-3g" }} {{ item.dimension }}</td>
+      <td class="num">{{ item.price|floatformat:"0g" }}</td>
+      <td class="num">{{ item.total_price|floatformat:"0g" }}</td>
+      <td class="num">{{ item.total_cost|floatformat:"0g" }}</td>
+      <td class="num"><strong>{{ item.profit|floatformat:"0g" }}</strong></td>
+    </tr>
+    {% endfor %}
+    <tr class="row-total">
+      <td><strong>Jami</strong></td><td></td><td></td>
+      <td class="num"><strong>{{ sale.total_price|floatformat:"0g" }}</strong></td>
+      <td class="num">{{ sale.total_cost|floatformat:"0g" }}</td>
+      <td class="num"><strong>{{ sale.profit|floatformat:"0g" }}</strong></td>
+    </tr>
+  </table>
+  </div>
+</div>
+
+<div class="card">
   <h2>Ma'lumot</h2>
   <div class="detail-grid">
     <div class="detail-row"><span class="k">Sana</span><span class="v">{{ sale.date|date:"Y-m-d" }}</span></div>
     <div class="detail-row"><span class="k">Mijoz</span><span class="v">{{ sale.client.name }}</span></div>
-    <div class="detail-row"><span class="k">Mahsulot</span><span class="v"><a href="{% url 'product_detail' sale.product.pk %}">{{ sale.product.name }}</a></span></div>
     <div class="detail-row"><span class="k">Sotuvchi</span><span class="v">{{ sale.sales_rep }}</span></div>
-    <div class="detail-row"><span class="k">Og'irligi</span><span class="v">{{ sale.weight|floatformat:"-3g" }} {{ sale.dimension }}</span></div>
-    <div class="detail-row"><span class="k">Narxi (1 {{ sale.dimension }})</span><span class="v">{{ sale.price|floatformat:"0g" }} so'm</span></div>
-    <div class="detail-row"><span class="k">Tannarxi (1 {{ sale.dimension }})</span><span class="v">{{ sale.cost_price|floatformat:"0g" }} so'm</span></div>
     <div class="detail-row"><span class="k">Umumiy narx</span><span class="v">{{ sale.total_price|floatformat:"0g" }} so'm</span></div>
     <div class="detail-row"><span class="k">Umumiy tannarx</span><span class="v">{{ sale.total_cost|floatformat:"0g" }} so'm</span></div>
     <div class="detail-row"><span class="k">Foyda</span><span class="v">{{ sale.profit|floatformat:"0g" }} so'm</span></div>
     <div class="detail-row">
       <span class="k">To'lov holati</span>
       <span class="v">
-        {% if sale.is_debt %}
+        {% if sale.is_outstanding %}
           <span class="badge {% if sale.is_overdue %}badge-cancelled{% else %}badge-shipped{% endif %}">Qarz · {{ sale.debt_deadline|date:"Y-m-d" }}</span>
         {% else %}
           <span class="badge badge-paid">To'langan</span>
         {% endif %}
       </span>
     </div>
-    {% if sale.is_debt %}
+    <div class="detail-row"><span class="k">To'lov muddati</span><span class="v">{{ sale.debt_deadline|date:"Y-m-d" }}{% if sale.is_outstanding %} · {% deadline_badge sale.debt_deadline %}{% endif %}</span></div>
+    {% if sale.is_outstanding %}
     <div class="detail-row"><span class="k">To'langan</span><span class="v">{{ paid|floatformat:"0g" }} so'm</span></div>
     <div class="detail-row"><span class="k">Qoldiq</span><span class="v">{{ remaining|floatformat:"0g" }} so'm</span></div>
     {% endif %}

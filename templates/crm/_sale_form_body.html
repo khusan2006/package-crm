@@ -1,0 +1,36 @@
+{% csrf_token %}
+{% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
+
+<p>{{ form.date.label_tag }}{{ form.date }}{{ form.date.errors }}</p>
+
+<p class="qa-container">
+  {{ form.client.label_tag }}
+  <span class="field-with-add">
+    {{ form.client }}
+    <button type="button" class="btn btn-sm quick-add-toggle"
+            data-quick-url="{% url 'client_quick_create' %}"
+            data-target="{{ form.client.id_for_label }}" title="Yangi mijoz">+</button>
+  </span>
+  <span class="quick-add-panel" hidden>
+    <input type="text" class="qa-name" placeholder="Mijoz ismi">
+    <input type="text" class="qa-phone" placeholder="Telefon (ixtiyoriy)">
+    <button type="button" class="btn btn-sm qa-save">Qo'shish</button>
+    <span class="qa-error"></span>
+  </span>
+  {{ form.client.errors }}
+</p>
+
+<div class="items-block">
+  <div class="items-label">Mahsulotlar</div>
+  {{ formset.management_form }}
+  {% if formset.non_form_errors %}<div class="flash flash-error">{{ formset.non_form_errors.0 }}</div>{% endif %}
+  <div class="item-rows">
+    {% for f in formset %}{% include "crm/_sale_item_row.html" with f=f %}{% endfor %}
+  </div>
+  <template class="item-empty-tpl">{% include "crm/_sale_item_row.html" with f=formset.empty_form %}</template>
+  <button type="button" class="btn btn-sm btn-ghost item-add">+ Mahsulot qo'shish</button>
+</div>
+
+<p>{{ form.debt_deadline.label_tag }}{{ form.debt_deadline }}{{ form.debt_deadline.errors }}<span class="helptext">{{ form.debt_deadline.help_text }}</span></p>
+
+{{ products_json|json_script:"product-price-map" }}

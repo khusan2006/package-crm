@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% load crm_extras %}
+{% block title %}{{ client.name }} — qarzlar · Paket CRM{% endblock %}
+{% block topbar_title %}Qarz — {{ client.name }}{% endblock %}
+{% block topbar_actions %}
+<a class="btn btn-ghost" href="{% url 'debt_list' %}">← Qarzlar</a>
+{% endblock %}
+{% block content %}
+
+<div class="kpi-grid">
+  <div class="kpi kpi--red">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
+      <span class="kpi-label">Umumiy qarz</span>
+    </div>
+    <div class="kpi-value">{{ total|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{{ sales|length }} ta ochiq chek{% if client.phone %} · {{ client.phone }}{% endif %}</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Ochiq cheklar</h2>
+  {% if sales %}
+  <div class="table-wrap">
+  <table>
+    <tr>
+      <th>Sana</th><th>Mahsulotlar</th><th class="num">Umumiy</th>
+      <th class="num">To'langan</th><th class="num">Qoldiq</th>
+      <th>Muddat</th><th></th>
+    </tr>
+    {% for sale in sales %}
+    <tr>
+      <td><a href="{% url 'sale_detail' sale.pk %}">{{ sale.date|date:"Y-m-d" }}</a></td>
+      <td><a href="{% url 'sale_detail' sale.pk %}">{{ sale.item_summary }}</a></td>
+      <td class="num">{{ sale.total|floatformat:"0g" }}</td>
+      <td class="num">{{ sale.paid|floatformat:"0g" }}</td>
+      <td class="num"><strong>{{ sale.remaining|floatformat:"0g" }}</strong></td>
+      <td>{{ sale.debt_deadline|date:"Y-m-d" }} · {% deadline_badge sale.debt_deadline %}</td>
+      <td>
+        <div class="row-actions">
+          <a class="icon-action settle" href="{% url 'sale_mark_paid' sale.pk %}" data-modal title="To'landi (naqd, to'liq)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          </a>
+          <a class="icon-action" href="{% url 'sale_pay' sale.pk %}" data-modal title="Qisman to'lov">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg>
+          </a>
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}<p class="muted">Ochiq qarz yo'q.</p>{% endif %}
+</div>
+{% endblock %}

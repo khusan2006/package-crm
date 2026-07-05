@@ -55,19 +55,19 @@
 
 <div class="card">
   <h2>So'nggi sotuvlar</h2>
-  {% if recent_sales %}
+  {% if recent_items %}
   <div class="table-wrap">
   <table>
     <tr><th>Sana</th><th>Mijoz</th><th class="num">Og'irligi</th><th class="num">Umumiy narx</th><th>To'lov</th></tr>
-    {% for sale in recent_sales %}
+    {% for item in recent_items %}
     <tr>
-      <td>{{ sale.date|date:"Y-m-d" }}</td>
-      <td>{{ sale.client.name }}</td>
-      <td class="num">{{ sale.weight|floatformat:"-3g" }} {{ sale.dimension }}</td>
-      <td class="num">{{ sale.total|floatformat:"0g" }}</td>
+      <td><a href="{% url 'sale_detail' item.sale.pk %}">{{ item.sale.date|date:"Y-m-d" }}</a></td>
+      <td>{{ item.sale.client.name }}</td>
+      <td class="num">{{ item.weight|floatformat:"-3g" }} {{ item.dimension }}</td>
+      <td class="num">{{ item.total_price|floatformat:"0g" }}</td>
       <td>
-        {% if sale.is_debt %}
-          <span class="badge {% if sale.is_overdue %}badge-cancelled{% else %}badge-shipped{% endif %}">Qarz</span>
+        {% if item.sale.is_outstanding %}
+          <span class="badge {% if item.sale.is_overdue %}badge-cancelled{% else %}badge-shipped{% endif %}">Qarz</span>
         {% else %}
           <span class="badge badge-paid">To'langan</span>
         {% endif %}

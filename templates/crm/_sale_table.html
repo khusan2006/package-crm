@@ -1,9 +1,9 @@
+{% load crm_extras %}
 {% if sales %}
 <div class="table-wrap">
 <table>
   <tr>
-    <th>Sana</th><th class="sticky-col">Mijoz</th><th>Mahsulot</th><th>Sotuvchi</th>
-    <th class="num">Og'irligi</th><th class="num">Narxi</th>
+    <th>Sana</th><th class="sticky-col">Mijoz</th><th>Mahsulotlar</th><th>Sotuvchi</th>
     <th class="num">Umumiy narx</th><th class="num">Tannarx</th><th class="num">Foyda</th>
     <th>To'lov</th><th></th>
   </tr>
@@ -11,24 +11,26 @@
   <tr>
     <td><a href="{% url 'sale_detail' sale.pk %}">{{ sale.date|date:"Y-m-d" }}</a></td>
     <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=sale.client.name %}<a href="{% url 'sale_detail' sale.pk %}">{{ sale.client.name }}</a></span></td>
-    <td>{{ sale.product.name }}</td>
+    <td><a href="{% url 'sale_detail' sale.pk %}">{{ sale.item_summary }}</a></td>
     <td>{{ sale.sales_rep }}</td>
-    <td class="num">{{ sale.weight|floatformat:"-3g" }} {{ sale.dimension }}</td>
-    <td class="num">{{ sale.price|floatformat:"0g" }}</td>
     <td class="num">{{ sale.total|floatformat:"0g" }}</td>
     <td class="num">{{ sale.cost_total|floatformat:"0g" }}</td>
     <td class="num"><strong>{{ sale.profit_total|floatformat:"0g" }}</strong></td>
     <td>
-      {% if sale.is_debt %}
+      {% if sale.is_outstanding %}
         <span class="badge {% if sale.is_overdue %}badge-cancelled{% else %}badge-shipped{% endif %}">Qarz · {{ sale.debt_deadline|date:"Y-m-d" }}</span>
+        {% deadline_badge sale.debt_deadline %}
       {% else %}
         <span class="badge badge-paid">To'langan</span>
       {% endif %}
     </td>
     <td>
       <div class="row-actions">
-        {% if sale.is_debt %}
-        <a class="icon-action settle" href="{% url 'sale_pay' sale.pk %}" data-modal title="To'lov qilish">
+        {% if sale.is_outstanding %}
+        <a class="icon-action settle" href="{% url 'sale_mark_paid' sale.pk %}" data-modal title="To'landi (naqd, to'liq)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </a>
+        <a class="icon-action" href="{% url 'sale_pay' sale.pk %}" data-modal title="Qisman to'lov">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg>
         </a>
         {% endif %}

@@ -33,10 +33,12 @@ urlpatterns = [
     path("sales/", crm_views.sale_list, name="sale_list"),
     path("sales/export/", crm_views.sale_export, name="sale_export"),
     path("debts/", crm_views.debt_list, name="debt_list"),
+    path("debts/<int:pk>/", crm_views.debt_client, name="debt_client"),
     path("payments/", crm_views.payment_list, name="payment_list"),
     path("sales/new/", crm_views.sale_create, name="sale_create"),
     path("sales/<int:pk>/", crm_views.sale_detail, name="sale_detail"),
     path("sales/<int:pk>/edit/", crm_views.sale_edit, name="sale_edit"),
     path("sales/<int:pk>/pay/", crm_views.sale_pay, name="sale_pay"),
+    path("sales/<int:pk>/mark-paid/", crm_views.sale_mark_paid, name="sale_mark_paid"),
     path("sales/<int:pk>/delete/", crm_views.sale_delete, name="sale_delete"),
 ]

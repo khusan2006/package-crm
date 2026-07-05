@@ -3,36 +3,68 @@
 {% block topbar_title %}Asosiy{% endblock %}
 {% block content %}
 
-<div class="stat-grid">
-  <div class="stat">
-    <div class="label">Shu oy savdo</div>
-    <div class="value">{{ month.revenue|default:0|floatformat:"0g" }} so'm</div>
+<div class="kpi-grid kpi-grid--compact">
+  <div class="kpi kpi--blue">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></span>
+      <span class="kpi-label">Shu oy savdo</span>
+    </div>
+    <div class="kpi-value">{{ month.revenue|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{{ month_count }} ta sotuv</div>
   </div>
-  <div class="stat">
-    <div class="label">Shu oy foyda</div>
-    <div class="value">{{ month.profit|default:0|floatformat:"0g" }} so'm</div>
+
+  <div class="kpi kpi--green">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span>
+      <span class="kpi-label">Shu oy foyda</span>
+    </div>
+    <div class="kpi-value">{{ month.profit|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta">▲ {{ month_margin|floatformat:1 }}% foyda ulushi</div>
   </div>
-  <div class="stat">
-    <div class="label">Jami savdo</div>
-    <div class="value">{{ all_time.revenue|default:0|floatformat:"0g" }} so'm</div>
+
+  <div class="kpi kpi--blue">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg></span>
+      <span class="kpi-label">Jami savdo</span>
+    </div>
+    <div class="kpi-value">{{ all_time.revenue|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{{ all_time_count }} ta sotuv</div>
   </div>
-  <div class="stat">
-    <div class="label">Jami foyda</div>
-    <div class="value">{{ all_time.profit|default:0|floatformat:"0g" }} so'm</div>
+
+  <div class="kpi kpi--green">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>
+      <span class="kpi-label">Jami foyda</span>
+    </div>
+    <div class="kpi-value">{{ all_time.profit|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta">▲ {{ all_time_margin|floatformat:1 }}% foyda ulushi</div>
   </div>
-  <div class="stat">
-    <div class="label">Qarzlar</div>
-    <div class="value">{{ debt_total|default:0|floatformat:"0g" }} so'm</div>
-    {% if overdue_count %}<div class="sub danger">{{ overdue_count }} ta muddati o'tgan</div>{% endif %}
+
+  <div class="kpi kpi--red">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
+      <span class="kpi-label">Qarzlar</span>
+    </div>
+    <div class="kpi-value">{{ debt_total|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    {% if overdue_count %}<div class="kpi-meta">{{ overdue_count }} ta muddati o'tgan</div>{% else %}<div class="kpi-meta muted">Muddati o'tgan yo'q</div>{% endif %}
   </div>
-  <div class="stat">
-    <div class="label">Mijozlar</div>
-    <div class="value">{{ client_count }}</div>
+
+  <div class="kpi kpi--gold">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+      <span class="kpi-label">Mijozlar</span>
+    </div>
+    <div class="kpi-value">{{ client_count }}</div>
+    <div class="kpi-meta muted">Jami mijozlar</div>
   </div>
-  <div class="stat">
-    <div class="label">Kam qolgan mahsulot</div>
-    <div class="value">{{ low_stock_count }}</div>
-    {% if low_stock_count %}<div class="sub" style="color: var(--warning);"><a href="{% url 'product_list' %}">Omborni ko'rish</a></div>{% endif %}
+
+  <div class="kpi kpi--gold">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
+      <span class="kpi-label">Kam qolgan mahsulot</span>
+    </div>
+    <div class="kpi-value">{{ low_stock_count }}</div>
+    {% if low_stock_count %}<div class="kpi-meta"><a href="{% url 'product_list' %}">Omborni ko'rish</a></div>{% else %}<div class="kpi-meta muted">Hammasi yetarli</div>{% endif %}
   </div>
 </div>
 
@@ -41,17 +73,16 @@
   {% if recent_sales %}
   <div class="table-wrap">
   <table>
-    <tr><th>Sana</th><th class="sticky-col">Mijoz</th><th>Mahsulot</th><th class="num">Og'irligi</th><th class="num">Umumiy narx</th><th class="num">Foyda</th><th>To'lov</th></tr>
+    <tr><th>Sana</th><th class="sticky-col">Mijoz</th><th>Mahsulotlar</th><th class="num">Umumiy narx</th><th class="num">Foyda</th><th>To'lov</th></tr>
     {% for sale in recent_sales %}
     <tr>
       <td><a href="{% url 'sale_detail' sale.pk %}">{{ sale.date|date:"Y-m-d" }}</a></td>
       <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=sale.client.name %}<a href="{% url 'sale_detail' sale.pk %}">{{ sale.client.name }}</a></span></td>
-      <td>{{ sale.product.name }}</td>
-      <td class="num">{{ sale.weight|floatformat:"-3g" }} {{ sale.dimension }}</td>
+      <td>{{ sale.item_summary }}</td>
       <td class="num">{{ sale.total|floatformat:"0g" }}</td>
       <td class="num">{{ sale.profit_total|floatformat:"0g" }}</td>
       <td>
-        {% if sale.is_debt %}
+        {% if sale.is_outstanding %}
           <span class="badge {% if sale.is_overdue %}badge-cancelled{% else %}badge-shipped{% endif %}">Qarz · {{ sale.debt_deadline|date:"Y-m-d" }}</span>
         {% else %}
           <span class="badge badge-paid">To'langan</span>

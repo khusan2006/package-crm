@@ -266,6 +266,69 @@
     });
   })();
 
+  // Sale item formset: add / remove product line rows inside the sale form
+  (function () {
+    document.addEventListener('click', function (e) {
+      var add = e.target.closest('.item-add');
+      if (add) {
+        e.preventDefault();
+        var block = add.closest('.items-block');
+        var rows = block.querySelector('.item-rows');
+        var tpl = block.querySelector('.item-empty-tpl');
+        var total = block.querySelector('[name$="-TOTAL_FORMS"]');
+        var idx = parseInt(total.value, 10);
+        var wrap = document.createElement('div');
+        wrap.innerHTML = tpl.innerHTML.replace(/__prefix__/g, idx).trim();
+        rows.appendChild(wrap.firstElementChild);
+        total.value = idx + 1;
+        return;
+      }
+      var rm = e.target.closest('.item-remove');
+      if (rm) {
+        e.preventDefault();
+        var row = rm.closest('.item-row');
+        var container = row.parentElement;
+        var visible = Array.prototype.filter.call(
+          container.querySelectorAll('.item-row'),
+          function (r) { return r.style.display !== 'none'; }
+        );
+        if (visible.length <= 1) { return; }  // always keep at least one line
+        var del = row.querySelector('input[type=checkbox][name$="-DELETE"]');
+        if (del) { del.checked = true; row.style.display = 'none'; }
+        else { row.remove(); }
+      }
+    });
+  })();
+
+  // Sale form: auto-fill price & cost from the selected product (per unit)
+  (function () {
+    function priceMap() {
+      var el = document.getElementById('product-price-map');
+      if (!el) { return {}; }
+      try { return JSON.parse(el.textContent); } catch (e) { return {}; }
+    }
+    function fillRow(row) {
+      if (!row) { return; }
+      var prod = row.querySelector('select[name$="-product"]');
+      if (!prod || !prod.value) { return; }
+      var info = priceMap()[prod.value];
+      if (!info) { return; }
+      var dim = row.querySelector('[name$="-dimension"]');
+      var factor = (dim && dim.value === 'g') ? 1000 : 1;
+      var conv = function (v) { return (Math.round((parseFloat(v) / factor) * 1000) / 1000).toString(); };
+      var priceEl = row.querySelector('[name$="-price"]');
+      var costEl = row.querySelector('[name$="-cost_price"]');
+      if (priceEl) { priceEl.value = conv(info.price); }
+      if (costEl) { costEl.value = conv(info.cost); }
+    }
+    document.addEventListener('change', function (e) {
+      var prod = e.target.closest('select[name$="-product"]');
+      if (prod) { fillRow(prod.closest('.item-row')); return; }
+      var dim = e.target.closest('select[name$="-dimension"]');
+      if (dim) { fillRow(dim.closest('.item-row')); }
+    });
+  })();
+
   // Custom dark range calendar for the sales date control (compact ‹ date › bar)
   (function () {
     var root = document.querySelector('.daterange');

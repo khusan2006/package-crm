@@ -1,0 +1,4 @@
+{% if days is None %}<span class="daybadge">—</span>
+{% elif days < 0 %}<span class="daybadge overdue">{{ overdue_by }} kun o'tgan</span>
+{% elif days == 0 %}<span class="daybadge today">Bugun</span>
+{% else %}<span class="daybadge soon">{{ days }} kun qoldi</span>{% endif %}
