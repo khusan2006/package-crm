@@ -896,6 +896,32 @@ class AuditLogTests(BaseSetup):
         self.assertEqual(self.client.get(reverse("audit_list")).status_code, 200)
 
 
+class ReportTests(BaseSetup):
+    def test_report_is_admin_manager_only(self):
+        self.client.force_login(self.sales1)
+        self.assertEqual(self.client.get(reverse("report_view")).status_code, 403)
+        self.client.force_login(self.manager)
+        self.assertEqual(self.client.get(reverse("report_view")).status_code, 200)
+
+    def test_per_seller_breakdown_groups_by_rep(self):
+        # sales1 already owns sale1; add a second sale so their count is 2
+        make_sale(self.client1, self.sales1, self.product, weight="5")
+        self.client.force_login(self.admin)
+        rows = {r["seller"]: r for r in self.client.get(reverse("report_view")).context["per_seller"]}
+        self.assertIn(str(self.sales1), rows)
+        self.assertIn(str(self.sales2), rows)
+        self.assertGreaterEqual(rows[str(self.sales1)]["sales"], 2)
+
+    def test_payment_export_scoped_to_rep(self):
+        response = self.client.get(reverse("payment_export"))  # anonymous → login
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("payment_export"))
+        self.assertEqual(response["Content-Type"], "text/csv; charset=utf-8")
+        body = response.content.decode("utf-8")
+        self.assertIn(self.client1.name, body)      # own client's payment
+        self.assertNotIn(self.client2.name, body)   # not another rep's
+
+
 class ModalFormTests(BaseSetup):
     def _ajax(self):
         return {"HTTP_X_REQUESTED_WITH": "XMLHttpRequest"}

@@ -833,6 +833,123 @@ def audit_list(request):
     return render(request, "crm/audit_list.html", {"page": page})
 
 
+# --- Reports ------------------------------------------------------------------
+
+def _report_window(request):
+    """The report's date window (dan..gacha), defaulting to the current month."""
+    today = timezone.localdate()
+    date_from = _parse_date(request.GET.get("dan")) or today.replace(day=1)
+    date_to = _parse_date(request.GET.get("gacha")) or today
+    if date_to < date_from:
+        date_from, date_to = date_to, date_from
+    return date_from, date_to
+
+
+def _per_seller_report(date_from, date_to):
+    """Revenue/cost/profit and sale count per sales rep over the window."""
+    rows = (
+        SaleItem.objects.filter(sale__date__gte=date_from, sale__date__lte=date_to)
+        .values("sale__sales_rep")
+        .annotate(
+            revenue=Sum(REVENUE),
+            cost=Sum(COST),
+            profit=Sum(PROFIT),
+            sales=Count("sale", distinct=True),
+        )
+        .order_by("-revenue")
+    )
+    users = {u.pk: u for u in User.objects.all()}
+    result = []
+    for r in rows:
+        revenue = r["revenue"] or Decimal("0")
+        profit = r["profit"] or Decimal("0")
+        user = users.get(r["sale__sales_rep"])
+        result.append({
+            "seller": str(user) if user else "—",
+            "sales": r["sales"],
+            "revenue": revenue,
+            "cost": r["cost"] or Decimal("0"),
+            "profit": profit,
+            "margin": (profit / revenue * 100) if revenue else 0,
+        })
+    return result
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def report_view(request):
+    """Period P&L and per-seller performance (admin/manager only)."""
+    date_from, date_to = _report_window(request)
+    items = SaleItem.objects.filter(sale__date__gte=date_from, sale__date__lte=date_to)
+    totals = items.aggregate(revenue=Sum(REVENUE), cost=Sum(COST), profit=Sum(PROFIT))
+    revenue = totals["revenue"] or Decimal("0")
+    profit = totals["profit"] or Decimal("0")
+    received = Payment.objects.filter(
+        date__gte=date_from, date__lte=date_to
+    ).aggregate(net=Sum(PAYMENT_NET))
+    return render(request, "crm/report.html", {
+        "date_from": date_from,
+        "date_to": date_to,
+        "revenue": revenue,
+        "cost": totals["cost"] or Decimal("0"),
+        "profit": profit,
+        "margin": (profit / revenue * 100) if revenue else 0,
+        "received_net": received["net"] or Decimal("0"),
+        "sales_count": items.values("sale").distinct().count(),
+        "per_seller": _per_seller_report(date_from, date_to),
+        "export_qs": request.GET.urlencode(),
+    })
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def report_export(request):
+    date_from, date_to = _report_window(request)
+    response = HttpResponse(content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = 'attachment; filename="hisobot.csv"'
+    response.write("﻿")  # UTF-8 BOM so Excel reads Uzbek text correctly
+    writer = csv.writer(response)
+    writer.writerow(["Sotuvchi", "Sotuvlar", "Tushum", "Tannarx", "Foyda", "Marja %"])
+    for r in _per_seller_report(date_from, date_to):
+        writer.writerow([
+            r["seller"], r["sales"], f"{r['revenue']:.2f}",
+            f"{r['cost']:.2f}", f"{r['profit']:.2f}", f"{r['margin']:.1f}",
+        ])
+    return response
+
+
+def payment_export(request):
+    """CSV of payments, scoped by role and filtered by the same date window."""
+    payments = Payment.objects.select_related("sale", "sale__client", "created_by")
+    if not request.user.can_see_all_records:
+        payments = payments.filter(sale__sales_rep=request.user)
+    date_from = _parse_date(request.GET.get("dan"))
+    date_to = _parse_date(request.GET.get("gacha"))
+    if date_from:
+        payments = payments.filter(date__gte=date_from)
+    if date_to:
+        payments = payments.filter(date__lte=date_to)
+    payments = payments.order_by("-date", "-created_at")
+
+    response = HttpResponse(content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = 'attachment; filename="tolovlar.csv"'
+    response.write("﻿")
+    writer = csv.writer(response)
+    writer.writerow([
+        "Sana", "Mijoz", "Miqdor", "Komissiya", "Qo'lga tushgan", "Usul", "Turi", "Qabul qildi",
+    ])
+    for p in payments:
+        writer.writerow([
+            p.date.isoformat(),
+            p.sale.client.name,
+            f"{p.amount:.2f}",
+            f"{p.commission:.2f}",
+            f"{p.net_amount:.2f}",
+            p.get_method_display(),
+            p.get_kind_display(),
+            str(p.created_by),
+        ])
+    return response
+
+
 def sale_export(request):
     base = (
         Sale.objects.visible_to(request.user)
