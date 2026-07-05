@@ -812,6 +812,47 @@ class QuickAddClientTests(BaseSetup):
         self.assertEqual(self.client.get(reverse("client_quick_create")).status_code, 405)
 
 
+class ClientDuplicateTests(BaseSetup):
+    # BaseSetup: client1 "Mijoz A" (owner sales1), client2 "Mijoz B" (owner sales2)
+
+    def test_create_blocks_same_name(self):
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("client_create"), {"name": "Mijoz A"})
+        self.assertEqual(Client.objects.filter(name="Mijoz A").count(), 1)
+
+    def test_create_allows_same_name_with_override(self):
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("client_create"), {"name": "Mijoz A", "allow_duplicate": "on"})
+        self.assertEqual(Client.objects.filter(name="Mijoz A").count(), 2)
+
+    def test_sales_duplicate_scoped_to_own_clients(self):
+        # "Mijoz B" belongs to sales2; sales1 doesn't see it, so no clash
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("client_create"), {"name": "Mijoz B"})
+        self.assertEqual(Client.objects.filter(name="Mijoz B").count(), 2)
+
+    def test_manager_duplicate_checks_all_clients(self):
+        self.client.force_login(self.manager)
+        self.client.post(reverse("client_create"), {"name": "Mijoz A"})
+        self.assertEqual(Client.objects.filter(name="Mijoz A").count(), 1)  # blocked
+
+    def test_quick_create_reports_duplicate(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("client_quick_create"), {"name": "Mijoz A"})
+        self.assertEqual(response.status_code, 409)
+        data = response.json()
+        self.assertTrue(data["duplicate"])
+        self.assertEqual(data["existing"]["id"], self.client1.pk)
+
+    def test_quick_create_override_creates_duplicate(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("client_quick_create"), {"name": "Mijoz A", "allow_duplicate": "1"}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Client.objects.filter(name="Mijoz A").count(), 2)
+
+
 class ModalFormTests(BaseSetup):
     def _ajax(self):
         return {"HTTP_X_REQUESTED_WITH": "XMLHttpRequest"}

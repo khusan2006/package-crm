@@ -234,18 +234,30 @@
       var name = nameEl.value.trim();
       errEl.textContent = '';
       if (!name) { errEl.textContent = 'Ism kiriting'; nameEl.focus(); return; }
+      // A duplicate warning only counts for the exact name it was shown for
+      if (saveBtn.dataset.dupName !== name) { saveBtn.dataset.dupOk = ''; }
       var form = saveBtn.closest('form');
       var token = form.querySelector('[name=csrfmiddlewaretoken]').value;
       saveBtn.disabled = true;
       fetch(toggle.getAttribute('data-quick-url'), {
         method: 'POST',
         headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ name: name, phone: phoneEl.value.trim(), csrfmiddlewaretoken: token }),
+        body: new URLSearchParams({ name: name, phone: phoneEl.value.trim(), csrfmiddlewaretoken: token, allow_duplicate: saveBtn.dataset.dupOk || '' }),
       }).then(function (r) {
         return r.json().then(function (d) { return { ok: r.ok, data: d }; });
       }).then(function (res) {
         saveBtn.disabled = false;
-        if (!res.ok) { errEl.textContent = res.data.error || 'Xatolik'; return; }
+        if (!res.ok) {
+          if (res.data.duplicate) {
+            saveBtn.dataset.dupOk = '1';
+            saveBtn.dataset.dupName = name;
+            errEl.textContent = (res.data.error || 'Bu nomli mijoz bor') + " — baribir qo'shish uchun yana bosing.";
+          } else {
+            errEl.textContent = res.data.error || 'Xatolik';
+          }
+          return;
+        }
+        saveBtn.dataset.dupOk = '';
         select.add(new Option(res.data.text, res.data.id, true, true));
         panel.hidden = true;
         nameEl.value = '';

@@ -267,7 +267,7 @@ def client_list(request):
 
 
 def client_create(request):
-    form = ClientForm(request.POST or None)
+    form = ClientForm(request.POST or None, user=request.user)
     if request.method == "POST":
         if form.is_valid():
             client = form.save(commit=False)
@@ -280,12 +280,27 @@ def client_create(request):
 
 
 def client_quick_create(request):
-    """Create a client inline (from the sale form) and return it as JSON."""
+    """Create a client inline (from the sale form) and return it as JSON.
+
+    Guards against accidental duplicates: an existing same-name client is
+    reported back (409) so the caller can reuse it, unless allow_duplicate is set.
+    """
     if request.method != "POST":
         return JsonResponse({"error": "POST kerak"}, status=405)
     name = request.POST.get("name", "").strip()
     if not name:
         return JsonResponse({"error": "Ism kiritilishi shart"}, status=400)
+    if not request.POST.get("allow_duplicate"):
+        dup = Client.find_duplicate(request.user, name)
+        if dup:
+            return JsonResponse(
+                {
+                    "error": f"“{dup.name}” allaqachon bor",
+                    "duplicate": True,
+                    "existing": {"id": dup.pk, "text": dup.name},
+                },
+                status=409,
+            )
     client = Client.objects.create(
         name=name, phone=request.POST.get("phone", "").strip(), owner=request.user
     )
@@ -294,7 +309,9 @@ def client_quick_create(request):
 
 def client_edit(request, pk):
     client = get_object_or_404(_visible_clients(request.user), pk=pk)
-    form = ClientForm(request.POST or None, instance=client)
+    form = ClientForm(
+        request.POST or None, instance=client, user=request.user, check_duplicates=False
+    )
     if request.method == "POST" and form.is_valid():
         form.save()
         messages.success(request, f"“{client.name}” mijozi yangilandi.")

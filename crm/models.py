@@ -53,6 +53,18 @@ class Client(models.Model):
         verbose_name = "Mijoz"
         verbose_name_plural = "Mijozlar"
 
+    @classmethod
+    def find_duplicate(cls, user, name, exclude_pk=None):
+        """An existing client with the same name (case-insensitive), within the
+        user's visible scope. Sales users only clash with their own clients;
+        admins/managers clash with anyone's. Returns the match or None."""
+        qs = cls.objects.filter(name__iexact=(name or "").strip())
+        if exclude_pk:
+            qs = qs.exclude(pk=exclude_pk)
+        if user is not None and not user.can_see_all_records:
+            qs = qs.filter(owner=user)
+        return qs.first()
+
     def __str__(self):
         return self.name
 

@@ -11,10 +11,37 @@ DEFAULT_DEBT_DAYS = 7
 
 
 class ClientForm(forms.ModelForm):
+    allow_duplicate = forms.BooleanField(
+        label="Bir xil nomli mijoz bo'lsa ham, baribir qo'shilsin",
+        required=False,
+    )
+
     class Meta:
         model = Client
         fields = ["name", "company", "email", "phone", "address", "notes"]
         widgets = {"notes": forms.Textarea(attrs={"rows": 3})}
+
+    def __init__(self, *args, user=None, check_duplicates=True, **kwargs):
+        self.user = user
+        self.check_duplicates = check_duplicates
+        super().__init__(*args, **kwargs)
+        # The override checkbox is only meaningful when creating a new client
+        if not check_duplicates:
+            self.fields.pop("allow_duplicate", None)
+
+    def clean(self):
+        cleaned = super().clean()
+        if not self.check_duplicates or cleaned.get("allow_duplicate"):
+            return cleaned
+        match = Client.find_duplicate(
+            self.user, cleaned.get("name", ""), exclude_pk=self.instance.pk
+        )
+        if match:
+            raise forms.ValidationError(
+                f"“{match.name}” nomli mijoz allaqachon bor. Agar bu boshqa mijoz "
+                f"bo'lsa, quyidagi katakchani belgilab qayta saqlang."
+            )
+        return cleaned
 
 
 class ProductForm(forms.ModelForm):
