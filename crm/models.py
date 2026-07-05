@@ -141,13 +141,21 @@ def _sale_item_sum(expr):
     )
 
 
+# A payment's net contribution to the debt: the gross paid minus the bank fee.
+# Cash/card carry no commission, so net == amount there.
+PAYMENT_NET = ExpressionWrapper(F("amount") - F("commission"), output_field=MONEY)
+
+
 def _sale_paid_sum():
-    """A subquery summing the payments recorded against one sale."""
+    """A subquery summing the net payments credited against one sale.
+
+    Only the net (amount − commission) reduces the debt — on a bank transfer the
+    client bears the fee, so a 100k transfer with a 5k fee clears only 95k."""
     return Coalesce(
         Subquery(
             Payment.objects.filter(sale=OuterRef("pk"))
             .values("sale")
-            .annotate(s=Sum("amount"))
+            .annotate(s=Sum(PAYMENT_NET))
             .values("s"),
             output_field=MONEY,
         ),
@@ -230,7 +238,8 @@ class Sale(models.Model):
 
     @property
     def paid_amount(self):
-        return self.payments.aggregate(s=Sum("amount"))["s"] or Decimal("0")
+        # Net of bank fees: only (amount − commission) counts toward the debt.
+        return self.payments.aggregate(s=Sum(PAYMENT_NET))["s"] or Decimal("0")
 
     @property
     def debt_remaining(self):
@@ -346,8 +355,8 @@ class Payment(models.Model):
     method = models.CharField(
         "To'lov usuli", max_length=8, choices=Method.choices, default=Method.CASH
     )
-    # Bank fee withheld on a transfer: the debt is credited the full amount, but
-    # only (amount − commission) actually lands in the till.
+    # Bank fee withheld on a transfer. Only the net (amount − commission) both
+    # lands in the till AND reduces the client's debt — the client bears the fee.
     commission = models.DecimalField(
         "Bank komissiyasi (so'm)", max_digits=18, decimal_places=2, default=0
     )
@@ -375,7 +384,8 @@ class Payment(models.Model):
 
     @property
     def net_amount(self):
-        """What actually reaches the till after the bank fee."""
+        """What actually reaches the till after the bank fee — and, since the
+        client bears the fee, also the amount credited against their debt."""
         return self.amount - (self.commission or Decimal("0"))
 
     def __str__(self):

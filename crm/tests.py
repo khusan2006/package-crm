@@ -594,8 +594,8 @@ class PaymentTests(BaseSetup):
         self.assertEqual(payment.commission, Decimal("3000.00"))  # 200000 × 1.5%
         self.assertEqual(payment.net_amount, Decimal("197000.00"))  # what hits the till
         self.assertEqual(payment.note, "Bank o'tkazma")
-        # The debt is credited the FULL amount paid, not the net after the fee
-        self.assertEqual(sale.debt_remaining, Decimal("40000"))
+        # Only the net (amount − commission) reduces the debt; the client bears the fee
+        self.assertEqual(sale.debt_remaining, Decimal("43000"))  # 240000 − 197000
 
     def test_commission_ignored_for_non_transfer(self):
         sale = self._debt_sale()
@@ -607,6 +607,37 @@ class PaymentTests(BaseSetup):
         payment = sale.payments.get()
         self.assertEqual(payment.commission, Decimal("0"))
         self.assertEqual(payment.commission_percent, Decimal("0"))
+
+    def test_transfer_grossed_up_settles_debt(self):
+        # A transfer can be grossed up over the balance so the net clears it:
+        # 240000 / 0.96 = 250000, a 4% fee of 10000 leaves 240000 net.
+        sale = self._debt_sale()  # 240000
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]),
+            {"amount": "250000", "method": "transfer", "commission_percent": "4"},
+        )
+        sale.refresh_from_db()
+        self.assertTrue(sale.is_paid)
+        payment = sale.payments.get()
+        self.assertEqual(payment.commission, Decimal("10000.00"))
+        self.assertEqual(payment.net_amount, Decimal("240000.00"))
+        self.assertEqual(sale.debt_remaining, Decimal("0"))
+
+    def test_client_debt_pay_transfer_credits_net(self):
+        # 200000 transfer at 5% → 10000 fee, 190000 net credited to the debt.
+        sale = self._debt_sale()  # 240000
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("client_debt_pay", args=[self.client1.pk]),
+            {"amount": "200000", "method": "transfer", "commission_percent": "5"},
+        )
+        sale.refresh_from_db()
+        payment = sale.payments.get()
+        self.assertEqual(payment.amount, Decimal("200000.00"))
+        self.assertEqual(payment.commission, Decimal("10000.00"))
+        self.assertEqual(payment.net_amount, Decimal("190000.00"))
+        self.assertEqual(sale.debt_remaining, Decimal("50000"))  # 240000 − 190000
 
     def test_client_debt_pay_distributes_fifo(self):
         today = timezone.localdate()
@@ -662,6 +693,102 @@ class PaymentTests(BaseSetup):
         rows = list(self.client.get(reverse("payment_list")).context["page"].object_list)
         self.assertIn(mine, [p.sale for p in rows])
         self.assertNotIn(others, [p.sale for p in rows])
+
+
+class SaleIntegrityTests(BaseSetup):
+    def _paid_sale(self):
+        # make_sale with is_debt=False books a full cash payment (240000)
+        return make_sale(self.client1, self.sales1, self.product)
+
+    def _edit_post(self, sale, weight):
+        item = sale.items.get()
+        return {
+            "date": sale.date.isoformat(),
+            "client": self.client1.pk,
+            "debt_deadline": sale.debt_deadline.isoformat(),
+            "items-TOTAL_FORMS": "1",
+            "items-INITIAL_FORMS": "1",
+            "items-MIN_NUM_FORMS": "1",
+            "items-MAX_NUM_FORMS": "1000",
+            "items-0-id": item.pk,
+            "items-0-product": self.product.pk,
+            "items-0-dimension": "kg",
+            "items-0-weight": weight,
+            "items-0-price": "24000",
+            "items-0-cost_price": "18000",
+        }
+
+    def test_cannot_delete_sale_with_payments(self):
+        sale = self._paid_sale()
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("sale_delete", args=[sale.pk]))
+        self.assertTrue(Sale.objects.filter(pk=sale.pk).exists())
+
+    def test_can_delete_sale_without_payments(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("sale_delete", args=[sale.pk]))
+        self.assertFalse(Sale.objects.filter(pk=sale.pk).exists())
+
+    def test_edit_cannot_drop_total_below_paid(self):
+        sale = self._paid_sale()  # 240000 paid in full
+        self.client.force_login(self.sales1)
+        # 5 kg × 24000 = 120000, below the 240000 already paid — must be rejected
+        response = self.client.post(
+            reverse("sale_edit", args=[sale.pk]), self._edit_post(sale, "5")
+        )
+        self.assertEqual(response.status_code, 200)  # re-rendered with error
+        self.assertEqual(sale.items.get().weight, Decimal("10"))  # unchanged
+
+    def test_edit_allowed_when_total_stays_at_or_above_paid(self):
+        sale = self._paid_sale()
+        self.client.force_login(self.sales1)
+        # 12 kg × 24000 = 288000, above the 240000 paid — allowed
+        self.client.post(reverse("sale_edit", args=[sale.pk]), self._edit_post(sale, "12"))
+        self.assertEqual(sale.items.get().weight, Decimal("12"))
+
+    def test_sale_rejects_zero_weight(self):
+        self.client.force_login(self.sales1)
+        before = Sale.objects.count()
+        data = sale_post(self.client1.pk, [one_item(self.product, weight="0")])
+        self.client.post(reverse("sale_create"), data)
+        self.assertEqual(Sale.objects.count(), before)
+
+    def test_sale_rejects_zero_price(self):
+        self.client.force_login(self.sales1)
+        before = Sale.objects.count()
+        data = sale_post(self.client1.pk, [one_item(self.product, weight="5", price="0")])
+        self.client.post(reverse("sale_create"), data)
+        self.assertEqual(Sale.objects.count(), before)
+
+
+class PaymentVoidTests(BaseSetup):
+    def test_manager_can_void_payment_and_restore_debt(self):
+        sale = make_sale(self.client1, self.sales1, self.product)  # paid 240000
+        payment = sale.payments.get()
+        self.client.force_login(self.manager)
+        self.client.post(reverse("payment_delete", args=[payment.pk]))
+        sale.refresh_from_db()
+        self.assertFalse(Payment.objects.filter(pk=payment.pk).exists())
+        self.assertTrue(sale.is_outstanding)
+        self.assertEqual(sale.debt_remaining, Decimal("240000"))
+
+    def test_sales_cannot_void_payment(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        payment = sale.payments.get()
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("payment_delete", args=[payment.pk]))
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(Payment.objects.filter(pk=payment.pk).exists())
+
+    def test_void_frees_sale_for_deletion(self):
+        # The delete guard blocks a paid sale; voiding its payment unblocks it
+        sale = make_sale(self.client1, self.sales1, self.product)
+        payment = sale.payments.get()
+        self.client.force_login(self.manager)
+        self.client.post(reverse("payment_delete", args=[payment.pk]))
+        self.client.post(reverse("sale_delete", args=[sale.pk]))
+        self.assertFalse(Sale.objects.filter(pk=sale.pk).exists())
 
 
 class QuickAddClientTests(BaseSetup):

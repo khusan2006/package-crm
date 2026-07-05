@@ -27,6 +27,7 @@ from .forms import (
 )
 from .models import (
     COST,
+    PAYMENT_NET,
     PROFIT,
     REVENUE,
     Client,
@@ -499,10 +500,13 @@ def _active_filter_chips(request, filters, clients, products, reps):
 
 
 def _outstanding_balance(sales):
-    """Total still owed across the given sales: item revenue − payments."""
+    """Total still owed across the given sales: item revenue − net payments.
+
+    Payments are netted of bank fees (amount − commission), matching how each
+    sale's remaining balance is computed."""
     pks = sales.values("pk")
     revenue = SaleItem.objects.filter(sale__in=pks).aggregate(v=Sum(REVENUE))["v"] or 0
-    paid = Payment.objects.filter(sale__in=pks).aggregate(v=Sum("amount"))["v"] or 0
+    paid = Payment.objects.filter(sale__in=pks).aggregate(v=Sum(PAYMENT_NET))["v"] or 0
     return revenue - paid
 
 
@@ -646,39 +650,48 @@ def _client_outstanding_fifo(request, client):
 
 
 def _distribute_debt_payment(sales, amount, method, percent, note, user):
-    """Spread `amount` across FIFO-ordered debts, oldest first.
+    """Spread a lump payment across FIFO-ordered debts, oldest first.
 
-    Each receipt is credited up to its outstanding balance; the last one
-    reached may receive a partial payment. Returns the receipts touched.
+    `amount` is the gross the client handed over; on a bank transfer the bank
+    withholds `percent`, so only the net (amount − commission) reduces the debt.
+    Each receipt is credited its net share up to its outstanding balance; the
+    last one reached may receive a partial payment. Returns the receipts touched.
     """
     is_transfer = method == Payment.Method.TRANSFER
-    left = amount
+    percent = percent if is_transfer else Decimal("0")
+    commission_total = (amount * percent / Decimal("100")).quantize(
+        Decimal("0.01"), ROUND_HALF_UP
+    )
+    net_left = amount - commission_total
     touched = 0
     with transaction.atomic():
         for sale in sales:
-            if left <= 0:
+            if net_left <= 0:
                 break
             due = sale.remaining or Decimal("0")
-            chunk = min(left, due)
-            if chunk <= 0:
+            chunk_net = min(net_left, due)
+            if chunk_net <= 0:
                 continue
-            commission = (
-                (chunk * percent / Decimal("100")).quantize(Decimal("0.01"), ROUND_HALF_UP)
-                if is_transfer
-                else Decimal("0")
-            )
+            # Gross this slice back up so the recorded fee stays at `percent`;
+            # commission is the exact difference, so the net credited is precise.
+            if is_transfer and percent < Decimal("100"):
+                chunk_gross = (
+                    chunk_net / (Decimal("1") - percent / Decimal("100"))
+                ).quantize(Decimal("0.01"), ROUND_HALF_UP)
+            else:
+                chunk_gross = chunk_net
             Payment.objects.create(
                 sale=sale,
-                amount=chunk,
+                amount=chunk_gross,
                 method=method,
-                commission=commission,
-                commission_percent=percent if is_transfer else Decimal("0"),
+                commission=chunk_gross - chunk_net,
+                commission_percent=percent,
                 note=note,
                 kind=Payment.Kind.DEBT,
                 date=timezone.localdate(),
                 created_by=user,
             )
-            left -= chunk
+            net_left -= chunk_net
             touched += 1
     return touched
 
@@ -755,6 +768,30 @@ def payment_list(request):
         request,
         "crm/payment_list.html",
         {"page": page, "totals": totals, "date_from": date_from, "date_to": date_to},
+    )
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def payment_delete(request, pk):
+    """Void a mistaken payment by removing it. The debt it covered is restored
+    automatically (remaining is derived). Admin/manager only — sellers must not
+    be able to erase money records."""
+    payment = get_object_or_404(
+        Payment.objects.select_related("sale", "sale__client"), pk=pk
+    )
+    if request.method == "POST":
+        sale_pk = payment.sale_id
+        payment.delete()
+        messages.success(request, "To'lov o'chirildi — qarz qayta tiklandi.")
+        return form_reload(request, reverse("sale_detail", args=[sale_pk]))
+    return render_confirm(
+        request,
+        "To'lovni bekor qilish",
+        f"“{payment.sale.client.name}” — {payment.amount:,.0f} so'm to'lov "
+        f"({payment.get_method_display()}) o'chiriladi va qarz qayta tiklanadi. "
+        f"Davom etasizmi?",
+        "Ha, o'chirish",
+        confirm_class="btn-danger",
     )
 
 
@@ -856,12 +893,37 @@ def sale_create(request):
     return _render_sale_form(request, form, formset, "Yangi sotuv")
 
 
+def _formset_total(formset):
+    """Revenue (weight × price) of the formset's surviving (non-deleted) items."""
+    total = Decimal("0")
+    for f in formset.forms:
+        cleaned = getattr(f, "cleaned_data", None)
+        if not cleaned or cleaned.get("DELETE"):
+            continue
+        weight = cleaned.get("weight")
+        price = cleaned.get("price")
+        if weight is not None and price is not None:
+            total += weight * price
+    return total
+
+
 def sale_edit(request, pk):
     sale = get_object_or_404(Sale.objects.visible_to(request.user), pk=pk)
     form = SaleForm(request.POST or None, instance=sale, user=request.user)
     formset = SaleItemFormSet(request.POST or None, instance=sale, prefix="items")
     if request.method == "POST":
         if form.is_valid() and formset.is_valid():
+            # An edit must not drop the total below what's already been paid, or
+            # the sale would read as over-paid (a negative balance) with no refund.
+            paid = sale.paid_amount
+            new_total = _formset_total(formset)
+            if new_total < paid:
+                form.add_error(
+                    None,
+                    f"Jami summa ({new_total:,.0f} so'm) allaqachon to'langan "
+                    f"puldan ({paid:,.0f} so'm) kam bo'lishi mumkin emas.",
+                )
+                return _render_sale_form(request, form, formset, "Sotuvni tahrirlash", invalid=True)
             sale = form.save()
             formset.save()
             messages.success(request, "Sotuv yangilandi.")
@@ -937,6 +999,15 @@ def sale_pay(request, pk):
 
 def sale_delete(request, pk):
     sale = get_object_or_404(Sale.objects.visible_to(request.user), pk=pk)
+    # A sale with recorded payments must not be deleted — it would silently wipe
+    # money already booked in the till/ledger. Reverse the payments first.
+    if sale.payments.exists():
+        messages.error(
+            request,
+            "Bu sotuvni o'chirib bo'lmaydi — unga to'lovlar yozilgan. "
+            "Avval to'lovlarni bekor qiling.",
+        )
+        return form_reload(request, reverse("sale_list"))
     if request.method == "POST":
         sale.delete()
         messages.success(request, "Sotuv o'chirildi.")
