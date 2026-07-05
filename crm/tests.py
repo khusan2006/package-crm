@@ -243,6 +243,21 @@ class AuthTests(BaseSetup):
             self.client.force_login(user)
             self.assertEqual(self.client.get(reverse("dashboard")).status_code, 200)
 
+    def test_dashboard_provides_chart_data(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("dashboard"))
+        ctx = response.context
+        self.assertEqual(len(ctx["monthly"]), 6)              # 6-month trend
+        self.assertIn("cost_pct", ctx["monthly"][0])
+        self.assertEqual(len(ctx["donut"]["segments"]), 3)    # cash / card / transfer
+        self.assertIsNotNone(ctx["donut"]["grand_short"])
+        self.assertTrue(all(hasattr(c, "pct") for c in ctx["top_clients"]))
+        # Numbers inside style/SVG attributes must stay unlocalised — a comma
+        # decimal separator silently breaks CSS lengths and SVG dash arrays.
+        body = response.content.decode()
+        self.assertNotRegex(body, r"(?:height|width):\s*\d+,\d")
+        self.assertNotRegex(body, r'stroke-dash(?:array|offset)="[^"]*,')
+
 
 class DayViewTests(BaseSetup):
     def test_defaults_to_today(self):
@@ -286,6 +301,25 @@ class DayViewTests(BaseSetup):
         self.assertIn(self.sale1, sales)     # today, within range
         self.assertNotIn(old, sales)         # 20 days ago, outside range
         self.assertFalse(response.context["is_single_day"])
+
+    def test_filter_ignores_date_range(self):
+        # An out-of-window sale must surface once a content filter is applied
+        old = make_sale(
+            self.client1, self.sales1, self.product,
+            date=timezone.localdate() - timedelta(days=30),
+        )
+        self.client.force_login(self.sales1)
+        default = self.client.get(reverse("sale_list"))
+        self.assertNotIn(old, list(default.context["page"].object_list))
+        self.assertFalse(default.context["has_filters"])
+
+        filtered = self.client.get(reverse("sale_list"), {"client": self.client1.pk})
+        self.assertIn(old, list(filtered.context["page"].object_list))  # date window bypassed
+        self.assertTrue(filtered.context["has_filters"])
+        chips = filtered.context["active_filters"]
+        self.assertEqual(len(chips), 1)
+        self.assertEqual(chips[0]["label"], "Mijoz")
+        self.assertEqual(chips[0]["value"], self.client1.name)
 
 
 class StockTests(BaseSetup):
@@ -540,6 +574,73 @@ class PaymentTests(BaseSetup):
         sale.refresh_from_db()
         self.assertTrue(sale.is_paid)
         self.assertEqual(sale.payments.get().kind, "debt")
+
+    def test_transfer_payment_records_commission_from_percent(self):
+        sale = self._debt_sale()  # 240000 debt
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]),
+            {
+                "amount": "200000",
+                "method": "transfer",
+                "commission_percent": "1.5",
+                "note": "Bank o'tkazma",
+            },
+        )
+        sale.refresh_from_db()
+        payment = sale.payments.get()
+        self.assertEqual(payment.method, "transfer")
+        self.assertEqual(payment.commission_percent, Decimal("1.5"))
+        self.assertEqual(payment.commission, Decimal("3000.00"))  # 200000 × 1.5%
+        self.assertEqual(payment.net_amount, Decimal("197000.00"))  # what hits the till
+        self.assertEqual(payment.note, "Bank o'tkazma")
+        # The debt is credited the FULL amount paid, not the net after the fee
+        self.assertEqual(sale.debt_remaining, Decimal("40000"))
+
+    def test_commission_ignored_for_non_transfer(self):
+        sale = self._debt_sale()
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]),
+            {"amount": "100000", "method": "cash", "commission_percent": "5"},
+        )
+        payment = sale.payments.get()
+        self.assertEqual(payment.commission, Decimal("0"))
+        self.assertEqual(payment.commission_percent, Decimal("0"))
+
+    def test_client_debt_pay_distributes_fifo(self):
+        today = timezone.localdate()
+        older = make_sale(
+            self.client1, self.sales1, self.product, is_debt=True, date=today - timedelta(days=10)
+        )
+        newer = make_sale(
+            self.client1, self.sales1, self.product, is_debt=True, date=today - timedelta(days=2)
+        )
+        self.client.force_login(self.sales1)
+        # 300000 clears the older 240000 debt in full, then 60000 of the newer
+        self.client.post(
+            reverse("client_debt_pay", args=[self.client1.pk]),
+            {"amount": "300000", "method": "cash"},
+        )
+        older.refresh_from_db()
+        newer.refresh_from_db()
+        self.assertTrue(older.is_paid)  # oldest debt cleared first (FIFO)
+        self.assertEqual(older.paid_amount, Decimal("240000"))
+        self.assertEqual(newer.debt_remaining, Decimal("180000"))  # partially paid
+        self.assertEqual(older.payments.filter(kind="debt").count(), 1)
+        self.assertEqual(newer.payments.filter(kind="debt").count(), 1)
+
+    def test_client_debt_pay_capped_at_total(self):
+        sale = self._debt_sale()  # 240000
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("client_debt_pay", args=[self.client1.pk]),
+            {"amount": "999999999", "method": "cash"},
+        )
+        self.assertEqual(response.status_code, 200)  # re-rendered with error
+        sale.refresh_from_db()
+        self.assertTrue(sale.is_outstanding)
+        self.assertEqual(sale.payments.count(), 0)
 
     def test_payment_cannot_exceed_remaining(self):
         sale = self._debt_sale()

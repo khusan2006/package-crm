@@ -494,6 +494,30 @@
     if (document.readyState !== 'loading') { recalcAll(); }
     else { document.addEventListener('DOMContentLoaded', recalcAll); }
   })();
+
+  // Slide-in filter drawer (Sotuvlar page)
+  (function () {
+    var drawer = document.getElementById('filter-drawer');
+    if (!drawer) { return; }
+    var backdrop = document.querySelector('.drawer-backdrop');
+    function openDrawer() {
+      drawer.classList.add('open');
+      drawer.setAttribute('aria-hidden', 'false');
+      if (backdrop) { backdrop.hidden = false; }
+    }
+    function closeDrawer() {
+      drawer.classList.remove('open');
+      drawer.setAttribute('aria-hidden', 'true');
+      if (backdrop) { backdrop.hidden = true; }
+    }
+    document.addEventListener('click', function (e) {
+      if (e.target.closest('[data-filter-open]')) { e.preventDefault(); openDrawer(); }
+      else if (e.target.closest('[data-filter-close]')) { e.preventDefault(); closeDrawer(); }
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && drawer.classList.contains('open')) { closeDrawer(); }
+    });
+  })();
 </script>
 </body>
 </html>

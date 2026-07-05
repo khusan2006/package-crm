@@ -1,10 +1,13 @@
 import csv
+import math
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.contrib import messages
 from django.core.paginator import Paginator
+from django.db import transaction
 from django.db.models import Count, F, ProtectedError, Q, Sum
+from django.db.models.functions import TruncMonth
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -76,6 +79,108 @@ def _parse_date(value):
 
 # --- Dashboard ---------------------------------------------------------------
 
+UZ_MONTHS_SHORT = ["Yan", "Fev", "Mar", "Apr", "May", "Iyn", "Iyl", "Avg", "Sen", "Okt", "Noy", "Dek"]
+
+
+def _monthly_series(sales, months=6):
+    """Revenue / cost / profit for the last `months` months (oldest first), with
+    each bar's cost & profit heights as a percentage of the tallest bar."""
+    today = timezone.localdate()
+    buckets = []
+    y, m = today.year, today.month
+    for _ in range(months):
+        buckets.append((y, m))
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    buckets.reverse()
+    start = date(buckets[0][0], buckets[0][1], 1)
+    rows = (
+        SaleItem.objects.filter(sale__in=sales, sale__date__gte=start)
+        .annotate(mon=TruncMonth("sale__date"))
+        .values("mon")
+        .annotate(revenue=Sum(REVENUE), cost=Sum(COST), profit=Sum(PROFIT))
+    )
+    by_month = {(r["mon"].year, r["mon"].month): r for r in rows}
+    data = []
+    for yy, mm in buckets:
+        row = by_month.get((yy, mm)) or {}
+        data.append({
+            "label": UZ_MONTHS_SHORT[mm - 1],
+            "revenue": row.get("revenue") or Decimal("0"),
+            "cost": row.get("cost") or Decimal("0"),
+            "profit": row.get("profit") or Decimal("0"),
+        })
+    peak = max((d["revenue"] for d in data), default=Decimal("0")) or Decimal("1")
+    for d in data:
+        d["cost_pct"] = round(float(d["cost"] / peak * 100), 2)
+        d["profit_pct"] = round(max(float(d["profit"] / peak * 100), 0.0), 2)
+    return data
+
+
+def _short_money(value):
+    """Compact so'm label (e.g. 44.4 mln) for tight spaces like a donut centre."""
+    v = float(value or 0)
+    if v >= 1e9:
+        return f"{v / 1e9:.1f} mlrd"
+    if v >= 1e6:
+        return f"{v / 1e6:.1f} mln"
+    if v >= 1e3:
+        return f"{v / 1e3:.0f} ming"
+    return f"{v:.0f}"
+
+
+def _payment_donut(sales):
+    """Payment totals split by method, as donut-ready arc segments."""
+    rows = Payment.objects.filter(sale__in=sales).values("method").annotate(total=Sum("amount"))
+    totals = {r["method"]: r["total"] or Decimal("0") for r in rows}
+    palette = [
+        ("cash", "Naqd", "var(--accent)"),
+        ("card", "Karta", "var(--success)"),
+        ("transfer", "Bank o'tkazmasi", "var(--warning)"),
+    ]
+    grand = sum((totals.get(key, Decimal("0")) for key, _, _ in palette), Decimal("0"))
+    radius = 56.0
+    circumference = 2 * math.pi * radius
+    segments = []
+    cursor = 0.0
+    for key, label, color in palette:
+        amount = totals.get(key, Decimal("0"))
+        frac = float(amount / grand) if grand else 0.0
+        length = frac * circumference
+        segments.append({
+            "label": label,
+            "total": amount,
+            "color": color,
+            "pct": round(frac * 100, 1),
+            "dash": round(length, 2),
+            "gap": round(circumference - length, 2),
+            "offset": round(-cursor, 2),
+        })
+        cursor += length
+    return {
+        "segments": segments,
+        "grand": grand,
+        "grand_short": _short_money(grand),
+        "radius": radius,
+    }
+
+
+def _top_products(sales, limit=5):
+    """Top products by revenue, each with a bar width as a % of the leader."""
+    rows = list(
+        SaleItem.objects.filter(sale__in=sales)
+        .values("product__name")
+        .annotate(revenue=Sum(REVENUE))
+        .order_by("-revenue")[:limit]
+    )
+    peak = max((r["revenue"] or Decimal("0") for r in rows), default=Decimal("1")) or Decimal("1")
+    for r in rows:
+        r["name"] = r["product__name"]
+        r["pct"] = round(float((r["revenue"] or Decimal("0")) / peak * 100), 2)
+    return rows
+
+
 def dashboard(request):
     sales = Sale.objects.visible_to(request.user)
     month_start = timezone.localdate().replace(day=1)
@@ -118,7 +223,15 @@ def dashboard(request):
         .count()
     )
 
+    top_clients = list(top_clients)
+    client_peak = max((c.total or 0 for c in top_clients), default=0) or 1
+    for client in top_clients:
+        client.pct = round(float((client.total or 0) / client_peak * 100), 2)
+
     context = {
+        "monthly": _monthly_series(sales),
+        "donut": _payment_donut(sales),
+        "top_products": _top_products(sales),
         "month": month,
         "all_time": all_time,
         "month_count": month_sales.count(),
@@ -309,17 +422,28 @@ def stock_adjust(request, pk):
 # --- Sales --------------------------------------------------------------------
 
 def _filter_sales(request, sales):
-    """Filter sales by a date window (dan..gacha, default today..today; a single
-    day is just an equal from/to) plus client/product/rep/status.
-    Returns (queryset, filters, date_from, date_to)."""
+    """Filter sales by client/product/rep/status and, only when no such filter
+    is active, a date window (dan..gacha, default today..today).
+
+    A content filter searches across ALL dates — the date window is the default
+    (unfiltered) view's concern, so the two never apply at once.
+    Returns (queryset, filters, date_from, date_to, has_filters)."""
     today = timezone.localdate()
+    filters = {key: request.GET.get(key, "") for key in ("client", "product", "rep", "status")}
+    has_filters = bool(
+        filters["client"].isdigit()
+        or filters["product"].isdigit()
+        or filters["status"] in ("paid", "debt", "overdue")
+        or (filters["rep"].isdigit() and request.user.can_see_all_records)
+    )
+
     date_from = _parse_date(request.GET.get("dan")) or today
     date_to = _parse_date(request.GET.get("gacha")) or date_from
     if date_to < date_from:
         date_from, date_to = date_to, date_from
-    sales = sales.filter(date__gte=date_from, date__lte=date_to)
+    if not has_filters:
+        sales = sales.filter(date__gte=date_from, date__lte=date_to)
 
-    filters = {key: request.GET.get(key, "") for key in ("client", "product", "rep", "status")}
     filters["dan"] = date_from.isoformat()
     filters["gacha"] = date_to.isoformat()
     if filters["client"].isdigit():
@@ -335,7 +459,43 @@ def _filter_sales(request, sales):
         sales = sales.filter(remaining__gt=0)
     elif filters["status"] == "overdue":
         sales = sales.filter(remaining__gt=0, debt_deadline__lt=today)
-    return sales, filters, date_from, date_to
+    return sales, filters, date_from, date_to, has_filters
+
+
+def _active_filter_chips(request, filters, clients, products, reps):
+    """Build the list of applied-filter chips (label, value, remove-URL) shown
+    on the sales page so each filter can be cleared individually."""
+
+    def without(param):
+        params = request.GET.copy()
+        params.pop(param, None)
+        params.pop("page", None)
+        # Drop empty filter params so the resulting URL stays clean
+        for key in ("client", "product", "rep", "status"):
+            if not params.get(key):
+                params.pop(key, None)
+        query = params.urlencode()
+        return f"{request.path}?{query}" if query else request.path
+
+    chips = []
+    if filters["client"].isdigit():
+        obj = clients.filter(pk=filters["client"]).first()
+        if obj:
+            chips.append({"label": "Mijoz", "value": obj.name, "remove_url": without("client")})
+    if filters["product"].isdigit():
+        obj = products.filter(pk=filters["product"]).first()
+        if obj:
+            chips.append({"label": "Mahsulot", "value": obj.name, "remove_url": without("product")})
+    if reps and filters["rep"].isdigit():
+        obj = reps.filter(pk=filters["rep"]).first()
+        if obj:
+            chips.append({"label": "Sotuvchi", "value": str(obj), "remove_url": without("rep")})
+    status_labels = {"paid": "To'langan", "debt": "Qarz", "overdue": "Muddati o'tgan"}
+    if filters["status"] in status_labels:
+        chips.append(
+            {"label": "To'lov", "value": status_labels[filters["status"]], "remove_url": without("status")}
+        )
+    return chips
 
 
 def _outstanding_balance(sales):
@@ -353,7 +513,7 @@ def sale_list(request):
         .prefetch_related("items__product")
         .with_balance()
     )
-    sales, filters, date_from, date_to = _filter_sales(request, base)
+    sales, filters, date_from, date_to, has_filters = _filter_sales(request, base)
     sales = sales.order_by("-date", "-created_at")
 
     totals = _sale_totals(sales)
@@ -370,6 +530,14 @@ def sale_list(request):
     totals["debtor_pct"] = totals["debtors"] / total_clients * 100 if total_clients else 0
 
     today = timezone.localdate()
+    clients = _visible_clients(request.user).order_by("name")
+    products = Product.objects.order_by("name")
+    reps = (
+        User.objects.filter(is_active=True).order_by("first_name", "username")
+        if request.user.can_see_all_records
+        else None
+    )
+    active_filters = _active_filter_chips(request, filters, clients, products, reps)
     page = Paginator(sales, 25).get_page(request.GET.get("page"))
     return render(
         request,
@@ -378,6 +546,9 @@ def sale_list(request):
             "page": page,
             "totals": totals,
             "filters": filters,
+            "has_filters": has_filters,
+            "active_filters": active_filters,
+            "filter_count": len(active_filters),
             "date_from": date_from,
             "date_to": date_to,
             "range_days": (date_to - date_from).days + 1,
@@ -388,13 +559,9 @@ def sale_list(request):
             "next_from": (date_from + timedelta(days=1)).isoformat(),
             "next_to": (date_to + timedelta(days=1)).isoformat(),
             "today_iso": today.isoformat(),
-            "clients": _visible_clients(request.user).order_by("name"),
-            "products": Product.objects.order_by("name"),
-            "reps": (
-                User.objects.filter(is_active=True).order_by("first_name", "username")
-                if request.user.can_see_all_records
-                else None
-            ),
+            "clients": clients,
+            "products": products,
+            "reps": reps,
             "export_qs": request.GET.urlencode(),
         },
     )
@@ -468,6 +635,100 @@ def debt_client(request, pk):
     )
 
 
+def _client_outstanding_fifo(request, client):
+    """A client's open receipts ordered oldest debt first (FIFO)."""
+    return list(
+        Sale.objects.visible_to(request.user)
+        .filter(client=client)
+        .outstanding()
+        .order_by("date", "created_at")
+    )
+
+
+def _distribute_debt_payment(sales, amount, method, percent, note, user):
+    """Spread `amount` across FIFO-ordered debts, oldest first.
+
+    Each receipt is credited up to its outstanding balance; the last one
+    reached may receive a partial payment. Returns the receipts touched.
+    """
+    is_transfer = method == Payment.Method.TRANSFER
+    left = amount
+    touched = 0
+    with transaction.atomic():
+        for sale in sales:
+            if left <= 0:
+                break
+            due = sale.remaining or Decimal("0")
+            chunk = min(left, due)
+            if chunk <= 0:
+                continue
+            commission = (
+                (chunk * percent / Decimal("100")).quantize(Decimal("0.01"), ROUND_HALF_UP)
+                if is_transfer
+                else Decimal("0")
+            )
+            Payment.objects.create(
+                sale=sale,
+                amount=chunk,
+                method=method,
+                commission=commission,
+                commission_percent=percent if is_transfer else Decimal("0"),
+                note=note,
+                kind=Payment.Kind.DEBT,
+                date=timezone.localdate(),
+                created_by=user,
+            )
+            left -= chunk
+            touched += 1
+    return touched
+
+
+def _render_client_pay(request, client, total, form, invalid=False):
+    context = {
+        "form": form,
+        "client": client,
+        "remaining": total,
+        "title": f"Umumiy to'lov: {client.name}",
+    }
+    if is_ajax(request):
+        return render(
+            request, "crm/_client_pay_modal.html", context, status=422 if invalid else 200
+        )
+    return render(request, "crm/_client_pay_page.html", context)
+
+
+def client_debt_pay(request, pk):
+    """Take one amount and pay down the client's debts oldest-first (FIFO)."""
+    client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    sales = _client_outstanding_fifo(request, client)
+    total = sum((s.remaining for s in sales), Decimal("0")).quantize(
+        Decimal("0.01"), ROUND_HALF_UP
+    )
+    if total <= 0:
+        return form_reload(request, reverse("debt_client", args=[client.pk]))
+    if request.method == "POST":
+        form = DebtPaymentForm(request.POST, max_amount=total)
+        if form.is_valid():
+            touched = _distribute_debt_payment(
+                sales,
+                form.cleaned_data["amount"],
+                form.cleaned_data["method"],
+                form.cleaned_data["commission_percent"],
+                form.cleaned_data["note"],
+                request.user,
+            )
+            messages.success(
+                request,
+                f"{form.cleaned_data['amount']:,.0f} so'm {touched} ta chekka taqsimlandi.",
+            )
+            return form_reload(request, reverse("debt_client", args=[client.pk]))
+        return _render_client_pay(request, client, total, form, invalid=True)
+    form = DebtPaymentForm(
+        initial={"amount": total, "method": Payment.Method.CASH}, max_amount=total
+    )
+    return _render_client_pay(request, client, total, form)
+
+
 def payment_list(request):
     payments = Payment.objects.select_related(
         "sale", "sale__client", "created_by"
@@ -503,7 +764,7 @@ def sale_export(request):
         .select_related("client", "sales_rep")
         .with_balance()
     )
-    sales, _, _, _ = _filter_sales(request, base)
+    sales, _, _, _, _ = _filter_sales(request, base)
     sales = sales.order_by("-date", "-created_at").prefetch_related("items__product")
 
     response = HttpResponse(content_type="text/csv; charset=utf-8")
