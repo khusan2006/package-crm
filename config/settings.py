@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "accounts",
     "crm",
+    "axes",
 ]
 
 MIDDLEWARE = [
@@ -44,6 +45,8 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.LoginRequiredMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # Must be last: wraps the login flow to count and block failed attempts.
+    "axes.middleware.AxesMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -77,6 +80,21 @@ DATABASES = {
 }
 
 AUTH_USER_MODEL = "accounts.User"
+
+# django-axes must come before the default backend so it can veto a login.
+AUTHENTICATION_BACKENDS = [
+    "axes.backends.AxesStandaloneBackend",
+    "django.contrib.auth.backends.ModelBackend",
+]
+
+# Brute-force protection: lock a username+IP pair after 5 failed logins for an
+# hour. The pair (not IP alone) is used so office users behind one NAT address
+# can't lock each other out, and a wrong username alone can't be a DoS lever.
+AXES_FAILURE_LIMIT = 5
+AXES_COOLOFF_TIME = 1  # hours
+AXES_LOCKOUT_PARAMETERS = [["username", "ip_address"]]
+AXES_RESET_ON_SUCCESS = True
+AXES_LOCKOUT_TEMPLATE = "accounts/lockout.html"
 
 LOGIN_URL = "login"
 LOGIN_REDIRECT_URL = "dashboard"
