@@ -205,6 +205,23 @@ class DayViewTests(BaseSetup):
         self.assertNotIn(self.sale1, sales)  # today's sale not on the target day
         self.assertFalse(response.context["is_today"])
 
+    def test_date_range_spans_multiple_days(self):
+        today = timezone.localdate()
+        d5 = make_sale(self.client1, self.sales1, self.product, date=today - timedelta(days=5))
+        d2 = make_sale(self.client1, self.sales1, self.product, date=today - timedelta(days=2))
+        old = make_sale(self.client1, self.sales1, self.product, date=today - timedelta(days=20))
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_list"), {
+            "dan": (today - timedelta(days=7)).isoformat(),
+            "gacha": today.isoformat(),
+        })
+        sales = list(response.context["page"].object_list)
+        self.assertIn(d5, sales)
+        self.assertIn(d2, sales)
+        self.assertIn(self.sale1, sales)     # today, within range
+        self.assertNotIn(old, sales)         # 20 days ago, outside range
+        self.assertTrue(response.context["filters"]["is_range"])
+
 
 class StockTests(BaseSetup):
     def setUp(self):

@@ -273,13 +273,30 @@ def stock_adjust(request, pk):
 # --- Sales --------------------------------------------------------------------
 
 def _filter_sales(request, sales):
-    """Filter sales to a single day (default today) + client/product/rep/status.
+    """Filter sales by a single day (default today) OR a date range, plus
+    client/product/rep/status. A range (dan/gacha) takes precedence over the day.
     Returns (queryset, filters, day)."""
-    day = _parse_date(request.GET.get("sana")) or timezone.localdate()
-    sales = sales.filter(date=day)
-
-    filters = {key: request.GET.get(key, "") for key in ("client", "product", "rep", "status")}
+    filters = {
+        key: request.GET.get(key, "")
+        for key in ("sana", "dan", "gacha", "client", "product", "rep", "status")
+    }
+    date_from = _parse_date(filters["dan"])
+    date_to = _parse_date(filters["gacha"])
+    is_range = bool(date_from or date_to)
+    day = _parse_date(filters["sana"]) or timezone.localdate()
     filters["sana"] = day.isoformat()
+    filters["is_range"] = is_range
+    filters["range_from"] = date_from
+    filters["range_to"] = date_to
+
+    if is_range:
+        if date_from:
+            sales = sales.filter(date__gte=date_from)
+        if date_to:
+            sales = sales.filter(date__lte=date_to)
+    else:
+        sales = sales.filter(date=day)
+
     if filters["client"].isdigit():
         sales = sales.filter(client_id=filters["client"])
     if filters["product"].isdigit():

@@ -30,9 +30,13 @@ def page_url(context, page_number):
 
 @register.simple_tag(takes_context=True)
 def qs_replace(context, **kwargs):
-    """Replace given query params (preserving the rest); resets pagination."""
+    """Replace given query params (preserving the rest); empty value drops the
+    param; pagination is always reset."""
     params = context["request"].GET.copy()
     for key, value in kwargs.items():
-        params[key] = value
+        if value in ("", None):
+            params.pop(key, None)
+        else:
+            params[key] = value
     params.pop("page", None)
     return "?" + params.urlencode()

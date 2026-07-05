@@ -8,6 +8,8 @@
 <form method="get" class="card filter-bar">
   <input type="hidden" name="sana" value="{{ filters.sana }}">
   <div class="filter-grid">
+    <label>Dan (oralig'i)<input type="date" name="dan" value="{{ filters.dan }}"></label>
+    <label>Gacha<input type="date" name="gacha" value="{{ filters.gacha }}"></label>
     <label>Mijoz
       <select name="client">
         <option value="">Barchasi</option>
@@ -87,18 +89,26 @@
 </div>
 
 <div class="table-toolbar">
-  <span class="table-toolbar-date">{{ day|date:"d-F, l" }}{% if is_today %} · Bugun{% endif %}</span>
+  <span class="table-toolbar-date">
+    {% if filters.is_range %}
+      {% if filters.range_from %}{{ filters.range_from|date:"d.m.Y" }}{% else %}…{% endif %} — {% if filters.range_to %}{{ filters.range_to|date:"d.m.Y" }}{% else %}…{% endif %}
+    {% else %}
+      {{ day|date:"d-F, l" }}{% if is_today %} · Bugun{% endif %}
+    {% endif %}
+  </span>
   <div class="day-nav">
-    <a class="icon-btn" href="{% qs_replace sana=prev_day %}" title="Oldingi kun">
+    {% if not filters.is_range %}
+    <a class="icon-btn" href="{% qs_replace sana=prev_day dan='' gacha='' %}" title="Oldingi kun">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
     </a>
     <input type="date" class="day-nav-date" value="{{ filters.sana }}"
-           onchange="var u=new URL(location); u.searchParams.set('sana', this.value); u.searchParams.delete('page'); location=u;"
+           onchange="var u=new URL(location); u.searchParams.set('sana', this.value); u.searchParams.delete('dan'); u.searchParams.delete('gacha'); u.searchParams.delete('page'); location=u;"
            title="Sanani tanlash">
-    <a class="icon-btn" href="{% qs_replace sana=next_day %}" title="Keyingi kun">
+    <a class="icon-btn" href="{% qs_replace sana=next_day dan='' gacha='' %}" title="Keyingi kun">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
     </a>
-    {% if not is_today %}<a class="btn btn-sm btn-ghost" href="{% qs_replace sana=today_iso %}">Bugun</a>{% endif %}
+    {% endif %}
+    {% if filters.is_range or not is_today %}<a class="btn btn-sm btn-ghost" href="{% qs_replace sana=today_iso dan='' gacha='' %}">Bugun</a>{% endif %}
   </div>
 </div>
 
