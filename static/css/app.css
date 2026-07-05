@@ -675,13 +675,14 @@ ul.errorlist li::before { content: "⚠ "; }
 .day-nav { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .day-nav .icon-btn { width: 34px; height: 34px; flex-shrink: 0; }
 .day-nav .day-nav-date {
-  width: 160px;
+  width: 150px;
   max-width: none;
   padding: 7px 10px;
   font-size: 13.5px;
   font-weight: 600;
   text-align: center;
 }
+.day-nav-sep { color: var(--text-muted); }
 
 /* ============================================================
    Flash messages

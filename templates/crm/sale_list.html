@@ -6,10 +6,9 @@
 {% block content %}
 
 <form method="get" class="card filter-bar">
-  <input type="hidden" name="sana" value="{{ filters.sana }}">
+  <input type="hidden" name="dan" value="{{ filters.dan }}">
+  <input type="hidden" name="gacha" value="{{ filters.gacha }}">
   <div class="filter-grid">
-    <label>Dan (oralig'i)<input type="date" name="dan" value="{{ filters.dan }}"></label>
-    <label>Gacha<input type="date" name="gacha" value="{{ filters.gacha }}"></label>
     <label>Mijoz
       <select name="client">
         <option value="">Barchasi</option>
@@ -90,25 +89,21 @@
 
 <div class="table-toolbar">
   <span class="table-toolbar-date">
-    {% if filters.is_range %}
-      {% if filters.range_from %}{{ filters.range_from|date:"d.m.Y" }}{% else %}…{% endif %} — {% if filters.range_to %}{{ filters.range_to|date:"d.m.Y" }}{% else %}…{% endif %}
-    {% else %}
-      {{ day|date:"d-F, l" }}{% if is_today %} · Bugun{% endif %}
-    {% endif %}
+    {% if is_single_day %}{{ date_from|date:"d-F, l" }}{% if is_today %} · Bugun{% endif %}{% else %}Oraliq{% endif %}
   </span>
   <div class="day-nav">
-    {% if not filters.is_range %}
-    <a class="icon-btn" href="{% qs_replace sana=prev_day dan='' gacha='' %}" title="Oldingi kun">
+    <a class="icon-btn" href="{% qs_replace dan=prev_from gacha=prev_to %}" title="Oldingi kun">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
     </a>
-    <input type="date" class="day-nav-date" value="{{ filters.sana }}"
-           onchange="var u=new URL(location); u.searchParams.set('sana', this.value); u.searchParams.delete('dan'); u.searchParams.delete('gacha'); u.searchParams.delete('page'); location=u;"
-           title="Sanani tanlash">
-    <a class="icon-btn" href="{% qs_replace sana=next_day dan='' gacha='' %}" title="Keyingi kun">
+    <input type="date" class="day-nav-date" value="{{ filters.dan }}" title="Dan"
+           onchange="var u=new URL(location); u.searchParams.set('dan', this.value); if ('{{ filters.dan }}' === '{{ filters.gacha }}' || this.value > u.searchParams.get('gacha')) u.searchParams.set('gacha', this.value); u.searchParams.delete('page'); location=u;">
+    <span class="day-nav-sep">—</span>
+    <input type="date" class="day-nav-date" value="{{ filters.gacha }}" title="Gacha"
+           onchange="var u=new URL(location); u.searchParams.set('gacha', this.value); if (this.value < u.searchParams.get('dan')) u.searchParams.set('dan', this.value); u.searchParams.delete('page'); location=u;">
+    <a class="icon-btn" href="{% qs_replace dan=next_from gacha=next_to %}" title="Keyingi kun">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
     </a>
-    {% endif %}
-    {% if filters.is_range or not is_today %}<a class="btn btn-sm btn-ghost" href="{% qs_replace sana=today_iso dan='' gacha='' %}">Bugun</a>{% endif %}
+    {% if not is_today %}<a class="btn btn-sm btn-ghost" href="{% qs_replace dan=today_iso gacha=today_iso %}">Bugun</a>{% endif %}
   </div>
 </div>
 

@@ -273,30 +273,19 @@ def stock_adjust(request, pk):
 # --- Sales --------------------------------------------------------------------
 
 def _filter_sales(request, sales):
-    """Filter sales by a single day (default today) OR a date range, plus
-    client/product/rep/status. A range (dan/gacha) takes precedence over the day.
-    Returns (queryset, filters, day)."""
-    filters = {
-        key: request.GET.get(key, "")
-        for key in ("sana", "dan", "gacha", "client", "product", "rep", "status")
-    }
-    date_from = _parse_date(filters["dan"])
-    date_to = _parse_date(filters["gacha"])
-    is_range = bool(date_from or date_to)
-    day = _parse_date(filters["sana"]) or timezone.localdate()
-    filters["sana"] = day.isoformat()
-    filters["is_range"] = is_range
-    filters["range_from"] = date_from
-    filters["range_to"] = date_to
+    """Filter sales by a date window (dan..gacha, default today..today; a single
+    day is just an equal from/to) plus client/product/rep/status.
+    Returns (queryset, filters, date_from, date_to)."""
+    today = timezone.localdate()
+    date_from = _parse_date(request.GET.get("dan")) or today
+    date_to = _parse_date(request.GET.get("gacha")) or date_from
+    if date_to < date_from:
+        date_from, date_to = date_to, date_from
+    sales = sales.filter(date__gte=date_from, date__lte=date_to)
 
-    if is_range:
-        if date_from:
-            sales = sales.filter(date__gte=date_from)
-        if date_to:
-            sales = sales.filter(date__lte=date_to)
-    else:
-        sales = sales.filter(date=day)
-
+    filters = {key: request.GET.get(key, "") for key in ("client", "product", "rep", "status")}
+    filters["dan"] = date_from.isoformat()
+    filters["gacha"] = date_to.isoformat()
     if filters["client"].isdigit():
         sales = sales.filter(client_id=filters["client"])
     if filters["product"].isdigit():
@@ -308,8 +297,8 @@ def _filter_sales(request, sales):
     elif filters["status"] == "debt":
         sales = sales.filter(is_debt=True)
     elif filters["status"] == "overdue":
-        sales = sales.filter(is_debt=True, debt_deadline__lt=timezone.localdate())
-    return sales, filters, day
+        sales = sales.filter(is_debt=True, debt_deadline__lt=today)
+    return sales, filters, date_from, date_to
 
 
 def sale_list(request):
@@ -318,8 +307,8 @@ def sale_list(request):
         .select_related("client", "product", "sales_rep")
         .with_totals()
     )
-    sales, filters, day = _filter_sales(request, base)
-    sales = sales.order_by("-created_at")
+    sales, filters, date_from, date_to = _filter_sales(request, base)
+    sales = sales.order_by("-date", "-created_at")
 
     totals = _sale_totals(sales)
     debt_sales = sales.filter(is_debt=True)
@@ -343,11 +332,15 @@ def sale_list(request):
             "page": page,
             "totals": totals,
             "filters": filters,
-            "day": day,
-            "prev_day": (day - timedelta(days=1)).isoformat(),
-            "next_day": (day + timedelta(days=1)).isoformat(),
+            "date_from": date_from,
+            "date_to": date_to,
+            "is_single_day": date_from == date_to,
+            "is_today": date_from == today and date_to == today,
+            "prev_from": (date_from - timedelta(days=1)).isoformat(),
+            "prev_to": (date_to - timedelta(days=1)).isoformat(),
+            "next_from": (date_from + timedelta(days=1)).isoformat(),
+            "next_to": (date_to + timedelta(days=1)).isoformat(),
             "today_iso": today.isoformat(),
-            "is_today": day == today,
             "clients": _visible_clients(request.user).order_by("name"),
             "products": Product.objects.order_by("name"),
             "reps": (
@@ -438,8 +431,8 @@ def payment_list(request):
 
 def sale_export(request):
     base = Sale.objects.visible_to(request.user).select_related("client", "product", "sales_rep")
-    sales, _, _ = _filter_sales(request, base)
-    sales = sales.order_by("-created_at")
+    sales, _, _, _ = _filter_sales(request, base)
+    sales = sales.order_by("-date", "-created_at")
 
     response = HttpResponse(content_type="text/csv; charset=utf-8")
     response["Content-Disposition"] = 'attachment; filename="sotuvlar.csv"'
