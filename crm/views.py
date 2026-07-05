@@ -334,6 +334,7 @@ def sale_list(request):
             "filters": filters,
             "date_from": date_from,
             "date_to": date_to,
+            "range_days": (date_to - date_from).days + 1,
             "is_single_day": date_from == date_to,
             "is_today": date_from == today and date_to == today,
             "prev_from": (date_from - timedelta(days=1)).isoformat(),

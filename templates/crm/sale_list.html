@@ -88,23 +88,29 @@
 </div>
 
 <div class="table-toolbar">
-  <span class="table-toolbar-date">
-    {% if is_single_day %}{{ date_from|date:"d-F, l" }}{% if is_today %} · Bugun{% endif %}{% else %}Oraliq{% endif %}
-  </span>
-  <div class="day-nav">
-    <a class="icon-btn" href="{% qs_replace dan=prev_from gacha=prev_to %}" title="Oldingi kun">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-    </a>
-    <input type="date" class="day-nav-date" value="{{ filters.dan }}" title="Dan"
-           onchange="var u=new URL(location); u.searchParams.set('dan', this.value); if ('{{ filters.dan }}' === '{{ filters.gacha }}' || this.value > u.searchParams.get('gacha')) u.searchParams.set('gacha', this.value); u.searchParams.delete('page'); location=u;">
-    <span class="day-nav-sep">—</span>
-    <input type="date" class="day-nav-date" value="{{ filters.gacha }}" title="Gacha"
-           onchange="var u=new URL(location); u.searchParams.set('gacha', this.value); if (this.value < u.searchParams.get('dan')) u.searchParams.set('dan', this.value); u.searchParams.delete('page'); location=u;">
-    <a class="icon-btn" href="{% qs_replace dan=next_from gacha=next_to %}" title="Keyingi kun">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-    </a>
-    {% if not is_today %}<a class="btn btn-sm btn-ghost" href="{% qs_replace dan=today_iso gacha=today_iso %}">Bugun</a>{% endif %}
+  <div class="toolbar-label">
+    {% if is_today %}<span class="today-chip">Bugun</span>
+    {% elif is_single_day %}{{ date_from|date:"j-F, l" }}
+    {% else %}{{ range_days }} kunlik oraliq{% endif %}
   </div>
+  <form method="get" class="toolbar-controls">
+    {% if filters.client %}<input type="hidden" name="client" value="{{ filters.client }}">{% endif %}
+    {% if filters.product %}<input type="hidden" name="product" value="{{ filters.product }}">{% endif %}
+    {% if filters.rep %}<input type="hidden" name="rep" value="{{ filters.rep }}">{% endif %}
+    {% if filters.status %}<input type="hidden" name="status" value="{{ filters.status }}">{% endif %}
+    <div class="datebar">
+      <a class="datebar-btn" href="{% qs_replace dan=prev_from gacha=prev_to %}" title="Oldingi">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </a>
+      <input type="date" name="dan" value="{{ filters.dan }}" title="Dan" onchange="this.form.submit()">
+      <span class="sep">—</span>
+      <input type="date" name="gacha" value="{{ filters.gacha }}" title="Gacha" onchange="this.form.submit()">
+      <a class="datebar-btn" href="{% qs_replace dan=next_from gacha=next_to %}" title="Keyingi">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </a>
+    </div>
+    {% if not is_today %}<a class="btn btn-sm btn-ghost" href="{% qs_replace dan=today_iso gacha=today_iso %}">Bugun</a>{% endif %}
+  </form>
 </div>
 
 {% include "crm/_sale_table.html" with sales=page %}
