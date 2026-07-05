@@ -351,6 +351,11 @@ class Payment(models.Model):
     commission = models.DecimalField(
         "Bank komissiyasi (so'm)", max_digits=18, decimal_places=2, default=0
     )
+    # Percentage the bank withholds on a transfer; `commission` is derived from it.
+    commission_percent = models.DecimalField(
+        "Bank ushlagan foiz (%)", max_digits=5, decimal_places=2, default=0
+    )
+    note = models.CharField("Izoh", max_length=255, blank=True)
     kind = models.CharField("Turi", max_length=4, choices=Kind.choices)
     sale = models.ForeignKey(
         Sale, on_delete=models.CASCADE, related_name="payments", verbose_name="Sotuv"

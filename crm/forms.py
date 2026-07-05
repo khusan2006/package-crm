@@ -1,5 +1,5 @@
 from datetime import timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from django import forms
 from django.forms import inlineformset_factory
@@ -41,13 +41,20 @@ class DebtPaymentForm(forms.Form):
     method = forms.ChoiceField(
         label="To'lov usuli", choices=Payment.Method.choices, initial=Payment.Method.CASH
     )
-    commission = forms.DecimalField(
-        label="Bank komissiyasi (so'm)",
-        max_digits=18,
+    commission_percent = forms.DecimalField(
+        label="Bank ushlagan foiz (%)",
+        max_digits=5,
         decimal_places=2,
         required=False,
         min_value=Decimal("0"),
-        help_text="Faqat bank o'tkazmasi uchun — bank ushlab qolgan haq",
+        max_value=Decimal("100"),
+        help_text="Faqat bank o'tkazmasi uchun — bank ushlab qoladigan foiz",
+    )
+    note = forms.CharField(
+        label="Izoh",
+        max_length=255,
+        required=False,
+        widget=forms.TextInput(attrs={"placeholder": "Ixtiyoriy — qo'shimcha ma'lumot"}),
     )
 
     def __init__(self, *args, max_amount=None, **kwargs):
@@ -64,13 +71,19 @@ class DebtPaymentForm(forms.Form):
 
     def clean(self):
         cleaned = super().clean()
-        commission = cleaned.get("commission") or Decimal("0")
+        percent = cleaned.get("commission_percent") or Decimal("0")
         # Commission only applies to bank transfers; ignore it otherwise
         if cleaned.get("method") != Payment.Method.TRANSFER:
-            commission = Decimal("0")
-        amount = cleaned.get("amount")
-        if amount is not None and commission > amount:
-            self.add_error("commission", "Komissiya to'lov summasidan ko'p bo'lishi mumkin emas.")
+            percent = Decimal("0")
+        amount = cleaned.get("amount") or Decimal("0")
+        commission = (amount * percent / Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if commission > amount:
+            self.add_error(
+                "commission_percent", "Komissiya to'lov summasidan ko'p bo'lishi mumkin emas."
+            )
+        cleaned["commission_percent"] = percent
         cleaned["commission"] = commission
         return cleaned
 

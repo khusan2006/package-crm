@@ -200,6 +200,7 @@
           body.innerHTML = html;
           if (!dlg.open) { dlg.showModal(); }
           bindForm(body.querySelector('form'));
+          document.dispatchEvent(new CustomEvent('modal:loaded', { detail: body }));
         });
     }
 
@@ -452,6 +453,46 @@
 
     document.addEventListener('click', function () { if (!pop.hidden) { closePop(); } });
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !pop.hidden) { closePop(); } });
+  })();
+
+  // Debt payment: show the bank commission + net-to-till live when paying by transfer
+  (function () {
+    function money(n) {
+      return Math.round(n).toLocaleString('ru-RU').replace(/ /g, ' ');
+    }
+    function recalc(root) {
+      var amountEl = root.querySelector('[name=amount]');
+      var methodEl = root.querySelector('[name=method]');
+      var pctEl = root.querySelector('[name=commission_percent]');
+      if (!amountEl || !methodEl) { return; }
+      var isTransfer = methodEl.value === 'transfer';
+      Array.prototype.forEach.call(root.querySelectorAll('.transfer-only'), function (el) {
+        el.hidden = !isTransfer;
+      });
+      var out = root.querySelector('[data-net]');
+      if (!out) { return; }
+      var amount = parseFloat(amountEl.value) || 0;
+      var pct = pctEl ? (parseFloat(pctEl.value) || 0) : 0;
+      if (!isTransfer || amount <= 0 || pct <= 0) { out.hidden = true; out.innerHTML = ''; return; }
+      var commission = amount * pct / 100;
+      var net = amount - commission;
+      out.hidden = false;
+      out.innerHTML =
+        "<span>Bank komissiyasi (" + pct + "%)</span><strong>−" + money(commission) + " so'm</strong>"
+        + "<span>Qo'lga tegadigan summa</span><strong>" + money(net) + " so'm</strong>";
+    }
+    function recalcAll() {
+      Array.prototype.forEach.call(document.querySelectorAll('[data-debt-pay]'), recalc);
+    }
+    document.addEventListener('input', function (e) {
+      var root = e.target.closest('[data-debt-pay]'); if (root) { recalc(root); }
+    });
+    document.addEventListener('change', function (e) {
+      var root = e.target.closest('[data-debt-pay]'); if (root) { recalc(root); }
+    });
+    document.addEventListener('modal:loaded', recalcAll);
+    if (document.readyState !== 'loading') { recalcAll(); }
+    else { document.addEventListener('DOMContentLoaded', recalcAll); }
   })();
 </script>
 </body>

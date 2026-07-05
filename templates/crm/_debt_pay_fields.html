@@ -1,0 +1,12 @@
+{% load crm_extras %}
+{% csrf_token %}
+<p class="muted">Qoldiq: <strong style="color: var(--text);">{{ remaining|floatformat:"0g" }} so'm</strong></p>
+{% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
+<p>{{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}</p>
+<p>{{ form.method.label_tag }}{{ form.method }}{{ form.method.errors }}</p>
+<div class="transfer-only"{% if form.method.value != 'transfer' %} hidden{% endif %}>
+  <p>{{ form.commission_percent.label_tag }}{{ form.commission_percent }}{{ form.commission_percent.errors }}
+    {% if form.commission_percent.help_text %}<span class="field-hint">{{ form.commission_percent.help_text }}</span>{% endif %}</p>
+  <div class="pay-breakdown" data-net hidden></div>
+</div>
+<p>{{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}</p>

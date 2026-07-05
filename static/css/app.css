@@ -680,8 +680,26 @@ input:focus, select:focus, textarea:focus {
 input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); vertical-align: middle; }
 
 .helptext, form.stacked .helptext { color: var(--text-faint); font-size: 12.5px; }
+.field-hint { display: block; margin-top: 5px; color: var(--text-faint); font-size: 12.5px; }
 ul.errorlist { color: var(--danger); margin: 5px 0 0; padding-left: 16px; font-size: 13px; list-style: none; }
 ul.errorlist li::before { content: "⚠ "; }
+
+/* Live bank-commission breakdown in the debt-payment form */
+.transfer-only[hidden] { display: none; }
+.pay-breakdown {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 12px;
+  margin: -4px 0 16px;
+  padding: 11px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: 13px;
+}
+.pay-breakdown span { color: var(--text-muted); }
+.pay-breakdown strong { color: var(--text); text-align: right; font-weight: 600; }
+.pay-breakdown strong:last-of-type { color: var(--success); }
 
 /* ============================================================
    Search / filter bar
