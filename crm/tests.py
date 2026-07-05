@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from accounts.models import User
 
-from .models import Client, Payment, Product, Sale, SaleItem, StockEntry
+from .models import AuditLog, Client, Payment, Product, Sale, SaleItem, StockEntry
 
 
 def make_sale(client, rep, product, weight="10", price="24000", **kwargs):
@@ -862,6 +862,38 @@ class ClientDuplicateTests(BaseSetup):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(Client.objects.filter(name="Mijoz A").count(), 2)
+
+
+class AuditLogTests(BaseSetup):
+    def test_sale_create_is_logged(self):
+        self.client.force_login(self.sales1)
+        data = sale_post(self.client1.pk, [one_item(self.product, weight="5")])
+        self.client.post(reverse("sale_create"), data)
+        log = AuditLog.objects.filter(action="create", target_type="Sotuv").latest("created_at")
+        self.assertEqual(log.user, self.sales1)
+
+    def test_payment_is_logged(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]), {"amount": "100000", "method": "cash"}
+        )
+        self.assertTrue(
+            AuditLog.objects.filter(action="payment", target_id=sale.pk).exists()
+        )
+
+    def test_void_is_logged(self):
+        sale = make_sale(self.client1, self.sales1, self.product)  # paid
+        payment = sale.payments.get()
+        self.client.force_login(self.manager)
+        self.client.post(reverse("payment_delete", args=[payment.pk]))
+        self.assertTrue(AuditLog.objects.filter(action="void", target_id=sale.pk).exists())
+
+    def test_audit_list_is_admin_manager_only(self):
+        self.client.force_login(self.sales1)
+        self.assertEqual(self.client.get(reverse("audit_list")).status_code, 403)
+        self.client.force_login(self.manager)
+        self.assertEqual(self.client.get(reverse("audit_list")).status_code, 200)
 
 
 class ModalFormTests(BaseSetup):

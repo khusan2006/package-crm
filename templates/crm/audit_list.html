@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% load crm_extras %}
+{% block title %}Audit jurnali · Paket CRM{% endblock %}
+{% block topbar_title %}Audit jurnali{% endblock %}
+{% block content %}
+
+{% if page.object_list %}
+<div class="table-wrap">
+<table>
+  <tr><th>Sana</th><th>Kim</th><th>Amal</th><th>Obyekt</th><th>Tafsilot</th></tr>
+  {% for log in page %}
+  <tr>
+    <td>{{ log.created_at|date:"Y-m-d H:i" }}</td>
+    <td>{{ log.user|default:"—" }}</td>
+    <td><span class="badge badge-neutral">{{ log.get_action_display }}</span></td>
+    <td>{{ log.target_type }}{% if log.target_id %} #{{ log.target_id }}{% endif %}</td>
+    <td>{{ log.summary }}</td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% if page.has_other_pages %}
+<div class="pagination">
+  {% if page.has_previous %}<a href="{% page_url page.previous_page_number %}">← Oldingi</a>{% endif %}
+  <span>{{ page.number }} / {{ page.paginator.num_pages }}-sahifa</span>
+  {% if page.has_next %}<a href="{% page_url page.next_page_number %}">Keyingi →</a>{% endif %}
+</div>
+{% endif %}
+{% else %}
+<p class="muted">Audit yozuvlari yo'q.</p>
+{% endif %}
+{% endblock %}

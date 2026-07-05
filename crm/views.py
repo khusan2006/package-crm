@@ -30,6 +30,7 @@ from .models import (
     PAYMENT_NET,
     PROFIT,
     REVENUE,
+    AuditLog,
     Client,
     Payment,
     Product,
@@ -752,6 +753,11 @@ def client_debt_pay(request, pk):
                 form.cleaned_data["note"],
                 request.user,
             )
+            AuditLog.record(
+                request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
+                f"{client.name} — {form.cleaned_data['amount']:,.0f} so'm "
+                f"({touched} ta chekka, {form.cleaned_data['method']})",
+            )
             messages.success(
                 request,
                 f"{form.cleaned_data['amount']:,.0f} so'm {touched} ta chekka taqsimlandi.",
@@ -803,7 +809,9 @@ def payment_delete(request, pk):
     )
     if request.method == "POST":
         sale_pk = payment.sale_id
+        summary = f"{payment.sale.client.name} — {payment.amount:,.0f} so'm ({payment.get_method_display()})"
         payment.delete()
+        AuditLog.record(request.user, AuditLog.Action.VOID, "To'lov", sale_pk, summary)
         messages.success(request, "To'lov o'chirildi — qarz qayta tiklandi.")
         return form_reload(request, reverse("sale_detail", args=[sale_pk]))
     return render_confirm(
@@ -815,6 +823,14 @@ def payment_delete(request, pk):
         "Ha, o'chirish",
         confirm_class="btn-danger",
     )
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def audit_list(request):
+    """The money-action audit trail (admin/manager only)."""
+    logs = AuditLog.objects.select_related("user")
+    page = Paginator(logs, 50).get_page(request.GET.get("page"))
+    return render(request, "crm/audit_list.html", {"page": page})
 
 
 def sale_export(request):
@@ -907,6 +923,10 @@ def sale_create(request):
             sale.save()
             formset.instance = sale
             formset.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Sotuv", sale.pk,
+                f"{sale.client.name} — {sale.total_price:,.0f} so'm",
+            )
             # Every sale starts as a receivable; payment is recorded separately.
             messages.success(request, "Sotuv qo'shildi (qarz sifatida).")
             _warn_if_negative_stock_items(request, sale)
@@ -948,6 +968,10 @@ def sale_edit(request, pk):
                 return _render_sale_form(request, form, formset, "Sotuvni tahrirlash", invalid=True)
             sale = form.save()
             formset.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Sotuv", sale.pk,
+                f"{sale.client.name} — {sale.total_price:,.0f} so'm",
+            )
             messages.success(request, "Sotuv yangilandi.")
             _warn_if_negative_stock_items(request, sale)
             return form_reload(request, reverse("sale_list"))
@@ -964,6 +988,10 @@ def sale_mark_paid(request, pk):
             Payment.objects.create(
                 sale=sale, amount=remaining, method=Payment.Method.CASH,
                 kind=Payment.Kind.SALE, date=timezone.localdate(), created_by=request.user,
+            )
+            AuditLog.record(
+                request.user, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
+                f"{sale.client.name} — {remaining:,.0f} so'm (naqd, to'liq)",
             )
             messages.success(request, "Sotuv to'langan deb belgilandi.")
         return form_reload(request, reverse("sale_list"))
@@ -1007,6 +1035,11 @@ def sale_pay(request, pk):
                 date=timezone.localdate(),
                 created_by=request.user,
             )
+            AuditLog.record(
+                request.user, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
+                f"{sale.client.name} — {form.cleaned_data['amount']:,.0f} so'm "
+                f"({form.cleaned_data['method']})",
+            )
             if sale.debt_remaining <= 0:
                 messages.success(request, "Qarz to'liq to'landi.")
             else:
@@ -1031,7 +1064,10 @@ def sale_delete(request, pk):
         )
         return form_reload(request, reverse("sale_list"))
     if request.method == "POST":
+        summary = f"{sale.client.name} — {sale.total_price:,.0f} so'm"
+        sale_pk = sale.pk
         sale.delete()
+        AuditLog.record(request.user, AuditLog.Action.DELETE, "Sotuv", sale_pk, summary)
         messages.success(request, "Sotuv o'chirildi.")
         return form_reload(request, reverse("sale_list"))
     return render_confirm(
