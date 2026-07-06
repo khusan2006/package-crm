@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from accounts.models import User
 
-from .models import Client, Payment, Product, Sale, SaleItem, StockEntry
+from .models import AuditLog, Client, Payment, Product, Sale, SaleItem, StockEntry
 
 
 def make_sale(client, rep, product, weight="10", price="24000", **kwargs):
@@ -257,6 +257,17 @@ class AuthTests(BaseSetup):
         body = response.content.decode()
         self.assertNotRegex(body, r"(?:height|width):\s*\d+,\d")
         self.assertNotRegex(body, r'stroke-dash(?:array|offset)="[^"]*,')
+
+    def test_dashboard_flags_overdue_debt(self):
+        make_sale(
+            self.client1, self.sales1, self.product,
+            is_debt=True, debt_deadline=timezone.localdate() - timedelta(days=3),
+        )
+        self.client.force_login(self.manager)
+        response = self.client.get(reverse("dashboard"))
+        self.assertEqual(response.context["overdue_count"], 1)
+        self.assertEqual(response.context["overdue_total"], Decimal("240000"))
+        self.assertContains(response, "overdue-banner")
 
 
 class DayViewTests(BaseSetup):
@@ -810,6 +821,153 @@ class QuickAddClientTests(BaseSetup):
     def test_get_not_allowed(self):
         self.client.force_login(self.sales1)
         self.assertEqual(self.client.get(reverse("client_quick_create")).status_code, 405)
+
+
+class ClientDuplicateTests(BaseSetup):
+    # BaseSetup: client1 "Mijoz A" (owner sales1), client2 "Mijoz B" (owner sales2)
+
+    def test_create_blocks_same_name(self):
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("client_create"), {"name": "Mijoz A"})
+        self.assertEqual(Client.objects.filter(name="Mijoz A").count(), 1)
+
+    def test_create_allows_same_name_with_override(self):
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("client_create"), {"name": "Mijoz A", "allow_duplicate": "on"})
+        self.assertEqual(Client.objects.filter(name="Mijoz A").count(), 2)
+
+    def test_sales_duplicate_scoped_to_own_clients(self):
+        # "Mijoz B" belongs to sales2; sales1 doesn't see it, so no clash
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("client_create"), {"name": "Mijoz B"})
+        self.assertEqual(Client.objects.filter(name="Mijoz B").count(), 2)
+
+    def test_manager_duplicate_checks_all_clients(self):
+        self.client.force_login(self.manager)
+        self.client.post(reverse("client_create"), {"name": "Mijoz A"})
+        self.assertEqual(Client.objects.filter(name="Mijoz A").count(), 1)  # blocked
+
+    def test_quick_create_reports_duplicate(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("client_quick_create"), {"name": "Mijoz A"})
+        self.assertEqual(response.status_code, 409)
+        data = response.json()
+        self.assertTrue(data["duplicate"])
+        self.assertEqual(data["existing"]["id"], self.client1.pk)
+
+    def test_quick_create_override_creates_duplicate(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("client_quick_create"), {"name": "Mijoz A", "allow_duplicate": "1"}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Client.objects.filter(name="Mijoz A").count(), 2)
+
+
+class AuditLogTests(BaseSetup):
+    def test_sale_create_is_logged(self):
+        self.client.force_login(self.sales1)
+        data = sale_post(self.client1.pk, [one_item(self.product, weight="5")])
+        self.client.post(reverse("sale_create"), data)
+        log = AuditLog.objects.filter(action="create", target_type="Sotuv").latest("created_at")
+        self.assertEqual(log.user, self.sales1)
+
+    def test_payment_is_logged(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]), {"amount": "100000", "method": "cash"}
+        )
+        self.assertTrue(
+            AuditLog.objects.filter(action="payment", target_id=sale.pk).exists()
+        )
+
+    def test_void_is_logged(self):
+        sale = make_sale(self.client1, self.sales1, self.product)  # paid
+        payment = sale.payments.get()
+        self.client.force_login(self.manager)
+        self.client.post(reverse("payment_delete", args=[payment.pk]))
+        self.assertTrue(AuditLog.objects.filter(action="void", target_id=sale.pk).exists())
+
+    def test_audit_list_is_admin_manager_only(self):
+        self.client.force_login(self.sales1)
+        self.assertEqual(self.client.get(reverse("audit_list")).status_code, 403)
+        self.client.force_login(self.manager)
+        self.assertEqual(self.client.get(reverse("audit_list")).status_code, 200)
+
+
+class ReportTests(BaseSetup):
+    def test_report_is_admin_manager_only(self):
+        self.client.force_login(self.sales1)
+        self.assertEqual(self.client.get(reverse("report_view")).status_code, 403)
+        self.client.force_login(self.manager)
+        self.assertEqual(self.client.get(reverse("report_view")).status_code, 200)
+
+    def test_per_seller_breakdown_groups_by_rep(self):
+        # sales1 already owns sale1; add a second sale so their count is 2
+        make_sale(self.client1, self.sales1, self.product, weight="5")
+        self.client.force_login(self.admin)
+        rows = {r["seller"]: r for r in self.client.get(reverse("report_view")).context["per_seller"]}
+        self.assertIn(str(self.sales1), rows)
+        self.assertIn(str(self.sales2), rows)
+        self.assertGreaterEqual(rows[str(self.sales1)]["sales"], 2)
+
+    def test_payment_export_scoped_to_rep(self):
+        response = self.client.get(reverse("payment_export"))  # anonymous → login
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("payment_export"))
+        self.assertEqual(response["Content-Type"], "text/csv; charset=utf-8")
+        body = response.content.decode("utf-8")
+        self.assertIn(self.client1.name, body)      # own client's payment
+        self.assertNotIn(self.client2.name, body)   # not another rep's
+
+
+class ReturnTests(BaseSetup):
+    def _return(self, sale, weight, price="24000", restock=True):
+        data = {
+            "product": self.product.pk, "dimension": "kg",
+            "weight": weight, "price": price,
+        }
+        if restock:
+            data["restock"] = "on"
+        return self.client.post(reverse("sale_return", args=[sale.pk]), data)
+
+    def test_return_reduces_debt(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)  # 240000
+        self.client.force_login(self.sales1)
+        self._return(sale, "4")  # 4 × 24000 = 96000
+        sale.refresh_from_db()
+        self.assertEqual(sale.returned_amount, Decimal("96000"))
+        self.assertEqual(sale.debt_remaining, Decimal("144000"))  # 240000 − 96000
+
+    def _stock(self):
+        return Product.objects.get(pk=self.product.pk).current_stock
+
+    def test_restock_return_increases_stock(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True, weight="10")
+        self.client.force_login(self.sales1)
+        before = self._stock()
+        self._return(sale, "3", restock=True)
+        self.assertEqual(self._stock() - before, Decimal("3"))  # 3 kg back in stock
+
+    def test_no_restock_leaves_stock_unchanged(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True, weight="10")
+        self.client.force_login(self.sales1)
+        before = self._stock()
+        self._return(sale, "3", restock=False)
+        self.assertEqual(self._stock() - before, Decimal("0"))  # not restocked
+
+    def test_cannot_return_more_than_sold(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True, weight="10")
+        self.client.force_login(self.sales1)
+        self._return(sale, "15")  # more than the 10 kg sold
+        self.assertEqual(sale.returns.count(), 0)
+
+    def test_return_is_audited(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        self.client.force_login(self.sales1)
+        self._return(sale, "2")
+        self.assertTrue(AuditLog.objects.filter(action="return", target_id=sale.pk).exists())
 
 
 class ModalFormTests(BaseSetup):

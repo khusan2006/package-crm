@@ -20,6 +20,7 @@ from .forms import (
     ClientForm,
     DebtPaymentForm,
     ProductForm,
+    ReturnForm,
     SaleForm,
     SaleItemFormSet,
     StockAdjustForm,
@@ -29,10 +30,13 @@ from .models import (
     COST,
     PAYMENT_NET,
     PROFIT,
+    RETURN_AMOUNT,
     REVENUE,
+    AuditLog,
     Client,
     Payment,
     Product,
+    Return,
     Sale,
     SaleItem,
     StockEntry,
@@ -215,7 +219,10 @@ def dashboard(request):
 
     open_sales = sales.outstanding()
     debt_total = _outstanding_balance(open_sales)
-    overdue_count = open_sales.filter(debt_deadline__lt=timezone.localdate()).count()
+    overdue_sales = open_sales.filter(debt_deadline__lt=timezone.localdate())
+    overdue_count = overdue_sales.count()
+    overdue_total = _outstanding_balance(overdue_sales)
+    overdue_clients = overdue_sales.values("client").distinct().count()
 
     low_stock_count = (
         Product.objects.filter(is_active=True)
@@ -244,6 +251,8 @@ def dashboard(request):
         "client_count": _visible_clients(request.user).count(),
         "debt_total": debt_total,
         "overdue_count": overdue_count,
+        "overdue_total": overdue_total,
+        "overdue_clients": overdue_clients,
         "low_stock_count": low_stock_count,
     }
     return render(request, "crm/dashboard.html", context)
@@ -267,7 +276,7 @@ def client_list(request):
 
 
 def client_create(request):
-    form = ClientForm(request.POST or None)
+    form = ClientForm(request.POST or None, user=request.user)
     if request.method == "POST":
         if form.is_valid():
             client = form.save(commit=False)
@@ -280,12 +289,27 @@ def client_create(request):
 
 
 def client_quick_create(request):
-    """Create a client inline (from the sale form) and return it as JSON."""
+    """Create a client inline (from the sale form) and return it as JSON.
+
+    Guards against accidental duplicates: an existing same-name client is
+    reported back (409) so the caller can reuse it, unless allow_duplicate is set.
+    """
     if request.method != "POST":
         return JsonResponse({"error": "POST kerak"}, status=405)
     name = request.POST.get("name", "").strip()
     if not name:
         return JsonResponse({"error": "Ism kiritilishi shart"}, status=400)
+    if not request.POST.get("allow_duplicate"):
+        dup = Client.find_duplicate(request.user, name)
+        if dup:
+            return JsonResponse(
+                {
+                    "error": f"“{dup.name}” allaqachon bor",
+                    "duplicate": True,
+                    "existing": {"id": dup.pk, "text": dup.name},
+                },
+                status=409,
+            )
     client = Client.objects.create(
         name=name, phone=request.POST.get("phone", "").strip(), owner=request.user
     )
@@ -294,7 +318,9 @@ def client_quick_create(request):
 
 def client_edit(request, pk):
     client = get_object_or_404(_visible_clients(request.user), pk=pk)
-    form = ClientForm(request.POST or None, instance=client)
+    form = ClientForm(
+        request.POST or None, instance=client, user=request.user, check_duplicates=False
+    )
     if request.method == "POST" and form.is_valid():
         form.save()
         messages.success(request, f"“{client.name}” mijozi yangilandi.")
@@ -500,14 +526,15 @@ def _active_filter_chips(request, filters, clients, products, reps):
 
 
 def _outstanding_balance(sales):
-    """Total still owed across the given sales: item revenue − net payments.
+    """Total still owed across the given sales: item revenue − returns − net payments.
 
-    Payments are netted of bank fees (amount − commission), matching how each
-    sale's remaining balance is computed."""
+    Payments are netted of bank fees (amount − commission) and returned goods are
+    subtracted, matching how each sale's remaining balance is computed."""
     pks = sales.values("pk")
     revenue = SaleItem.objects.filter(sale__in=pks).aggregate(v=Sum(REVENUE))["v"] or 0
+    returned = Return.objects.filter(sale__in=pks).aggregate(v=Sum(RETURN_AMOUNT))["v"] or 0
     paid = Payment.objects.filter(sale__in=pks).aggregate(v=Sum(PAYMENT_NET))["v"] or 0
-    return revenue - paid
+    return revenue - returned - paid
 
 
 def sale_list(request):
@@ -730,6 +757,11 @@ def client_debt_pay(request, pk):
                 form.cleaned_data["note"],
                 request.user,
             )
+            AuditLog.record(
+                request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
+                f"{client.name} — {form.cleaned_data['amount']:,.0f} so'm "
+                f"({touched} ta chekka, {form.cleaned_data['method']})",
+            )
             messages.success(
                 request,
                 f"{form.cleaned_data['amount']:,.0f} so'm {touched} ta chekka taqsimlandi.",
@@ -781,7 +813,9 @@ def payment_delete(request, pk):
     )
     if request.method == "POST":
         sale_pk = payment.sale_id
+        summary = f"{payment.sale.client.name} — {payment.amount:,.0f} so'm ({payment.get_method_display()})"
         payment.delete()
+        AuditLog.record(request.user, AuditLog.Action.VOID, "To'lov", sale_pk, summary)
         messages.success(request, "To'lov o'chirildi — qarz qayta tiklandi.")
         return form_reload(request, reverse("sale_detail", args=[sale_pk]))
     return render_confirm(
@@ -793,6 +827,131 @@ def payment_delete(request, pk):
         "Ha, o'chirish",
         confirm_class="btn-danger",
     )
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def audit_list(request):
+    """The money-action audit trail (admin/manager only)."""
+    logs = AuditLog.objects.select_related("user")
+    page = Paginator(logs, 50).get_page(request.GET.get("page"))
+    return render(request, "crm/audit_list.html", {"page": page})
+
+
+# --- Reports ------------------------------------------------------------------
+
+def _report_window(request):
+    """The report's date window (dan..gacha), defaulting to the current month."""
+    today = timezone.localdate()
+    date_from = _parse_date(request.GET.get("dan")) or today.replace(day=1)
+    date_to = _parse_date(request.GET.get("gacha")) or today
+    if date_to < date_from:
+        date_from, date_to = date_to, date_from
+    return date_from, date_to
+
+
+def _per_seller_report(date_from, date_to):
+    """Revenue/cost/profit and sale count per sales rep over the window."""
+    rows = (
+        SaleItem.objects.filter(sale__date__gte=date_from, sale__date__lte=date_to)
+        .values("sale__sales_rep")
+        .annotate(
+            revenue=Sum(REVENUE),
+            cost=Sum(COST),
+            profit=Sum(PROFIT),
+            sales=Count("sale", distinct=True),
+        )
+        .order_by("-revenue")
+    )
+    users = {u.pk: u for u in User.objects.all()}
+    result = []
+    for r in rows:
+        revenue = r["revenue"] or Decimal("0")
+        profit = r["profit"] or Decimal("0")
+        user = users.get(r["sale__sales_rep"])
+        result.append({
+            "seller": str(user) if user else "—",
+            "sales": r["sales"],
+            "revenue": revenue,
+            "cost": r["cost"] or Decimal("0"),
+            "profit": profit,
+            "margin": (profit / revenue * 100) if revenue else 0,
+        })
+    return result
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def report_view(request):
+    """Period P&L and per-seller performance (admin/manager only)."""
+    date_from, date_to = _report_window(request)
+    items = SaleItem.objects.filter(sale__date__gte=date_from, sale__date__lte=date_to)
+    totals = items.aggregate(revenue=Sum(REVENUE), cost=Sum(COST), profit=Sum(PROFIT))
+    revenue = totals["revenue"] or Decimal("0")
+    profit = totals["profit"] or Decimal("0")
+    received = Payment.objects.filter(
+        date__gte=date_from, date__lte=date_to
+    ).aggregate(net=Sum(PAYMENT_NET))
+    return render(request, "crm/report.html", {
+        "date_from": date_from,
+        "date_to": date_to,
+        "revenue": revenue,
+        "cost": totals["cost"] or Decimal("0"),
+        "profit": profit,
+        "margin": (profit / revenue * 100) if revenue else 0,
+        "received_net": received["net"] or Decimal("0"),
+        "sales_count": items.values("sale").distinct().count(),
+        "per_seller": _per_seller_report(date_from, date_to),
+        "export_qs": request.GET.urlencode(),
+    })
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def report_export(request):
+    date_from, date_to = _report_window(request)
+    response = HttpResponse(content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = 'attachment; filename="hisobot.csv"'
+    response.write("﻿")  # UTF-8 BOM so Excel reads Uzbek text correctly
+    writer = csv.writer(response)
+    writer.writerow(["Sotuvchi", "Sotuvlar", "Tushum", "Tannarx", "Foyda", "Marja %"])
+    for r in _per_seller_report(date_from, date_to):
+        writer.writerow([
+            r["seller"], r["sales"], f"{r['revenue']:.2f}",
+            f"{r['cost']:.2f}", f"{r['profit']:.2f}", f"{r['margin']:.1f}",
+        ])
+    return response
+
+
+def payment_export(request):
+    """CSV of payments, scoped by role and filtered by the same date window."""
+    payments = Payment.objects.select_related("sale", "sale__client", "created_by")
+    if not request.user.can_see_all_records:
+        payments = payments.filter(sale__sales_rep=request.user)
+    date_from = _parse_date(request.GET.get("dan"))
+    date_to = _parse_date(request.GET.get("gacha"))
+    if date_from:
+        payments = payments.filter(date__gte=date_from)
+    if date_to:
+        payments = payments.filter(date__lte=date_to)
+    payments = payments.order_by("-date", "-created_at")
+
+    response = HttpResponse(content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = 'attachment; filename="tolovlar.csv"'
+    response.write("﻿")
+    writer = csv.writer(response)
+    writer.writerow([
+        "Sana", "Mijoz", "Miqdor", "Komissiya", "Qo'lga tushgan", "Usul", "Turi", "Qabul qildi",
+    ])
+    for p in payments:
+        writer.writerow([
+            p.date.isoformat(),
+            p.sale.client.name,
+            f"{p.amount:.2f}",
+            f"{p.commission:.2f}",
+            f"{p.net_amount:.2f}",
+            p.get_method_display(),
+            p.get_kind_display(),
+            str(p.created_by),
+        ])
+    return response
 
 
 def sale_export(request):
@@ -842,6 +1001,7 @@ def sale_detail(request, pk):
         pk=pk,
     )
     payments = sale.payments.select_related("created_by").order_by("-date", "-created_at")
+    returns = sale.returns.select_related("product", "created_by")
     return render(
         request,
         "crm/sale_detail.html",
@@ -849,6 +1009,8 @@ def sale_detail(request, pk):
             "sale": sale,
             "items": sale.items.all(),
             "payments": payments,
+            "returns": returns,
+            "returned": sale.returned_amount,
             "paid": sale.paid_amount,
             "remaining": sale.debt_remaining,
         },
@@ -885,6 +1047,10 @@ def sale_create(request):
             sale.save()
             formset.instance = sale
             formset.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Sotuv", sale.pk,
+                f"{sale.client.name} — {sale.total_price:,.0f} so'm",
+            )
             # Every sale starts as a receivable; payment is recorded separately.
             messages.success(request, "Sotuv qo'shildi (qarz sifatida).")
             _warn_if_negative_stock_items(request, sale)
@@ -926,6 +1092,10 @@ def sale_edit(request, pk):
                 return _render_sale_form(request, form, formset, "Sotuvni tahrirlash", invalid=True)
             sale = form.save()
             formset.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Sotuv", sale.pk,
+                f"{sale.client.name} — {sale.total_price:,.0f} so'm",
+            )
             messages.success(request, "Sotuv yangilandi.")
             _warn_if_negative_stock_items(request, sale)
             return form_reload(request, reverse("sale_list"))
@@ -942,6 +1112,10 @@ def sale_mark_paid(request, pk):
             Payment.objects.create(
                 sale=sale, amount=remaining, method=Payment.Method.CASH,
                 kind=Payment.Kind.SALE, date=timezone.localdate(), created_by=request.user,
+            )
+            AuditLog.record(
+                request.user, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
+                f"{sale.client.name} — {remaining:,.0f} so'm (naqd, to'liq)",
             )
             messages.success(request, "Sotuv to'langan deb belgilandi.")
         return form_reload(request, reverse("sale_list"))
@@ -985,6 +1159,11 @@ def sale_pay(request, pk):
                 date=timezone.localdate(),
                 created_by=request.user,
             )
+            AuditLog.record(
+                request.user, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
+                f"{sale.client.name} — {form.cleaned_data['amount']:,.0f} so'm "
+                f"({form.cleaned_data['method']})",
+            )
             if sale.debt_remaining <= 0:
                 messages.success(request, "Qarz to'liq to'landi.")
             else:
@@ -995,6 +1174,36 @@ def sale_pay(request, pk):
         return _render_debt_pay(request, sale, form, invalid=True)
     form = DebtPaymentForm(initial={"amount": remaining, "method": Payment.Method.CASH})
     return _render_debt_pay(request, sale, form)
+
+
+def _render_return_form(request, sale, form, invalid=False):
+    context = {"form": form, "sale": sale, "title": f"Qaytarish: {sale.client.name}"}
+    if is_ajax(request):
+        return render(request, "crm/_return_modal.html", context, status=422 if invalid else 200)
+    return render(request, "crm/_return_page.html", context)
+
+
+def sale_return(request, pk):
+    sale = get_object_or_404(
+        Sale.objects.visible_to(request.user).prefetch_related("items__product", "returns"),
+        pk=pk,
+    )
+    if request.method == "POST":
+        form = ReturnForm(request.POST, sale=sale)
+        if form.is_valid():
+            ret = form.save(commit=False)
+            ret.sale = sale
+            ret.created_by = request.user
+            ret.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.RETURN, "Qaytarish", sale.pk,
+                f"{sale.client.name} — {ret.amount:,.0f} so'm ({ret.product.name})",
+            )
+            messages.success(request, f"Qaytarish qabul qilindi: {ret.amount:,.0f} so'm.")
+            return form_reload(request, reverse("sale_detail", args=[sale.pk]))
+        return _render_return_form(request, sale, form, invalid=True)
+    form = ReturnForm(sale=sale, initial={"restock": True})
+    return _render_return_form(request, sale, form)
 
 
 def sale_delete(request, pk):
@@ -1009,7 +1218,10 @@ def sale_delete(request, pk):
         )
         return form_reload(request, reverse("sale_list"))
     if request.method == "POST":
+        summary = f"{sale.client.name} — {sale.total_price:,.0f} so'm"
+        sale_pk = sale.pk
         sale.delete()
+        AuditLog.record(request.user, AuditLog.Action.DELETE, "Sotuv", sale_pk, summary)
         messages.success(request, "Sotuv o'chirildi.")
         return form_reload(request, reverse("sale_list"))
     return render_confirm(

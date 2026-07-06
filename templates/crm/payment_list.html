@@ -9,6 +9,7 @@
   <label>Gacha <input type="date" name="gacha" value="{{ date_to|date:'Y-m-d' }}"></label>
   <button type="submit" class="btn btn-sm">Filtrlash</button>
   {% if date_from or date_to %}<a class="btn btn-sm btn-ghost" href="{% url 'payment_list' %}">Tozalash</a>{% endif %}
+  <a class="btn btn-sm btn-ghost" href="{% url 'payment_export' %}{% if request.GET.urlencode %}?{{ request.GET.urlencode }}{% endif %}">CSV</a>
 </form>
 
 <div class="kpi-grid">

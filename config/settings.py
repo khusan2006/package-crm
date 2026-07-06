@@ -13,7 +13,16 @@ SECRET_KEY = os.environ["SECRET_KEY"]
 
 DEBUG = os.environ.get("DEBUG", "False") == "True"
 
-ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
+
+def _csv_env(name, default=""):
+    return [item.strip() for item in os.environ.get(name, default).split(",") if item.strip()]
+
+
+ALLOWED_HOSTS = _csv_env("ALLOWED_HOSTS", "localhost,127.0.0.1")
+
+# Origins allowed to submit forms over HTTPS (needed behind a TLS-terminating
+# proxy). e.g. CSRF_TRUSTED_ORIGINS=https://crm.example.com
+CSRF_TRUSTED_ORIGINS = _csv_env("CSRF_TRUSTED_ORIGINS")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -24,6 +33,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "accounts",
     "crm",
+    "axes",
 ]
 
 MIDDLEWARE = [
@@ -35,6 +45,8 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.LoginRequiredMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # Must be last: wraps the login flow to count and block failed attempts.
+    "axes.middleware.AxesMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -69,6 +81,21 @@ DATABASES = {
 
 AUTH_USER_MODEL = "accounts.User"
 
+# django-axes must come before the default backend so it can veto a login.
+AUTHENTICATION_BACKENDS = [
+    "axes.backends.AxesStandaloneBackend",
+    "django.contrib.auth.backends.ModelBackend",
+]
+
+# Brute-force protection: lock a username+IP pair after 5 failed logins for an
+# hour. The pair (not IP alone) is used so office users behind one NAT address
+# can't lock each other out, and a wrong username alone can't be a DoS lever.
+AXES_FAILURE_LIMIT = 5
+AXES_COOLOFF_TIME = 1  # hours
+AXES_LOCKOUT_PARAMETERS = [["username", "ip_address"]]
+AXES_RESET_ON_SUCCESS = True
+AXES_LOCKOUT_TEMPLATE = "accounts/lockout.html"
+
 LOGIN_URL = "login"
 LOGIN_REDIRECT_URL = "dashboard"
 LOGOUT_REDIRECT_URL = "login"
@@ -94,3 +121,18 @@ STATIC_URL = "static/"
 STATICFILES_DIRS = [BASE_DIR / "static"]
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# --- Production security -------------------------------------------------------
+# Enforced only when DEBUG is off, so local HTTP development is unaffected. The
+# app is expected to sit behind a TLS-terminating reverse proxy in production.
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SESSION_COOKIE_HTTPONLY = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    # HSTS: tell browsers to stick to HTTPS for a year (opt-in to preload lists).
+    SECURE_HSTS_SECONDS = 31_536_000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
