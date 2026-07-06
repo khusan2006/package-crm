@@ -912,6 +912,23 @@ class ReportTests(BaseSetup):
         self.assertIn(str(self.sales2), rows)
         self.assertGreaterEqual(rows[str(self.sales1)]["sales"], 2)
 
+    def test_kassa_is_gross_and_commission_is_separate(self):
+        # A 100000 transfer at 5% credits the debt with net 95000, but the till
+        # (kassa) records the full 100000 and the 5000 fee is tracked separately.
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)  # 240000
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]),
+            {"amount": "100000", "method": "transfer", "commission_percent": "5"},
+        )
+        self.client.force_login(self.manager)
+        ctx = self.client.get(reverse("report_view")).context
+        self.assertEqual(ctx["commission_total"], Decimal("5000.00"))  # separate expense
+        # BaseSetup's two cash-paid sales (240000 each) + this gross 100000
+        self.assertEqual(ctx["received_gross"], Decimal("580000"))
+        sale.refresh_from_db()
+        self.assertEqual(sale.debt_remaining, Decimal("145000"))  # 240000 − net 95000
+
     def test_payment_export_scoped_to_rep(self):
         response = self.client.get(reverse("payment_export"))  # anonymous → login
         self.client.force_login(self.sales1)

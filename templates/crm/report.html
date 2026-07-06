@@ -29,9 +29,9 @@
     <div class="kpi-value">{{ cost|floatformat:"0g" }}<span class="unit">so'm</span></div>
   </div>
   <div class="kpi kpi--blue">
-    <div class="kpi-head"><span class="kpi-label">Qo'lga tushgan</span></div>
-    <div class="kpi-value">{{ received_net|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta muted">to'lovlar (komissiya ayrilgan)</div>
+    <div class="kpi-head"><span class="kpi-label">Kassaga tushgan</span></div>
+    <div class="kpi-value">{{ received_gross|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">bank komissiyasi: {{ commission_total|floatformat:"0g" }} so'm</div>
   </div>
 </div>
 

@@ -887,9 +887,11 @@ def report_view(request):
     totals = items.aggregate(revenue=Sum(REVENUE), cost=Sum(COST), profit=Sum(PROFIT))
     revenue = totals["revenue"] or Decimal("0")
     profit = totals["profit"] or Decimal("0")
+    # The till records the gross amount paid; the bank fee is a separate expense
+    # (the client bears it — it stays on their debt), matching the client's rule.
     received = Payment.objects.filter(
         date__gte=date_from, date__lte=date_to
-    ).aggregate(net=Sum(PAYMENT_NET))
+    ).aggregate(gross=Sum("amount"), commission=Sum("commission"))
     return render(request, "crm/report.html", {
         "date_from": date_from,
         "date_to": date_to,
@@ -897,7 +899,8 @@ def report_view(request):
         "cost": totals["cost"] or Decimal("0"),
         "profit": profit,
         "margin": (profit / revenue * 100) if revenue else 0,
-        "received_net": received["net"] or Decimal("0"),
+        "received_gross": received["gross"] or Decimal("0"),
+        "commission_total": received["commission"] or Decimal("0"),
         "sales_count": items.values("sale").distinct().count(),
         "per_seller": _per_seller_report(date_from, date_to),
         "export_qs": request.GET.urlencode(),
