@@ -1190,3 +1190,37 @@ ul.errorlist li::before { content: "⚠ "; }
 @media (prefers-reduced-motion: reduce) {
   .sidebar, .nav-backdrop { transition: none; }
 }
+
+/* ============================================================
+   Searchable combobox (progressive enhancement of <select>)
+   ============================================================ */
+.combobox { position: relative; width: 100%; }
+.combobox-native { display: none; }               /* still submits with the form */
+.combobox-input { max-width: none; cursor: text; }
+.combobox-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-lg);
+}
+.combobox-option {
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.combobox-option:hover,
+.combobox-option.is-active { background: var(--surface-hover); }
+.combobox-option[aria-selected="true"] { color: var(--accent); font-weight: 600; }
+.combobox-empty { padding: 8px 10px; color: var(--text-muted); font-size: 13px; }

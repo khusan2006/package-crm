@@ -101,20 +101,20 @@
   </div>
   <form method="get" action="{% url 'sale_list' %}" class="drawer-body">
     <label>Mijoz
-      <select name="client">
+      <select name="client" data-combobox>
         <option value="">Barchasi</option>
         {% for c in clients %}<option value="{{ c.pk }}" {% if filters.client == c.pk|stringformat:'s' %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
       </select>
     </label>
     <label>Mahsulot
-      <select name="product">
+      <select name="product" data-combobox>
         <option value="">Barchasi</option>
         {% for p in products %}<option value="{{ p.pk }}" {% if filters.product == p.pk|stringformat:'s' %}selected{% endif %}>{{ p.name }}</option>{% endfor %}
       </select>
     </label>
     {% if reps %}
     <label>Sotuvchi
-      <select name="rep">
+      <select name="rep" data-combobox>
         <option value="">Barchasi</option>
         {% for r in reps %}<option value="{{ r.pk }}" {% if filters.rep == r.pk|stringformat:'s' %}selected{% endif %}>{{ r }}</option>{% endfor %}
       </select>

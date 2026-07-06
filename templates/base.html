@@ -572,6 +572,125 @@
       if (e.key === 'Escape' && drawer.classList.contains('open')) { closeDrawer(); }
     });
   })();
+
+  // Searchable combobox: progressively enhances <select data-combobox> into a
+  // type-to-filter input. The native <select> stays in the DOM (kept in sync)
+  // so the form submits normally and existing change-listeners keep working.
+  (function () {
+    function enhance(select) {
+      if (select.dataset.comboboxReady) { return; }
+      select.dataset.comboboxReady = '1';
+
+      var wrap = document.createElement('div');
+      wrap.className = 'combobox';
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'combobox-input';
+      input.autocomplete = 'off';
+      input.setAttribute('role', 'combobox');
+      input.setAttribute('aria-autocomplete', 'list');
+      input.setAttribute('aria-expanded', 'false');
+      var pop = document.createElement('div');
+      pop.className = 'combobox-pop';
+      pop.setAttribute('role', 'listbox');
+      pop.hidden = true;
+
+      select.parentNode.insertBefore(wrap, select);
+      wrap.appendChild(select);
+      wrap.appendChild(input);
+      wrap.appendChild(pop);
+      select.classList.add('combobox-native');
+
+      var visible = [];
+      var active = -1;
+
+      function selectedText() {
+        var o = select.options[select.selectedIndex];
+        return o ? o.textContent.trim() : '';
+      }
+      function syncInput() { input.value = selectedText(); }
+
+      function build(filter) {
+        var q = (filter || '').toLowerCase();
+        pop.innerHTML = '';
+        visible = [];
+        Array.prototype.forEach.call(select.options, function (opt, i) {
+          var text = opt.textContent.trim();
+          if (q && text.toLowerCase().indexOf(q) === -1) { return; }
+          var item = document.createElement('div');
+          item.className = 'combobox-option';
+          item.setAttribute('role', 'option');
+          item.textContent = text;
+          item.dataset.index = i;
+          if (i === select.selectedIndex) { item.setAttribute('aria-selected', 'true'); }
+          pop.appendChild(item);
+          visible.push(item);
+        });
+        if (!visible.length) {
+          var empty = document.createElement('div');
+          empty.className = 'combobox-empty';
+          empty.textContent = 'Topilmadi';
+          pop.appendChild(empty);
+        }
+        active = -1;
+      }
+
+      function open() {
+        build('');                 // rebuild from the live <select> each open
+        pop.hidden = false;
+        input.setAttribute('aria-expanded', 'true');
+        input.select();
+      }
+      function close() {
+        pop.hidden = true;
+        input.setAttribute('aria-expanded', 'false');
+        syncInput();               // discard any half-typed text
+      }
+      function choose(i) {
+        select.selectedIndex = i;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        close();
+      }
+      function setActive(n) {
+        if (!visible.length) { return; }
+        active = (n + visible.length) % visible.length;
+        visible.forEach(function (el, i) { el.classList.toggle('is-active', i === active); });
+        visible[active].scrollIntoView({ block: 'nearest' });
+      }
+
+      input.addEventListener('focus', function () { if (pop.hidden) { open(); } });
+      input.addEventListener('click', function () { if (pop.hidden) { open(); } });
+      input.addEventListener('input', function () {
+        pop.hidden = false;
+        input.setAttribute('aria-expanded', 'true');
+        build(input.value);
+      });
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'ArrowDown') { e.preventDefault(); if (pop.hidden) { open(); } setActive(active + 1); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(active - 1); }
+        else if (e.key === 'Enter') {
+          if (!pop.hidden && active >= 0) { e.preventDefault(); choose(parseInt(visible[active].dataset.index, 10)); }
+        } else if (e.key === 'Escape') { if (!pop.hidden) { e.preventDefault(); close(); } }
+      });
+      input.addEventListener('blur', function () { setTimeout(close, 120); });
+      pop.addEventListener('mousedown', function (e) {
+        var opt = e.target.closest('.combobox-option');
+        if (opt) { e.preventDefault(); choose(parseInt(opt.dataset.index, 10)); }
+      });
+      select.addEventListener('change', syncInput);
+
+      syncInput();
+    }
+
+    function enhanceComboboxes(root) {
+      (root || document).querySelectorAll('select[data-combobox]').forEach(enhance);
+    }
+    window.enhanceComboboxes = enhanceComboboxes;
+
+    if (document.readyState !== 'loading') { enhanceComboboxes(); }
+    else { document.addEventListener('DOMContentLoaded', function () { enhanceComboboxes(); }); }
+    document.addEventListener('modal:loaded', function (e) { enhanceComboboxes(e.detail || document); });
+  })();
 </script>
 </body>
 </html>
