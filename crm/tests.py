@@ -332,6 +332,19 @@ class DayViewTests(BaseSetup):
         self.assertEqual(chips[0]["label"], "Mijoz")
         self.assertEqual(chips[0]["value"], self.client1.name)
 
+    def test_toolbar_branches_on_has_filters_not_chip_presence(self):
+        # A filter id outside the user's visibility: has_filters True but no chip.
+        self.client.force_login(self.sales2)
+        resp = self.client.get(reverse("sale_list"), {"client": self.client1.pk})
+        self.assertTrue(resp.context["has_filters"])
+        self.assertEqual(resp.context["active_filters"], [])
+        # Toolbar shows the clear-filter control and hides the date-range picker,
+        # matching the pre-refactor behavior. (The bare class name also appears
+        # in base.html's unconditional JS behavior script, so match the actual
+        # rendered element instead of the substring.)
+        self.assertContains(resp, "chip-clear")
+        self.assertNotContains(resp, 'class="daterange-trigger"')
+
 
 class StockTests(BaseSetup):
     def setUp(self):

@@ -1,7 +1,7 @@
 {% load crm_extras %}
 <div class="table-toolbar">
   <div class="toolbar-left">
-    {% if active_filters %}
+    {% if has_filters %}
     <div class="filter-chips">
       {% for chip in active_filters %}
       <span class="chip">{{ chip.label }}: <strong>{{ chip.value }}</strong><a href="{{ chip.remove_url }}" class="chip-x" title="Olib tashlash" aria-label="Olib tashlash">&times;</a></span>
@@ -17,7 +17,7 @@
     {% endif %}
   </div>
   <div class="toolbar-right">
-    {% if show_daterange_picker and not active_filters %}
+    {% if show_daterange_picker and not has_filters %}
     <div class="daterange" data-from="{{ filters.dan }}" data-to="{{ filters.gacha }}" data-today="{{ today_iso }}">
       <a class="datebar-btn" href="{% qs_replace dan=prev_from gacha=prev_to %}" title="Oldingi kun">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
