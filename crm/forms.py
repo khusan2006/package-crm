@@ -61,14 +61,6 @@ class DebtPaymentForm(forms.Form):
         self.max_amount = max_amount
         super().__init__(*args, **kwargs)
 
-    def clean_amount(self):
-        amount = self.cleaned_data["amount"]
-        if self.max_amount is not None and amount > self.max_amount:
-            raise forms.ValidationError(
-                f"Qoldiqdan ({self.max_amount:.0f} so'm) ko'p bo'lishi mumkin emas."
-            )
-        return amount
-
     def clean(self):
         cleaned = super().clean()
         percent = cleaned.get("commission_percent") or Decimal("0")
@@ -82,6 +74,14 @@ class DebtPaymentForm(forms.Form):
         if commission > amount:
             self.add_error(
                 "commission_percent", "Komissiya to'lov summasidan ko'p bo'lishi mumkin emas."
+            )
+        # Only the net (amount − commission) pays down the debt, so the net —
+        # not the gross — is what may not exceed the outstanding balance. This
+        # lets a transfer be grossed up to cover the bank fee and still settle.
+        net = amount - commission
+        if self.max_amount is not None and net > self.max_amount:
+            self.add_error(
+                "amount", f"Qoldiqdan ({self.max_amount:.0f} so'm) ko'p bo'lishi mumkin emas."
             )
         cleaned["commission_percent"] = percent
         cleaned["commission"] = commission
@@ -137,6 +137,18 @@ class SaleItemForm(forms.ModelForm):
         self.fields["product"].queryset = Product.objects.filter(is_active=True)
         self.fields["cost_price"].required = False
         self.fields["cost_price"].widget.attrs["placeholder"] = "Bo'sh qolsa — mahsulot tannarxi"
+
+    def clean_weight(self):
+        weight = self.cleaned_data.get("weight")
+        if weight is not None and weight <= 0:
+            raise forms.ValidationError("Og'irlik 0 dan katta bo'lishi kerak.")
+        return weight
+
+    def clean_price(self):
+        price = self.cleaned_data.get("price")
+        if price is not None and price <= 0:
+            raise forms.ValidationError("Narx 0 dan katta bo'lishi kerak.")
+        return price
 
     def clean(self):
         cleaned = super().clean()
