@@ -21,7 +21,8 @@
 <div class="app-shell">
 {% if user.is_authenticated %}
   {% with url_name=request.resolver_match.url_name|default:'' %}
-  <aside class="sidebar">
+  <div class="nav-backdrop" data-nav-close hidden></div>
+  <aside class="sidebar" id="app-sidebar">
     <div class="brand">
       <span class="brand-mark">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
@@ -93,6 +94,9 @@
     {% if user.is_authenticated %}
     <header class="topbar">
       <div class="topbar-left">
+        <button type="button" class="icon-btn nav-toggle" data-nav-open aria-label="Menyu" aria-controls="app-sidebar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
         <span class="topbar-title">{% block topbar_title %}Paket CRM{% endblock %}</span>
       </div>
       <div class="topbar-right">
@@ -519,6 +523,30 @@
     document.addEventListener('modal:loaded', recalcAll);
     if (document.readyState !== 'loading') { recalcAll(); }
     else { document.addEventListener('DOMContentLoaded', recalcAll); }
+  })();
+
+  // Off-canvas sidebar drawer (mobile): hamburger toggles it, backdrop/nav closes it
+  (function () {
+    var sidebar = document.getElementById('app-sidebar');
+    var backdrop = document.querySelector('.nav-backdrop');
+    if (!sidebar || !backdrop) { return; }
+    function openNav() {
+      sidebar.classList.add('open');
+      backdrop.hidden = false;
+    }
+    function closeNav() {
+      sidebar.classList.remove('open');
+      backdrop.hidden = true;
+    }
+    document.addEventListener('click', function (e) {
+      if (e.target.closest('[data-nav-open]')) { e.preventDefault(); openNav(); return; }
+      if (e.target.closest('[data-nav-close]')) { closeNav(); return; }
+      // Tapping any nav link closes the drawer as we navigate away
+      if (e.target.closest('.sidebar .nav-item')) { closeNav(); }
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && sidebar.classList.contains('open')) { closeNav(); }
+    });
   })();
 
   // Slide-in filter drawer (Sotuvlar page)

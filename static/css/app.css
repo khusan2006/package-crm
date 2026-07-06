@@ -267,7 +267,10 @@ html[data-theme="light"] #theme-toggle .ico-moon { display: block; }
   color: var(--text-muted);
   font-weight: 600;
 }
-.stat .value { font-size: 23px; font-weight: 700; margin-top: 7px; letter-spacing: -0.02em; }
+.stat .value { font-size: 23px; font-weight: 700; margin-top: 7px; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+
+/* Keep all dashboard figures on aligned, non-shifting tabular numerals */
+.donut-total, .hbar-value, .bar-label, .kpi-meta, .ob-sum { font-variant-numeric: tabular-nums; }
 .stat .sub { font-size: 11.5px; margin-top: 4px; font-weight: 600; }
 .stat .sub.danger { color: var(--danger); }
 
@@ -283,21 +286,22 @@ html[data-theme="light"] #theme-toggle .ico-moon { display: block; }
   position: relative;
   overflow: hidden;
   background: var(--surface);
-  border: 1px solid color-mix(in srgb, var(--kpi) 26%, var(--border));
+  border: 1px solid var(--border);
   border-radius: var(--r-lg);
   padding: 15px 17px;
+  transition: border-color 0.15s;
 }
-.kpi::after {
+.kpi:hover { border-color: var(--border-strong); }
+/* Minimalist accent: a thin colour bar on the left edge instead of a glow */
+.kpi::before {
   content: "";
   position: absolute;
-  top: -55px;
-  right: -30px;
-  width: 135px;
-  height: 135px;
-  border-radius: 50%;
-  background: radial-gradient(circle, var(--kpi), transparent 70%);
-  opacity: 0.16;
-  pointer-events: none;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--kpi);
+  opacity: 0.9;
 }
 .kpi--blue { --kpi: var(--accent); }
 .kpi--green { --kpi: var(--success); }
@@ -312,7 +316,7 @@ html[data-theme="light"] #theme-toggle .ico-moon { display: block; }
   border-radius: 9px;
   display: grid;
   place-items: center;
-  background: color-mix(in srgb, var(--kpi) 20%, transparent);
+  background: color-mix(in srgb, var(--kpi) 13%, transparent);
   color: var(--kpi);
 }
 .kpi-icon svg { width: 17px; height: 17px; }
@@ -323,7 +327,7 @@ html[data-theme="light"] #theme-toggle .ico-moon { display: block; }
   font-weight: 700;
   color: var(--text-muted);
 }
-.kpi-value { position: relative; font-size: 23px; font-weight: 700; letter-spacing: -0.02em; }
+.kpi-value { position: relative; font-size: 23px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .kpi-value .unit { font-size: 14px; font-weight: 500; color: var(--text-muted); margin-left: 3px; }
 .kpi-meta {
   position: relative;
@@ -1137,10 +1141,51 @@ ul.errorlist li::before { content: "⚠ "; }
   .user-chip .meta { display: none; }
 }
 
+/* Hamburger toggle + off-canvas sidebar backdrop (mobile only) */
+.nav-toggle { display: none; }
+.nav-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity 0.22s ease;
+}
+.nav-backdrop:not([hidden]) { opacity: 1; }
+
 @media (max-width: 560px) {
   .topbar { padding: 0 12px; gap: 8px; }
+  .topbar-left { gap: 8px; }
   .topbar-title { font-size: 16px; }
   .topbar-right { gap: 10px; }
   .user-chip { display: none; }
   .btn { padding: 8px 12px; }
+
+  .nav-toggle { display: grid; }
+
+  /* Sidebar becomes a slide-in drawer with full labels restored */
+  .sidebar {
+    position: fixed;
+    left: 0; top: 0; bottom: 0;
+    width: 244px;
+    height: 100dvh;
+    z-index: 60;
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    box-shadow: var(--shadow-lg);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .brand { justify-content: flex-start; padding: 18px 20px; }
+  .brand-text { display: block; }
+  .nav-group-label { display: block; }
+  .nav-item { justify-content: flex-start; padding: 10px 12px; gap: 12px; }
+  .nav-item span { display: inline; }
+
+  /* Stack the overdue banner so text + action don't get squeezed */
+  .overdue-banner { flex-wrap: wrap; }
+  .overdue-banner .btn { width: 100%; justify-content: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar, .nav-backdrop { transition: none; }
 }
