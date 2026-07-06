@@ -527,6 +527,28 @@ def _active_filter_chips(request, filters, clients, products, reps):
     return _filter_chips(request, specs)
 
 
+def _date_range_context(request):
+    """Parse ?dan/?gacha into a today-default window plus the navigation vars
+    the shared toolbar's date-range picker needs."""
+    today = timezone.localdate()
+    date_from = _parse_date(request.GET.get("dan")) or today
+    date_to = _parse_date(request.GET.get("gacha")) or date_from
+    if date_to < date_from:
+        date_from, date_to = date_to, date_from
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "range_days": (date_to - date_from).days + 1,
+        "is_single_day": date_from == date_to,
+        "is_today": date_from == today and date_to == today,
+        "prev_from": (date_from - timedelta(days=1)).isoformat(),
+        "prev_to": (date_to - timedelta(days=1)).isoformat(),
+        "next_from": (date_from + timedelta(days=1)).isoformat(),
+        "next_to": (date_to + timedelta(days=1)).isoformat(),
+        "today_iso": today.isoformat(),
+    }
+
+
 def _outstanding_balance(sales):
     """Total still owed across the given sales: item revenue − returns − net payments.
 
@@ -562,7 +584,6 @@ def sale_list(request):
     totals["debt_share"] = (totals["debt"] or 0) / revenue * 100 if revenue else 0
     totals["debtor_pct"] = totals["debtors"] / total_clients * 100 if total_clients else 0
 
-    today = timezone.localdate()
     clients = _visible_clients(request.user).order_by("name")
     products = Product.objects.order_by("name")
     reps = (
@@ -583,16 +604,7 @@ def sale_list(request):
             "has_filters": has_filters,
             "active_filters": active_filters,
             "filter_count": len(active_filters),
-            "date_from": date_from,
-            "date_to": date_to,
-            "range_days": (date_to - date_from).days + 1,
-            "is_single_day": date_from == date_to,
-            "is_today": date_from == today and date_to == today,
-            "prev_from": (date_from - timedelta(days=1)).isoformat(),
-            "prev_to": (date_to - timedelta(days=1)).isoformat(),
-            "next_from": (date_from + timedelta(days=1)).isoformat(),
-            "next_to": (date_to + timedelta(days=1)).isoformat(),
-            "today_iso": today.isoformat(),
+            **_date_range_context(request),
             "clients": clients,
             "products": products,
             "reps": reps,
