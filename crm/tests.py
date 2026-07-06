@@ -486,6 +486,21 @@ class SaleFilterExportTests(BaseSetup):
         self.assertNotIn(self.client2.name, body)  # client2 belongs to sales2
 
 
+class FilterChipTests(BaseSetup):
+    def test_sales_chips_resolve_names_and_remove_urls(self):
+        self.client.force_login(self.admin)
+        url = reverse("sale_list")
+        resp = self.client.get(url, {"client": self.client1.pk, "status": "debt"})
+        chips = resp.context["active_filters"]
+        labels = {c["label"]: c["value"] for c in chips}
+        self.assertEqual(labels["Mijoz"], "Mijoz A")
+        self.assertEqual(labels["To'lov"], "Qarz")
+        # removing the client chip keeps status, drops client + page
+        client_chip = next(c for c in chips if c["label"] == "Mijoz")
+        self.assertIn("status=debt", client_chip["remove_url"])
+        self.assertNotIn("client=", client_chip["remove_url"])
+
+
 class DebtPageTests(BaseSetup):
     def setUp(self):
         today = timezone.localdate()

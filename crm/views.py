@@ -489,40 +489,42 @@ def _filter_sales(request, sales):
     return sales, filters, date_from, date_to, has_filters
 
 
-def _active_filter_chips(request, filters, clients, products, reps):
-    """Build the list of applied-filter chips (label, value, remove-URL) shown
-    on the sales page so each filter can be cleared individually."""
+def _filter_chips(request, specs):
+    """Build removable filter chips from a list of specs:
+    {"param", "label", "value"}. Only specs with a truthy `value` produce a chip.
+    The remove-URL drops that param, the page, and any empty filter params."""
+    params = [s["param"] for s in specs]
 
     def without(param):
-        params = request.GET.copy()
-        params.pop(param, None)
-        params.pop("page", None)
-        # Drop empty filter params so the resulting URL stays clean
-        for key in ("client", "product", "rep", "status"):
-            if not params.get(key):
-                params.pop(key, None)
-        query = params.urlencode()
+        qs = request.GET.copy()
+        qs.pop(param, None)
+        qs.pop("page", None)
+        for key in params:
+            if not qs.get(key):
+                qs.pop(key, None)
+        query = qs.urlencode()
         return f"{request.path}?{query}" if query else request.path
 
-    chips = []
-    if filters["client"].isdigit():
-        obj = clients.filter(pk=filters["client"]).first()
-        if obj:
-            chips.append({"label": "Mijoz", "value": obj.name, "remove_url": without("client")})
-    if filters["product"].isdigit():
-        obj = products.filter(pk=filters["product"]).first()
-        if obj:
-            chips.append({"label": "Mahsulot", "value": obj.name, "remove_url": without("product")})
-    if reps and filters["rep"].isdigit():
-        obj = reps.filter(pk=filters["rep"]).first()
-        if obj:
-            chips.append({"label": "Sotuvchi", "value": str(obj), "remove_url": without("rep")})
+    return [
+        {"label": s["label"], "value": s["value"], "remove_url": without(s["param"])}
+        for s in specs
+        if s.get("value")
+    ]
+
+
+def _active_filter_chips(request, filters, clients, products, reps):
+    """Sotuvlar filter chips (client/product/rep/status)."""
     status_labels = {"paid": "To'langan", "debt": "Qarz", "overdue": "Muddati o'tgan"}
-    if filters["status"] in status_labels:
-        chips.append(
-            {"label": "To'lov", "value": status_labels[filters["status"]], "remove_url": without("status")}
-        )
-    return chips
+    client = clients.filter(pk=filters["client"]).first() if filters["client"].isdigit() else None
+    product = products.filter(pk=filters["product"]).first() if filters["product"].isdigit() else None
+    rep = reps.filter(pk=filters["rep"]).first() if reps and filters["rep"].isdigit() else None
+    specs = [
+        {"param": "client", "label": "Mijoz", "value": client.name if client else ""},
+        {"param": "product", "label": "Mahsulot", "value": product.name if product else ""},
+        {"param": "rep", "label": "Sotuvchi", "value": str(rep) if rep else ""},
+        {"param": "status", "label": "To'lov", "value": status_labels.get(filters["status"], "")},
+    ]
+    return _filter_chips(request, specs)
 
 
 def _outstanding_balance(sales):
