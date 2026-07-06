@@ -144,6 +144,7 @@ class SaleForm(forms.ModelForm):
         self.fields["debt_deadline"].help_text = (
             f"Bo'sh qolsa — sotuv sanasidan +{DEFAULT_DEBT_DAYS} kun"
         )
+        self.fields["client"].widget.attrs["data-combobox"] = ""
 
     def clean(self):
         cleaned = super().clean()
@@ -162,6 +163,7 @@ class SaleItemForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["product"].queryset = Product.objects.filter(is_active=True)
+        self.fields["product"].widget.attrs["data-combobox"] = ""
         self.fields["cost_price"].required = False
         self.fields["cost_price"].widget.attrs["placeholder"] = "Bo'sh qolsa — mahsulot tannarxi"
 
@@ -215,6 +217,7 @@ class ReturnForm(forms.ModelForm):
             self.fields["product"].queryset = Product.objects.filter(
                 sale_items__sale=sale
             ).distinct()
+        self.fields["product"].widget.attrs["data-combobox"] = ""
 
     def clean_weight(self):
         weight = self.cleaned_data.get("weight")

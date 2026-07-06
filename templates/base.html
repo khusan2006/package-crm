@@ -277,6 +277,7 @@
         }
         saveBtn.dataset.dupOk = '';
         select.add(new Option(res.data.text, res.data.id, true, true));
+        select.dispatchEvent(new Event('change', { bubbles: true }));
         panel.hidden = true;
         nameEl.value = '';
         phoneEl.value = '';
@@ -310,8 +311,10 @@
         var idx = parseInt(total.value, 10);
         var wrap = document.createElement('div');
         wrap.innerHTML = tpl.innerHTML.replace(/__prefix__/g, idx).trim();
-        rows.appendChild(wrap.firstElementChild);
+        var added = wrap.firstElementChild;
+        rows.appendChild(added);
         total.value = idx + 1;
+        if (window.enhanceComboboxes) { window.enhanceComboboxes(added); }
         return;
       }
       var rm = e.target.closest('.item-remove');
