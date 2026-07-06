@@ -723,6 +723,16 @@ def _distribute_debt_payment(sales, amount, method, percent, note, user):
     return touched
 
 
+def _clean_amount(value):
+    """Trim meaningless trailing zeros so a pre-filled amount reads '579300',
+    not '579300,00000'. Quantity (3dp) × price (2dp) leaves up to 5 decimal
+    places; real so'm never needs more than 2, and whole amounts need none."""
+    value = value.quantize(Decimal("0.01"), ROUND_HALF_UP)
+    if value == value.to_integral_value():
+        return value.to_integral_value()
+    return value.normalize()
+
+
 def _render_client_pay(request, client, total, form, invalid=False):
     context = {
         "form": form,
@@ -769,7 +779,8 @@ def client_debt_pay(request, pk):
             return form_reload(request, reverse("debt_client", args=[client.pk]))
         return _render_client_pay(request, client, total, form, invalid=True)
     form = DebtPaymentForm(
-        initial={"amount": total, "method": Payment.Method.CASH}, max_amount=total
+        initial={"amount": _clean_amount(total), "method": Payment.Method.CASH},
+        max_amount=total,
     )
     return _render_client_pay(request, client, total, form)
 
@@ -1190,7 +1201,9 @@ def sale_pay(request, pk):
                 )
             return form_reload(request, reverse("debt_list"))
         return _render_debt_pay(request, sale, form, invalid=True)
-    form = DebtPaymentForm(initial={"amount": remaining, "method": Payment.Method.CASH})
+    form = DebtPaymentForm(
+        initial={"amount": _clean_amount(remaining), "method": Payment.Method.CASH}
+    )
     return _render_debt_pay(request, sale, form)
 
 
