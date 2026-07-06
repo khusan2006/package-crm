@@ -44,6 +44,37 @@
   </div>
 </div>
 
+{% if outstanding %}
+<h2 class="table-heading">Ochiq to'lovlar <span class="muted">· {{ outstanding|length }} ta qarzli sotuv</span></h2>
+<div class="table-wrap table-section">
+<table>
+  <tr>
+    <th class="sticky-col">Mijoz</th><th>Mahsulotlar</th>
+    <th>To'lov muddati</th><th class="num">Qarz qoldig'i</th><th></th>
+  </tr>
+  {% for s in outstanding %}
+  <tr>
+    <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=s.client.name %}<a href="{% url 'sale_detail' s.pk %}">{{ s.client.name }}</a></span></td>
+    <td><a href="{% url 'sale_detail' s.pk %}">{{ s.item_summary }}</a></td>
+    <td>{% if s.debt_deadline %}{{ s.debt_deadline|date:"Y-m-d" }} · {% deadline_badge s.debt_deadline %}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td class="num"><strong>{{ s.remaining|floatformat:"0g" }}</strong> so'm</td>
+    <td>
+      <div class="row-actions">
+        <a class="icon-action settle" href="{% url 'sale_mark_paid' s.pk %}" data-modal title="To'landi (naqd, to'liq)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </a>
+        <a class="icon-action" href="{% url 'sale_pay' s.pk %}" data-modal title="To'lov qabul qilish">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg>
+        </a>
+      </div>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% endif %}
+
+<h2 class="table-heading">To'lovlar tarixi</h2>
 {% if page.object_list %}
 <div class="table-wrap">
 <table>

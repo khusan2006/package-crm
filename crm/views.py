@@ -796,10 +796,25 @@ def payment_list(request):
         debt=Sum("amount", filter=Q(kind=Payment.Kind.DEBT)),
     )
     page = Paginator(payments, 30).get_page(request.GET.get("page"))
+
+    # Outstanding sales you can settle / take a payment on, straight from here
+    outstanding = (
+        Sale.objects.visible_to(request.user)
+        .outstanding()
+        .select_related("client", "sales_rep")
+        .prefetch_related("items__product")
+        .order_by("debt_deadline", "date")
+    )
     return render(
         request,
         "crm/payment_list.html",
-        {"page": page, "totals": totals, "date_from": date_from, "date_to": date_to},
+        {
+            "page": page,
+            "totals": totals,
+            "date_from": date_from,
+            "date_to": date_to,
+            "outstanding": outstanding,
+        },
     )
 
 

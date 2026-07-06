@@ -3,10 +3,6 @@
 {% block title %}Sotuv · {{ sale.client.name }} · Paket CRM{% endblock %}
 {% block topbar_title %}Sotuv — {{ sale.client.name }}{% endblock %}
 {% block topbar_actions %}
-{% if sale.is_outstanding %}
-<a class="btn" href="{% url 'sale_mark_paid' sale.pk %}" data-modal>To'landi</a>
-<a class="btn btn-ghost" href="{% url 'sale_pay' sale.pk %}" data-modal>Qisman to'lov</a>
-{% endif %}
 <a class="btn btn-ghost" href="{% url 'sale_return' sale.pk %}" data-modal>Qaytarish</a>
 <a class="btn btn-ghost" href="{% url 'sale_edit' sale.pk %}" data-modal>Tahrirlash</a>
 {% endblock %}

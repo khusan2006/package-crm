@@ -455,6 +455,11 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 .cell-user { display: flex; align-items: center; gap: 11px; }
 .cell-sub { display: block; margin-top: 3px; font-size: 11.5px; font-weight: 400; color: var(--text-faint); }
 
+/* Standalone table section heading (e.g. payments page) */
+.table-heading { font-size: 15px; font-weight: 600; margin: 0 0 12px; letter-spacing: -0.01em; }
+.table-heading .muted { font-weight: 400; font-size: 13px; }
+.table-section { margin-bottom: 26px; }
+
 /* Key-value detail grid (sale detail page) */
 .detail-grid {
   display: grid;
