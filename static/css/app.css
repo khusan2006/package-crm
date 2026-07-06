@@ -1,64 +1,11 @@
 /* ============================================================
-   Paket CRM — dark admin theme
+   Paket CRM — light admin theme (dark opt-in via [data-theme="dark"])
    ============================================================ */
 
 :root {
-  color-scheme: dark;
-
-  /* Surfaces (dark → light) */
-  --bg: #252525;
-  --sidebar: #1c1c1c;
-  --surface: #252525;
-  --surface-2: #2e2e2e;
-  --surface-hover: #2a2a2a;
-  --input: #1c1c1c;
-  --table-bg: #1c1c1c;
-  --table-head: #333333;
-
-  /* Lines */
-  --border: #333333;
-  --border-strong: #3d3d3d;
-
-  /* Text */
-  --text: #e8ebf2;
-  --text-muted: #97a1b5;
-  --text-faint: #616b80;
-
-  /* Accent */
-  --accent: #4d7cfe;
-  --accent-hover: #6b91ff;
-  --accent-soft: rgba(77, 124, 254, 0.14);
-  --accent-ring: rgba(77, 124, 254, 0.35);
-
-  /* Semantic */
-  --success: #16A34A;
-  --success-soft: #1B2A21;
-  --warning: #E6B414;
-  --warning-soft: #3A3421;
-  --danger: #E61918;
-  --danger-soft: #321B1A;
-
-  --topbar-bg: rgba(28, 28, 28, 0.9);
-
-  /* Radius */
-  --r-sm: 7px;
-  --r: 10px;
-  --r-lg: 14px;
-  --r-pill: 999px;
-
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.5);
-
-  --sidebar-w: 244px;
-}
-
-/* ============================================================
-   Light theme
-   ============================================================ */
-
-html[data-theme="light"] {
   color-scheme: light;
 
+  /* Surfaces (light → dark) */
   --bg: #f3f4f6;
   --sidebar: #ffffff;
   --surface: #ffffff;
@@ -68,18 +15,22 @@ html[data-theme="light"] {
   --table-bg: #ffffff;
   --table-head: #f0f2f5;
 
+  /* Lines */
   --border: #e3e6ea;
   --border-strong: #ccd1d8;
 
+  /* Text */
   --text: #1b2430;
   --text-muted: #59626f;
   --text-faint: #8b94a1;
 
+  /* Accent */
   --accent: #2f6fe0;
   --accent-hover: #2560c8;
   --accent-soft: rgba(47, 111, 224, 0.10);
   --accent-ring: rgba(47, 111, 224, 0.30);
 
+  /* Semantic */
   --success: #128a54;
   --success-soft: #dcf3e8;
   --warning: #9a7500;
@@ -89,8 +40,57 @@ html[data-theme="light"] {
 
   --topbar-bg: rgba(255, 255, 255, 0.9);
 
+  /* Radius */
+  --r-sm: 7px;
+  --r: 10px;
+  --r-lg: 14px;
+  --r-pill: 999px;
+
   --shadow: 0 1px 2px rgba(20, 30, 50, 0.08);
   --shadow-lg: 0 12px 32px rgba(20, 30, 50, 0.16);
+
+  --sidebar-w: 244px;
+}
+
+/* ============================================================
+   Dark theme
+   ============================================================ */
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #252525;
+  --sidebar: #1c1c1c;
+  --surface: #252525;
+  --surface-2: #2e2e2e;
+  --surface-hover: #2a2a2a;
+  --input: #1c1c1c;
+  --table-bg: #1c1c1c;
+  --table-head: #333333;
+
+  --border: #333333;
+  --border-strong: #3d3d3d;
+
+  --text: #e8ebf2;
+  --text-muted: #97a1b5;
+  --text-faint: #616b80;
+
+  --accent: #4d7cfe;
+  --accent-hover: #6b91ff;
+  --accent-soft: rgba(77, 124, 254, 0.14);
+  --accent-ring: rgba(77, 124, 254, 0.35);
+
+  --success: #16A34A;
+  --success-soft: #1B2A21;
+  --warning: #E6B414;
+  --warning-soft: #3A3421;
+  --danger: #E61918;
+  --danger-soft: #321B1A;
+
+  --topbar-bg: rgba(28, 28, 28, 0.9);
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.5);
 }
 
 * { box-sizing: border-box; }
@@ -226,9 +226,9 @@ h2 { font-size: 15px; font-weight: 600; margin: 0 0 14px; letter-spacing: -0.01e
 .icon-btn:hover { background: var(--surface-hover); color: var(--text); border-color: var(--border-strong); }
 .icon-btn svg { width: 18px; height: 18px; }
 
-#theme-toggle .ico-moon { display: none; }
-html[data-theme="light"] #theme-toggle .ico-sun { display: none; }
-html[data-theme="light"] #theme-toggle .ico-moon { display: block; }
+#theme-toggle .ico-sun { display: none; }
+html[data-theme="dark"] #theme-toggle .ico-moon { display: none; }
+html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
 
 .content { padding: 22px 24px 48px; max-width: none; width: 100%; margin: 0; }
 

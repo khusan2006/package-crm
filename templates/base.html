@@ -9,8 +9,8 @@
     // Apply saved theme before first paint to avoid a flash
     (function () {
       try {
-        if (localStorage.getItem('theme') === 'light') {
-          document.documentElement.setAttribute('data-theme', 'light');
+        if (localStorage.getItem('theme') === 'dark') {
+          document.documentElement.setAttribute('data-theme', 'dark');
         }
       } catch (e) {}
     })();
@@ -147,15 +147,15 @@
 {% endif %}
 
 <script>
-  // Theme toggle (dark default, light saved in localStorage)
+  // Theme toggle (light default, dark saved in localStorage)
   (function () {
     var toggle = document.getElementById('theme-toggle');
     if (!toggle) { return; }
     toggle.addEventListener('click', function () {
-      var isLight = document.documentElement.getAttribute('data-theme') === 'light';
-      var next = isLight ? 'dark' : 'light';
-      if (next === 'light') {
-        document.documentElement.setAttribute('data-theme', 'light');
+      var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+      var next = isDark ? 'light' : 'dark';
+      if (next === 'dark') {
+        document.documentElement.setAttribute('data-theme', 'dark');
       } else {
         document.documentElement.removeAttribute('data-theme');
       }
