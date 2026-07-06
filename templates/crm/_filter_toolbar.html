@@ -1,0 +1,49 @@
+{% load crm_extras %}
+<div class="table-toolbar">
+  <div class="toolbar-left">
+    {% if active_filters %}
+    <div class="filter-chips">
+      {% for chip in active_filters %}
+      <span class="chip">{{ chip.label }}: <strong>{{ chip.value }}</strong><a href="{{ chip.remove_url }}" class="chip-x" title="Olib tashlash" aria-label="Olib tashlash">&times;</a></span>
+      {% endfor %}
+      <a href="{{ filter_url }}" class="chip-clear">Tozalash</a>
+    </div>
+    {% elif show_daterange_picker %}
+    <div class="toolbar-label">
+      {% if is_today %}<span class="today-chip">Bugun</span>
+      {% elif is_single_day %}{{ date_from|date:"j-F, l" }}
+      {% else %}{{ range_days }} kunlik oraliq{% endif %}
+    </div>
+    {% endif %}
+  </div>
+  <div class="toolbar-right">
+    {% if show_daterange_picker and not active_filters %}
+    <div class="daterange" data-from="{{ filters.dan }}" data-to="{{ filters.gacha }}" data-today="{{ today_iso }}">
+      <a class="datebar-btn" href="{% qs_replace dan=prev_from gacha=prev_to %}" title="Oldingi kun">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </a>
+      <button type="button" class="daterange-trigger" aria-haspopup="dialog" aria-expanded="false">
+        <svg class="cal-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        <span class="daterange-text">
+          {% if is_today %}Bugun{% elif is_single_day %}{{ date_from|date:"j-F" }}{% else %}{{ date_from|date:"j-F" }} – {{ date_to|date:"j-F" }}{% endif %}
+        </span>
+      </button>
+      <a class="datebar-btn" href="{% qs_replace dan=next_from gacha=next_to %}" title="Keyingi kun">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </a>
+      <div class="daterange-pop" role="dialog" aria-label="Sana tanlash" hidden></div>
+    </div>
+    {% if not is_today %}<a class="btn btn-sm btn-ghost" href="{% qs_replace dan=today_iso gacha=today_iso %}">Bugun</a>{% endif %}
+    {% endif %}
+    <button type="button" class="btn btn-sm btn-ghost filter-toggle{% if has_filters %} is-active{% endif %}" data-filter-open>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+      Filtrlash{% if filter_count %} <span class="filter-badge">{{ filter_count }}</span>{% endif %}
+    </button>
+    {% if export_url %}
+    <a class="btn btn-sm btn-ghost" href="{{ export_url }}" title="CSV yuklab olish">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      CSV
+    </a>
+    {% endif %}
+  </div>
+</div>

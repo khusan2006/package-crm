@@ -933,6 +933,8 @@ ul.errorlist li::before { content: "⚠ "; }
 .drawer-body select { width: 100%; max-width: none; }
 .drawer-actions { display: flex; gap: 10px; margin-top: 6px; }
 .drawer-actions .btn { flex: 1; justify-content: center; }
+.drawer-body .check-row { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+.drawer-body .check-row input[type=checkbox] { width: 16px; height: 16px; }
 
 /* ============================================================
    Dashboard charts

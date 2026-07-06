@@ -1,0 +1,59 @@
+<div class="drawer-backdrop" data-filter-close hidden></div>
+<aside class="filter-drawer" id="filter-drawer" aria-hidden="true" aria-label="Filtrlar">
+  <div class="drawer-head">
+    <h2>Filtrlar</h2>
+    <button type="button" class="modal-x" data-filter-close aria-label="Yopish">&times;</button>
+  </div>
+  <form method="get" action="{{ filter_url }}" class="drawer-body">
+    <label>Mijoz
+      <select name="client" data-combobox>
+        <option value="">Barchasi</option>
+        {% for c in clients %}<option value="{{ c.pk }}" {% if filters.client == c.pk|stringformat:'s' %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+      </select>
+    </label>
+    {% if products %}
+    <label>Mahsulot
+      <select name="product" data-combobox>
+        <option value="">Barchasi</option>
+        {% for p in products %}<option value="{{ p.pk }}" {% if filters.product == p.pk|stringformat:'s' %}selected{% endif %}>{{ p.name }}</option>{% endfor %}
+      </select>
+    </label>
+    {% endif %}
+    {% if reps %}
+    <label>Sotuvchi
+      <select name="rep" data-combobox>
+        <option value="">Barchasi</option>
+        {% for r in reps %}<option value="{{ r.pk }}" {% if filters.rep == r.pk|stringformat:'s' %}selected{% endif %}>{{ r }}</option>{% endfor %}
+      </select>
+    </label>
+    {% endif %}
+    {% if show_status %}
+    <label>To'lov
+      <select name="status">
+        <option value="">Barchasi</option>
+        <option value="paid" {% if filters.status == 'paid' %}selected{% endif %}>To'langan</option>
+        <option value="debt" {% if filters.status == 'debt' %}selected{% endif %}>Qarz</option>
+        <option value="overdue" {% if filters.status == 'overdue' %}selected{% endif %}>Muddati o'tgan</option>
+      </select>
+    </label>
+    {% endif %}
+    {% if show_method %}
+    <label>To'lov usuli
+      <select name="method">
+        <option value="">Barchasi</option>
+        <option value="cash" {% if filters.method == 'cash' %}selected{% endif %}>Naqd</option>
+        <option value="card" {% if filters.method == 'card' %}selected{% endif %}>Karta</option>
+        <option value="transfer" {% if filters.method == 'transfer' %}selected{% endif %}>O'tkazma</option>
+      </select>
+    </label>
+    {% endif %}
+    {% if show_overdue %}
+    <label class="check-row"><input type="checkbox" name="overdue" value="1" {% if filters.overdue %}checked{% endif %}> Faqat muddati o'tgan</label>
+    {% endif %}
+    {% if show_status %}<p class="field-hint">Filtr qo'llanganda sana oralig'i hisobga olinmaydi — barcha kunlar bo'yicha qidiriladi.</p>{% endif %}
+    <div class="drawer-actions">
+      <button type="submit" class="btn">Qo'llash</button>
+      <a href="{{ filter_url }}" class="btn btn-ghost">Tozalash</a>
+    </div>
+  </form>
+</aside>

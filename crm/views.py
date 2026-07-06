@@ -570,6 +570,7 @@ def sale_list(request):
     )
     active_filters = _active_filter_chips(request, filters, clients, products, reps)
     page = Paginator(sales, 25).get_page(request.GET.get("page"))
+    export_qs = request.GET.urlencode()
     return render(
         request,
         "crm/sale_list.html",
@@ -593,7 +594,9 @@ def sale_list(request):
             "clients": clients,
             "products": products,
             "reps": reps,
-            "export_qs": request.GET.urlencode(),
+            "export_qs": export_qs,
+            "filter_url": reverse("sale_list"),
+            "sale_export_url": reverse("sale_export") + (f"?{export_qs}" if export_qs else ""),
         },
     )
 
