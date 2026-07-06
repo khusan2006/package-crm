@@ -420,12 +420,10 @@ table { width: 100%; border-collapse: collapse; }
 
 th, td {
   text-align: left;
-  padding: 16px 18px;
+  padding: 14px 18px;
   white-space: nowrap;
-  border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
 }
-th:last-child, td:last-child { border-right: none; }
 th {
   font-size: 11px;
   text-transform: uppercase;
@@ -446,10 +444,9 @@ th.sticky-col, td.sticky-col {
   left: 0;
   z-index: 2;
   background: var(--table-bg);
-  /* inset borders redraw the separators the sticky background would otherwise
-     cover (border-collapse hides them); the drop shadow marks the freeze */
+  /* right inset redraws the divider the sticky background would cover;
+     the drop shadow marks the freeze on horizontal scroll */
   box-shadow:
-    inset 1px 0 0 var(--border),
     inset -1px 0 0 var(--border),
     5px 0 9px -5px rgba(0, 0, 0, 0.5);
 }
