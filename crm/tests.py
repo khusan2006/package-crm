@@ -830,6 +830,43 @@ class PaymentVoidTests(BaseSetup):
         self.assertFalse(Sale.objects.filter(pk=sale.pk).exists())
 
 
+class PaymentFilterTests(BaseSetup):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        # sale1 (client1/sales1) and sale2 (client2/sales2) each got a CASH sale payment.
+        Payment.objects.create(
+            sale=cls.sale1, amount=Decimal("1000"), method=Payment.Method.CARD,
+            kind=Payment.Kind.DEBT, date=timezone.localdate(), created_by=cls.sales1,
+        )
+
+    def _get(self, **params):
+        self.client.force_login(self.admin)
+        return self.client.get(reverse("payment_list"), params)
+
+    def test_filter_by_client(self):
+        resp = self._get(client=self.client1.pk)
+        for p in resp.context["page"].object_list:
+            self.assertEqual(p.sale.client_id, self.client1.pk)
+
+    def test_filter_by_method(self):
+        resp = self._get(method="card")
+        methods = {p.method for p in resp.context["page"].object_list}
+        self.assertEqual(methods, {"card"})
+
+    def test_filter_by_rep(self):
+        resp = self._get(rep=self.sales2.pk)
+        for p in resp.context["page"].object_list:
+            self.assertEqual(p.sale.sales_rep_id, self.sales2.pk)
+
+    def test_seller_cannot_filter_by_other_rep(self):
+        # a plain seller only ever sees their own; rep param is ignored for them
+        self.client.force_login(self.sales1)
+        resp = self.client.get(reverse("payment_list"), {"rep": self.sales2.pk})
+        for p in resp.context["page"].object_list:
+            self.assertEqual(p.sale.sales_rep_id, self.sales1.pk)
+
+
 class QuickAddClientTests(BaseSetup):
     def test_creates_client_owned_by_current_user(self):
         self.client.force_login(self.sales1)
