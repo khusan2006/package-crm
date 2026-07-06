@@ -1017,3 +1017,14 @@ class ModalFormTests(BaseSetup):
         response = self.client.get(reverse("client_create"))
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, "crm/form.html")
+
+
+class SeedDemoTests(TestCase):
+    def test_seed_demo_runs_and_populates(self):
+        from django.core.management import call_command
+
+        call_command("seed_demo")
+        self.assertTrue(User.objects.filter(username="admin").exists())
+        self.assertEqual(Sale.objects.count(), 30)
+        # Every seeded sale carries a deadline (there is no is_debt field anymore)
+        self.assertFalse(Sale.objects.filter(debt_deadline__isnull=True).exists())

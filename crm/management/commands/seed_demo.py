@@ -103,13 +103,12 @@ class Command(BaseCommand):
             client = rng.choice(clients)
             is_debt = rng.random() < 0.3
             sale_date = today - timedelta(days=rng.randint(0, 45))
+            # Every sale is a receivable with a deadline; whether it reads as
+            # "paid" depends only on the payments recorded below.
             sale = Sale.objects.create(
                 date=sale_date,
                 client=client,
-                is_debt=is_debt,
-                debt_deadline=(
-                    sale_date + timedelta(days=rng.choice([15, 30, 45])) if is_debt else None
-                ),
+                debt_deadline=sale_date + timedelta(days=rng.choice([15, 30, 45])),
                 sales_rep=client.owner,
             )
             # Each receipt carries 1–4 product lines
