@@ -1167,24 +1167,18 @@ def _per_employee_kassa(date_from, date_to):
     return result
 
 
-def kassa_view(request):
-    """The cash register (Kassa): two till drawers (so'm + dollar) with income by
-    method and running balance, per-employee kassa & performance, and the expense
-    list. Visible to everyone — the shared company till. Any filter (employee, turkum,
-    usul, valyuta) scopes the figures so a supervisor can drill into one employee."""
+def _kassa_expenses(request):
+    """The kassa expense queryset for the window, narrowed by the drawer filters
+    (employee, turkum, usul, valyuta). Shared by the page and its CSV export.
+    Returns (expenses, dates, filters, rep, reps)."""
     dates = _date_range_context(request)
-    date_from, date_to = dates["date_from"], dates["date_to"]
-
     filters = {key: request.GET.get(key, "") for key in ("method", "category", "currency", "rep")}
-    filters["dan"] = date_from.isoformat()
-    filters["gacha"] = date_to.isoformat()
+    filters["dan"] = dates["date_from"].isoformat()
+    filters["gacha"] = dates["date_to"].isoformat()
     reps = User.objects.filter(is_active=True).order_by("first_name", "username")
     rep = reps.filter(pk=filters["rep"]).first() if filters["rep"].isdigit() else None
-
-    summary = _kassa_summary(date_from, date_to, rep=rep)
-
     expenses = Expense.objects.select_related("created_by").filter(
-        date__gte=date_from, date__lte=date_to
+        date__gte=dates["date_from"], date__lte=dates["date_to"]
     )
     if rep is not None:
         expenses = expenses.filter(created_by=rep)
@@ -1194,7 +1188,17 @@ def kassa_view(request):
         expenses = expenses.filter(category=filters["category"])
     if filters["currency"] in dict(Payment.Currency.choices):
         expenses = expenses.filter(currency=filters["currency"])
-    expenses = expenses.order_by("-date", "-created_at")
+    return expenses.order_by("-date", "-created_at"), dates, filters, rep, reps
+
+
+def kassa_view(request):
+    """The cash register (Kassa): two till drawers (so'm + dollar) with income by
+    method and running balance, per-employee kassa & performance, and the expense
+    list. Visible to everyone — the shared company till. Any filter (employee, turkum,
+    usul, valyuta) scopes the figures so a supervisor can drill into one employee."""
+    expenses, dates, filters, rep, reps = _kassa_expenses(request)
+    date_from, date_to = dates["date_from"], dates["date_to"]
+    summary = _kassa_summary(date_from, date_to, rep=rep)
 
     method_labels = dict(Payment.Method.choices)
     category_labels = dict(Expense.Category.choices)
@@ -1221,9 +1225,36 @@ def kassa_view(request):
         "show_method": True,
         "show_category": True,
         "show_currency": True,
-        "export_url": reverse("report_export") + (f"?{export_qs}" if export_qs else ""),
+        "export_url": reverse("expense_export") + (f"?{export_qs}" if export_qs else ""),
         **dates,
     })
+
+
+def expense_export(request):
+    """CSV of the kassa expenses for the current window and drawer filters."""
+    expenses = _kassa_expenses(request)[0]
+    response = HttpResponse(content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = 'attachment; filename="chiqimlar.csv"'
+    response.write("﻿")  # UTF-8 BOM so Excel reads Uzbek text correctly
+    writer = csv.writer(response)
+    writer.writerow([
+        "Sana", "Turkum", "Usul", "Valyuta", "Summa (so'm)",
+        "Asl summa", "Kurs", "Izoh", "Kim kiritdi",
+    ])
+    for e in expenses:
+        is_usd = e.currency == Payment.Currency.USD
+        writer.writerow([
+            e.date.isoformat(),
+            e.get_category_display(),
+            e.get_method_display(),
+            e.get_currency_display(),
+            f"{e.amount:.2f}",
+            f"{e.original_amount:.2f}",
+            f"{e.exchange_rate:.2f}" if is_usd else "",
+            e.note,
+            str(e.created_by),
+        ])
+    return response
 
 
 def expense_create(request):

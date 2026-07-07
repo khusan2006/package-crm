@@ -1252,6 +1252,24 @@ class KassaCurrencyTests(BaseSetup):
             self.client.get(reverse("expense_edit", args=[expense.pk])).status_code, 403
         )
 
+    def test_expense_csv_export(self):
+        self.client.force_login(self.admin)
+        self.client.post(
+            reverse("expense_create"),
+            {
+                "date": timezone.localdate().isoformat(),
+                "amount": "20", "currency": "usd", "exchange_rate": "12700",
+                "category": "purchase", "method": "cash", "note": "csv-row",
+            },
+        )
+        response = self.client.get(reverse("expense_export"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "text/csv; charset=utf-8")
+        body = response.content.decode("utf-8")
+        self.assertIn("csv-row", body)
+        self.assertIn("254000.00", body)  # so'm value
+        self.assertIn("Dollar", body)     # currency label
+
     def test_per_employee_net_subtracts_expense_from_profit(self):
         # sales2's only sale earns 60000 profit; a 20000 expense they record
         # nets their performance to 40000 (foyda − rasxot).
