@@ -8,14 +8,14 @@
       {% if filters.q %}<a href="{{ filter_url }}" class="toolbar-search-x" title="Qidiruvni tozalash" aria-label="Qidiruvni tozalash">&times;</a>{% endif %}
     </form>
     {% endif %}
-    {% if active_filters %}
+    {% if has_filters %}
     <div class="filter-chips">
       {% for chip in active_filters %}
       <span class="chip">{{ chip.label }}: <strong>{{ chip.value }}</strong><a href="{{ chip.remove_url }}" class="chip-x" title="Olib tashlash" aria-label="Olib tashlash">&times;</a></span>
       {% endfor %}
       <a href="{{ filter_url }}" class="chip-clear">Tozalash</a>
     </div>
-    {% elif show_daterange_picker and not filters.q %}
+    {% elif show_daterange_picker %}
     <div class="toolbar-label">
       {% if is_today %}<span class="today-chip">Bugun</span>
       {% elif is_single_day %}{{ date_from|date:"j-F, l" }}

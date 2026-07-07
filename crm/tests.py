@@ -732,17 +732,6 @@ class PaymentTests(BaseSetup):
         self.assertTrue(sale.is_outstanding)
         self.assertEqual(sale.payments.count(), 0)
 
-    def test_ledger_scoped_to_sales_rep(self):
-        mine = self._debt_sale()
-        Payment.objects.create(sale=mine, amount=Decimal("50000"), method="cash", kind="debt", created_by=self.sales1)
-        others = make_sale(self.client2, self.sales2, self.product, is_debt=True, debt_deadline=timezone.localdate())
-        Payment.objects.create(sale=others, amount=Decimal("50000"), method="cash", kind="debt", created_by=self.sales2)
-        self.client.force_login(self.sales1)
-        rows = list(self.client.get(reverse("payment_list")).context["page"].object_list)
-        self.assertIn(mine, [p.sale for p in rows])
-        self.assertNotIn(others, [p.sale for p in rows])
-
-
 class SaleIntegrityTests(BaseSetup):
     def _paid_sale(self):
         # make_sale with is_debt=False books a full cash payment (240000)
@@ -837,43 +826,6 @@ class PaymentVoidTests(BaseSetup):
         self.client.post(reverse("payment_delete", args=[payment.pk]))
         self.client.post(reverse("sale_delete", args=[sale.pk]))
         self.assertFalse(Sale.objects.filter(pk=sale.pk).exists())
-
-
-class PaymentFilterTests(BaseSetup):
-    @classmethod
-    def setUpTestData(cls):
-        super().setUpTestData()
-        # sale1 (client1/sales1) and sale2 (client2/sales2) each got a CASH sale payment.
-        Payment.objects.create(
-            sale=cls.sale1, amount=Decimal("1000"), method=Payment.Method.CARD,
-            kind=Payment.Kind.DEBT, date=timezone.localdate(), created_by=cls.sales1,
-        )
-
-    def _get(self, **params):
-        self.client.force_login(self.admin)
-        return self.client.get(reverse("payment_list"), params)
-
-    def test_filter_by_client(self):
-        resp = self._get(client=self.client1.pk)
-        for p in resp.context["page"].object_list:
-            self.assertEqual(p.sale.client_id, self.client1.pk)
-
-    def test_filter_by_method(self):
-        resp = self._get(method="card")
-        methods = {p.method for p in resp.context["page"].object_list}
-        self.assertEqual(methods, {"card"})
-
-    def test_filter_by_rep(self):
-        resp = self._get(rep=self.sales2.pk)
-        for p in resp.context["page"].object_list:
-            self.assertEqual(p.sale.sales_rep_id, self.sales2.pk)
-
-    def test_seller_cannot_filter_by_other_rep(self):
-        # a plain seller only ever sees their own; rep param is ignored for them
-        self.client.force_login(self.sales1)
-        resp = self.client.get(reverse("payment_list"), {"rep": self.sales2.pk})
-        for p in resp.context["page"].object_list:
-            self.assertEqual(p.sale.sales_rep_id, self.sales1.pk)
 
 
 class DebtFilterTests(BaseSetup):
@@ -997,17 +949,6 @@ class AuditLogTests(BaseSetup):
         self.assertEqual(self.client.get(reverse("audit_list")).status_code, 403)
         self.client.force_login(self.manager)
         self.assertEqual(self.client.get(reverse("audit_list")).status_code, 200)
-
-
-class PaymentExportTests(BaseSetup):
-    def test_payment_export_scoped_to_rep(self):
-        response = self.client.get(reverse("payment_export"))  # anonymous → login
-        self.client.force_login(self.sales1)
-        response = self.client.get(reverse("payment_export"))
-        self.assertEqual(response["Content-Type"], "text/csv; charset=utf-8")
-        body = response.content.decode("utf-8")
-        self.assertIn(self.client1.name, body)      # own client's payment
-        self.assertNotIn(self.client2.name, body)   # not another rep's
 
 
 class ReturnTests(BaseSetup):

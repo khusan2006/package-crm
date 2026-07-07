@@ -875,91 +875,6 @@ def client_debt_pay(request, pk):
     return _render_client_pay(request, client, total, form)
 
 
-def payment_list(request):
-    payments = Payment.objects.select_related(
-        "sale", "sale__client", "created_by"
-    ).prefetch_related("sale__items__product")
-    if not request.user.can_see_all_records:
-        payments = payments.filter(sale__sales_rep=request.user)
-
-    filters = {key: request.GET.get(key, "") for key in ("client", "rep", "method")}
-    filters["q"] = request.GET.get("q", "").strip()
-    has_filters = bool(
-        filters["q"]
-        or filters["client"].isdigit()
-        or filters["method"] in dict(Payment.Method.choices)
-        or (filters["rep"].isdigit() and request.user.can_see_all_records)
-    )
-
-    dates = _date_range_context(request)
-    filters["dan"] = dates["date_from"].isoformat()
-    filters["gacha"] = dates["date_to"].isoformat()
-    # Mirror Sotuvlar: a content filter searches all dates; otherwise the window applies.
-    if not has_filters:
-        payments = payments.filter(date__gte=dates["date_from"], date__lte=dates["date_to"])
-    if filters["q"]:
-        payments = payments.filter(_client_search_q(filters["q"], "sale__client"))
-    if filters["client"].isdigit():
-        payments = payments.filter(sale__client_id=filters["client"])
-    if filters["rep"].isdigit() and request.user.can_see_all_records:
-        payments = payments.filter(sale__sales_rep_id=filters["rep"])
-    if filters["method"] in dict(Payment.Method.choices):
-        payments = payments.filter(method=filters["method"])
-    payments = payments.order_by("-date", "-created_at")
-
-    totals = payments.aggregate(
-        total=Sum("amount"),
-        cash=Sum("amount", filter=Q(method=Payment.Method.CASH)),
-        card=Sum("amount", filter=Q(method=Payment.Method.CARD)),
-        debt=Sum("amount", filter=Q(kind=Payment.Kind.DEBT)),
-    )
-    page = Paginator(payments, 30).get_page(request.GET.get("page"))
-
-    outstanding = (
-        Sale.objects.visible_to(request.user)
-        .outstanding()
-        .select_related("client", "sales_rep")
-        .prefetch_related("items__product")
-        .order_by("debt_deadline", "date")
-    )
-    if filters["q"]:
-        outstanding = outstanding.filter(_client_search_q(filters["q"], "client"))
-
-    clients = _visible_clients(request.user).order_by("name")
-    reps = (
-        User.objects.filter(is_active=True).order_by("first_name", "username")
-        if request.user.can_see_all_records
-        else None
-    )
-    method_labels = {"cash": "Naqd", "card": "Karta", "transfer": "O'tkazma"}
-    client_obj = clients.filter(pk=filters["client"]).first() if filters["client"].isdigit() else None
-    rep_obj = reps.filter(pk=filters["rep"]).first() if reps and filters["rep"].isdigit() else None
-    active_filters = _filter_chips(request, [
-        {"param": "client", "label": "Mijoz", "value": client_obj.name if client_obj else ""},
-        {"param": "rep", "label": "Sotuvchi", "value": str(rep_obj) if rep_obj else ""},
-        {"param": "method", "label": "Usul", "value": method_labels.get(filters["method"], "")},
-    ])
-    export_qs = request.GET.urlencode()
-    return render(
-        request,
-        "crm/payment_list.html",
-        {
-            "page": page,
-            "totals": totals,
-            "outstanding": outstanding,
-            "filters": filters,
-            "clients": clients,
-            "reps": reps,
-            "active_filters": active_filters,
-            "filter_count": len(active_filters),
-            "has_filters": has_filters,
-            "filter_url": reverse("payment_list"),
-            "payment_export_url": reverse("payment_export") + (f"?{export_qs}" if export_qs else ""),
-            **dates,
-        },
-    )
-
-
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
 def payment_delete(request, pk):
     """Void a mistaken payment by removing it. The debt it covered is restored
@@ -1258,40 +1173,6 @@ def expense_delete(request, pk):
         "Ha, o'chirish",
         confirm_class="btn-danger",
     )
-
-
-def payment_export(request):
-    """CSV of payments, scoped by role and filtered by the same date window."""
-    payments = Payment.objects.select_related("sale", "sale__client", "created_by")
-    if not request.user.can_see_all_records:
-        payments = payments.filter(sale__sales_rep=request.user)
-    date_from = _parse_date(request.GET.get("dan"))
-    date_to = _parse_date(request.GET.get("gacha"))
-    if date_from:
-        payments = payments.filter(date__gte=date_from)
-    if date_to:
-        payments = payments.filter(date__lte=date_to)
-    payments = payments.order_by("-date", "-created_at")
-
-    response = HttpResponse(content_type="text/csv; charset=utf-8")
-    response["Content-Disposition"] = 'attachment; filename="tolovlar.csv"'
-    response.write("﻿")
-    writer = csv.writer(response)
-    writer.writerow([
-        "Sana", "Mijoz", "Miqdor", "Komissiya", "Qo'lga tushgan", "Usul", "Turi", "Qabul qildi",
-    ])
-    for p in payments:
-        writer.writerow([
-            p.date.isoformat(),
-            p.sale.client.name,
-            f"{p.amount:.2f}",
-            f"{p.commission:.2f}",
-            f"{p.net_amount:.2f}",
-            p.get_method_display(),
-            p.get_kind_display(),
-            str(p.created_by),
-        ])
-    return response
 
 
 def sale_export(request):
