@@ -340,6 +340,13 @@ html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
 }
 .kpi-meta.muted { color: var(--text-muted); }
 
+/* Tills variant: only two till cards — keep them tile-sized (like the other
+   pages' KPIs) instead of stretching each to half the page width. */
+.kpi-grid--tills {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 300px));
+  justify-content: start;
+}
+
 /* Compact variant: force every card onto a single row (dashboard) */
 .kpi-grid--compact {
   grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -889,7 +896,61 @@ ul.errorlist li::before { content: "⚠ "; }
 .cal-sel-label { font-size: 13px; font-weight: 600; color: var(--text-muted); }
 
 /* Sales toolbar split + applied-filter chips + slide-in filter drawer */
-.toolbar-left { display: flex; align-items: center; min-width: 0; flex: 1 1 auto; }
+.toolbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 auto; flex-wrap: wrap; }
+
+/* Inline name-search box (Sotuvlar / Qarzlar / To'lovlar toolbars) */
+.toolbar-search {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 260px;
+  min-width: 170px;
+}
+.toolbar-search-ico {
+  position: absolute;
+  left: 10px;
+  width: 16px;
+  height: 16px;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+.toolbar-search input[type=search] {
+  width: 100%;
+  max-width: none;
+  padding: 6px 30px 6px 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--input);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.toolbar-search input[type=search]::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
+.toolbar-search input[type=search]::placeholder { color: var(--text-faint); }
+.toolbar-search input[type=search]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.toolbar-search.is-active input[type=search] { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.toolbar-search.is-active .toolbar-search-ico { color: var(--accent); }
+.toolbar-search-x {
+  position: absolute;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+.toolbar-search-x:hover { background: var(--surface-2); color: var(--text); }
 .toolbar-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
 
 .filter-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

@@ -1,14 +1,21 @@
 {% load crm_extras %}
 <div class="table-toolbar">
   <div class="toolbar-left">
-    {% if has_filters %}
+    {% if show_search %}
+    <form method="get" action="{{ filter_url }}" class="toolbar-search{% if filters.q %} is-active{% endif %}" role="search">
+      <svg class="toolbar-search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="search" name="q" value="{{ filters.q }}" placeholder="Ism bo'yicha qidirish…" autocomplete="off" aria-label="Ism bo'yicha qidirish">
+      {% if filters.q %}<a href="{{ filter_url }}" class="toolbar-search-x" title="Qidiruvni tozalash" aria-label="Qidiruvni tozalash">&times;</a>{% endif %}
+    </form>
+    {% endif %}
+    {% if active_filters %}
     <div class="filter-chips">
       {% for chip in active_filters %}
       <span class="chip">{{ chip.label }}: <strong>{{ chip.value }}</strong><a href="{{ chip.remove_url }}" class="chip-x" title="Olib tashlash" aria-label="Olib tashlash">&times;</a></span>
       {% endfor %}
       <a href="{{ filter_url }}" class="chip-clear">Tozalash</a>
     </div>
-    {% elif show_daterange_picker %}
+    {% elif show_daterange_picker and not filters.q %}
     <div class="toolbar-label">
       {% if is_today %}<span class="today-chip">Bugun</span>
       {% elif is_single_day %}{{ date_from|date:"j-F, l" }}

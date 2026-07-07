@@ -3,13 +3,13 @@
   "configurations": [
     {
       "name": "django-dev",
-      "runtimeExecutable": ".venv/bin/python",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
       "runtimeArgs": ["manage.py", "runserver", "127.0.0.1:8000"],
       "port": 8000
     },
     {
       "name": "django-preview",
-      "runtimeExecutable": ".venv/bin/python",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
       "runtimeArgs": ["manage.py", "runserver", "127.0.0.1:8010"],
       "port": 8010
     }

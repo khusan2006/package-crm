@@ -450,6 +450,17 @@ def stock_adjust(request, pk):
 
 # --- Sales --------------------------------------------------------------------
 
+def _client_search_q(term, base):
+    """Q matching a client by name/company/phone (case-insensitive) for the
+    toolbar's name-search box. `base` is the lookup path to the Client — e.g.
+    "client" for Sale, "sale__client" for Payment."""
+    return (
+        Q(**{f"{base}__name__icontains": term})
+        | Q(**{f"{base}__company__icontains": term})
+        | Q(**{f"{base}__phone__icontains": term})
+    )
+
+
 def _filter_sales(request, sales):
     """Filter sales by client/product/rep/status and, only when no such filter
     is active, a date window (dan..gacha, default today..today).
@@ -459,8 +470,10 @@ def _filter_sales(request, sales):
     Returns (queryset, filters, date_from, date_to, has_filters)."""
     today = timezone.localdate()
     filters = {key: request.GET.get(key, "") for key in ("client", "product", "rep", "status")}
+    filters["q"] = request.GET.get("q", "").strip()
     has_filters = bool(
-        filters["client"].isdigit()
+        filters["q"]
+        or filters["client"].isdigit()
         or filters["product"].isdigit()
         or filters["status"] in ("paid", "debt", "overdue")
         or (filters["rep"].isdigit() and request.user.can_see_all_records)
@@ -475,6 +488,8 @@ def _filter_sales(request, sales):
 
     filters["dan"] = date_from.isoformat()
     filters["gacha"] = date_to.isoformat()
+    if filters["q"]:
+        sales = sales.filter(_client_search_q(filters["q"], "client"))
     if filters["client"].isdigit():
         sales = sales.filter(client_id=filters["client"])
     if filters["product"].isdigit():
@@ -625,6 +640,9 @@ def debt_list(request):
     )
 
     filters = {key: request.GET.get(key, "") for key in ("client", "rep", "overdue")}
+    filters["q"] = request.GET.get("q", "").strip()
+    if filters["q"]:
+        open_sales = open_sales.filter(_client_search_q(filters["q"], "client"))
     if filters["client"].isdigit():
         open_sales = open_sales.filter(client_id=filters["client"])
     if filters["rep"].isdigit() and request.user.can_see_all_records:
@@ -865,8 +883,10 @@ def payment_list(request):
         payments = payments.filter(sale__sales_rep=request.user)
 
     filters = {key: request.GET.get(key, "") for key in ("client", "rep", "method")}
+    filters["q"] = request.GET.get("q", "").strip()
     has_filters = bool(
-        filters["client"].isdigit()
+        filters["q"]
+        or filters["client"].isdigit()
         or filters["method"] in dict(Payment.Method.choices)
         or (filters["rep"].isdigit() and request.user.can_see_all_records)
     )
@@ -877,6 +897,8 @@ def payment_list(request):
     # Mirror Sotuvlar: a content filter searches all dates; otherwise the window applies.
     if not has_filters:
         payments = payments.filter(date__gte=dates["date_from"], date__lte=dates["date_to"])
+    if filters["q"]:
+        payments = payments.filter(_client_search_q(filters["q"], "sale__client"))
     if filters["client"].isdigit():
         payments = payments.filter(sale__client_id=filters["client"])
     if filters["rep"].isdigit() and request.user.can_see_all_records:
@@ -900,6 +922,8 @@ def payment_list(request):
         .prefetch_related("items__product")
         .order_by("debt_deadline", "date")
     )
+    if filters["q"]:
+        outstanding = outstanding.filter(_client_search_q(filters["q"], "client"))
 
     clients = _visible_clients(request.user).order_by("name")
     reps = (

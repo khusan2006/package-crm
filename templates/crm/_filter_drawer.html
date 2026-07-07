@@ -9,6 +9,7 @@
     <input type="hidden" name="dan" value="{{ filters.dan }}">
     <input type="hidden" name="gacha" value="{{ filters.gacha }}">
     {% endif %}
+    {% if filters.q %}<input type="hidden" name="q" value="{{ filters.q }}">{% endif %}
     {% if clients %}
     <label>Mijoz
       <select name="client" data-combobox>
