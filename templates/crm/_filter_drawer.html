@@ -5,12 +5,18 @@
     <button type="button" class="modal-x" data-filter-close aria-label="Yopish">&times;</button>
   </div>
   <form method="get" action="{{ filter_url }}" class="drawer-body">
+    {% if keep_daterange %}
+    <input type="hidden" name="dan" value="{{ filters.dan }}">
+    <input type="hidden" name="gacha" value="{{ filters.gacha }}">
+    {% endif %}
+    {% if clients %}
     <label>Mijoz
       <select name="client" data-combobox>
         <option value="">Barchasi</option>
         {% for c in clients %}<option value="{{ c.pk }}" {% if filters.client == c.pk|stringformat:'s' %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
       </select>
     </label>
+    {% endif %}
     {% if products %}
     <label>Mahsulot
       <select name="product" data-combobox>
@@ -44,6 +50,28 @@
         <option value="cash" {% if filters.method == 'cash' %}selected{% endif %}>Naqd</option>
         <option value="card" {% if filters.method == 'card' %}selected{% endif %}>Karta</option>
         <option value="transfer" {% if filters.method == 'transfer' %}selected{% endif %}>O'tkazma</option>
+      </select>
+    </label>
+    {% endif %}
+    {% if show_currency %}
+    <label>Valyuta
+      <select name="currency">
+        <option value="">Barchasi</option>
+        <option value="uzs" {% if filters.currency == 'uzs' %}selected{% endif %}>So'm</option>
+        <option value="usd" {% if filters.currency == 'usd' %}selected{% endif %}>Dollar</option>
+      </select>
+    </label>
+    {% endif %}
+    {% if show_category %}
+    <label>Turkum
+      <select name="category">
+        <option value="">Barchasi</option>
+        <option value="fuel" {% if filters.category == 'fuel' %}selected{% endif %}>Benzin / transport</option>
+        <option value="salary" {% if filters.category == 'salary' %}selected{% endif %}>Oylik / xodim</option>
+        <option value="rent" {% if filters.category == 'rent' %}selected{% endif %}>Ijara</option>
+        <option value="meal" {% if filters.category == 'meal' %}selected{% endif %}>Ovqat (obed)</option>
+        <option value="purchase" {% if filters.category == 'purchase' %}selected{% endif %}>Mahsulot xaridi</option>
+        <option value="other" {% if filters.category == 'other' %}selected{% endif %}>Boshqa</option>
       </select>
     </label>
     {% endif %}

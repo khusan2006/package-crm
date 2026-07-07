@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% load crm_extras %}
+{% block title %}Kassa · Paket CRM{% endblock %}
+{% block topbar_title %}Kassa{% endblock %}
+{% block topbar_actions %}
+<a class="btn btn-primary" href="{% url 'expense_create' %}" data-modal>+ Chiqim qo'shish</a>
+{% endblock %}
+{% block fab %}<a class="fab" href="{% url 'expense_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Chiqim qo'shish</a>{% endblock %}
+{% block content %}
+
+{% include "crm/_filter_toolbar.html" %}
+
+{# Ikkita alohida sandiq qoldig'i #}
+<div class="kpi-grid kpi-grid--compact">
+  <div class="kpi kpi--green">
+    <div class="kpi-head"><span class="kpi-label">So'm sandiq qoldig'i</span></div>
+    <div class="kpi-value">{{ summary.som.closing|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">boshlang'ich {{ summary.som.opening|floatformat:"0g" }}</div>
+  </div>
+  <div class="kpi kpi--blue">
+    <div class="kpi-head"><span class="kpi-label">Dollar sandiq qoldig'i</span></div>
+    <div class="kpi-value">${{ summary.usd.closing|floatformat:"2g" }}</div>
+    <div class="kpi-meta muted">boshlang'ich ${{ summary.usd.opening|floatformat:"2g" }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Kassa holati — so'm va dollar</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Ko'rsatkich</th><th class="num">So'm</th><th class="num">Dollar</th></tr>
+    <tr><td>Naqd kirim</td><td class="num">{{ summary.som.cash|floatformat:"0g" }}</td><td class="num">${{ summary.usd.cash|floatformat:"2g" }}</td></tr>
+    <tr><td>Karta kirim</td><td class="num">{{ summary.som.card|floatformat:"0g" }}</td><td class="num">${{ summary.usd.card|floatformat:"2g" }}</td></tr>
+    <tr><td>Bank o'tkazma (sof)</td><td class="num">{{ summary.som.bank|floatformat:"0g" }}</td><td class="num">${{ summary.usd.bank|floatformat:"2g" }}</td></tr>
+    <tr><td><strong>Jami kirim</strong></td><td class="num"><strong>{{ summary.som.income|floatformat:"0g" }}</strong></td><td class="num"><strong>${{ summary.usd.income|floatformat:"2g" }}</strong></td></tr>
+    <tr><td>Chiqim</td><td class="num">−{{ summary.som.expense|floatformat:"0g" }}</td><td class="num">−${{ summary.usd.expense|floatformat:"2g" }}</td></tr>
+    <tr><td>Boshlang'ich qoldiq</td><td class="num muted">{{ summary.som.opening|floatformat:"0g" }}</td><td class="num muted">${{ summary.usd.opening|floatformat:"2g" }}</td></tr>
+    <tr><td><strong>Kassa qoldig'i</strong></td><td class="num"><strong>{{ summary.som.closing|floatformat:"0g" }}</strong></td><td class="num"><strong>${{ summary.usd.closing|floatformat:"2g" }}</strong></td></tr>
+  </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Xodimlar bo'yicha</h2>
+  <p class="field-hint" style="margin-top:-6px;">Kirim/chiqim — kassa harakati; “Sof” — foydadan rasxot ayirilgan samaradorlik (naqd qoldiq emas).</p>
+  {% if per_employee %}
+  <div class="table-wrap">
+  <table>
+    <tr>
+      <th>Xodim</th>
+      <th class="num">Kirim (so'm)</th><th class="num">Kirim ($)</th>
+      <th class="num">Chiqim (so'm)</th><th class="num">Chiqim ($)</th>
+      <th class="num">Foyda</th><th class="num">Sof (foyda−rasxot)</th>
+    </tr>
+    {% for r in per_employee %}
+    <tr>
+      <td>{{ r.employee }}</td>
+      <td class="num">{{ r.in_som|floatformat:"0g" }}</td>
+      <td class="num">{% if r.in_usd %}${{ r.in_usd|floatformat:"2g" }}{% else %}—{% endif %}</td>
+      <td class="num">{{ r.out_som|floatformat:"0g" }}</td>
+      <td class="num">{% if r.out_usd %}${{ r.out_usd|floatformat:"2g" }}{% else %}—{% endif %}</td>
+      <td class="num">{{ r.profit|floatformat:"0g" }}</td>
+      <td class="num"><strong>{{ r.net|floatformat:"0g" }}</strong></td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}<p class="muted">Bu davrda harakat yo'q.</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Chiqimlar</h2>
+  {% if expenses %}
+  <div class="table-wrap">
+  <table>
+    <tr>
+      <th>Sana</th><th>Turkum</th><th>Usul</th><th>Valyuta</th><th class="num">Summa</th>
+      <th>Izoh</th><th>Kim kiritdi</th><th></th>
+    </tr>
+    {% for e in expenses %}
+    <tr>
+      <td>{{ e.date|date:"Y-m-d" }}</td>
+      <td>{{ e.get_category_display }}</td>
+      <td>{{ e.get_method_display }}</td>
+      <td>{% if e.currency == 'usd' %}<span class="badge badge-neutral">Dollar</span>{% else %}So'm{% endif %}</td>
+      <td class="num"><strong>{{ e.amount|floatformat:"0g" }}</strong> so'm
+        {% if e.currency == 'usd' %}<span class="cell-sub">${{ e.original_amount|floatformat:"2g" }} × {{ e.exchange_rate|floatformat:"0g" }} kurs</span>{% endif %}
+      </td>
+      <td class="muted">{{ e.note|default:"—" }}</td>
+      <td>{{ e.created_by }}</td>
+      <td>{% if user.can_see_all_records %}<a class="icon-action danger" href="{% url 'expense_delete' e.pk %}" data-modal title="Chiqimni o'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}<p class="muted">Bu davrda chiqim yo'q.</p>{% endif %}
+</div>
+
+{% include "crm/_filter_drawer.html" %}
+{% endblock %}

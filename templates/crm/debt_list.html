@@ -4,8 +4,6 @@
 {% block topbar_title %}Qarzlar{% endblock %}
 {% block content %}
 
-{% include "crm/_filter_toolbar.html" %}
-
 <div class="kpi-grid">
   <div class="kpi kpi--blue">
     <div class="kpi-head">
@@ -34,6 +32,8 @@
     <div class="kpi-meta muted">jami</div>
   </div>
 </div>
+
+{% include "crm/_filter_toolbar.html" %}
 
 {% if debtors %}
 <div class="table-wrap">

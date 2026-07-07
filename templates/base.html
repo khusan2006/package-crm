@@ -52,6 +52,10 @@
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg></span>
           <span>To'lov</span>
         </a>
+        <a class="nav-item {% if 'kassa' in url_name or 'expense' in url_name %}active{% endif %}" href="{% url 'kassa' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4"/><path d="M4 6v12a2 2 0 0 0 2 2h14v-4"/><path d="M18 12a2 2 0 0 0-2 2c0 1.1.9 2 2 2h4v-4Z"/></svg></span>
+          <span>Kassa</span>
+        </a>
         <a class="nav-item {% if 'client' in url_name %}active{% endif %}" href="{% url 'client_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
           <span>Mijozlar</span>
@@ -65,10 +69,6 @@
       {% if user.can_see_all_records %}
       <div class="nav-group">
         <div class="nav-group-label">Nazorat</div>
-        <a class="nav-item {% if 'report' in url_name %}active{% endif %}" href="{% url 'report_view' %}">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span>
-          <span>Hisobotlar</span>
-        </a>
         <a class="nav-item {% if 'audit' in url_name %}active{% endif %}" href="{% url 'audit_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/><line x1="9" y1="11" x2="12" y2="11"/></svg></span>
           <span>Audit jurnali</span>
@@ -497,14 +497,31 @@
       var amountEl = root.querySelector('[name=amount]');
       var methodEl = root.querySelector('[name=method]');
       var pctEl = root.querySelector('[name=commission_percent]');
+      var currencyEl = root.querySelector('[name=currency]');
+      var rateEl = root.querySelector('[name=exchange_rate]');
       if (!amountEl || !methodEl) { return; }
+      var entered = parseFloat(amountEl.value) || 0;
+      // Dollar payments convert to so'm at the hand-entered rate before anything else
+      var isUsd = currencyEl && currencyEl.value === 'usd';
+      var rate = rateEl ? (parseFloat(rateEl.value) || 0) : 0;
+      Array.prototype.forEach.call(root.querySelectorAll('.usd-only'), function (el) {
+        el.hidden = !isUsd;
+      });
+      var amount = isUsd ? entered * rate : entered;
+      var usdOut = root.querySelector('[data-usd]');
+      if (usdOut) {
+        if (isUsd && entered > 0 && rate > 0) {
+          usdOut.hidden = false;
+          usdOut.innerHTML =
+            "<span>$" + entered + " × " + money(rate) + "</span><strong>" + money(amount) + " so'm</strong>";
+        } else { usdOut.hidden = true; usdOut.innerHTML = ''; }
+      }
       var isTransfer = methodEl.value === 'transfer';
       Array.prototype.forEach.call(root.querySelectorAll('.transfer-only'), function (el) {
         el.hidden = !isTransfer;
       });
       var out = root.querySelector('[data-net]');
       if (!out) { return; }
-      var amount = parseFloat(amountEl.value) || 0;
       var pct = pctEl ? (parseFloat(pctEl.value) || 0) : 0;
       if (!isTransfer || amount <= 0 || pct <= 0) { out.hidden = true; out.innerHTML = ''; return; }
       var commission = amount * pct / 100;

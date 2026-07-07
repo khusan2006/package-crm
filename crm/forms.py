@@ -5,7 +5,7 @@ from django import forms
 from django.forms import inlineformset_factory
 from django.utils import timezone
 
-from .models import Client, Payment, Product, Return, Sale, SaleItem, StockEntry
+from .models import Client, Expense, Payment, Product, Return, Sale, SaleItem, StockEntry
 
 DEFAULT_DEBT_DAYS = 7
 
@@ -63,7 +63,22 @@ TRANSFER_COMMISSION_PCT = Decimal("1")  # default bank fee suggested for transfe
 
 class DebtPaymentForm(forms.Form):
     amount = forms.DecimalField(
-        label="Miqdor (so'm)", max_digits=18, decimal_places=2, min_value=Decimal("0.01")
+        label="Miqdor", max_digits=18, decimal_places=2, min_value=Decimal("0.01"),
+        help_text="Tanlangan valyutada — dollar tanlansa, dollardagi summa",
+    )
+    currency = forms.ChoiceField(
+        label="Valyuta",
+        choices=Payment.Currency.choices,
+        initial=Payment.Currency.UZS,
+        required=False,
+    )
+    exchange_rate = forms.DecimalField(
+        label="Dollar kursi (1$ = so'm)",
+        max_digits=12,
+        decimal_places=2,
+        required=False,
+        min_value=Decimal("0"),
+        help_text="Faqat dollar to'lovi uchun — har safar qo'lda kiritiladi",
     )
     method = forms.ChoiceField(
         label="To'lov usuli", choices=Payment.Method.choices, initial=Payment.Method.CASH
@@ -90,11 +105,24 @@ class DebtPaymentForm(forms.Form):
 
     def clean(self):
         cleaned = super().clean()
+        # Convert the entered amount to so'm — the base currency the debt lives in.
+        # A dollar payment is amount(USD) × rate; a so'm payment passes through.
+        currency = cleaned.get("currency") or Payment.Currency.UZS
+        entered = cleaned.get("amount") or Decimal("0")
+        rate = cleaned.get("exchange_rate") or Decimal("0")
+        if currency == Payment.Currency.USD:
+            if rate <= 0:
+                self.add_error("exchange_rate", "Dollar to'lovi uchun kursni kiriting.")
+                rate = Decimal("0")
+            amount = (entered * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        else:
+            rate = Decimal("0")
+            amount = entered
+
         percent = cleaned.get("commission_percent") or Decimal("0")
         # Commission only applies to bank transfers; ignore it otherwise
         if cleaned.get("method") != Payment.Method.TRANSFER:
             percent = Decimal("0")
-        amount = cleaned.get("amount") or Decimal("0")
         commission = (amount * percent / Decimal("100")).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
@@ -110,8 +138,60 @@ class DebtPaymentForm(forms.Form):
             self.add_error(
                 "amount", f"Qoldiqdan ({self.max_amount:.0f} so'm) ko'p bo'lishi mumkin emas."
             )
+        cleaned["amount"] = amount  # canonical so'm value the views persist
+        cleaned["amount_original"] = entered  # the physical figure (dollars for USD)
+        cleaned["currency"] = currency
+        cleaned["exchange_rate"] = rate
         cleaned["commission_percent"] = percent
         cleaned["commission"] = commission
+        return cleaned
+
+
+class ExpenseForm(forms.ModelForm):
+    """A payout from the till. `method` records which wallet it left (cash/card/bank);
+    `currency` records whether it left the so'm or the dollar till. A dollar expense is
+    entered in dollars with a hand-typed rate and converted to a so'm `amount`."""
+
+    class Meta:
+        model = Expense
+        fields = ["date", "amount", "currency", "exchange_rate", "category", "method", "note"]
+        widgets = {
+            "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — nima uchun"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["amount"].label = "Miqdor"
+        self.fields["amount"].help_text = "Tanlangan valyutada — dollar tanlansa, dollardagi summa"
+        self.fields["exchange_rate"].required = False
+        self.fields["exchange_rate"].help_text = "Faqat dollar chiqimi uchun — qo'lda kiritiladi"
+
+    def clean_amount(self):
+        amount = self.cleaned_data.get("amount")
+        if amount is not None and amount <= 0:
+            raise forms.ValidationError("Summa 0 dan katta bo'lishi kerak.")
+        return amount
+
+    def clean(self):
+        cleaned = super().clean()
+        # Convert the entered amount to so'm — the base the kassa/profit math uses.
+        currency = cleaned.get("currency") or Payment.Currency.UZS
+        entered = cleaned.get("amount") or Decimal("0")
+        rate = cleaned.get("exchange_rate") or Decimal("0")
+        if currency == Payment.Currency.USD:
+            if rate <= 0:
+                self.add_error("exchange_rate", "Dollar chiqimi uchun kursni kiriting.")
+                rate = Decimal("0")
+            som = (entered * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        else:
+            rate = Decimal("0")
+            som = entered
+        # `amount` persists as so'm (via cleaned); `amount_original` keeps the
+        # physical figure and isn't a form field, so it's set on the instance here.
+        self.instance.amount_original = entered
+        cleaned["amount"] = som
+        cleaned["exchange_rate"] = rate
         return cleaned
 
 

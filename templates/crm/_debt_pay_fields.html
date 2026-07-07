@@ -4,6 +4,12 @@
 {% if fifo %}<p class="field-hint" style="margin: -10px 0 6px;">To'lov eng eski chekdan boshlab (FIFO) taqsimlanadi.</p>{% endif %}
 {% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
 <p>{{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}</p>
+<p>{{ form.currency.label_tag }}{{ form.currency }}{{ form.currency.errors }}</p>
+<div class="usd-only"{% if form.currency.value != 'usd' %} hidden{% endif %}>
+  <p>{{ form.exchange_rate.label_tag }}{{ form.exchange_rate }}{{ form.exchange_rate.errors }}
+    {% if form.exchange_rate.help_text %}<span class="field-hint">{{ form.exchange_rate.help_text }}</span>{% endif %}</p>
+  <div class="pay-breakdown" data-usd hidden></div>
+</div>
 <p>{{ form.method.label_tag }}{{ form.method }}{{ form.method.errors }}</p>
 <div class="transfer-only"{% if form.method.value != 'transfer' %} hidden{% endif %}>
   <p>{{ form.commission_percent.label_tag }}{{ form.commission_percent }}{{ form.commission_percent.errors }}

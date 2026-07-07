@@ -19,6 +19,7 @@ from accounts.models import User
 from .forms import (
     ClientForm,
     DebtPaymentForm,
+    ExpenseForm,
     ProductForm,
     ReturnForm,
     SaleForm,
@@ -34,6 +35,7 @@ from .models import (
     REVENUE,
     AuditLog,
     Client,
+    Expense,
     Payment,
     Product,
     Return,
@@ -722,7 +724,9 @@ def _client_outstanding_fifo(request, client):
     )
 
 
-def _distribute_debt_payment(sales, amount, method, percent, note, user):
+def _distribute_debt_payment(
+    sales, amount, method, percent, note, user, currency=None, exchange_rate=Decimal("0")
+):
     """Spread a lump payment across FIFO-ordered debts, oldest first.
 
     `amount` is the gross the client handed over; on a bank transfer the bank
@@ -732,6 +736,7 @@ def _distribute_debt_payment(sales, amount, method, percent, note, user):
     """
     is_transfer = method == Payment.Method.TRANSFER
     percent = percent if is_transfer else Decimal("0")
+    currency = currency or Payment.Currency.UZS
     commission_total = (amount * percent / Decimal("100")).quantize(
         Decimal("0.01"), ROUND_HALF_UP
     )
@@ -753,9 +758,20 @@ def _distribute_debt_payment(sales, amount, method, percent, note, user):
                 ).quantize(Decimal("0.01"), ROUND_HALF_UP)
             else:
                 chunk_gross = chunk_net
+            # Each so'm chunk's dollar figure (for the dollar till) is its share of
+            # the gross at the payment's rate; a so'm payment's original == the so'm.
+            if currency == Payment.Currency.USD and exchange_rate:
+                chunk_original = (chunk_gross / exchange_rate).quantize(
+                    Decimal("0.01"), ROUND_HALF_UP
+                )
+            else:
+                chunk_original = chunk_gross
             Payment.objects.create(
                 sale=sale,
                 amount=chunk_gross,
+                amount_original=chunk_original,
+                currency=currency,
+                exchange_rate=exchange_rate,
                 method=method,
                 commission=chunk_gross - chunk_net,
                 commission_percent=percent,
@@ -777,6 +793,14 @@ def _clean_amount(value):
     if value == value.to_integral_value():
         return value.to_integral_value()
     return value.normalize()
+
+
+def _usd_note(cleaned):
+    """A ' · $100.00 × 12 700' suffix for audit/success lines on a dollar payment."""
+    if cleaned.get("currency") == Payment.Currency.USD and cleaned.get("exchange_rate"):
+        usd = cleaned["amount"] / cleaned["exchange_rate"]
+        return f" · ${usd:,.2f} × {cleaned['exchange_rate']:,.0f}"
+    return ""
 
 
 def _render_client_pay(request, client, total, form, invalid=False):
@@ -812,11 +836,13 @@ def client_debt_pay(request, pk):
                 form.cleaned_data["commission_percent"],
                 form.cleaned_data["note"],
                 request.user,
+                currency=form.cleaned_data["currency"],
+                exchange_rate=form.cleaned_data["exchange_rate"],
             )
             AuditLog.record(
                 request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
                 f"{client.name} — {form.cleaned_data['amount']:,.0f} so'm "
-                f"({touched} ta chekka, {form.cleaned_data['method']})",
+                f"({touched} ta chekka, {form.cleaned_data['method']}){_usd_note(form.cleaned_data)}",
             )
             messages.success(
                 request,
@@ -1030,6 +1056,221 @@ def report_export(request):
     return response
 
 
+# --- Kassa (cash register) ----------------------------------------------------
+
+def _currency_till(payments, expenses, date_from, date_to, *, som):
+    """Income (by method), expense and the running balance for ONE currency drawer.
+
+    The so'm drawer counts net so'm (amount − bank fee); the dollar drawer counts the
+    physical dollars handed over (`amount_original`). The balance is cumulative:
+    opening = everything strictly before date_from, closing = opening + in − out."""
+    field = PAYMENT_NET if som else F("amount_original")
+    exp_field = "amount" if som else "amount_original"
+
+    def income(**flt):
+        return payments.filter(**flt).aggregate(s=Sum(field))["s"] or Decimal("0")
+
+    def outflow(**flt):
+        return expenses.filter(**flt).aggregate(s=Sum(exp_field))["s"] or Decimal("0")
+
+    window = {"date__gte": date_from, "date__lte": date_to}
+    cash = income(method=Payment.Method.CASH, **window)
+    card = income(method=Payment.Method.CARD, **window)
+    bank = income(method=Payment.Method.TRANSFER, **window)
+    total_in = cash + card + bank
+    total_out = outflow(**window)
+    opening = income(date__lt=date_from) - outflow(date__lt=date_from)
+    return {
+        "cash": cash, "card": card, "bank": bank, "income": total_in,
+        "expense": total_out, "opening": opening,
+        "closing": opening + total_in - total_out,
+    }
+
+
+def _kassa_summary(date_from, date_to, rep=None):
+    """Two side-by-side till drawers — so'm and dollar — each with its income by
+    method, expense and running balance. Scoped to one employee when `rep` is given."""
+    payments = Payment.objects.all()
+    expenses = Expense.objects.all()
+    if rep is not None:
+        payments = payments.filter(created_by=rep)
+        expenses = expenses.filter(created_by=rep)
+    uzs, usd = Payment.Currency.UZS, Payment.Currency.USD
+    return {
+        "som": _currency_till(
+            payments.filter(currency=uzs), expenses.filter(currency=uzs),
+            date_from, date_to, som=True,
+        ),
+        "usd": _currency_till(
+            payments.filter(currency=usd), expenses.filter(currency=usd),
+            date_from, date_to, som=False,
+        ),
+    }
+
+
+def _per_employee_kassa(date_from, date_to):
+    """Per-employee kassa flow + sales performance for the window: money they took in
+    (so'm net / dollars), money they paid out, the profit their sales earned, and the
+    net of that profit less all their expenses (in so'm)."""
+    window = {"date__gte": date_from, "date__lte": date_to}
+    users = {u.pk: u for u in User.objects.all()}
+    usd = Payment.Currency.USD
+
+    def blank(uid):
+        return {
+            "employee": str(users.get(uid)) if users.get(uid) else "—",
+            "in_som": Decimal("0"), "in_usd": Decimal("0"),
+            "out_som": Decimal("0"), "out_usd": Decimal("0"),
+            "expense_total": Decimal("0"), "profit": Decimal("0"),
+        }
+
+    rows = {}
+
+    def row(uid):
+        return rows.setdefault(uid, blank(uid))
+
+    for r in (
+        Payment.objects.filter(**window)
+        .values("created_by", "currency")
+        .annotate(som=Sum(PAYMENT_NET), usd_amt=Sum("amount_original"))
+    ):
+        rr = row(r["created_by"])
+        if r["currency"] == usd:
+            rr["in_usd"] += r["usd_amt"] or Decimal("0")
+        else:
+            rr["in_som"] += r["som"] or Decimal("0")
+
+    for r in (
+        Expense.objects.filter(**window)
+        .values("created_by", "currency")
+        .annotate(som=Sum("amount"), usd_amt=Sum("amount_original"))
+    ):
+        rr = row(r["created_by"])
+        rr["expense_total"] += r["som"] or Decimal("0")  # so'm value of every expense
+        if r["currency"] == usd:
+            rr["out_usd"] += r["usd_amt"] or Decimal("0")
+        else:
+            rr["out_som"] += r["som"] or Decimal("0")
+
+    for r in (
+        SaleItem.objects.filter(sale__date__gte=date_from, sale__date__lte=date_to)
+        .values("sale__sales_rep")
+        .annotate(profit=Sum(PROFIT))
+    ):
+        row(r["sale__sales_rep"])["profit"] += r["profit"] or Decimal("0")
+
+    result = []
+    for rr in rows.values():
+        rr["net"] = rr["profit"] - rr["expense_total"]  # samaradorlik: foyda − rasxot
+        result.append(rr)
+    result.sort(key=lambda r: (r["in_som"] + r["profit"]), reverse=True)
+    return result
+
+
+def kassa_view(request):
+    """The cash register (Kassa): two till drawers (so'm + dollar) with income by
+    method and running balance, per-employee kassa & performance, and the expense
+    list. Visible to everyone — the shared company till. Any filter (employee, turkum,
+    usul, valyuta) scopes the figures so a supervisor can drill into one employee."""
+    dates = _date_range_context(request)
+    date_from, date_to = dates["date_from"], dates["date_to"]
+
+    filters = {key: request.GET.get(key, "") for key in ("method", "category", "currency", "rep")}
+    filters["dan"] = date_from.isoformat()
+    filters["gacha"] = date_to.isoformat()
+    reps = User.objects.filter(is_active=True).order_by("first_name", "username")
+    rep = reps.filter(pk=filters["rep"]).first() if filters["rep"].isdigit() else None
+
+    summary = _kassa_summary(date_from, date_to, rep=rep)
+
+    expenses = Expense.objects.select_related("created_by").filter(
+        date__gte=date_from, date__lte=date_to
+    )
+    if rep is not None:
+        expenses = expenses.filter(created_by=rep)
+    if filters["method"] in dict(Payment.Method.choices):
+        expenses = expenses.filter(method=filters["method"])
+    if filters["category"] in dict(Expense.Category.choices):
+        expenses = expenses.filter(category=filters["category"])
+    if filters["currency"] in dict(Payment.Currency.choices):
+        expenses = expenses.filter(currency=filters["currency"])
+    expenses = expenses.order_by("-date", "-created_at")
+
+    method_labels = dict(Payment.Method.choices)
+    category_labels = dict(Expense.Category.choices)
+    currency_labels = dict(Payment.Currency.choices)
+    active_filters = _filter_chips(request, [
+        {"param": "rep", "label": "Xodim", "value": str(rep) if rep else ""},
+        {"param": "category", "label": "Turkum", "value": category_labels.get(filters["category"], "")},
+        {"param": "method", "label": "Usul", "value": method_labels.get(filters["method"], "")},
+        {"param": "currency", "label": "Valyuta", "value": currency_labels.get(filters["currency"], "")},
+    ])
+    export_qs = request.GET.urlencode()
+    return render(request, "crm/kassa.html", {
+        "summary": summary,
+        "expenses": expenses,
+        "per_employee": _per_employee_kassa(date_from, date_to),
+        "filters": filters,
+        "reps": reps,
+        "active_filters": active_filters,
+        "filter_count": len(active_filters),
+        "has_filters": bool(active_filters),
+        "filter_url": reverse("kassa"),
+        "show_daterange_picker": True,
+        "keep_daterange": True,
+        "show_method": True,
+        "show_category": True,
+        "show_currency": True,
+        "export_url": reverse("report_export") + (f"?{export_qs}" if export_qs else ""),
+        **dates,
+    })
+
+
+def expense_create(request):
+    """Record a payout from the till. Any logged-in user may add one — staff come to
+    the cashier and the expense is written against the kassa (logged for audit)."""
+    form = ExpenseForm(request.POST or None)
+    title = "Chiqim qo'shish"
+    if request.method == "POST":
+        if form.is_valid():
+            expense = form.save(commit=False)
+            expense.created_by = request.user
+            expense.save()
+            usd = (
+                f" · ${expense.original_amount:,.2f} × {expense.exchange_rate:,.0f}"
+                if expense.currency == Payment.Currency.USD else ""
+            )
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Chiqim", expense.pk,
+                f"{expense.get_category_display()} — {expense.amount:,.0f} so'm "
+                f"({expense.get_method_display()}){usd}",
+            )
+            messages.success(request, f"Chiqim qo'shildi: {expense.amount:,.0f} so'm.")
+            return form_success(request, reverse("kassa"))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def expense_delete(request, pk):
+    """Remove a mistaken expense. Admin/manager only — sellers add but can't erase."""
+    expense = get_object_or_404(Expense.objects.select_related("created_by"), pk=pk)
+    if request.method == "POST":
+        summary = f"{expense.get_category_display()} — {expense.amount:,.0f} so'm"
+        expense.delete()
+        AuditLog.record(request.user, AuditLog.Action.DELETE, "Chiqim", pk, summary)
+        messages.success(request, "Chiqim o'chirildi.")
+        return form_reload(request, reverse("kassa"))
+    return render_confirm(
+        request,
+        "Chiqimni o'chirish",
+        f"{expense.get_category_display()} — {expense.amount:,.0f} so'm chiqim "
+        f"o'chiriladi. Davom etasizmi?",
+        "Ha, o'chirish",
+        confirm_class="btn-danger",
+    )
+
+
 def payment_export(request):
     """CSV of payments, scoped by role and filtered by the same date window."""
     payments = Payment.objects.select_related("sale", "sale__client", "created_by")
@@ -1220,7 +1461,8 @@ def sale_mark_paid(request, pk):
         remaining = sale.debt_remaining
         if remaining > 0:
             Payment.objects.create(
-                sale=sale, amount=remaining, method=Payment.Method.CASH,
+                sale=sale, amount=remaining, amount_original=remaining,
+                method=Payment.Method.CASH,
                 kind=Payment.Kind.SALE, date=timezone.localdate(), created_by=request.user,
             )
             AuditLog.record(
@@ -1261,6 +1503,9 @@ def sale_pay(request, pk):
             Payment.objects.create(
                 sale=sale,
                 amount=form.cleaned_data["amount"],
+                amount_original=form.cleaned_data["amount_original"],
+                currency=form.cleaned_data["currency"],
+                exchange_rate=form.cleaned_data["exchange_rate"],
                 method=form.cleaned_data["method"],
                 commission=form.cleaned_data["commission"],
                 commission_percent=form.cleaned_data["commission_percent"],
@@ -1272,7 +1517,7 @@ def sale_pay(request, pk):
             AuditLog.record(
                 request.user, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
                 f"{sale.client.name} — {form.cleaned_data['amount']:,.0f} so'm "
-                f"({form.cleaned_data['method']})",
+                f"({form.cleaned_data['method']}){_usd_note(form.cleaned_data)}",
             )
             if sale.debt_remaining <= 0:
                 messages.success(request, "Qarz to'liq to'landi.")

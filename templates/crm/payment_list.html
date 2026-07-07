@@ -82,6 +82,7 @@
     <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=p.sale.client.name %}<a href="{% url 'sale_detail' p.sale.pk %}">{{ p.sale.client.name }}</a></span></td>
     <td>{{ p.sale.item_summary }}</td>
     <td class="num"><strong>{{ p.amount|floatformat:"0g" }}</strong>
+      {% if p.currency == 'usd' %}<span class="cell-sub">${{ p.original_amount|floatformat:"2g" }} × {{ p.exchange_rate|floatformat:"0g" }} kurs</span>{% endif %}
       {% if p.commission %}<span class="cell-sub">komissiya −{{ p.commission|floatformat:"0g" }} ({{ p.commission_percent|floatformat:"-2" }}%) · qo'lga {{ p.net_amount|floatformat:"0g" }}</span>{% endif %}
     </td>
     <td><span class="badge badge-neutral">{{ p.get_method_display }}</span>

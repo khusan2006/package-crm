@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
 from django.db import models
@@ -456,8 +456,26 @@ class Payment(models.Model):
         SALE = "sale", "Sotuvda to'langan"
         DEBT = "debt", "Qarz to'lovi"
 
+    class Currency(models.TextChoices):
+        UZS = "uzs", "So'm"
+        USD = "usd", "Dollar"
+
     date = models.DateField("Sana", default=timezone.localdate)
+    # `amount` is always the so'm value — the canonical figure every debt, till and
+    # report total is built on. A dollar payment is converted here at entry time.
     amount = models.DecimalField("Miqdor (so'm)", max_digits=18, decimal_places=2)
+    currency = models.CharField(
+        "Valyuta", max_length=3, choices=Currency.choices, default=Currency.UZS
+    )
+    # So'm per 1 USD, typed in by hand on each dollar payment; 0 for so'm payments.
+    exchange_rate = models.DecimalField(
+        "Dollar kursi (1$ = so'm)", max_digits=12, decimal_places=2, default=0
+    )
+    # The physical amount handed over, in its own currency (dollars for a USD
+    # payment). `amount` is its so'm value; this is what the dollar till counts.
+    amount_original = models.DecimalField(
+        "Asl summa (valyutada)", max_digits=18, decimal_places=2, default=0
+    )
     method = models.CharField(
         "To'lov usuli", max_length=8, choices=Method.choices, default=Method.CASH
     )
@@ -494,8 +512,73 @@ class Payment(models.Model):
         client bears the fee, also the amount credited against their debt."""
         return self.amount - (self.commission or Decimal("0"))
 
+    @property
+    def original_amount(self):
+        """The amount in the currency the client actually handed over — the dollars
+        for a USD payment, otherwise the so'm figure. Stored on entry; older rows
+        (recorded before this field existed) fall back to the so'm `amount`."""
+        return self.amount_original or self.amount
+
     def __str__(self):
         return f"{self.get_kind_display()}: {self.amount} so'm ({self.date})"
+
+
+class Expense(models.Model):
+    """A cash-register outflow (Chiqim): money paid out of the till — fuel,
+    salaries, meals, purchases, and the like. Reduces the kassa balance. Unlike a
+    bank commission (which the client bears), an expense is the business's own cost,
+    tagged with the wallet it left (naqd/karta/bank) so each method's balance is right."""
+
+    class Category(models.TextChoices):
+        FUEL = "fuel", "Benzin / transport"
+        SALARY = "salary", "Oylik / xodim"
+        RENT = "rent", "Ijara"
+        MEAL = "meal", "Ovqat (obed)"
+        PURCHASE = "purchase", "Mahsulot xaridi"
+        OTHER = "other", "Boshqa"
+
+    date = models.DateField("Sana", default=timezone.localdate)
+    # `amount` is always the so'm value — the base every kassa and profit figure
+    # uses. A dollar expense is converted here; `amount_original` keeps the dollars.
+    amount = models.DecimalField("Summa (so'm)", max_digits=18, decimal_places=2)
+    currency = models.CharField(
+        "Valyuta", max_length=3, choices=Payment.Currency.choices,
+        default=Payment.Currency.UZS,
+    )
+    exchange_rate = models.DecimalField(
+        "Dollar kursi (1$ = so'm)", max_digits=12, decimal_places=2, default=0
+    )
+    amount_original = models.DecimalField(
+        "Asl summa (valyutada)", max_digits=18, decimal_places=2, default=0
+    )
+    category = models.CharField(
+        "Turkum", max_length=10, choices=Category.choices, default=Category.OTHER
+    )
+    method = models.CharField(
+        "To'lov usuli", max_length=8, choices=Payment.Method.choices,
+        default=Payment.Method.CASH,
+    )
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="expenses",
+        verbose_name="Kim kiritdi",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date", "-created_at"]
+        verbose_name = "Chiqim"
+        verbose_name_plural = "Chiqimlar"
+
+    @property
+    def original_amount(self):
+        """The dollars for a USD expense, otherwise the so'm figure."""
+        return self.amount_original or self.amount
+
+    def __str__(self):
+        return f"{self.get_category_display()}: {self.amount} so'm ({self.date})"
 
 
 class AuditLog(models.Model):

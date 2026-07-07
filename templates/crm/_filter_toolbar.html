@@ -17,7 +17,7 @@
     {% endif %}
   </div>
   <div class="toolbar-right">
-    {% if show_daterange_picker and not has_filters %}
+    {% if show_daterange_picker and keep_daterange or show_daterange_picker and not has_filters %}
     <div class="daterange" data-from="{{ filters.dan }}" data-to="{{ filters.gacha }}" data-today="{{ today_iso }}">
       <a class="datebar-btn" href="{% qs_replace dan=prev_from gacha=prev_to %}" title="Oldingi kun">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
