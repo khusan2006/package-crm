@@ -7,7 +7,17 @@ from django.utils import timezone
 
 from accounts.models import User
 
-from .models import AuditLog, Client, Payment, Product, Sale, SaleItem, StockEntry
+from .models import (
+    AuditLog,
+    Client,
+    Expense,
+    Payment,
+    Product,
+    Sale,
+    SaleItem,
+    StockEntry,
+)
+from .views import _kassa_summary, _per_employee_kassa
 
 
 def make_sale(client, rep, product, weight="10", price="24000", **kwargs):
@@ -1122,3 +1132,99 @@ class SeedDemoTests(TestCase):
         self.assertEqual(Sale.objects.count(), 30)
         # Every seeded sale carries a deadline (there is no is_debt field anymore)
         self.assertFalse(Sale.objects.filter(debt_deadline__isnull=True).exists())
+
+
+class KassaCurrencyTests(BaseSetup):
+    """Dollar payments/expenses and the two-currency kassa (so'm + dollar tills)."""
+
+    def _debt_sale(self):
+        # 10 kg × 24000 = 240000 outstanding
+        return make_sale(
+            self.client1, self.sales1, self.product,
+            is_debt=True, debt_deadline=timezone.localdate() + timedelta(days=5),
+        )
+
+    def test_dollar_payment_converts_to_som(self):
+        # $10 × 12700 = 127000 so'm credited against the debt
+        sale = self._debt_sale()
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]),
+            {"amount": "10", "currency": "usd", "exchange_rate": "12700", "method": "cash"},
+        )
+        sale.refresh_from_db()
+        payment = sale.payments.get()
+        self.assertEqual(payment.currency, "usd")
+        self.assertEqual(payment.amount, Decimal("127000.00"))        # so'm value
+        self.assertEqual(payment.amount_original, Decimal("10.00"))   # the dollars
+        self.assertEqual(payment.exchange_rate, Decimal("12700.00"))
+        self.assertEqual(sale.debt_remaining, Decimal("113000"))      # 240000 − 127000
+
+    def test_dollar_payment_requires_rate(self):
+        sale = self._debt_sale()
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("sale_pay", args=[sale.pk]),
+            {"amount": "10", "currency": "usd", "method": "cash"},  # no rate
+        )
+        self.assertEqual(response.status_code, 200)   # re-rendered with errors
+        self.assertEqual(sale.payments.count(), 0)    # nothing recorded
+
+    def test_dollar_expense_converts_to_som(self):
+        # $20 × 12700 = 254000 so'm
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("expense_create"),
+            {
+                "date": timezone.localdate().isoformat(),
+                "amount": "20", "currency": "usd", "exchange_rate": "12700",
+                "category": "purchase", "method": "cash", "note": "dollar rasxot",
+            },
+        )
+        expense = Expense.objects.get(note="dollar rasxot")
+        self.assertEqual(expense.currency, "usd")
+        self.assertEqual(expense.amount, Decimal("254000.00"))        # so'm value
+        self.assertEqual(expense.amount_original, Decimal("20.00"))   # the dollars
+
+    def test_kassa_summary_isolates_dollar_till(self):
+        # $10 in and $4 out → a $6 dollar-till balance, independent of the
+        # so'm activity in the base fixtures. ($10 × 12700 = 127000 ≤ 240000 debt.)
+        sale = self._debt_sale()
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]),
+            {"amount": "10", "currency": "usd", "exchange_rate": "12700", "method": "cash"},
+        )
+        self.client.post(
+            reverse("expense_create"),
+            {
+                "date": timezone.localdate().isoformat(),
+                "amount": "4", "currency": "usd", "exchange_rate": "12700",
+                "category": "purchase", "method": "cash",
+            },
+        )
+        today = timezone.localdate()
+        summary = _kassa_summary(today, today)
+        self.assertEqual(summary["usd"]["cash"], Decimal("10.00"))
+        self.assertEqual(summary["usd"]["income"], Decimal("10.00"))
+        self.assertEqual(summary["usd"]["expense"], Decimal("4.00"))
+        self.assertEqual(summary["usd"]["closing"], Decimal("6.00"))
+
+    def test_per_employee_net_subtracts_expense_from_profit(self):
+        # sales2's only sale earns 60000 profit; a 20000 expense they record
+        # nets their performance to 40000 (foyda − rasxot).
+        self.client.force_login(self.sales2)
+        self.client.post(
+            reverse("expense_create"),
+            {
+                "date": timezone.localdate().isoformat(),
+                "amount": "20000", "currency": "uzs",
+                "category": "fuel", "method": "cash", "note": "sales2 rasxot",
+            },
+        )
+        today = timezone.localdate()
+        rows = {r["employee"]: r for r in _per_employee_kassa(today, today)}
+        row = rows[str(self.sales2)]
+        self.assertEqual(row["profit"], Decimal("60000"))
+        self.assertEqual(row["out_som"], Decimal("20000"))
+        self.assertEqual(row["net"], Decimal("40000"))  # 60000 − 20000
