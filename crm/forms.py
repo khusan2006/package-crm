@@ -210,7 +210,28 @@ class StockAdjustForm(forms.Form):
 
 class SaleForm(forms.ModelForm):
     """The sale receipt header. Every sale is a receivable; if no deadline is
-    entered it defaults to the sale date + DEFAULT_DEBT_DAYS."""
+    entered it defaults to the sale date + DEFAULT_DEBT_DAYS. On create, an
+    optional immediate payment (any currency) can settle it right away."""
+
+    # Optional "pay now" block, only added when creating a sale (with_payment).
+    pay_amount = forms.DecimalField(
+        label="Darhol to'lov (ixtiyoriy)", max_digits=18, decimal_places=2,
+        required=False, min_value=Decimal("0.01"),
+        help_text="Bo'sh qolsa — sotuv qarz sifatida qoladi",
+    )
+    pay_currency = forms.ChoiceField(
+        label="Valyuta", choices=Payment.Currency.choices,
+        initial=Payment.Currency.UZS, required=False,
+    )
+    pay_exchange_rate = forms.DecimalField(
+        label="Dollar kursi (1$ = so'm)", max_digits=12, decimal_places=2,
+        required=False, min_value=Decimal("0"),
+        help_text="Faqat dollar to'lovi uchun — qo'lda kiritiladi",
+    )
+    pay_method = forms.ChoiceField(
+        label="To'lov usuli", choices=Payment.Method.choices,
+        initial=Payment.Method.CASH, required=False,
+    )
 
     class Meta:
         model = Sale
@@ -220,7 +241,7 @@ class SaleForm(forms.ModelForm):
             "debt_deadline": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
         }
 
-    def __init__(self, *args, user=None, **kwargs):
+    def __init__(self, *args, user=None, with_payment=False, **kwargs):
         super().__init__(*args, **kwargs)
         if user is not None and not user.can_see_all_records:
             self.fields["client"].queryset = Client.objects.filter(owner=user)
@@ -229,6 +250,10 @@ class SaleForm(forms.ModelForm):
             f"Bo'sh qolsa — sotuv sanasidan +{DEFAULT_DEBT_DAYS} kun"
         )
         self.fields["client"].widget.attrs["data-combobox"] = ""
+        # The pay-now block only makes sense when creating; drop it on edit.
+        if not with_payment:
+            for name in ("pay_amount", "pay_currency", "pay_exchange_rate", "pay_method"):
+                self.fields.pop(name, None)
 
     def clean(self):
         cleaned = super().clean()
@@ -236,6 +261,26 @@ class SaleForm(forms.ModelForm):
             base_date = cleaned.get("date") or timezone.localdate()
             cleaned["debt_deadline"] = base_date + timedelta(days=DEFAULT_DEBT_DAYS)
             self.instance.debt_deadline = cleaned["debt_deadline"]
+        # Convert an optional immediate payment to so'm (the "≤ sale total" check
+        # needs the line items, so it lives in the view). pay_som == 0 means none.
+        cleaned["pay_som"] = Decimal("0")
+        if "pay_amount" in self.fields and cleaned.get("pay_amount"):
+            amount = cleaned["pay_amount"]
+            currency = cleaned.get("pay_currency") or Payment.Currency.UZS
+            rate = cleaned.get("pay_exchange_rate") or Decimal("0")
+            if currency == Payment.Currency.USD:
+                if rate <= 0:
+                    self.add_error("pay_exchange_rate", "Dollar to'lovi uchun kursni kiriting.")
+                    rate = Decimal("0")
+                som = (amount * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            else:
+                rate = Decimal("0")
+                som = amount
+            cleaned["pay_som"] = som
+            cleaned["pay_original"] = amount
+            cleaned["pay_rate"] = rate
+            cleaned["pay_currency"] = currency
+            cleaned["pay_method"] = cleaned.get("pay_method") or Payment.Method.CASH
         return cleaned
 
 

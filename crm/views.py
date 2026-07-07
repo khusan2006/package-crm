@@ -1354,10 +1354,19 @@ def _product_price_map():
 
 
 def sale_create(request):
-    form = SaleForm(request.POST or None, user=request.user)
+    form = SaleForm(request.POST or None, user=request.user, with_payment=True)
     formset = SaleItemFormSet(request.POST or None, instance=Sale(), prefix="items")
     if request.method == "POST":
         if form.is_valid() and formset.is_valid():
+            # An optional immediate payment can't exceed the sale's own total.
+            pay_som = form.cleaned_data.get("pay_som") or Decimal("0")
+            total = _formset_total(formset)
+            if pay_som > total:
+                form.add_error(
+                    "pay_amount",
+                    f"To'lov sotuv summasidan ({total:,.0f} so'm) ko'p bo'lishi mumkin emas.",
+                )
+                return _render_sale_form(request, form, formset, "Yangi sotuv", invalid=True)
             sale = form.save(commit=False)
             sale.sales_rep = request.user
             sale.save()
@@ -1367,8 +1376,27 @@ def sale_create(request):
                 request.user, AuditLog.Action.CREATE, "Sotuv", sale.pk,
                 f"{sale.client.name} — {sale.total_price:,.0f} so'm",
             )
-            # Every sale starts as a receivable; payment is recorded separately.
-            messages.success(request, "Sotuv qo'shildi (qarz sifatida).")
+            if pay_som > 0:
+                cd = form.cleaned_data
+                Payment.objects.create(
+                    sale=sale, amount=pay_som, amount_original=cd["pay_original"],
+                    currency=cd["pay_currency"], exchange_rate=cd["pay_rate"],
+                    method=cd["pay_method"], kind=Payment.Kind.SALE,
+                    date=sale.date, created_by=request.user,
+                )
+                usd = (
+                    f" · ${cd['pay_original']:,.2f} × {cd['pay_rate']:,.0f}"
+                    if cd["pay_currency"] == Payment.Currency.USD else ""
+                )
+                AuditLog.record(
+                    request.user, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
+                    f"{sale.client.name} — {pay_som:,.0f} so'm (sotuvda){usd}",
+                )
+                messages.success(
+                    request, f"Sotuv qo'shildi. {pay_som:,.0f} so'm to'lov qabul qilindi."
+                )
+            else:
+                messages.success(request, "Sotuv qo'shildi (qarz sifatida).")
             _warn_if_negative_stock_items(request, sale)
             return form_success(request, reverse("sale_list"))
         return _render_sale_form(request, form, formset, "Yangi sotuv", invalid=True)

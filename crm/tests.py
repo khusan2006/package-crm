@@ -1256,3 +1256,59 @@ class KassaCurrencyTests(BaseSetup):
         self.assertEqual(row["profit"], Decimal("60000"))
         self.assertEqual(row["out_som"], Decimal("20000"))
         self.assertEqual(row["net"], Decimal("40000"))  # 60000 − 20000
+
+
+class SaleTimePaymentTests(BaseSetup):
+    """Optional immediate payment (any currency) recorded at sale creation."""
+
+    def _data(self, **overrides):
+        # 5 kg × 24000 = 120000 total
+        return sale_post(
+            self.client1.pk, [one_item(self.product, weight="5", price="24000")], **overrides
+        )
+
+    def test_sale_with_som_payment_is_settled(self):
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_create"),
+            self._data(pay_amount="120000", pay_currency="uzs", pay_method="cash"),
+        )
+        sale = Sale.objects.latest("created_at")
+        self.assertTrue(sale.is_paid)
+        payment = sale.payments.get()
+        self.assertEqual(payment.amount, Decimal("120000"))
+        self.assertEqual(payment.kind, "sale")
+
+    def test_sale_with_dollar_payment_converts(self):
+        # $5 × 12700 = 63500 so'm partial payment on a 120000 sale
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_create"),
+            self._data(
+                pay_amount="5", pay_currency="usd",
+                pay_exchange_rate="12700", pay_method="cash",
+            ),
+        )
+        sale = Sale.objects.latest("created_at")
+        payment = sale.payments.get()
+        self.assertEqual(payment.currency, "usd")
+        self.assertEqual(payment.amount, Decimal("63500.00"))
+        self.assertEqual(payment.amount_original, Decimal("5.00"))
+        self.assertEqual(sale.debt_remaining, Decimal("56500"))  # 120000 − 63500
+
+    def test_sale_without_payment_stays_receivable(self):
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("sale_create"), self._data())
+        sale = Sale.objects.latest("created_at")
+        self.assertEqual(sale.payments.count(), 0)
+        self.assertTrue(sale.is_outstanding)
+
+    def test_payment_over_total_is_rejected(self):
+        self.client.force_login(self.sales1)
+        before = Sale.objects.count()
+        response = self.client.post(
+            reverse("sale_create"),
+            self._data(pay_amount="200000", pay_currency="uzs", pay_method="cash"),
+        )
+        self.assertEqual(response.status_code, 200)   # re-rendered with an error
+        self.assertEqual(Sale.objects.count(), before)  # nothing saved
