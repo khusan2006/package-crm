@@ -43,6 +43,7 @@ urlpatterns = [
     path("reports/export/", crm_views.report_export, name="report_export"),
     path("kassa/", crm_views.kassa_view, name="kassa"),
     path("kassa/chiqim/", crm_views.expense_create, name="expense_create"),
+    path("kassa/chiqim/<int:pk>/edit/", crm_views.expense_edit, name="expense_edit"),
     path("kassa/chiqim/<int:pk>/delete/", crm_views.expense_delete, name="expense_delete"),
     path("sales/new/", crm_views.sale_create, name="sale_create"),
     path("sales/<int:pk>/", crm_views.sale_detail, name="sale_detail"),

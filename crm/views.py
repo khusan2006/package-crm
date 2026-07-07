@@ -1252,6 +1252,25 @@ def expense_create(request):
 
 
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
+def expense_edit(request, pk):
+    """Fix a mistaken expense. Admin/manager only — sellers add but can't edit."""
+    expense = get_object_or_404(Expense, pk=pk)
+    title = "Chiqimni tahrirlash"
+    form = ExpenseForm(request.POST or None, instance=expense)
+    if request.method == "POST":
+        if form.is_valid():
+            form.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Chiqim", expense.pk,
+                f"{expense.get_category_display()} — {expense.amount:,.0f} so'm",
+            )
+            messages.success(request, "Chiqim yangilandi.")
+            return form_success(request, reverse("kassa"))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
 def expense_delete(request, pk):
     """Remove a mistaken expense. Admin/manager only — sellers add but can't erase."""
     expense = get_object_or_404(Expense.objects.select_related("created_by"), pk=pk)

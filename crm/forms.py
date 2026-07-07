@@ -166,6 +166,10 @@ class ExpenseForm(forms.ModelForm):
         self.fields["amount"].help_text = "Tanlangan valyutada — dollar tanlansa, dollardagi summa"
         self.fields["exchange_rate"].required = False
         self.fields["exchange_rate"].help_text = "Faqat dollar chiqimi uchun — qo'lda kiritiladi"
+        # Editing a dollar expense: show the original dollars in the amount field
+        # (not the stored so'm), so re-saving converts at the rate correctly.
+        if self.instance.pk and self.instance.currency == Payment.Currency.USD:
+            self.initial["amount"] = self.instance.amount_original
 
     def clean_amount(self):
         amount = self.cleaned_data.get("amount")

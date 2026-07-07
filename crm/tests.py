@@ -1210,6 +1210,48 @@ class KassaCurrencyTests(BaseSetup):
         self.assertEqual(summary["usd"]["expense"], Decimal("4.00"))
         self.assertEqual(summary["usd"]["closing"], Decimal("6.00"))
 
+    def test_dollar_expense_edit_prefills_dollars_and_recomputes(self):
+        self.client.force_login(self.admin)
+        self.client.post(
+            reverse("expense_create"),
+            {
+                "date": timezone.localdate().isoformat(),
+                "amount": "20", "currency": "usd", "exchange_rate": "12700",
+                "category": "purchase", "method": "cash", "note": "edit-me",
+            },
+        )
+        expense = Expense.objects.get(note="edit-me")
+        # The edit form shows the original dollars, not the stored so'm.
+        get = self.client.get(reverse("expense_edit", args=[expense.pk]))
+        self.assertEqual(get.context["form"].initial["amount"], Decimal("20.00"))
+        # Re-saving at $30 reconverts the so'm value.
+        self.client.post(
+            reverse("expense_edit", args=[expense.pk]),
+            {
+                "date": timezone.localdate().isoformat(),
+                "amount": "30", "currency": "usd", "exchange_rate": "12700",
+                "category": "purchase", "method": "cash", "note": "edit-me",
+            },
+        )
+        expense.refresh_from_db()
+        self.assertEqual(expense.amount_original, Decimal("30.00"))
+        self.assertEqual(expense.amount, Decimal("381000.00"))  # 30 × 12700
+
+    def test_seller_cannot_edit_expense(self):
+        self.client.force_login(self.admin)
+        self.client.post(
+            reverse("expense_create"),
+            {
+                "date": timezone.localdate().isoformat(), "amount": "50000",
+                "currency": "uzs", "category": "fuel", "method": "cash", "note": "x",
+            },
+        )
+        expense = Expense.objects.get(note="x")
+        self.client.force_login(self.sales1)
+        self.assertEqual(
+            self.client.get(reverse("expense_edit", args=[expense.pk])).status_code, 403
+        )
+
     def test_per_employee_net_subtracts_expense_from_profit(self):
         # sales2's only sale earns 60000 profit; a 20000 expense they record
         # nets their performance to 40000 (foyda − rasxot).
