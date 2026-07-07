@@ -1278,8 +1278,8 @@ def expense_create(request):
             )
             messages.success(request, f"Chiqim qo'shildi: {expense.amount:,.0f} so'm.")
             return form_success(request, reverse("kassa"))
-        return form_response(request, form, title, invalid=True)
-    return form_response(request, form, title)
+        return form_response(request, form, title, invalid=True, modal_template="crm/_expense_modal.html")
+    return form_response(request, form, title, modal_template="crm/_expense_modal.html")
 
 
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
@@ -1297,8 +1297,8 @@ def expense_edit(request, pk):
             )
             messages.success(request, "Chiqim yangilandi.")
             return form_success(request, reverse("kassa"))
-        return form_response(request, form, title, invalid=True)
-    return form_response(request, form, title)
+        return form_response(request, form, title, invalid=True, modal_template="crm/_expense_modal.html")
+    return form_response(request, form, title, modal_template="crm/_expense_modal.html")
 
 
 @role_required(User.Role.ADMIN, User.Role.MANAGER)

@@ -1,0 +1,26 @@
+{% load crm_extras %}
+<div class="modal-head">
+  <h2>{{ title }}</h2>
+  <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
+</div>
+{# data-debt-pay reuses the payment form's JS: it toggles the dollar block and
+   shows the live "$X × kurs = so'm" breakdown (no commission fields here). #}
+<form method="post" action="{{ request.path }}" class="stacked" data-debt-pay>
+  {% csrf_token %}
+  {% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
+  <p>{{ form.date.label_tag }}{{ form.date }}{{ form.date.errors }}</p>
+  <p>{{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}</p>
+  <p>{{ form.currency.label_tag }}{{ form.currency }}{{ form.currency.errors }}</p>
+  <div class="usd-only"{% if form.currency.value != 'usd' %} hidden{% endif %}>
+    <p>{{ form.exchange_rate.label_tag }}{{ form.exchange_rate }}{{ form.exchange_rate.errors }}
+      {% if form.exchange_rate.help_text %}<span class="field-hint">{{ form.exchange_rate.help_text }}</span>{% endif %}</p>
+    <div class="pay-breakdown" data-usd hidden></div>
+  </div>
+  <p>{{ form.category.label_tag }}{{ form.category }}{{ form.category.errors }}</p>
+  <p>{{ form.method.label_tag }}{{ form.method }}{{ form.method.errors }}</p>
+  <p>{{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}</p>
+  <div class="modal-actions">
+    <button type="submit" class="btn">Saqlash</button>
+    <button type="button" class="btn btn-ghost" data-modal-close>Bekor qilish</button>
+  </div>
+</form>
