@@ -867,6 +867,35 @@ class PaymentFilterTests(BaseSetup):
             self.assertEqual(p.sale.sales_rep_id, self.sales1.pk)
 
 
+class DebtFilterTests(BaseSetup):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        # one overdue debt for client1/sales1, one current debt for client2/sales2
+        cls.overdue = make_sale(
+            cls.client1, cls.sales1, cls.product, is_debt=True,
+            debt_deadline=timezone.localdate() - timedelta(days=3),
+        )
+        cls.current = make_sale(
+            cls.client2, cls.sales2, cls.product, is_debt=True,
+            debt_deadline=timezone.localdate() + timedelta(days=10),
+        )
+
+    def _debtors(self, **params):
+        self.client.force_login(self.admin)
+        resp = self.client.get(reverse("debt_list"), params)
+        return {g["client"].pk for g in resp.context["debtors"]}
+
+    def test_filter_by_client(self):
+        self.assertEqual(self._debtors(client=self.client1.pk), {self.client1.pk})
+
+    def test_filter_by_rep(self):
+        self.assertEqual(self._debtors(rep=self.sales2.pk), {self.client2.pk})
+
+    def test_overdue_only(self):
+        self.assertEqual(self._debtors(overdue="1"), {self.client1.pk})
+
+
 class QuickAddClientTests(BaseSetup):
     def test_creates_client_owned_by_current_user(self):
         self.client.force_login(self.sales1)

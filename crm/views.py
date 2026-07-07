@@ -622,6 +622,14 @@ def debt_list(request):
         Sale.objects.visible_to(request.user).outstanding().select_related("client")
     )
 
+    filters = {key: request.GET.get(key, "") for key in ("client", "rep", "overdue")}
+    if filters["client"].isdigit():
+        open_sales = open_sales.filter(client_id=filters["client"])
+    if filters["rep"].isdigit() and request.user.can_see_all_records:
+        open_sales = open_sales.filter(sales_rep_id=filters["rep"])
+    if filters["overdue"] == "1":
+        open_sales = open_sales.filter(debt_deadline__lt=today)
+
     groups = {}
     total_debt = Decimal("0")
     overdue_total = Decimal("0")
@@ -651,6 +659,20 @@ def debt_list(request):
     debtors = sorted(groups.values(), key=lambda g: g["earliest"] or today)
     overdue_debtors = sum(1 for g in debtors if g["overdue_count"])
 
+    clients = _visible_clients(request.user).order_by("name")
+    reps = (
+        User.objects.filter(is_active=True).order_by("first_name", "username")
+        if request.user.can_see_all_records
+        else None
+    )
+    client_obj = clients.filter(pk=filters["client"]).first() if filters["client"].isdigit() else None
+    rep_obj = reps.filter(pk=filters["rep"]).first() if reps and filters["rep"].isdigit() else None
+    active_filters = _filter_chips(request, [
+        {"param": "client", "label": "Mijoz", "value": client_obj.name if client_obj else ""},
+        {"param": "rep", "label": "Sotuvchi", "value": str(rep_obj) if rep_obj else ""},
+        {"param": "overdue", "label": "Holat", "value": "Muddati o'tgan" if filters["overdue"] == "1" else ""},
+    ])
+
     return render(
         request,
         "crm/debt_list.html",
@@ -660,6 +682,13 @@ def debt_list(request):
             "overdue_total": overdue_total,
             "total_debtors": len(debtors),
             "overdue_debtors": overdue_debtors,
+            "filters": filters,
+            "clients": clients,
+            "reps": reps,
+            "active_filters": active_filters,
+            "filter_count": len(active_filters),
+            "has_filters": bool(active_filters),
+            "filter_url": reverse("debt_list"),
         },
     )
 
