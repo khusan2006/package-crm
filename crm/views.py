@@ -1220,6 +1220,7 @@ def kassa_view(request):
         "filter_count": len(active_filters),
         "has_filters": bool(active_filters),
         "filter_url": reverse("kassa"),
+        "rep_label": "Xodim",
         "show_daterange_picker": True,
         "keep_daterange": True,
         "show_method": True,

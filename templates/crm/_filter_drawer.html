@@ -26,7 +26,7 @@
     </label>
     {% endif %}
     {% if reps %}
-    <label>Sotuvchi
+    <label>{{ rep_label|default:"Sotuvchi" }}
       <select name="rep" data-combobox>
         <option value="">Barchasi</option>
         {% for r in reps %}<option value="{{ r.pk }}" {% if filters.rep == r.pk|stringformat:'s' %}selected{% endif %}>{{ r }}</option>{% endfor %}
