@@ -9,7 +9,23 @@ from django.db import transaction
 from django.utils import timezone
 
 from accounts.models import User
-from crm.models import Client, Payment, Product, Sale, SaleItem, StockEntry
+from crm.models import Client, Expense, Payment, Product, Sale, SaleItem, StockEntry
+
+USD_RATE = Decimal("12700")
+
+# (days ago, category, method, currency, amount|usd, note, user key)
+DEMO_EXPENSES = [
+    (2, "fuel", "cash", "uzs", "450000", "Yetkazib berish — benzin", "sales1"),
+    (2, "meal", "cash", "uzs", "120000", "Tushlik", "sales2"),
+    (5, "salary", "card", "uzs", "3500000", "Oylik avans", "admin"),
+    (8, "rent", "transfer", "uzs", "4000000", "Sklad ijarasi", "manager"),
+    (10, "purchase", "cash", "usd", "150", "Xomashyo (dollarda)", "admin"),
+    (12, "fuel", "cash", "uzs", "380000", "Benzin", "sales1"),
+    (15, "other", "cash", "uzs", "250000", "Kanstovarlar", "manager"),
+    (18, "meal", "cash", "uzs", "160000", "Jamoa tushligi", "sales2"),
+    (22, "purchase", "transfer", "uzs", "2200000", "Paket xomashyosi", "admin"),
+    (26, "salary", "card", "uzs", "3500000", "Oylik", "admin"),
+]
 
 DEMO_USERS = [
     ("admin", "Admin", "User", User.Role.ADMIN),
@@ -149,7 +165,43 @@ class Command(BaseCommand):
                     created_by=sale.sales_rep,
                 )
 
+        # Chiqimlar (kassa rasxotlari) — turli turkum, hamyon va valyutada
+        for days_ago, category, method, currency, amount, note, ukey in DEMO_EXPENSES:
+            original = Decimal(amount)
+            som = original * USD_RATE if currency == "usd" else original
+            Expense.objects.create(
+                date=today - timedelta(days=days_ago),
+                amount=som,
+                currency=currency,
+                exchange_rate=USD_RATE if currency == "usd" else Decimal("0"),
+                amount_original=original,
+                category=category,
+                method=method,
+                note=note,
+                created_by=users[ukey],
+            )
+
+        # Bir nechta dollar qarz to'lovi — dollar sandig'i bo'sh qolmasligi uchun
+        # (har biri qarzdan oshib ketmasligi uchun qoldiqqacha cheklanadi).
+        for sale in Sale.objects.outstanding()[:3]:
+            remaining = sale.debt_remaining
+            if remaining <= 0:
+                continue
+            som = min(Decimal("635000"), remaining)  # ~$50 chamasida
+            Payment.objects.create(
+                sale=sale,
+                amount=som,
+                currency=Payment.Currency.USD,
+                exchange_rate=USD_RATE,
+                amount_original=(som / USD_RATE).quantize(Decimal("0.01")),
+                method=Payment.Method.CASH,
+                kind=Payment.Kind.DEBT,
+                date=today - timedelta(days=rng.randint(1, 5)),
+                created_by=sale.sales_rep,
+            )
+
         self.stdout.write(self.style.SUCCESS(
             "Yaratildi: 4 foydalanuvchi (admin/manager/sales1/sales2, parol demo1234), "
-            f"{len(products)} mahsulot (ombor kirimlari bilan), {len(clients)} mijoz, 30 sotuv."
+            f"{len(products)} mahsulot (ombor kirimlari bilan), {len(clients)} mijoz, 30 sotuv, "
+            f"{len(DEMO_EXPENSES)} chiqim va dollar to'lovlar."
         ))
