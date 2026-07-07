@@ -260,7 +260,7 @@
       fetch(toggle.getAttribute('data-quick-url'), {
         method: 'POST',
         headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ name: name, phone: phoneEl.value.trim(), csrfmiddlewaretoken: token, allow_duplicate: saveBtn.dataset.dupOk || '' }),
+        body: new URLSearchParams({ name: name, phone: window.canonicalPhone ? window.canonicalPhone(phoneEl) : phoneEl.value.trim(), csrfmiddlewaretoken: token, allow_duplicate: saveBtn.dataset.dupOk || '' }),
       }).then(function (r) {
         return r.json().then(function (d) { return { ok: r.ok, data: d }; });
       }).then(function (res) {
@@ -281,6 +281,7 @@
         panel.hidden = true;
         nameEl.value = '';
         phoneEl.value = '';
+        phoneEl.dispatchEvent(new Event('input', { bubbles: true }));  // re-seed "+998 "
       }).catch(function () { saveBtn.disabled = false; errEl.textContent = 'Xatolik'; });
     }
 
@@ -625,6 +626,140 @@
     if (document.readyState !== 'loading') { enhance(); }
     else { document.addEventListener('DOMContentLoaded', function () { enhance(); }); }
     document.addEventListener('modal:loaded', function (e) { enhance(e.detail || document); });
+  })();
+
+  // Phone inputs (data-phone): lock a "+998 " prefix and let the user type only
+  // the 9 national digits, auto-grouped as "90 123 45 67". A bare "+998" with no
+  // national digits is collapsed to empty on submit, so the field stays optional.
+  (function () {
+    var PREFIX = '+998 ';
+    function national(value) {
+      var digits = String(value).replace(/\D/g, '');
+      if (digits.indexOf('998') === 0) { digits = digits.slice(3); }  // drop country code
+      return digits.slice(0, 9);
+    }
+    function group(nat) {
+      var parts = [];
+      if (nat.length > 0) { parts.push(nat.slice(0, 2)); }
+      if (nat.length > 2) { parts.push(nat.slice(2, 5)); }
+      if (nat.length > 5) { parts.push(nat.slice(5, 7)); }
+      if (nat.length > 7) { parts.push(nat.slice(7, 9)); }
+      return parts.join(' ');
+    }
+    function display(value) { return PREFIX + group(national(value)); }
+    function canonical(value) {
+      var nat = national(value);
+      return nat ? PREFIX + group(nat) : '';   // no national digits → empty
+    }
+    // Caret help: count/restore by national-digit position (skip the 3 CC digits).
+    function natDigitsBefore(str, caret) {
+      var cc = 0, seen = 0;
+      for (var i = 0; i < caret && i < str.length; i++) {
+        if (str[i] >= '0' && str[i] <= '9') { if (cc < 3) { cc++; } else { seen++; } }
+      }
+      return seen;
+    }
+    function caretForNat(str, count) {
+      if (count <= 0) { return str.indexOf(PREFIX) === 0 ? PREFIX.length : str.length; }
+      var cc = 0, seen = 0;
+      for (var j = 0; j < str.length; j++) {
+        if (str[j] >= '0' && str[j] <= '9') {
+          if (cc < 3) { cc++; continue; }
+          seen++;
+          if (seen === count) { return j + 1; }
+        }
+      }
+      return str.length;
+    }
+    function reformat(el) {
+      var caret = el.selectionStart;
+      var before = caret == null ? null : natDigitsBefore(el.value, caret);
+      el.value = display(el.value);
+      if (before != null) {
+        var pos = caretForNat(el.value, before);
+        try { el.setSelectionRange(pos, pos); } catch (e) {}
+      }
+    }
+    function enhance(root) {
+      (root || document).querySelectorAll('input[data-phone]').forEach(function (el) {
+        if (el.dataset.phoneReady) { return; }
+        el.dataset.phoneReady = '1';
+        el.type = 'tel';
+        el.setAttribute('inputmode', 'numeric');
+        el.autocomplete = 'off';
+        el.value = display(el.value);   // always show the locked "+998 " prefix
+      });
+    }
+    document.addEventListener('input', function (e) {
+      if (e.target.matches && e.target.matches('input[data-phone]')) { reformat(e.target); }
+    });
+    // Seed the prefix on focus and keep the caret out of the locked "+998 ".
+    document.addEventListener('focusin', function (e) {
+      var el = e.target;
+      if (!el.matches || !el.matches('input[data-phone]')) { return; }
+      if (!el.value) { el.value = PREFIX; }
+      setTimeout(function () {
+        if (el.selectionStart < PREFIX.length) {
+          try { el.setSelectionRange(PREFIX.length, Math.max(PREFIX.length, el.selectionEnd)); } catch (e2) {}
+        }
+      }, 0);
+    });
+    // An untouched "+998 " should submit as empty (phone is optional).
+    document.addEventListener('submit', function (e) {
+      if (!e.target.querySelectorAll) { return; }
+      e.target.querySelectorAll('input[data-phone]').forEach(function (el) { el.value = canonical(el.value); });
+    }, true);
+    window.enhancePhoneInputs = enhance;
+    window.canonicalPhone = function (el) { return canonical(el ? el.value : ''); };
+    if (document.readyState !== 'loading') { enhance(); }
+    else { document.addEventListener('DOMContentLoaded', function () { enhance(); }); }
+    document.addEventListener('modal:loaded', function (e) { enhance(e.detail || document); });
+  })();
+
+  // Debt deadline preview: as the user types the number of days, show the
+  // resulting return date under the input. The server stays authoritative
+  // (SaleForm.clean computes the same date); this is a live hint only.
+  (function () {
+    var MONTHS = ['Yanvar', 'Fevral', 'Mart', 'Aprel', 'May', 'Iyun', 'Iyul', 'Avgust', 'Sentabr', 'Oktabr', 'Noyabr', 'Dekabr'];
+    var DEFAULT_DAYS = 7;  // mirrors DEFAULT_DEBT_DAYS in crm/forms.py
+    function parseIso(s) {
+      var p = (s || '').split('-');
+      return p.length === 3 ? new Date(+p[0], +p[1] - 1, +p[2]) : null;
+    }
+    function update(daysEl) {
+      var form = daysEl.closest('form');
+      if (!form) { return; }
+      var out = form.querySelector('[data-deadline-preview]');
+      if (!out) { return; }
+      var dateEl = form.querySelector('input[name=date]');
+      var base = parseIso(dateEl && dateEl.value) || new Date();
+      var raw = daysEl.value.trim();
+      var days = raw === '' ? DEFAULT_DAYS : parseInt(raw, 10);
+      if (isNaN(days) || days < 0) { out.hidden = true; out.textContent = ''; return; }
+      var d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + days);
+      out.hidden = false;
+      out.textContent = '→ ' + d.getDate() + '-' + MONTHS[d.getMonth()] + ' ' + d.getFullYear();
+    }
+    function daysElFor(target) {
+      var form = target.closest('form');
+      return form ? form.querySelector('[data-debt-days]') : null;
+    }
+    function onChange(e) {
+      if (!e.target.matches) { return; }
+      if (e.target.matches('[data-debt-days]')) { update(e.target); }
+      else if (e.target.matches('input[name=date]')) {
+        var el = daysElFor(e.target);   // the deadline shifts with the sale date
+        if (el) { update(el); }
+      }
+    }
+    function updateAll(root) {
+      (root || document).querySelectorAll('[data-debt-days]').forEach(update);
+    }
+    document.addEventListener('input', onChange);
+    document.addEventListener('change', onChange);
+    document.addEventListener('modal:loaded', function (e) { updateAll(e.detail || document); });
+    if (document.readyState !== 'loading') { updateAll(); }
+    else { document.addEventListener('DOMContentLoaded', function () { updateAll(); }); }
   })();
 
   // Off-canvas sidebar drawer (mobile): hamburger toggles it, backdrop/nav closes it

@@ -13,7 +13,7 @@
   </span>
   <span class="quick-add-panel" hidden>
     <input type="text" class="qa-name" placeholder="Mijoz ismi">
-    <input type="text" class="qa-phone" placeholder="Telefon (ixtiyoriy)">
+    <input type="tel" class="qa-phone" data-phone placeholder="Telefon (ixtiyoriy)">
     <button type="button" class="btn btn-sm qa-save">Qo'shish</button>
     <span class="qa-error"></span>
   </span>
@@ -31,16 +31,10 @@
   <button type="button" class="btn btn-sm btn-ghost item-add">+ Mahsulot qo'shish</button>
 </div>
 
-<p>{{ form.debt_deadline.label_tag }}{{ form.debt_deadline }}{{ form.debt_deadline.errors }}<span class="helptext">{{ form.debt_deadline.help_text }}</span></p>
-
-{% if form.pay_amount %}
-<div class="pay-at-sale">
-  <div class="items-label">Darhol to'lov (ixtiyoriy)</div>
-  <p>{{ form.pay_amount.label_tag }}{{ form.pay_amount }}{{ form.pay_amount.errors }}<span class="helptext">{{ form.pay_amount.help_text }}</span></p>
-  <p>{{ form.pay_currency.label_tag }}{{ form.pay_currency }}{{ form.pay_currency.errors }}</p>
-  <p>{{ form.pay_exchange_rate.label_tag }}{{ form.pay_exchange_rate }}{{ form.pay_exchange_rate.errors }}<span class="helptext">{{ form.pay_exchange_rate.help_text }}</span></p>
-  <p>{{ form.pay_method.label_tag }}{{ form.pay_method }}{{ form.pay_method.errors }}</p>
-</div>
-{% endif %}
+<p>
+  {{ form.debt_days.label_tag }}{{ form.debt_days }}{{ form.debt_days.errors }}
+  <span class="helptext">{{ form.debt_days.help_text }}</span>
+  <span class="deadline-preview" data-deadline-preview hidden></span>
+</p>
 
 {{ products_json|json_script:"product-price-map" }}

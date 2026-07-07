@@ -29,6 +29,7 @@ class UserCreateForm(UserCreationForm):
         model = User
         fields = ["username", "first_name", "last_name", "email", "phone", "role"]
         labels = USER_LABELS
+        widgets = {"phone": forms.TextInput(attrs={"data-phone": ""})}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -41,3 +42,4 @@ class UserEditForm(forms.ModelForm):
         model = User
         fields = ["username", "first_name", "last_name", "email", "phone", "role", "is_active"]
         labels = USER_LABELS
+        widgets = {"phone": forms.TextInput(attrs={"data-phone": ""})}

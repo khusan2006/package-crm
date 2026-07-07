@@ -676,7 +676,7 @@ form.stacked p { margin: 0 0 16px; max-width: 480px; }
 form.stacked label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 6px; font-weight: 500; }
 
 input[type=text], input[type=email], input[type=password],
-input[type=number], input[type=date], select, textarea {
+input[type=number], input[type=date], input[type=tel], select, textarea {
   width: 100%;
   max-width: 480px;
   padding: 9px 12px;
@@ -703,6 +703,9 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 
 .helptext, form.stacked .helptext { color: var(--text-faint); font-size: 12.5px; }
 .field-hint { display: block; margin-top: 5px; color: var(--text-faint); font-size: 12.5px; }
+/* Live "returns on <date>" hint under the debt-days input */
+.deadline-preview { display: block; margin-top: 5px; color: var(--accent); font-size: 13px; font-weight: 600; }
+.deadline-preview[hidden] { display: none; }
 ul.errorlist { color: var(--danger); margin: 5px 0 0; padding-left: 16px; font-size: 13px; list-style: none; }
 ul.errorlist li::before { content: "⚠ "; }
 
