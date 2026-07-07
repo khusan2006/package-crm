@@ -9,6 +9,17 @@ from .models import Client, Expense, Payment, Product, Return, Sale, SaleItem, S
 
 DEFAULT_DEBT_DAYS = 7
 
+# Marks an amount field so the frontend groups it as "1 000 000" while typing.
+# The raw numeric value is restored before submit, so nothing changes server-side.
+MONEY_WIDGET_ATTRS = {"data-money": "", "inputmode": "decimal"}
+
+
+def _mark_money(*fields):
+    """Attach the money-input marker to the given bound form fields."""
+    for field in fields:
+        if field is not None:
+            field.widget.attrs.update(MONEY_WIDGET_ATTRS)
+
 
 class ClientForm(forms.ModelForm):
     allow_duplicate = forms.BooleanField(
@@ -49,6 +60,10 @@ class ProductForm(forms.ModelForm):
         model = Product
         fields = ["name", "sku", "description", "cost_price", "price", "low_stock_threshold", "is_active"]
         widgets = {"description": forms.Textarea(attrs={"rows": 3})}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _mark_money(self.fields["cost_price"], self.fields["price"])
 
 
 class StockEntryForm(forms.ModelForm):
@@ -102,6 +117,7 @@ class DebtPaymentForm(forms.Form):
     def __init__(self, *args, max_amount=None, **kwargs):
         self.max_amount = max_amount
         super().__init__(*args, **kwargs)
+        _mark_money(self.fields["amount"], self.fields["exchange_rate"])
 
     def clean(self):
         cleaned = super().clean()
@@ -166,6 +182,7 @@ class ExpenseForm(forms.ModelForm):
         self.fields["amount"].help_text = "Tanlangan valyutada — dollar tanlansa, dollardagi summa"
         self.fields["exchange_rate"].required = False
         self.fields["exchange_rate"].help_text = "Faqat dollar chiqimi uchun — qo'lda kiritiladi"
+        _mark_money(self.fields["amount"], self.fields["exchange_rate"])
         # Editing a dollar expense: show the original dollars in the amount field
         # (not the stored so'm), so re-saving converts at the rate correctly.
         if self.instance.pk and self.instance.currency == Payment.Currency.USD:
@@ -254,6 +271,8 @@ class SaleForm(forms.ModelForm):
         if not with_payment:
             for name in ("pay_amount", "pay_currency", "pay_exchange_rate", "pay_method"):
                 self.fields.pop(name, None)
+        else:
+            _mark_money(self.fields["pay_amount"], self.fields["pay_exchange_rate"])
 
     def clean(self):
         cleaned = super().clean()
@@ -295,6 +314,7 @@ class SaleItemForm(forms.ModelForm):
         self.fields["product"].widget.attrs["data-combobox"] = ""
         self.fields["cost_price"].required = False
         self.fields["cost_price"].widget.attrs["placeholder"] = "Bo'sh qolsa — mahsulot tannarxi"
+        _mark_money(self.fields["price"], self.fields["cost_price"])
 
     def clean_weight(self):
         weight = self.cleaned_data.get("weight")

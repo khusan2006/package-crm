@@ -315,6 +315,7 @@
         rows.appendChild(added);
         total.value = idx + 1;
         if (window.enhanceComboboxes) { window.enhanceComboboxes(added); }
+        if (window.enhanceMoneyInputs) { window.enhanceMoneyInputs(added); }
         return;
       }
       var rm = e.target.closest('.item-remove');
@@ -352,8 +353,14 @@
       var conv = function (v) { return (Math.round((parseFloat(v) / factor) * 1000) / 1000).toString(); };
       var priceEl = row.querySelector('[name$="-price"]');
       var costEl = row.querySelector('[name$="-cost_price"]');
-      if (priceEl) { priceEl.value = conv(info.price); }
-      if (costEl) { costEl.value = conv(info.cost); }
+      // Dispatch input so the money formatter re-groups the auto-filled figure.
+      var setVal = function (el, v) {
+        if (!el) { return; }
+        el.value = v;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      setVal(priceEl, conv(info.price));
+      setVal(costEl, conv(info.cost));
     }
     document.addEventListener('change', function (e) {
       var prod = e.target.closest('select[name$="-product"]');
@@ -493,6 +500,11 @@
     function money(n) {
       return Math.round(n).toLocaleString('ru-RU').replace(/ /g, ' ');
     }
+    // Money inputs may hold space-grouped text ("1 000 000"); parse the raw number.
+    function num(el) {
+      if (!el) { return 0; }
+      return parseFloat(String(el.value).replace(/\s/g, '').replace(',', '.')) || 0;
+    }
     function recalc(root) {
       var amountEl = root.querySelector('[name=amount]');
       var methodEl = root.querySelector('[name=method]');
@@ -500,10 +512,10 @@
       var currencyEl = root.querySelector('[name=currency]');
       var rateEl = root.querySelector('[name=exchange_rate]');
       if (!amountEl || !methodEl) { return; }
-      var entered = parseFloat(amountEl.value) || 0;
+      var entered = num(amountEl);
       // Dollar payments convert to so'm at the hand-entered rate before anything else
       var isUsd = currencyEl && currencyEl.value === 'usd';
-      var rate = rateEl ? (parseFloat(rateEl.value) || 0) : 0;
+      var rate = num(rateEl);
       Array.prototype.forEach.call(root.querySelectorAll('.usd-only'), function (el) {
         el.hidden = !isUsd;
       });
@@ -543,6 +555,76 @@
     document.addEventListener('modal:loaded', recalcAll);
     if (document.readyState !== 'loading') { recalcAll(); }
     else { document.addEventListener('DOMContentLoaded', recalcAll); }
+  })();
+
+  // Live thousands-grouping on money inputs. Renders "1 000 000" as the user
+  // types (marked server-side with data-money); the raw numeric value is
+  // restored right before submit, so the server always gets a plain number.
+  (function () {
+    function toNumeric(value) {
+      var s = String(value).replace(/\s/g, '').replace(',', '.').replace(/[^\d.]/g, '');
+      var dot = s.indexOf('.');
+      if (dot !== -1) { s = s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, ''); }
+      return s;
+    }
+    function format(value) {
+      var s = toNumeric(value);
+      if (s === '' || s === '.') { return s; }
+      var dot = s.indexOf('.');
+      var intPart = dot === -1 ? s : s.slice(0, dot);
+      var dec = dot === -1 ? '' : s.slice(dot);
+      intPart = intPart.replace(/^0+(?=\d)/, '');
+      if (intPart === '') { intPart = '0'; }
+      return intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + dec;
+    }
+    function digitsBefore(str, caret) {
+      var n = 0;
+      for (var i = 0; i < caret && i < str.length; i++) { if (str[i] >= '0' && str[i] <= '9') { n++; } }
+      return n;
+    }
+    function caretForDigits(str, count) {
+      if (count <= 0) {
+        for (var i = 0; i < str.length; i++) { if (str[i] >= '0' && str[i] <= '9') { return i; } }
+        return str.length;
+      }
+      var seen = 0;
+      for (var j = 0; j < str.length; j++) {
+        if (str[j] >= '0' && str[j] <= '9') { seen++; if (seen === count) { return j + 1; } }
+      }
+      return str.length;
+    }
+    function reformat(el) {
+      var caret = el.selectionStart;
+      var before = caret == null ? null : digitsBefore(el.value, caret);
+      el.value = format(el.value);
+      if (before != null) {
+        var pos = caretForDigits(el.value, before);
+        try { el.setSelectionRange(pos, pos); } catch (e) {}
+      }
+    }
+    function enhance(root) {
+      (root || document).querySelectorAll('input[data-money]').forEach(function (el) {
+        if (el.dataset.moneyReady) { return; }
+        el.dataset.moneyReady = '1';
+        el.type = 'text';                       // number inputs can't show grouping
+        el.setAttribute('inputmode', 'decimal');
+        el.autocomplete = 'off';
+        if (el.value) { el.value = format(el.value); }
+      });
+    }
+    document.addEventListener('input', function (e) {
+      if (e.target.matches && e.target.matches('input[data-money]')) { reformat(e.target); }
+    });
+    // Restore the raw numeric value before submit. Capture phase runs before the
+    // modal's own submit handler builds its FormData, so the fetch sends clean data.
+    document.addEventListener('submit', function (e) {
+      if (!e.target.querySelectorAll) { return; }
+      e.target.querySelectorAll('input[data-money]').forEach(function (el) { el.value = toNumeric(el.value); });
+    }, true);
+    window.enhanceMoneyInputs = enhance;
+    if (document.readyState !== 'loading') { enhance(); }
+    else { document.addEventListener('DOMContentLoaded', function () { enhance(); }); }
+    document.addEventListener('modal:loaded', function (e) { enhance(e.detail || document); });
   })();
 
   // Off-canvas sidebar drawer (mobile): hamburger toggles it, backdrop/nav closes it

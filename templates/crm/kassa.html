@@ -3,26 +3,32 @@
 {% block title %}Kassa · Paket CRM{% endblock %}
 {% block topbar_title %}Kassa{% endblock %}
 {% block topbar_actions %}
-<a class="btn btn-primary" href="{% url 'expense_create' %}" data-modal>+ Chiqim qo'shish</a>
+<a class="btn" href="{% url 'expense_create' %}" data-modal>+ Chiqim qo'shish</a>
 {% endblock %}
 {% block fab %}<a class="fab" href="{% url 'expense_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Chiqim qo'shish</a>{% endblock %}
 {% block content %}
 
-{% include "crm/_filter_toolbar.html" %}
-
 {# Ikkita alohida sandiq qoldig'i #}
-<div class="kpi-grid kpi-grid--compact">
+<div class="kpi-grid">
   <div class="kpi kpi--green">
-    <div class="kpi-head"><span class="kpi-label">So'm sandiq qoldig'i</span></div>
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><circle cx="12" cy="14" r="1.5"/></svg></span>
+      <span class="kpi-label">So'm sandiq qoldig'i</span>
+    </div>
     <div class="kpi-value">{{ summary.som.closing|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta muted">boshlang'ich {{ summary.som.opening|floatformat:"0g" }}</div>
   </div>
   <div class="kpi kpi--blue">
-    <div class="kpi-head"><span class="kpi-label">Dollar sandiq qoldig'i</span></div>
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>
+      <span class="kpi-label">Dollar sandiq qoldig'i</span>
+    </div>
     <div class="kpi-value">${{ summary.usd.closing|floatformat:"2g" }}</div>
     <div class="kpi-meta muted">boshlang'ich ${{ summary.usd.opening|floatformat:"2g" }}</div>
   </div>
 </div>
+
+{% include "crm/_filter_toolbar.html" %}
 
 <div class="card">
   <h2>Kassa holati — so'm va dollar</h2>

@@ -393,10 +393,6 @@ html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
 .item-fields .if select { width: 100%; }
 .item-fields .if-price input,
 .item-fields .if-cost input { text-align: right; }
-/* Drop the number spinners — they clip long so'm values */
-.item-fields input[type=number]::-webkit-outer-spin-button,
-.item-fields input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.item-fields input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .item-fields .item-remove { align-self: end; height: 40px; }
 .item-add { margin-top: 8px; }
 @media (max-width: 560px) {
@@ -692,6 +688,11 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
 input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); vertical-align: middle; }
+
+/* Drop the number spinners app-wide — they clip long so'm figures and add noise */
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 
 .helptext, form.stacked .helptext { color: var(--text-faint); font-size: 12.5px; }
 .field-hint { display: block; margin-top: 5px; color: var(--text-faint); font-size: 12.5px; }

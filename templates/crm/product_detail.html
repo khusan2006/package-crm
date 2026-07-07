@@ -10,27 +10,41 @@
 {% block fab %}{% if user.can_see_all_records %}<a class="fab" href="{% url 'stock_entry_create' product.pk %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Kirim qo'shish</a>{% endif %}{% endblock %}
 {% block content %}
 
-<div class="stat-grid">
-  <div class="stat">
-    <div class="label">Joriy qoldiq</div>
-    <div class="value">{{ current_stock|floatformat:"-3g" }} kg</div>
+<div class="kpi-grid">
+  <div class="kpi {% if current_stock <= 0 %}kpi--red{% elif product.low_stock_threshold > 0 and current_stock <= product.low_stock_threshold %}kpi--gold{% else %}kpi--blue{% endif %}">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg></span>
+      <span class="kpi-label">Joriy qoldiq</span>
+    </div>
+    <div class="kpi-value">{{ current_stock|floatformat:"-3g" }}<span class="unit">kg</span></div>
     {% if current_stock <= 0 %}
-      <div class="sub danger">Tugagan</div>
+      <div class="kpi-meta">Tugagan</div>
     {% elif product.low_stock_threshold > 0 and current_stock <= product.low_stock_threshold %}
-      <div class="sub" style="color: var(--warning);">Kam qoldi (chegara {{ product.low_stock_threshold|floatformat:"-3g" }} kg)</div>
+      <div class="kpi-meta">Kam qoldi (chegara {{ product.low_stock_threshold|floatformat:"-3g" }} kg)</div>
+    {% else %}
+      <div class="kpi-meta muted">Yetarli</div>
     {% endif %}
   </div>
-  <div class="stat">
-    <div class="label">Jami kirim</div>
-    <div class="value">{{ total_received|floatformat:"-3g" }} kg</div>
+  <div class="kpi kpi--green">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><line x1="5" y1="21" x2="19" y2="21"/></svg></span>
+      <span class="kpi-label">Jami kirim</span>
+    </div>
+    <div class="kpi-value">{{ total_received|floatformat:"-3g" }}<span class="unit">kg</span></div>
   </div>
-  <div class="stat">
-    <div class="label">Jami sotilgan</div>
-    <div class="value">{{ total_sold|floatformat:"-3g" }} kg</div>
+  <div class="kpi kpi--gold">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span>
+      <span class="kpi-label">Jami sotilgan</span>
+    </div>
+    <div class="kpi-value">{{ total_sold|floatformat:"-3g" }}<span class="unit">kg</span></div>
   </div>
-  <div class="stat">
-    <div class="label">Sotish narxi (1 kg)</div>
-    <div class="value">{{ product.price|floatformat:"0g" }} so'm</div>
+  <div class="kpi kpi--blue">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg></span>
+      <span class="kpi-label">Sotish narxi (1 kg)</span>
+    </div>
+    <div class="kpi-value">{{ product.price|floatformat:"0g" }}<span class="unit">so'm</span></div>
   </div>
 </div>
 

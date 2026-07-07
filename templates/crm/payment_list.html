@@ -4,8 +4,6 @@
 {% block topbar_title %}To'lovlar{% endblock %}
 {% block content %}
 
-{% include "crm/_filter_toolbar.html" with show_daterange_picker=True export_url=payment_export_url %}
-
 <div class="kpi-grid">
   <div class="kpi kpi--blue">
     <div class="kpi-head">
@@ -37,6 +35,8 @@
     <div class="kpi-value">{{ totals.debt|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
   </div>
 </div>
+
+{% include "crm/_filter_toolbar.html" with show_daterange_picker=True export_url=payment_export_url %}
 
 {% if outstanding %}
 <h2 class="table-heading">Ochiq to'lovlar <span class="muted">· {{ outstanding|length }} ta qarzli sotuv</span></h2>
