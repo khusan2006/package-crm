@@ -43,96 +43,10 @@
   </div>
 </div>
 
-<div class="table-toolbar">
-  <div class="toolbar-left">
-    {% if has_filters %}
-    <div class="filter-chips">
-      {% for chip in active_filters %}
-      <span class="chip">{{ chip.label }}: <strong>{{ chip.value }}</strong><a href="{{ chip.remove_url }}" class="chip-x" title="Olib tashlash" aria-label="Olib tashlash">&times;</a></span>
-      {% endfor %}
-      <a href="{% url 'sale_list' %}" class="chip-clear">Tozalash</a>
-    </div>
-    {% else %}
-    <div class="toolbar-label">
-      {% if is_today %}<span class="today-chip">Bugun</span>
-      {% elif is_single_day %}{{ date_from|date:"j-F, l" }}
-      {% else %}{{ range_days }} kunlik oraliq{% endif %}
-    </div>
-    {% endif %}
-  </div>
-  <div class="toolbar-right">
-    {% if not has_filters %}
-    <div class="daterange" data-from="{{ filters.dan }}" data-to="{{ filters.gacha }}" data-today="{{ today_iso }}">
-      <a class="datebar-btn" href="{% qs_replace dan=prev_from gacha=prev_to %}" title="Oldingi kun">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-      </a>
-      <button type="button" class="daterange-trigger" aria-haspopup="dialog" aria-expanded="false">
-        <svg class="cal-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-        <span class="daterange-text">
-          {% if is_today %}Bugun{% elif is_single_day %}{{ date_from|date:"j-F" }}{% else %}{{ date_from|date:"j-F" }} – {{ date_to|date:"j-F" }}{% endif %}
-        </span>
-      </button>
-      <a class="datebar-btn" href="{% qs_replace dan=next_from gacha=next_to %}" title="Keyingi kun">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-      </a>
-      <div class="daterange-pop" role="dialog" aria-label="Sana tanlash" hidden></div>
-    </div>
-    {% if not is_today %}<a class="btn btn-sm btn-ghost" href="{% qs_replace dan=today_iso gacha=today_iso %}">Bugun</a>{% endif %}
-    {% endif %}
-    <button type="button" class="btn btn-sm btn-ghost filter-toggle{% if has_filters %} is-active{% endif %}" data-filter-open>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
-      Filtrlash{% if filter_count %} <span class="filter-badge">{{ filter_count }}</span>{% endif %}
-    </button>
-    <a class="btn btn-sm btn-ghost" href="{% url 'sale_export' %}{% if export_qs %}?{{ export_qs }}{% endif %}" title="CSV yuklab olish">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-      CSV
-    </a>
-  </div>
-</div>
+{% include "crm/_filter_toolbar.html" with show_daterange_picker=True export_url=sale_export_url %}
 
 {% include "crm/_sale_table.html" with sales=page %}
 {% include "crm/_pagination.html" %}
 
-<div class="drawer-backdrop" data-filter-close hidden></div>
-<aside class="filter-drawer" id="filter-drawer" aria-hidden="true" aria-label="Filtrlar">
-  <div class="drawer-head">
-    <h2>Filtrlar</h2>
-    <button type="button" class="modal-x" data-filter-close aria-label="Yopish">&times;</button>
-  </div>
-  <form method="get" action="{% url 'sale_list' %}" class="drawer-body">
-    <label>Mijoz
-      <select name="client">
-        <option value="">Barchasi</option>
-        {% for c in clients %}<option value="{{ c.pk }}" {% if filters.client == c.pk|stringformat:'s' %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
-      </select>
-    </label>
-    <label>Mahsulot
-      <select name="product">
-        <option value="">Barchasi</option>
-        {% for p in products %}<option value="{{ p.pk }}" {% if filters.product == p.pk|stringformat:'s' %}selected{% endif %}>{{ p.name }}</option>{% endfor %}
-      </select>
-    </label>
-    {% if reps %}
-    <label>Sotuvchi
-      <select name="rep">
-        <option value="">Barchasi</option>
-        {% for r in reps %}<option value="{{ r.pk }}" {% if filters.rep == r.pk|stringformat:'s' %}selected{% endif %}>{{ r }}</option>{% endfor %}
-      </select>
-    </label>
-    {% endif %}
-    <label>To'lov
-      <select name="status">
-        <option value="">Barchasi</option>
-        <option value="paid" {% if filters.status == 'paid' %}selected{% endif %}>To'langan</option>
-        <option value="debt" {% if filters.status == 'debt' %}selected{% endif %}>Qarz</option>
-        <option value="overdue" {% if filters.status == 'overdue' %}selected{% endif %}>Muddati o'tgan</option>
-      </select>
-    </label>
-    <p class="field-hint">Filtr qo'llanganda sana oralig'i hisobga olinmaydi — barcha kunlar bo'yicha qidiriladi.</p>
-    <div class="drawer-actions">
-      <button type="submit" class="btn">Qo'llash</button>
-      <a href="{% url 'sale_list' %}" class="btn btn-ghost">Tozalash</a>
-    </div>
-  </form>
-</aside>
+{% include "crm/_filter_drawer.html" with show_status=True %}
 {% endblock %}

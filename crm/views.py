@@ -489,40 +489,64 @@ def _filter_sales(request, sales):
     return sales, filters, date_from, date_to, has_filters
 
 
-def _active_filter_chips(request, filters, clients, products, reps):
-    """Build the list of applied-filter chips (label, value, remove-URL) shown
-    on the sales page so each filter can be cleared individually."""
+def _filter_chips(request, specs):
+    """Build removable filter chips from a list of specs:
+    {"param", "label", "value"}. Only specs with a truthy `value` produce a chip.
+    The remove-URL drops that param, the page, and any empty filter params."""
+    params = [s["param"] for s in specs]
 
     def without(param):
-        params = request.GET.copy()
-        params.pop(param, None)
-        params.pop("page", None)
-        # Drop empty filter params so the resulting URL stays clean
-        for key in ("client", "product", "rep", "status"):
-            if not params.get(key):
-                params.pop(key, None)
-        query = params.urlencode()
+        qs = request.GET.copy()
+        qs.pop(param, None)
+        qs.pop("page", None)
+        for key in params:
+            if not qs.get(key):
+                qs.pop(key, None)
+        query = qs.urlencode()
         return f"{request.path}?{query}" if query else request.path
 
-    chips = []
-    if filters["client"].isdigit():
-        obj = clients.filter(pk=filters["client"]).first()
-        if obj:
-            chips.append({"label": "Mijoz", "value": obj.name, "remove_url": without("client")})
-    if filters["product"].isdigit():
-        obj = products.filter(pk=filters["product"]).first()
-        if obj:
-            chips.append({"label": "Mahsulot", "value": obj.name, "remove_url": without("product")})
-    if reps and filters["rep"].isdigit():
-        obj = reps.filter(pk=filters["rep"]).first()
-        if obj:
-            chips.append({"label": "Sotuvchi", "value": str(obj), "remove_url": without("rep")})
+    return [
+        {"label": s["label"], "value": s["value"], "remove_url": without(s["param"])}
+        for s in specs
+        if s.get("value")
+    ]
+
+
+def _active_filter_chips(request, filters, clients, products, reps):
+    """Sotuvlar filter chips (client/product/rep/status)."""
     status_labels = {"paid": "To'langan", "debt": "Qarz", "overdue": "Muddati o'tgan"}
-    if filters["status"] in status_labels:
-        chips.append(
-            {"label": "To'lov", "value": status_labels[filters["status"]], "remove_url": without("status")}
-        )
-    return chips
+    client = clients.filter(pk=filters["client"]).first() if filters["client"].isdigit() else None
+    product = products.filter(pk=filters["product"]).first() if filters["product"].isdigit() else None
+    rep = reps.filter(pk=filters["rep"]).first() if reps and filters["rep"].isdigit() else None
+    specs = [
+        {"param": "client", "label": "Mijoz", "value": client.name if client else ""},
+        {"param": "product", "label": "Mahsulot", "value": product.name if product else ""},
+        {"param": "rep", "label": "Sotuvchi", "value": str(rep) if rep else ""},
+        {"param": "status", "label": "To'lov", "value": status_labels.get(filters["status"], "")},
+    ]
+    return _filter_chips(request, specs)
+
+
+def _date_range_context(request):
+    """Parse ?dan/?gacha into a today-default window plus the navigation vars
+    the shared toolbar's date-range picker needs."""
+    today = timezone.localdate()
+    date_from = _parse_date(request.GET.get("dan")) or today
+    date_to = _parse_date(request.GET.get("gacha")) or date_from
+    if date_to < date_from:
+        date_from, date_to = date_to, date_from
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "range_days": (date_to - date_from).days + 1,
+        "is_single_day": date_from == date_to,
+        "is_today": date_from == today and date_to == today,
+        "prev_from": (date_from - timedelta(days=1)).isoformat(),
+        "prev_to": (date_to - timedelta(days=1)).isoformat(),
+        "next_from": (date_from + timedelta(days=1)).isoformat(),
+        "next_to": (date_to + timedelta(days=1)).isoformat(),
+        "today_iso": today.isoformat(),
+    }
 
 
 def _outstanding_balance(sales):
@@ -560,7 +584,6 @@ def sale_list(request):
     totals["debt_share"] = (totals["debt"] or 0) / revenue * 100 if revenue else 0
     totals["debtor_pct"] = totals["debtors"] / total_clients * 100 if total_clients else 0
 
-    today = timezone.localdate()
     clients = _visible_clients(request.user).order_by("name")
     products = Product.objects.order_by("name")
     reps = (
@@ -570,6 +593,7 @@ def sale_list(request):
     )
     active_filters = _active_filter_chips(request, filters, clients, products, reps)
     page = Paginator(sales, 25).get_page(request.GET.get("page"))
+    export_qs = request.GET.urlencode()
     return render(
         request,
         "crm/sale_list.html",
@@ -580,20 +604,13 @@ def sale_list(request):
             "has_filters": has_filters,
             "active_filters": active_filters,
             "filter_count": len(active_filters),
-            "date_from": date_from,
-            "date_to": date_to,
-            "range_days": (date_to - date_from).days + 1,
-            "is_single_day": date_from == date_to,
-            "is_today": date_from == today and date_to == today,
-            "prev_from": (date_from - timedelta(days=1)).isoformat(),
-            "prev_to": (date_to - timedelta(days=1)).isoformat(),
-            "next_from": (date_from + timedelta(days=1)).isoformat(),
-            "next_to": (date_to + timedelta(days=1)).isoformat(),
-            "today_iso": today.isoformat(),
+            **_date_range_context(request),
             "clients": clients,
             "products": products,
             "reps": reps,
-            "export_qs": request.GET.urlencode(),
+            "export_qs": export_qs,
+            "filter_url": reverse("sale_list"),
+            "sale_export_url": reverse("sale_export") + (f"?{export_qs}" if export_qs else ""),
         },
     )
 
@@ -604,6 +621,14 @@ def debt_list(request):
     open_sales = (
         Sale.objects.visible_to(request.user).outstanding().select_related("client")
     )
+
+    filters = {key: request.GET.get(key, "") for key in ("client", "rep", "overdue")}
+    if filters["client"].isdigit():
+        open_sales = open_sales.filter(client_id=filters["client"])
+    if filters["rep"].isdigit() and request.user.can_see_all_records:
+        open_sales = open_sales.filter(sales_rep_id=filters["rep"])
+    if filters["overdue"] == "1":
+        open_sales = open_sales.filter(debt_deadline__lt=today)
 
     groups = {}
     total_debt = Decimal("0")
@@ -634,6 +659,20 @@ def debt_list(request):
     debtors = sorted(groups.values(), key=lambda g: g["earliest"] or today)
     overdue_debtors = sum(1 for g in debtors if g["overdue_count"])
 
+    clients = _visible_clients(request.user).order_by("name")
+    reps = (
+        User.objects.filter(is_active=True).order_by("first_name", "username")
+        if request.user.can_see_all_records
+        else None
+    )
+    client_obj = clients.filter(pk=filters["client"]).first() if filters["client"].isdigit() else None
+    rep_obj = reps.filter(pk=filters["rep"]).first() if reps and filters["rep"].isdigit() else None
+    active_filters = _filter_chips(request, [
+        {"param": "client", "label": "Mijoz", "value": client_obj.name if client_obj else ""},
+        {"param": "rep", "label": "Sotuvchi", "value": str(rep_obj) if rep_obj else ""},
+        {"param": "overdue", "label": "Holat", "value": "Muddati o'tgan" if filters["overdue"] == "1" else ""},
+    ])
+
     return render(
         request,
         "crm/debt_list.html",
@@ -643,6 +682,13 @@ def debt_list(request):
             "overdue_total": overdue_total,
             "total_debtors": len(debtors),
             "overdue_debtors": overdue_debtors,
+            "filters": filters,
+            "clients": clients,
+            "reps": reps,
+            "active_filters": active_filters,
+            "filter_count": len(active_filters),
+            "has_filters": bool(active_filters),
+            "filter_url": reverse("debt_list"),
         },
     )
 
@@ -723,6 +769,16 @@ def _distribute_debt_payment(sales, amount, method, percent, note, user):
     return touched
 
 
+def _clean_amount(value):
+    """Trim meaningless trailing zeros so a pre-filled amount reads '579300',
+    not '579300,00000'. Quantity (3dp) × price (2dp) leaves up to 5 decimal
+    places; real so'm never needs more than 2, and whole amounts need none."""
+    value = value.quantize(Decimal("0.01"), ROUND_HALF_UP)
+    if value == value.to_integral_value():
+        return value.to_integral_value()
+    return value.normalize()
+
+
 def _render_client_pay(request, client, total, form, invalid=False):
     context = {
         "form": form,
@@ -769,7 +825,8 @@ def client_debt_pay(request, pk):
             return form_reload(request, reverse("debt_client", args=[client.pk]))
         return _render_client_pay(request, client, total, form, invalid=True)
     form = DebtPaymentForm(
-        initial={"amount": total, "method": Payment.Method.CASH}, max_amount=total
+        initial={"amount": _clean_amount(total), "method": Payment.Method.CASH},
+        max_amount=total,
     )
     return _render_client_pay(request, client, total, form)
 
@@ -781,12 +838,25 @@ def payment_list(request):
     if not request.user.can_see_all_records:
         payments = payments.filter(sale__sales_rep=request.user)
 
-    date_from = _parse_date(request.GET.get("dan"))
-    date_to = _parse_date(request.GET.get("gacha"))
-    if date_from:
-        payments = payments.filter(date__gte=date_from)
-    if date_to:
-        payments = payments.filter(date__lte=date_to)
+    filters = {key: request.GET.get(key, "") for key in ("client", "rep", "method")}
+    has_filters = bool(
+        filters["client"].isdigit()
+        or filters["method"] in dict(Payment.Method.choices)
+        or (filters["rep"].isdigit() and request.user.can_see_all_records)
+    )
+
+    dates = _date_range_context(request)
+    filters["dan"] = dates["date_from"].isoformat()
+    filters["gacha"] = dates["date_to"].isoformat()
+    # Mirror Sotuvlar: a content filter searches all dates; otherwise the window applies.
+    if not has_filters:
+        payments = payments.filter(date__gte=dates["date_from"], date__lte=dates["date_to"])
+    if filters["client"].isdigit():
+        payments = payments.filter(sale__client_id=filters["client"])
+    if filters["rep"].isdigit() and request.user.can_see_all_records:
+        payments = payments.filter(sale__sales_rep_id=filters["rep"])
+    if filters["method"] in dict(Payment.Method.choices):
+        payments = payments.filter(method=filters["method"])
     payments = payments.order_by("-date", "-created_at")
 
     totals = payments.aggregate(
@@ -797,7 +867,6 @@ def payment_list(request):
     )
     page = Paginator(payments, 30).get_page(request.GET.get("page"))
 
-    # Outstanding sales you can settle / take a payment on, straight from here
     outstanding = (
         Sale.objects.visible_to(request.user)
         .outstanding()
@@ -805,15 +874,38 @@ def payment_list(request):
         .prefetch_related("items__product")
         .order_by("debt_deadline", "date")
     )
+
+    clients = _visible_clients(request.user).order_by("name")
+    reps = (
+        User.objects.filter(is_active=True).order_by("first_name", "username")
+        if request.user.can_see_all_records
+        else None
+    )
+    method_labels = {"cash": "Naqd", "card": "Karta", "transfer": "O'tkazma"}
+    client_obj = clients.filter(pk=filters["client"]).first() if filters["client"].isdigit() else None
+    rep_obj = reps.filter(pk=filters["rep"]).first() if reps and filters["rep"].isdigit() else None
+    active_filters = _filter_chips(request, [
+        {"param": "client", "label": "Mijoz", "value": client_obj.name if client_obj else ""},
+        {"param": "rep", "label": "Sotuvchi", "value": str(rep_obj) if rep_obj else ""},
+        {"param": "method", "label": "Usul", "value": method_labels.get(filters["method"], "")},
+    ])
+    export_qs = request.GET.urlencode()
     return render(
         request,
         "crm/payment_list.html",
         {
             "page": page,
             "totals": totals,
-            "date_from": date_from,
-            "date_to": date_to,
             "outstanding": outstanding,
+            "filters": filters,
+            "clients": clients,
+            "reps": reps,
+            "active_filters": active_filters,
+            "filter_count": len(active_filters),
+            "has_filters": has_filters,
+            "filter_url": reverse("payment_list"),
+            "payment_export_url": reverse("payment_export") + (f"?{export_qs}" if export_qs else ""),
+            **dates,
         },
     )
 
@@ -1190,7 +1282,9 @@ def sale_pay(request, pk):
                 )
             return form_reload(request, reverse("debt_list"))
         return _render_debt_pay(request, sale, form, invalid=True)
-    form = DebtPaymentForm(initial={"amount": remaining, "method": Payment.Method.CASH})
+    form = DebtPaymentForm(
+        initial={"amount": _clean_amount(remaining), "method": Payment.Method.CASH}
+    )
     return _render_debt_pay(request, sale, form)
 
 

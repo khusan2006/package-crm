@@ -4,13 +4,7 @@
 {% block topbar_title %}To'lovlar{% endblock %}
 {% block content %}
 
-<form method="get" class="searchbar">
-  <label>Dan <input type="date" name="dan" value="{{ date_from|date:'Y-m-d' }}"></label>
-  <label>Gacha <input type="date" name="gacha" value="{{ date_to|date:'Y-m-d' }}"></label>
-  <button type="submit" class="btn btn-sm">Filtrlash</button>
-  {% if date_from or date_to %}<a class="btn btn-sm btn-ghost" href="{% url 'payment_list' %}">Tozalash</a>{% endif %}
-  <a class="btn btn-sm btn-ghost" href="{% url 'payment_export' %}{% if request.GET.urlencode %}?{{ request.GET.urlencode }}{% endif %}">CSV</a>
-</form>
+{% include "crm/_filter_toolbar.html" with show_daterange_picker=True export_url=payment_export_url %}
 
 <div class="kpi-grid">
   <div class="kpi kpi--blue">
@@ -119,4 +113,6 @@
 {% else %}
 <p class="muted">To'lovlar topilmadi.</p>
 {% endif %}
+
+{% include "crm/_filter_drawer.html" with show_method=True %}
 {% endblock %}

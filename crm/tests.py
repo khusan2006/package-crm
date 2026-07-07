@@ -332,6 +332,19 @@ class DayViewTests(BaseSetup):
         self.assertEqual(chips[0]["label"], "Mijoz")
         self.assertEqual(chips[0]["value"], self.client1.name)
 
+    def test_toolbar_branches_on_has_filters_not_chip_presence(self):
+        # A filter id outside the user's visibility: has_filters True but no chip.
+        self.client.force_login(self.sales2)
+        resp = self.client.get(reverse("sale_list"), {"client": self.client1.pk})
+        self.assertTrue(resp.context["has_filters"])
+        self.assertEqual(resp.context["active_filters"], [])
+        # Toolbar shows the clear-filter control and hides the date-range picker,
+        # matching the pre-refactor behavior. (The bare class name also appears
+        # in base.html's unconditional JS behavior script, so match the actual
+        # rendered element instead of the substring.)
+        self.assertContains(resp, "chip-clear")
+        self.assertNotContains(resp, 'class="daterange-trigger"')
+
 
 class StockTests(BaseSetup):
     def setUp(self):
@@ -471,6 +484,21 @@ class SaleFilterExportTests(BaseSetup):
         response = self.client.get(reverse("sale_export"))
         body = response.content.decode("utf-8")
         self.assertNotIn(self.client2.name, body)  # client2 belongs to sales2
+
+
+class FilterChipTests(BaseSetup):
+    def test_sales_chips_resolve_names_and_remove_urls(self):
+        self.client.force_login(self.admin)
+        url = reverse("sale_list")
+        resp = self.client.get(url, {"client": self.client1.pk, "status": "debt"})
+        chips = resp.context["active_filters"]
+        labels = {c["label"]: c["value"] for c in chips}
+        self.assertEqual(labels["Mijoz"], "Mijoz A")
+        self.assertEqual(labels["To'lov"], "Qarz")
+        # removing the client chip keeps status, drops client + page
+        client_chip = next(c for c in chips if c["label"] == "Mijoz")
+        self.assertIn("status=debt", client_chip["remove_url"])
+        self.assertNotIn("client=", client_chip["remove_url"])
 
 
 class DebtPageTests(BaseSetup):
@@ -800,6 +828,72 @@ class PaymentVoidTests(BaseSetup):
         self.client.post(reverse("payment_delete", args=[payment.pk]))
         self.client.post(reverse("sale_delete", args=[sale.pk]))
         self.assertFalse(Sale.objects.filter(pk=sale.pk).exists())
+
+
+class PaymentFilterTests(BaseSetup):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        # sale1 (client1/sales1) and sale2 (client2/sales2) each got a CASH sale payment.
+        Payment.objects.create(
+            sale=cls.sale1, amount=Decimal("1000"), method=Payment.Method.CARD,
+            kind=Payment.Kind.DEBT, date=timezone.localdate(), created_by=cls.sales1,
+        )
+
+    def _get(self, **params):
+        self.client.force_login(self.admin)
+        return self.client.get(reverse("payment_list"), params)
+
+    def test_filter_by_client(self):
+        resp = self._get(client=self.client1.pk)
+        for p in resp.context["page"].object_list:
+            self.assertEqual(p.sale.client_id, self.client1.pk)
+
+    def test_filter_by_method(self):
+        resp = self._get(method="card")
+        methods = {p.method for p in resp.context["page"].object_list}
+        self.assertEqual(methods, {"card"})
+
+    def test_filter_by_rep(self):
+        resp = self._get(rep=self.sales2.pk)
+        for p in resp.context["page"].object_list:
+            self.assertEqual(p.sale.sales_rep_id, self.sales2.pk)
+
+    def test_seller_cannot_filter_by_other_rep(self):
+        # a plain seller only ever sees their own; rep param is ignored for them
+        self.client.force_login(self.sales1)
+        resp = self.client.get(reverse("payment_list"), {"rep": self.sales2.pk})
+        for p in resp.context["page"].object_list:
+            self.assertEqual(p.sale.sales_rep_id, self.sales1.pk)
+
+
+class DebtFilterTests(BaseSetup):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        # one overdue debt for client1/sales1, one current debt for client2/sales2
+        cls.overdue = make_sale(
+            cls.client1, cls.sales1, cls.product, is_debt=True,
+            debt_deadline=timezone.localdate() - timedelta(days=3),
+        )
+        cls.current = make_sale(
+            cls.client2, cls.sales2, cls.product, is_debt=True,
+            debt_deadline=timezone.localdate() + timedelta(days=10),
+        )
+
+    def _debtors(self, **params):
+        self.client.force_login(self.admin)
+        resp = self.client.get(reverse("debt_list"), params)
+        return {g["client"].pk for g in resp.context["debtors"]}
+
+    def test_filter_by_client(self):
+        self.assertEqual(self._debtors(client=self.client1.pk), {self.client1.pk})
+
+    def test_filter_by_rep(self):
+        self.assertEqual(self._debtors(rep=self.sales2.pk), {self.client2.pk})
+
+    def test_overdue_only(self):
+        self.assertEqual(self._debtors(overdue="1"), {self.client1.pk})
 
 
 class QuickAddClientTests(BaseSetup):
