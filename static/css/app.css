@@ -339,6 +339,9 @@ html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
   color: var(--kpi);
 }
 .kpi-meta.muted { color: var(--text-muted); }
+/* Mini trend line under each KPI value (6-month sparkline, coloured per card) */
+.kpi-spark { position: relative; display: block; width: 100%; height: 30px; margin-top: 11px; }
+.kpi-spark polyline { vector-effect: non-scaling-stroke; }
 
 /* Tills variant: only two till cards — keep them tile-sized (like the other
    pages' KPIs) instead of stretching each to half the page width. */

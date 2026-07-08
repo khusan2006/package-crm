@@ -165,6 +165,89 @@ def _monthly_series(sales, months=6):
     }
 
 
+def _spark_points(values, width=118.0, height=30.0, pad=3.0):
+    """Scale a numeric series into an SVG polyline points string for a KPI
+    sparkline. A flat or empty series renders as a centred flat line."""
+    nums = [float(v or 0) for v in values]
+    n = len(nums)
+    if n == 0:
+        return ""
+    lo, hi = min(nums), max(nums)
+    span = hi - lo
+    inner_w = width - 2 * pad
+    inner_h = height - 2 * pad
+    pts = []
+    for i, v in enumerate(nums):
+        x = pad + (inner_w * i / (n - 1) if n > 1 else inner_w / 2)
+        frac = (v - lo) / span if span else 0.5   # higher value → higher on screen
+        y = pad + (1 - frac) * inner_h
+        pts.append(f"{round(x, 1)},{round(y, 1)}")
+    return " ".join(pts)
+
+
+def _kpi_sparklines(flow, scoped, clients_q, months=6):
+    """Six-month trend for each dashboard KPI as sparkline point strings. Uses the
+    same rep/client/method scoping as the rest of the dashboard (date window aside,
+    since a sparkline shows the longer trend, not just the selected period)."""
+    today = timezone.localdate()
+    buckets = []
+    y, m = today.year, today.month
+    for _ in range(months):
+        buckets.append((y, m))
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    buckets.reverse()
+    start = date(buckets[0][0], buckets[0][1], 1)
+
+    item_rows = (
+        SaleItem.objects.filter(sale__in=flow, sale__date__gte=start)
+        .annotate(mon=TruncMonth("sale__date"))
+        .values("mon")
+        .annotate(revenue=Sum(REVENUE), profit=Sum(PROFIT))
+    )
+    rev_by = {(r["mon"].year, r["mon"].month): r["revenue"] or 0 for r in item_rows}
+    prof_by = {(r["mon"].year, r["mon"].month): r["profit"] or 0 for r in item_rows}
+
+    cnt_rows = (
+        flow.filter(date__gte=start).annotate(mon=TruncMonth("date"))
+        .values("mon").annotate(c=Count("pk"))
+    )
+    cnt_by = {(r["mon"].year, r["mon"].month): r["c"] for r in cnt_rows}
+
+    cli_rows = (
+        clients_q.filter(created_at__date__gte=start)
+        .annotate(mon=TruncMonth("created_at"))
+        .values("mon").annotate(c=Count("pk"))
+    )
+    cli_by = {(r["mon"].year, r["mon"].month): r["c"] for r in cli_rows}
+
+    debt_rows = (
+        scoped.outstanding().filter(date__gte=start)
+        .annotate(mon=TruncMonth("date"))
+        .values("mon").annotate(c=Count("pk"))
+    )
+    debt_by = {(r["mon"].year, r["mon"].month): r["c"] for r in debt_rows}
+
+    revenue, profit, avg, clients, debt = [], [], [], [], []
+    for yy, mm in buckets:
+        rev = float(rev_by.get((yy, mm), 0))
+        cnt = cnt_by.get((yy, mm), 0)
+        revenue.append(rev)
+        profit.append(float(prof_by.get((yy, mm), 0)))
+        avg.append(rev / cnt if cnt else 0)
+        clients.append(cli_by.get((yy, mm), 0))
+        debt.append(debt_by.get((yy, mm), 0))
+
+    return {
+        "revenue": _spark_points(revenue),
+        "profit": _spark_points(profit),
+        "avg": _spark_points(avg),
+        "clients": _spark_points(clients),
+        "debt": _spark_points(debt),
+    }
+
+
 def _short_money(value):
     """Compact so'm label (e.g. 44.4 mln) for tight spaces like a donut centre."""
     v = float(value or 0)
@@ -401,6 +484,7 @@ def dashboard(request):
 
     context = {
         "monthly": _monthly_series(flow),
+        "sparks": _kpi_sparklines(flow, scoped, new_clients_q),
         "donut": _payment_donut(period),
         "debt": _debt_overview(scoped, aging_filter=aging),
         "top_clients": _top_clients(period),

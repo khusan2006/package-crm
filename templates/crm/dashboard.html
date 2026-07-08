@@ -25,6 +25,7 @@
     </div>
     <div class="kpi-value">{{ period_revenue|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta muted">{{ period_count }} ta sotuv</div>
+    {% if sparks.revenue %}<svg class="kpi-spark" viewBox="0 0 118 30" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ sparks.revenue }}" fill="none" stroke="var(--kpi)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
   </div>
 
   <div class="kpi kpi--green">
@@ -34,6 +35,7 @@
     </div>
     <div class="kpi-value">{{ period_profit|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta">▲ {{ period_margin|floatformat:1 }}% foyda ulushi</div>
+    {% if sparks.profit %}<svg class="kpi-spark" viewBox="0 0 118 30" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ sparks.profit }}" fill="none" stroke="var(--kpi)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
   </div>
 
   <div class="kpi kpi--blue">
@@ -43,6 +45,7 @@
     </div>
     <div class="kpi-value">{{ avg_check|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta muted">Har bir sotuvga</div>
+    {% if sparks.avg %}<svg class="kpi-spark" viewBox="0 0 118 30" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ sparks.avg }}" fill="none" stroke="var(--kpi)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
   </div>
 
   <div class="kpi kpi--red">
@@ -52,6 +55,7 @@
     </div>
     <div class="kpi-value">{{ debt_total|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
     {% if overdue_count %}<div class="kpi-meta">{{ overdue_count }} ta muddati o'tgan</div>{% else %}<div class="kpi-meta muted">Muddati o'tgan yo'q</div>{% endif %}
+    {% if sparks.debt %}<svg class="kpi-spark" viewBox="0 0 118 30" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ sparks.debt }}" fill="none" stroke="var(--kpi)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
   </div>
 
   <div class="kpi kpi--gold">
@@ -61,6 +65,7 @@
     </div>
     <div class="kpi-value">{{ new_clients }}</div>
     <div class="kpi-meta muted">Tanlangan davrda</div>
+    {% if sparks.clients %}<svg class="kpi-spark" viewBox="0 0 118 30" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ sparks.clients }}" fill="none" stroke="var(--kpi)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
   </div>
 </div>
 
