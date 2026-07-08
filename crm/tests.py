@@ -263,11 +263,11 @@ class AuthTests(BaseSetup):
         self.client.force_login(self.admin)
         response = self.client.get(reverse("dashboard"))
         ctx = response.context
-        self.assertEqual(len(ctx["monthly"]), 6)              # 6-month trend
-        self.assertIn("cost_pct", ctx["monthly"][0])
+        self.assertEqual(len(ctx["monthly"]["rows"]), 6)      # 6-month trend
+        self.assertIn("revenue", ctx["monthly"]["rows"][0])
         self.assertEqual(len(ctx["donut"]["segments"]), 3)    # cash / card / transfer
         self.assertIsNotNone(ctx["donut"]["grand_short"])
-        self.assertTrue(all(hasattr(c, "pct") for c in ctx["top_clients"]))
+        self.assertTrue(all("pct" in c for c in ctx["top_clients"]))
         # Numbers inside style/SVG attributes must stay unlocalised — a comma
         # decimal separator silently breaks CSS lengths and SVG dash arrays.
         body = response.content.decode()
