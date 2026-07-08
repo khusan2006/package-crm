@@ -46,6 +46,7 @@
   </div>
 </div>
 
+{% if user.can_see_all_records %}
 <div class="card">
   <h2>Xodimlar bo'yicha</h2>
   <p class="field-hint" style="margin-top:-6px;">Kirim/chiqim — kassa harakati; “Sof” — foydadan rasxot ayirilgan samaradorlik (naqd qoldiq emas).</p>
@@ -73,6 +74,7 @@
   </div>
   {% else %}<p class="muted">Bu davrda harakat yo'q.</p>{% endif %}
 </div>
+{% endif %}
 
 <div class="card">
   <h2>Chiqimlar</h2>

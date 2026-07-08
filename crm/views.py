@@ -1240,8 +1240,14 @@ def _kassa_expenses(request):
     filters = {key: request.GET.get(key, "") for key in ("method", "category", "currency", "rep")}
     filters["dan"] = dates["date_from"].isoformat()
     filters["gacha"] = dates["date_to"].isoformat()
-    reps = User.objects.filter(is_active=True).order_by("first_name", "username")
-    rep = reps.filter(pk=filters["rep"]).first() if filters["rep"].isdigit() else None
+    # Admins/managers may filter by any employee; a seller is locked to their own
+    # till, so the employee filter is never offered to them.
+    if request.user.can_see_all_records:
+        reps = User.objects.filter(is_active=True).order_by("first_name", "username")
+        rep = reps.filter(pk=filters["rep"]).first() if filters["rep"].isdigit() else None
+    else:
+        reps = None
+        rep = request.user
     expenses = Expense.objects.select_related("created_by").filter(
         date__gte=dates["date_from"], date__lte=dates["date_to"]
     )
@@ -1268,8 +1274,10 @@ def kassa_view(request):
     method_labels = dict(Payment.Method.choices)
     category_labels = dict(Expense.Category.choices)
     currency_labels = dict(Payment.Currency.choices)
+    # Only the company view exposes a rep chip; a seller's own scope isn't a filter.
+    rep_chip = str(rep) if (reps is not None and rep) else ""
     active_filters = _filter_chips(request, [
-        {"param": "rep", "label": "Xodim", "value": str(rep) if rep else ""},
+        {"param": "rep", "label": "Xodim", "value": rep_chip},
         {"param": "category", "label": "Turkum", "value": category_labels.get(filters["category"], "")},
         {"param": "method", "label": "Usul", "value": method_labels.get(filters["method"], "")},
         {"param": "currency", "label": "Valyuta", "value": currency_labels.get(filters["currency"], "")},
@@ -1278,7 +1286,7 @@ def kassa_view(request):
     return render(request, "crm/kassa.html", {
         "summary": summary,
         "expenses": expenses,
-        "per_employee": _per_employee_kassa(date_from, date_to),
+        "per_employee": _per_employee_kassa(date_from, date_to) if request.user.can_see_all_records else None,
         "filters": filters,
         "reps": reps,
         "active_filters": active_filters,

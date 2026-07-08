@@ -1234,6 +1234,44 @@ class KassaCurrencyTests(BaseSetup):
         self.assertEqual(row["net"], Decimal("40000"))  # 60000 − 20000
 
 
+class KassaScopingTests(BaseSetup):
+    def setUp(self):
+        today = timezone.localdate()
+        Expense.objects.create(
+            amount=Decimal("50000"), category=Expense.Category.OTHER,
+            method=Payment.Method.CASH, created_by=self.sales2, date=today,
+        )
+        Expense.objects.create(
+            amount=Decimal("30000"), category=Expense.Category.OTHER,
+            method=Payment.Method.CASH, created_by=self.sales1, date=today,
+        )
+
+    def test_seller_sees_only_own_expenses(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"))
+        creators = {e.created_by_id for e in response.context["expenses"]}
+        self.assertEqual(creators, {self.sales1.pk})
+
+    def test_seller_cannot_widen_scope_via_rep_param(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"), {"rep": self.sales2.pk})
+        creators = {e.created_by_id for e in response.context["expenses"]}
+        self.assertEqual(creators, {self.sales1.pk})
+
+    def test_seller_has_no_per_employee_table(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"))
+        self.assertIsNone(response.context["per_employee"])
+        self.assertIsNone(response.context["reps"])
+
+    def test_admin_sees_all_expenses_and_per_employee(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("kassa"))
+        creators = {e.created_by_id for e in response.context["expenses"]}
+        self.assertEqual(creators, {self.sales1.pk, self.sales2.pk})
+        self.assertIsNotNone(response.context["per_employee"])
+
+
 class ClientTransferTests(BaseSetup):
     def test_seller_transfers_own_client(self):
         self.client.force_login(self.sales1)
