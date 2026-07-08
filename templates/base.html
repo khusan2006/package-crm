@@ -836,6 +836,33 @@
     });
   })();
 
+  // Live search: forms marked [data-live-search] submit themselves ~350ms after
+  // the user stops typing, so the list filters without a button. Clearing the box
+  // submits an empty query (removing the filter). After the reload we restore focus
+  // to the search input so the user can keep typing seamlessly.
+  (function () {
+    var timers = new WeakMap();
+    document.addEventListener('input', function (e) {
+      var input = e.target;
+      if (!input.matches || !input.matches('[data-live-search] input[name=q]')) { return; }
+      var form = input.closest('form');
+      if (!form) { return; }
+      clearTimeout(timers.get(form));
+      timers.set(form, setTimeout(function () {
+        if (form.requestSubmit) { form.requestSubmit(); } else { form.submit(); }
+      }, 350));
+    });
+    function restoreFocus() {
+      var input = document.querySelector('[data-live-search] input[name=q]');
+      if (input && input.value) {
+        input.focus();
+        var v = input.value; input.value = ''; input.value = v;  // caret to the end
+      }
+    }
+    if (document.readyState !== 'loading') { restoreFocus(); }
+    else { document.addEventListener('DOMContentLoaded', restoreFocus); }
+  })();
+
   // Searchable combobox: progressively enhances <select data-combobox> into a
   // type-to-filter input. The native <select> stays in the DOM (kept in sync)
   // so the form submits normally and existing change-listeners keep working.

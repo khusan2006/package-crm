@@ -1,9 +1,11 @@
 from datetime import timedelta
 from decimal import Decimal
+from io import BytesIO
 
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
+from openpyxl import load_workbook
 
 from accounts.models import User
 
@@ -17,7 +19,12 @@ from .models import (
     SaleItem,
     StockEntry,
 )
-from .views import _kassa_summary, _per_employee_kassa
+from .views import XLSX_CONTENT_TYPE, _kassa_summary, _per_employee_kassa
+
+
+def read_xlsx(response):
+    """Return an .xlsx export response as a list of row tuples (header first)."""
+    return list(load_workbook(BytesIO(response.content)).active.iter_rows(values_only=True))
 
 
 def make_sale(client, rep, product, weight="10", price="24000", **kwargs):
@@ -476,23 +483,23 @@ class SaleFilterExportTests(BaseSetup):
         self.assertIn(self.debt_sale, sales)
         self.assertTrue(all(s.is_outstanding for s in sales))
 
-    def test_export_returns_csv_scoped_and_filtered(self):
+    def test_export_returns_xlsx_scoped_and_filtered(self):
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("sale_export"), {"status": "debt"})
         self.assertEqual(response.status_code, 200)
-        self.assertIn("text/csv", response["Content-Type"])
+        self.assertIn("spreadsheetml", response["Content-Type"])
         self.assertIn("attachment", response["Content-Disposition"])
-        body = response.content.decode("utf-8")
-        lines = [ln for ln in body.splitlines() if ln.strip()]
+        self.assertIn(".xlsx", response["Content-Disposition"])
+        rows = read_xlsx(response)
         # header + exactly the one debt sale owned by sales1
-        self.assertEqual(len(lines), 2)
-        self.assertIn("Mijoz", lines[0])
+        self.assertEqual(len(rows), 2)
+        self.assertIn("Mijoz", rows[0])
 
     def test_sales_export_excludes_other_reps(self):
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("sale_export"))
-        body = response.content.decode("utf-8")
-        self.assertNotIn(self.client2.name, body)  # client2 belongs to sales2
+        values = {str(v) for row in read_xlsx(response) for v in row}
+        self.assertNotIn(self.client2.name, values)  # client2 belongs to sales2
 
 
 class FilterChipTests(BaseSetup):
@@ -899,7 +906,10 @@ class ClientDuplicateTests(BaseSetup):
 
     def test_manager_duplicate_checks_all_clients(self):
         self.client.force_login(self.manager)
-        self.client.post(reverse("client_create"), {"name": "Mijoz A"})
+        # Managers pick the responsible employee (required for them on the form).
+        self.client.post(
+            reverse("client_create"), {"name": "Mijoz A", "owner": self.manager.pk}
+        )
         self.assertEqual(Client.objects.filter(name="Mijoz A").count(), 1)  # blocked
 
     def test_quick_create_reports_duplicate(self):
@@ -917,6 +927,32 @@ class ClientDuplicateTests(BaseSetup):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(Client.objects.filter(name="Mijoz A").count(), 2)
+
+
+class ClientSearchTests(BaseSetup):
+    def test_search_matches_location(self):
+        Client.objects.create(name="Dala Mijoz", address="Sergeli tumani, 5-uy", owner=self.sales1)
+        Client.objects.create(name="Chekka Mijoz", address="Chilonzor", owner=self.sales1)
+        self.client.force_login(self.admin)  # admin sees every client
+        resp = self.client.get(reverse("client_list"), {"q": "sergeli"})
+        names = [c.name for c in resp.context["page"].object_list]
+        self.assertIn("Dala Mijoz", names)
+        self.assertNotIn("Chekka Mijoz", names)
+
+
+class ClientRepresentativeTests(BaseSetup):
+    def test_admin_assigns_representative(self):
+        self.client.force_login(self.admin)
+        self.client.post(
+            reverse("client_create"), {"name": "Vakil Mijoz", "owner": self.sales2.pk}
+        )
+        self.assertEqual(Client.objects.get(name="Vakil Mijoz").owner, self.sales2)
+
+    def test_seller_client_owned_by_self(self):
+        # Sellers don't see the representative field; their client stays theirs.
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("client_create"), {"name": "O'z Mijozim"})
+        self.assertEqual(Client.objects.get(name="O'z Mijozim").owner, self.sales1)
 
 
 class AuditLogTests(BaseSetup):
@@ -1160,23 +1196,23 @@ class KassaCurrencyTests(BaseSetup):
             self.client.get(reverse("expense_edit", args=[expense.pk])).status_code, 403
         )
 
-    def test_expense_csv_export(self):
+    def test_expense_xlsx_export(self):
         self.client.force_login(self.admin)
         self.client.post(
             reverse("expense_create"),
             {
                 "date": timezone.localdate().isoformat(),
                 "amount": "20", "currency": "usd", "exchange_rate": "12700",
-                "category": "purchase", "method": "cash", "note": "csv-row",
+                "category": "purchase", "method": "cash", "note": "xlsx-row",
             },
         )
         response = self.client.get(reverse("expense_export"))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "text/csv; charset=utf-8")
-        body = response.content.decode("utf-8")
-        self.assertIn("csv-row", body)
-        self.assertIn("254000.00", body)  # so'm value
-        self.assertIn("Dollar", body)     # currency label
+        self.assertEqual(response["Content-Type"], XLSX_CONTENT_TYPE)
+        cells = {v for row in read_xlsx(response) for v in row}
+        self.assertIn("xlsx-row", cells)
+        self.assertIn(254000.0, cells)  # so'm value (numeric cell)
+        self.assertIn("Dollar", cells)  # currency label
 
     def test_per_employee_net_subtracts_expense_from_profit(self):
         # sales2's only sale earns 60000 profit; a 20000 expense they record

@@ -4,15 +4,18 @@
 {% block fab %}<a class="fab" href="{% url 'client_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi mijoz</a>{% endblock %}
 {% block content %}
 
-<form method="get" class="searchbar">
-  <input type="text" name="q" value="{{ q }}" placeholder="Ism, kompaniya yoki telefon bo'yicha qidirish…">
-  <button type="submit" class="btn btn-sm">Qidirish</button>
+<form method="get" class="searchbar" role="search" data-live-search>
+  <div class="toolbar-search{% if q %} is-active{% endif %}">
+    <svg class="toolbar-search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input type="search" name="q" value="{{ q }}" placeholder="Ism, telefon yoki manzil bo'yicha qidirish (masalan: Sergeli)…" autocomplete="off" aria-label="Mijoz qidirish">
+    {% if q %}<a href="?" class="toolbar-search-x" title="Qidiruvni tozalash" aria-label="Qidiruvni tozalash">&times;</a>{% endif %}
+  </div>
 </form>
 
 {% if page.object_list %}
 <div class="table-wrap">
 <table>
-  <tr><th class="sticky-col">Ismi</th><th>Kompaniya</th><th>Telefon</th><th>Email</th><th>Mas'ul</th><th class="num">Sotuvlar</th><th></th></tr>
+  <tr><th class="sticky-col">Ismi</th><th>Kompaniya</th><th>Telefon</th><th>Manzil</th><th>Mas'ul</th><th class="num">Sotuvlar</th><th></th></tr>
   {% for client in page %}
   <tr>
     <td class="sticky-col">
@@ -23,7 +26,14 @@
     </td>
     <td>{{ client.company|default:"—" }}</td>
     <td>{{ client.phone|default:"—" }}</td>
-    <td>{{ client.email|default:"—" }}</td>
+    <td>
+      {% if client.address %}
+      <span class="cell-loc">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+        {{ client.address }}
+      </span>
+      {% else %}<span class="muted">—</span>{% endif %}
+    </td>
     <td>{{ client.owner }}</td>
     <td class="num">{{ client.sale_count }}</td>
     <td><a class="btn btn-sm btn-danger" href="{% url 'client_delete' client.pk %}">O'chirish</a></td>
