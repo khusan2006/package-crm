@@ -591,6 +591,7 @@ class AuditLog(models.Model):
         VOID = "void", "Bekor qilindi"
         PAYMENT = "payment", "To'lov"
         RETURN = "return", "Qaytarish"
+        TRANSFER = "transfer", "Sotuvchi o'zgartirildi"
 
     created_at = models.DateTimeField(auto_now_add=True)
     user = models.ForeignKey(

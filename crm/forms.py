@@ -387,3 +387,25 @@ class ReturnForm(forms.ModelForm):
                     "Qaytarilayotgan miqdor sotilganidan ko'p bo'lishi mumkin emas."
                 )
         return cleaned
+
+
+class ClientTransferForm(forms.Form):
+    """Reassign a client to another seller. The target list excludes the current
+    owner, so transferring to who already owns them is not selectable."""
+
+    new_owner = forms.ModelChoiceField(
+        label="Yangi sotuvchi",
+        queryset=User.objects.none(),
+        empty_label="— tanlang —",
+    )
+
+    def __init__(self, *args, client=None, **kwargs):
+        self.client = client
+        super().__init__(*args, **kwargs)
+        qs = User.objects.filter(is_active=True)
+        if client is not None:
+            qs = qs.exclude(pk=client.owner_id)
+        self.fields["new_owner"].queryset = qs.order_by(
+            "first_name", "last_name", "username"
+        )
+        self.fields["new_owner"].widget.attrs["data-combobox"] = ""

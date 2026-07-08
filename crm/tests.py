@@ -1232,3 +1232,85 @@ class KassaCurrencyTests(BaseSetup):
         self.assertEqual(row["profit"], Decimal("60000"))
         self.assertEqual(row["out_som"], Decimal("20000"))
         self.assertEqual(row["net"], Decimal("40000"))  # 60000 − 20000
+
+
+class ClientTransferTests(BaseSetup):
+    def test_seller_transfers_own_client(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("client_transfer", args=[self.client1.pk]),
+            {"new_owner": self.sales2.pk},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.client1.refresh_from_db()
+        self.assertEqual(self.client1.owner, self.sales2)
+        self.assertEqual(
+            list(Sale.objects.filter(client=self.client1).values_list("sales_rep", flat=True)),
+            [self.sales2.pk],
+        )
+
+    def test_transfer_moves_all_of_a_clients_sales(self):
+        make_sale(self.client1, self.sales1, self.product)  # a second sale
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("client_transfer", args=[self.client1.pk]),
+            {"new_owner": self.sales2.pk},
+        )
+        reps = set(
+            Sale.objects.filter(client=self.client1).values_list("sales_rep", flat=True)
+        )
+        self.assertEqual(reps, {self.sales2.pk})
+
+    def test_seller_cannot_transfer_another_sellers_client(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("client_transfer", args=[self.client2.pk]),
+            {"new_owner": self.sales1.pk},
+        )
+        self.assertEqual(response.status_code, 404)
+        self.client2.refresh_from_db()
+        self.assertEqual(self.client2.owner, self.sales2)
+
+    def test_admin_can_transfer_any_client(self):
+        self.client.force_login(self.admin)
+        response = self.client.post(
+            reverse("client_transfer", args=[self.client2.pk]),
+            {"new_owner": self.sales1.pk},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.client2.refresh_from_db()
+        self.assertEqual(self.client2.owner, self.sales1)
+
+    def test_cannot_transfer_to_current_owner(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("client_transfer", args=[self.client1.pk]),
+            {"new_owner": self.sales1.pk},
+        )
+        self.assertEqual(response.status_code, 200)  # re-rendered with error
+        self.client1.refresh_from_db()
+        self.assertEqual(self.client1.owner, self.sales1)
+
+    def test_transfer_writes_audit_log(self):
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("client_transfer", args=[self.client1.pk]),
+            {"new_owner": self.sales2.pk},
+        )
+        log = AuditLog.objects.filter(action=AuditLog.Action.TRANSFER).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.target_id, self.client1.pk)
+
+    def test_new_owner_gains_and_old_owner_loses_visibility(self):
+        make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("client_transfer", args=[self.client1.pk]),
+            {"new_owner": self.sales2.pk},
+        )
+        self.client.force_login(self.sales2)
+        resp2 = self.client.get(reverse("client_list"))
+        self.assertIn(self.client1, list(resp2.context["page"].object_list))
+        self.client.force_login(self.sales1)
+        resp1 = self.client.get(reverse("client_list"))
+        self.assertNotIn(self.client1, list(resp1.context["page"].object_list))

@@ -20,6 +20,7 @@ from accounts.models import User
 
 from .forms import (
     ClientForm,
+    ClientTransferForm,
     DebtPaymentForm,
     ExpenseForm,
     ProductForm,
@@ -510,6 +511,51 @@ def client_delete(request, pk):
             )
         return redirect("client_list")
     return render(request, "crm/confirm_delete.html", {"object": client, "back": "client_list"})
+
+
+def _render_client_transfer(request, client, form, invalid=False):
+    context = {
+        "form": form,
+        "client": client,
+        "sales_count": Sale.objects.filter(client=client).count(),
+        "title": f"Mijozni o'tkazish: {client.name}",
+    }
+    if is_ajax(request):
+        return render(
+            request, "crm/_client_transfer_modal.html", context,
+            status=422 if invalid else 200,
+        )
+    return render(request, "crm/form.html", context)
+
+
+def client_transfer(request, pk):
+    """Hand a client — and their whole sales history — to another seller.
+
+    Full handover: the client's owner and every one of their sales' sales_rep
+    move to the target, atomically. Sellers may transfer only clients they own
+    (a non-owned client 404s via the visible-clients scope); admins/managers
+    may transfer anyone's."""
+    client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    if request.method == "POST":
+        form = ClientTransferForm(request.POST, client=client)
+        if form.is_valid():
+            target = form.cleaned_data["new_owner"]
+            old_owner = client.owner
+            with transaction.atomic():
+                moved = Sale.objects.filter(client=client).update(sales_rep=target)
+                client.owner = target
+                client.save(update_fields=["owner"])
+                AuditLog.record(
+                    request.user, AuditLog.Action.TRANSFER, "Mijoz", client.pk,
+                    f"{client.name}: {old_owner} → {target} ({moved} ta sotuv)",
+                )
+            messages.success(
+                request, f"“{client.name}” {target}ga o'tkazildi ({moved} ta sotuv)."
+            )
+            return form_reload(request, reverse("client_list"))
+        return _render_client_transfer(request, client, form, invalid=True)
+    form = ClientTransferForm(client=client)
+    return _render_client_transfer(request, client, form)
 
 
 # --- Products -----------------------------------------------------------------
