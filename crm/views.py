@@ -90,8 +90,8 @@ UZ_MONTHS_SHORT = ["Yan", "Fev", "Mar", "Apr", "May", "Iyn", "Iyl", "Avg", "Sen"
 
 
 def _monthly_series(sales, months=6):
-    """Revenue / cost / profit for the last `months` months (oldest first), with
-    each bar's cost & profit heights as a percentage of the tallest bar."""
+    """Revenue / profit for the last `months` months (oldest first) as SVG line
+    points scaled to a fixed viewBox, ready for a line chart."""
     today = timezone.localdate()
     buckets = []
     y, m = today.year, today.month
@@ -112,17 +112,46 @@ def _monthly_series(sales, months=6):
     data = []
     for yy, mm in buckets:
         row = by_month.get((yy, mm)) or {}
+        last_day = (date(yy + (mm == 12), (mm % 12) + 1, 1) - timedelta(days=1)).day
         data.append({
             "label": UZ_MONTHS_SHORT[mm - 1],
             "revenue": row.get("revenue") or Decimal("0"),
             "cost": row.get("cost") or Decimal("0"),
             "profit": row.get("profit") or Decimal("0"),
+            "dan": date(yy, mm, 1).isoformat(),
+            "gacha": date(yy, mm, last_day).isoformat(),
         })
+
+    # --- line-chart geometry (fixed viewBox, scaled to the tallest revenue) ---
+    vb_w, vb_h = 720.0, 240.0
+    pad_l, pad_r, pad_t, pad_b = 16.0, 16.0, 18.0, 30.0
+    inner_w = vb_w - pad_l - pad_r
+    inner_h = vb_h - pad_t - pad_b
+    baseline = pad_t + inner_h
+    n = len(data)
     peak = max((d["revenue"] for d in data), default=Decimal("0")) or Decimal("1")
-    for d in data:
-        d["cost_pct"] = round(float(d["cost"] / peak * 100), 2)
-        d["profit_pct"] = round(max(float(d["profit"] / peak * 100), 0.0), 2)
-    return data
+
+    def _y(value):
+        return round(baseline - float(value / peak) * inner_h, 2)
+
+    for i, d in enumerate(data):
+        d["x"] = round(pad_l + (inner_w * i / (n - 1) if n > 1 else inner_w / 2), 2)
+        d["y_rev"] = _y(d["revenue"])
+        d["y_profit"] = _y(d["profit"])
+
+    rev_line = " ".join(f"{d['x']},{d['y_rev']}" for d in data)
+    profit_line = " ".join(f"{d['x']},{d['y_profit']}" for d in data)
+    first_x = data[0]["x"] if data else pad_l
+    last_x = data[-1]["x"] if data else vb_w - pad_r
+    rev_area = f"{rev_line} {last_x},{baseline} {first_x},{baseline}"
+
+    return {
+        "rows": data,
+        "rev_line": rev_line,
+        "profit_line": profit_line,
+        "rev_area": rev_area,
+        "viewbox": f"0 0 {vb_w:g} {vb_h:g}",
+    }
 
 
 def _short_money(value):
@@ -137,25 +166,20 @@ def _short_money(value):
     return f"{v:.0f}"
 
 
-def _payment_donut(sales):
-    """Payment totals split by method, as donut-ready arc segments."""
-    rows = Payment.objects.filter(sale__in=sales).values("method").annotate(total=Sum("amount"))
-    totals = {r["method"]: r["total"] or Decimal("0") for r in rows}
-    palette = [
-        ("cash", "Naqd", "var(--accent)"),
-        ("card", "Karta", "var(--success)"),
-        ("transfer", "Bank o'tkazmasi", "var(--warning)"),
-    ]
-    grand = sum((totals.get(key, Decimal("0")) for key, _, _ in palette), Decimal("0"))
+def _donut(items):
+    """Build donut-ready arc segments from (key, label, amount, color) tuples: each
+    segment carries the stroke-dasharray/offset that draws its slice of the ring.
+    `key` is an optional cross-filter handle (e.g. a payment method) — may be None."""
+    grand = sum((amount for _, _, amount, _ in items), Decimal("0"))
     radius = 56.0
     circumference = 2 * math.pi * radius
     segments = []
     cursor = 0.0
-    for key, label, color in palette:
-        amount = totals.get(key, Decimal("0"))
+    for key, label, amount, color in items:
         frac = float(amount / grand) if grand else 0.0
         length = frac * circumference
         segments.append({
+            "key": key,
             "label": label,
             "total": amount,
             "color": color,
@@ -173,89 +197,216 @@ def _payment_donut(sales):
     }
 
 
-def _top_products(sales, limit=5):
-    """Top products by revenue, each with a bar width as a % of the leader."""
+def _payment_donut(sales):
+    """Payment totals split by method, as donut-ready arc segments."""
+    rows = Payment.objects.filter(sale__in=sales).values("method").annotate(total=Sum("amount"))
+    totals = {r["method"]: r["total"] or Decimal("0") for r in rows}
+    palette = [
+        ("cash", "Naqd", "var(--accent)"),
+        ("card", "Karta", "var(--success)"),
+        ("transfer", "Bank o'tkazmasi", "var(--warning)"),
+    ]
+    return _donut([(key, label, totals.get(key, Decimal("0")), color) for key, label, color in palette])
+
+
+def _debt_overview(sales, top=5):
+    """Outstanding receivables split into aging buckets (by days overdue) plus the
+    biggest debtors — the dashboard's debt-at-a-glance. A company that sells heavily
+    on credit needs to see which money is at risk and who to collect from first."""
+    today = timezone.localdate()
+    open_sales = sales.outstanding().select_related("client")
+
+    # Risk gradient: neutral (not yet due) → gold → orange → red (deeply overdue).
+    aging_defs = [
+        ("Muddati kelmagan", "color-mix(in srgb, var(--accent) 45%, var(--surface))"),
+        ("1–7 kun kechikkan", "var(--warning)"),
+        ("8–30 kun kechikkan", "color-mix(in srgb, var(--warning) 45%, var(--danger))"),
+        ("30+ kun kechikkan", "var(--danger)"),
+    ]
+    aging = [{"label": lbl, "color": clr, "amount": Decimal("0"), "count": 0}
+             for lbl, clr in aging_defs]
+
+    clients = {}
+    total = Decimal("0")
+    overdue_total = Decimal("0")
+    for sale in open_sales:
+        rem = sale.remaining or Decimal("0")
+        if rem <= 0:
+            continue
+        total += rem
+        deadline = sale.debt_deadline
+        if deadline is None or deadline >= today:
+            idx = 0
+        else:
+            overdue_days = (today - deadline).days
+            overdue_total += rem
+            idx = 1 if overdue_days <= 7 else 2 if overdue_days <= 30 else 3
+        aging[idx]["amount"] += rem
+        aging[idx]["count"] += 1
+
+        debtor = clients.get(sale.client_id)
+        if debtor is None:
+            debtor = clients[sale.client_id] = {
+                "client_id": sale.client_id, "name": sale.client.name,
+                "amount": Decimal("0"), "overdue": False,
+            }
+        debtor["amount"] += rem
+        if deadline is not None and deadline < today:
+            debtor["overdue"] = True
+
+    grand = total or Decimal("1")
+    for bucket in aging:
+        bucket["pct"] = round(float(bucket["amount"] / grand) * 100, 2)
+
+    # Draw the aging split as a donut, then fold each bucket's receipt count back
+    # onto its arc segment so the legend can show both amount and count.
+    aging_donut = _donut([(None, b["label"], b["amount"], b["color"]) for b in aging])
+    for segment, bucket in zip(aging_donut["segments"], aging):
+        segment["count"] = bucket["count"]
+
+    top_debtors = sorted(clients.values(), key=lambda d: d["amount"], reverse=True)[:top]
+    peak = max((d["amount"] for d in top_debtors), default=Decimal("1")) or Decimal("1")
+    for debtor in top_debtors:
+        debtor["pct"] = round(float(debtor["amount"] / peak) * 100, 2)
+
+    return {
+        "aging": aging,
+        "aging_donut": aging_donut,
+        "top_debtors": top_debtors,
+        "total": total,
+        "overdue_total": overdue_total,
+        "overdue_pct": round(float(overdue_total / grand) * 100, 1),
+    }
+
+
+
+def _top_clients(sales, limit=5):
+    """Top clients by revenue within the given (already-scoped) sales."""
     rows = list(
-        SaleItem.objects.filter(sale__in=sales)
-        .values("product__name")
-        .annotate(revenue=Sum(REVENUE))
-        .order_by("-revenue")[:limit]
+        SaleItem.objects.filter(sale__in=sales.values("pk"))
+        .values("sale__client_id", "sale__client__name")
+        .annotate(total=Sum(REVENUE))
+        .order_by("-total")[:limit]
     )
-    peak = max((r["revenue"] or Decimal("0") for r in rows), default=Decimal("1")) or Decimal("1")
-    for r in rows:
-        r["name"] = r["product__name"]
-        r["pct"] = round(float((r["revenue"] or Decimal("0")) / peak * 100), 2)
+    peak = max((r["total"] or Decimal("0") for r in rows), default=Decimal("1")) or Decimal("1")
+    for row in rows:
+        row["name"] = row["sale__client__name"]
+        row["client_id"] = row["sale__client_id"]
+        row["pct"] = round(float((row["total"] or Decimal("0")) / peak * 100), 2)
     return rows
 
 
 def dashboard(request):
-    sales = Sale.objects.visible_to(request.user)
-    month_start = timezone.localdate().replace(day=1)
-    month_sales = sales.filter(date__gte=month_start)
+    today = timezone.localdate()
+    # The period drives every "flow" figure; it defaults to month-to-date.
+    date_from = _parse_date(request.GET.get("dan")) or today.replace(day=1)
+    date_to = _parse_date(request.GET.get("gacha")) or today
+    if date_to < date_from:
+        date_from, date_to = date_to, date_from
 
-    month = _sale_totals(month_sales)
-    all_time = _sale_totals(sales)
+    # Cross-filters set by clicking a chart element (or the drawer). Rep is
+    # admin/manager-only; rep+client scope the whole dashboard, the date window and
+    # payment method only the sales "flows" (debt is a method-independent snapshot).
+    filters = {key: request.GET.get(key, "") for key in ("rep", "client", "method")}
+    rep_id = filters["rep"] if (filters["rep"].isdigit() and request.user.can_see_all_records) else ""
+    client_id = filters["client"] if filters["client"].isdigit() else ""
+    method = filters["method"] if filters["method"] in Payment.Method.values else ""
+
+    scoped = Sale.objects.visible_to(request.user)
+    if rep_id:
+        scoped = scoped.filter(sales_rep_id=rep_id)
+    if client_id:
+        scoped = scoped.filter(client_id=client_id)
+    # `flow` narrows the sales set by payment method for the flow figures, but debt
+    # keeps using `scoped` — an unpaid receipt has no payment row of any method.
+    flow = scoped.filter(payments__method=method).distinct() if method else scoped
+    period = flow.filter(date__gte=date_from, date__lte=date_to)
 
     def _margin(t):
         rev = t["revenue"] or 0
         return (t["profit"] or 0) / rev * 100 if rev else 0
 
-    top_clients = (
-        _visible_clients(request.user)
-        .filter(sales__items__isnull=False)
-        .annotate(
-            total=Sum(F("sales__items__weight") * F("sales__items__price")),
-            profit=Sum(
-                F("sales__items__weight")
-                * (F("sales__items__price") - F("sales__items__cost_price"))
-            ),
-        )
-        .order_by("-total")[:5]
-    )
+    period_totals = _sale_totals(period)
+    period_count = period.count()
+    period_revenue = period_totals["revenue"] or 0
+    avg_check = period_revenue / period_count if period_count else 0
 
-    recent_sales = (
-        sales.select_related("client", "sales_rep")
-        .prefetch_related("items__product")
-        .with_totals()[:8]
-    )
-
-    open_sales = sales.outstanding()
+    # Debt is a live snapshot: rep/client scoped, but never date-scoped — an old
+    # receipt is still owed today regardless of the selected window.
+    open_sales = scoped.outstanding()
     debt_total = _outstanding_balance(open_sales)
-    overdue_sales = open_sales.filter(debt_deadline__lt=timezone.localdate())
+    overdue_sales = open_sales.filter(debt_deadline__lt=today)
     overdue_count = overdue_sales.count()
     overdue_total = _outstanding_balance(overdue_sales)
     overdue_clients = overdue_sales.values("client").distinct().count()
 
-    low_stock_count = (
-        Product.objects.filter(is_active=True)
-        .with_stock()
-        .filter(stock__lte=F("low_stock_threshold"))
-        .count()
+    # New clients acquired in the period (owner-scoped when a rep is selected).
+    new_clients_q = _visible_clients(request.user)
+    if rep_id:
+        new_clients_q = new_clients_q.filter(owner_id=rep_id)
+    new_clients = new_clients_q.filter(
+        created_at__date__gte=date_from, created_at__date__lte=date_to
+    ).count()
+
+    recent_sales = (
+        period.select_related("client", "sales_rep")
+        .prefetch_related("items__product")
+        .with_totals()
+        .order_by("-date", "-created_at")[:8]
     )
 
-    top_clients = list(top_clients)
-    client_peak = max((c.total or 0 for c in top_clients), default=0) or 1
-    for client in top_clients:
-        client.pct = round(float((client.total or 0) / client_peak * 100), 2)
+    # Shared toolbar / drawer plumbing (rep + client chips, the date-range picker).
+    clients = _visible_clients(request.user).order_by("name")
+    reps = (
+        User.objects.filter(is_active=True).order_by("first_name", "username")
+        if request.user.can_see_all_records
+        else None
+    )
+    client_obj = clients.filter(pk=client_id).first() if client_id else None
+    rep_obj = reps.filter(pk=rep_id).first() if reps and rep_id else None
+    method_labels = dict(Payment.Method.choices)
+    filters["dan"] = date_from.isoformat()
+    filters["gacha"] = date_to.isoformat()
+    filters["q"] = ""
+    active_filters = _filter_chips(request, [
+        {"param": "rep", "label": "Sotuvchi", "value": str(rep_obj) if rep_obj else ""},
+        {"param": "client", "label": "Mijoz", "value": client_obj.name if client_obj else ""},
+        {"param": "method", "label": "To'lov usuli", "value": method_labels.get(method, "")},
+    ])
 
     context = {
-        "monthly": _monthly_series(sales),
-        "donut": _payment_donut(sales),
-        "top_products": _top_products(sales),
-        "month": month,
-        "all_time": all_time,
-        "month_count": month_sales.count(),
-        "all_time_count": sales.count(),
-        "month_margin": _margin(month),
-        "all_time_margin": _margin(all_time),
-        "top_clients": top_clients,
+        "monthly": _monthly_series(flow),
+        "donut": _payment_donut(period),
+        "debt": _debt_overview(scoped),
+        "top_clients": _top_clients(period),
         "recent_sales": recent_sales,
-        "client_count": _visible_clients(request.user).count(),
+        "period_revenue": period_revenue,
+        "period_profit": period_totals["profit"] or 0,
+        "period_count": period_count,
+        "period_margin": _margin(period_totals),
+        "avg_check": avg_check,
+        "new_clients": new_clients,
         "debt_total": debt_total,
         "overdue_count": overdue_count,
         "overdue_total": overdue_total,
         "overdue_clients": overdue_clients,
-        "low_stock_count": low_stock_count,
+        "filters": filters,
+        "reps": reps,
+        "clients": clients,
+        "active_filters": active_filters,
+        "has_filters": bool(active_filters),
+        "filter_count": len(active_filters),
+        "filter_url": reverse("dashboard"),
+        "date_from": date_from,
+        "date_to": date_to,
+        "range_days": (date_to - date_from).days + 1,
+        "is_single_day": date_from == date_to,
+        "is_today": date_from == today and date_to == today,
+        "prev_from": (date_from - timedelta(days=1)).isoformat(),
+        "prev_to": (date_to - timedelta(days=1)).isoformat(),
+        "next_from": (date_from + timedelta(days=1)).isoformat(),
+        "next_to": (date_to + timedelta(days=1)).isoformat(),
+        "today_iso": today.isoformat(),
     }
     return render(request, "crm/dashboard.html", context)
 

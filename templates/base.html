@@ -409,6 +409,9 @@
         + '<button type="button" class="cal-nav" data-nav="-1" aria-label="Oldingi oy">' + CHEV_L + '</button>'
         + '<span class="cal-title">' + MONTHS[m] + ' ' + y + '</span>'
         + '<button type="button" class="cal-nav" data-nav="1" aria-label="Keyingi oy">' + CHEV_R + '</button>'
+        + '</div><div class="cal-inputs">'
+        + '<label class="cal-in-field">Dan<input type="date" class="cal-in" data-input="from" value="' + (selStart || '') + '"></label>'
+        + '<label class="cal-in-field">Gacha<input type="date" class="cal-in" data-input="to" value="' + (selEnd || selStart || '') + '"></label>'
         + '</div><div class="cal-wd">';
       for (var w = 0; w < 7; w++) { h += '<span>' + WD[w] + '</span>'; }
       h += '</div><div class="cal-days">';
@@ -429,7 +432,6 @@
         + '<button type="button" class="cal-preset" data-preset="30">30 kun</button>'
         + '<button type="button" class="cal-preset" data-preset="month">Bu oy</button>'
         + '</div><div class="cal-actions">'
-        + '<span class="cal-sel-label">' + selLabel() + '</span>'
         + '<button type="button" class="btn btn-sm" data-apply>Tanlash</button>'
         + '</div>';
       pop.innerHTML = h;
@@ -486,6 +488,34 @@
       var preset = e.target.closest('[data-preset]');
       if (preset) { applyPreset(preset.getAttribute('data-preset')); return; }
       if (e.target.closest('[data-apply]')) { apply(selStart, selEnd || selStart); }
+    });
+
+    // Manual entry: typing (or picking) in the Dan/Gacha fields updates the range
+    function syncFromInputs(focusEl) {
+      var fromEl = pop.querySelector('[data-input="from"]');
+      var toEl = pop.querySelector('[data-input="to"]');
+      if (!fromEl || !toEl) { return; }
+      var f = fromEl.value || '';
+      var t = toEl.value || '';
+      if (f && t && t < f) { var s = f; f = t; t = s; }
+      selStart = f || t || todayIso;
+      selEnd = t || null;
+      var focus = parseIso((focusEl && focusEl.value) || selStart);
+      if (focus) { view = new Date(focus.getFullYear(), focus.getMonth(), 1); }
+      render();
+    }
+    pop.addEventListener('change', function (e) {
+      var el = e.target.closest('[data-input]');
+      if (el) { syncFromInputs(el); }
+    });
+    pop.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter') { return; }
+      var el = e.target.closest('[data-input]');
+      if (!el) { return; }
+      e.preventDefault();
+      var f = pop.querySelector('[data-input="from"]').value || '';
+      var t = pop.querySelector('[data-input="to"]').value || f;
+      if (f) { apply(f, t); }
     });
 
     document.addEventListener('click', function () { if (!pop.hidden) { closePop(); } });

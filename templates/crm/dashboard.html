@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load l10n %}
+{% load l10n crm_extras %}
 {% block title %}Asosiy · Paket CRM{% endblock %}
 {% block topbar_title %}Asosiy{% endblock %}
 {% block content %}
@@ -15,41 +15,34 @@
 </div>
 {% endif %}
 
-<div class="kpi-grid kpi-grid--compact">
+{% include "crm/_filter_toolbar.html" with show_daterange_picker=True keep_daterange=True %}
+
+<div class="kpi-grid">
   <div class="kpi kpi--blue">
     <div class="kpi-head">
       <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></span>
-      <span class="kpi-label">Shu oy savdo</span>
+      <span class="kpi-label">Savdo</span>
     </div>
-    <div class="kpi-value">{{ month.revenue|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta muted">{{ month_count }} ta sotuv</div>
+    <div class="kpi-value">{{ period_revenue|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{{ period_count }} ta sotuv</div>
   </div>
 
   <div class="kpi kpi--green">
     <div class="kpi-head">
       <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span>
-      <span class="kpi-label">Shu oy foyda</span>
+      <span class="kpi-label">Foyda</span>
     </div>
-    <div class="kpi-value">{{ month.profit|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta">▲ {{ month_margin|floatformat:1 }}% foyda ulushi</div>
+    <div class="kpi-value">{{ period_profit|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta">▲ {{ period_margin|floatformat:1 }}% foyda ulushi</div>
   </div>
 
   <div class="kpi kpi--blue">
     <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg></span>
-      <span class="kpi-label">Jami savdo</span>
-    </div>
-    <div class="kpi-value">{{ all_time.revenue|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta muted">{{ all_time_count }} ta sotuv</div>
-  </div>
-
-  <div class="kpi kpi--green">
-    <div class="kpi-head">
       <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>
-      <span class="kpi-label">Jami foyda</span>
+      <span class="kpi-label">O'rtacha chek</span>
     </div>
-    <div class="kpi-value">{{ all_time.profit|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta">▲ {{ all_time_margin|floatformat:1 }}% foyda ulushi</div>
+    <div class="kpi-value">{{ avg_check|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">Har bir sotuvga</div>
   </div>
 
   <div class="kpi kpi--red">
@@ -63,20 +56,61 @@
 
   <div class="kpi kpi--gold">
     <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
-      <span class="kpi-label">Mijozlar</span>
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg></span>
+      <span class="kpi-label">Yangi mijozlar</span>
     </div>
-    <div class="kpi-value">{{ client_count }}</div>
-    <div class="kpi-meta muted">Jami mijozlar</div>
+    <div class="kpi-value">{{ new_clients }}</div>
+    <div class="kpi-meta muted">Tanlangan davrda</div>
+  </div>
+</div>
+
+<div class="chart-grid chart-grid--split">
+  <div class="card chart-card">
+    <div class="card-head">
+      <h2>Qarzlar muddati bo'yicha</h2>
+      {% if debt.total %}<span class="head-note">{{ debt.overdue_total|floatformat:"0g" }} so'm ({{ debt.overdue_pct|floatformat:0 }}%) muddati o'tgan</span>{% endif %}
+    </div>
+    {% if debt.total %}
+    <div class="donut-block">
+      <div class="donut-wrap">
+        <svg class="donut" viewBox="0 0 160 160" aria-hidden="true">
+          <circle cx="80" cy="80" r="{{ debt.aging_donut.radius|unlocalize }}" fill="none" stroke="var(--surface-2)" stroke-width="18"/>
+          {% for s in debt.aging_donut.segments %}{% if s.dash %}<circle cx="80" cy="80" r="{{ debt.aging_donut.radius|unlocalize }}" fill="none" stroke="{{ s.color }}" stroke-width="18" stroke-dasharray="{{ s.dash|unlocalize }} {{ s.gap|unlocalize }}" stroke-dashoffset="{{ s.offset|unlocalize }}" transform="rotate(-90 80 80)"/>{% endif %}{% endfor %}
+        </svg>
+        <div class="donut-center">
+          <span class="donut-total">{{ debt.aging_donut.grand_short }}</span>
+          <span class="donut-sub">so'm</span>
+        </div>
+      </div>
+      <div class="legend legend-col">
+        {% for s in debt.aging_donut.segments %}
+        <span class="legend-item legend-item--debt">
+          <i class="dot" style="background:{{ s.color }}"></i>
+          <span class="lg-label">{{ s.label }}<small>{{ s.count }} ta</small></span>
+          <strong>{{ s.total|floatformat:"0g" }}</strong>
+        </span>
+        {% endfor %}
+      </div>
+    </div>
+    {% else %}<p class="muted">Hozircha qarzlar yo'q.</p>{% endif %}
   </div>
 
-  <div class="kpi kpi--gold">
-    <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
-      <span class="kpi-label">Kam qolgan mahsulot</span>
+  <div class="card chart-card">
+    <div class="card-head">
+      <h2>Eng katta qarzdorlar</h2>
+      <a class="head-note" href="{% url 'debt_list' %}">Barchasi →</a>
     </div>
-    <div class="kpi-value">{{ low_stock_count }}</div>
-    {% if low_stock_count %}<div class="kpi-meta"><a href="{% url 'product_list' %}">Omborni ko'rish</a></div>{% else %}<div class="kpi-meta muted">Hammasi yetarli</div>{% endif %}
+    {% if debt.top_debtors %}
+    <div class="hbars">
+      {% for d in debt.top_debtors %}
+      <div class="hbar-row">
+        <span class="hbar-label" title="{{ d.name }}"><a class="xf-link" href="{% qs_replace client=d.client_id %}">{{ d.name }}</a>{% if d.overdue %} <i class="overdue-mark" title="Muddati o'tgan qarzi bor">●</i>{% endif %}</span>
+        <div class="hbar-track"><div class="hbar-fill{% if d.overdue %} hbar-fill--danger{% endif %}" style="width:{{ d.pct|unlocalize }}%"></div></div>
+        <span class="hbar-value">{{ d.amount|floatformat:"0g" }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}<p class="muted">Hozircha qarzlar yo'q.</p>{% endif %}
   </div>
 </div>
 
@@ -85,22 +119,33 @@
     <div class="card-head">
       <h2>Oylik savdo</h2>
       <div class="legend">
-        <span class="legend-item"><i class="dot dot-cost"></i>Tannarx</span>
+        <span class="legend-item"><i class="dot dot-revenue"></i>Savdo</span>
         <span class="legend-item"><i class="dot dot-profit"></i>Foyda</span>
       </div>
     </div>
-    <div class="bar-chart">
-      {% for m in monthly %}
-      <div class="bar-col">
-        <div class="bar-track" title="{{ m.label }} — savdo: {{ m.revenue|floatformat:'0g' }} so'm · foyda: {{ m.profit|floatformat:'0g' }} so'm">
-          <div class="bar-stack">
-            <div class="bar-seg bar-profit" style="height:{{ m.profit_pct|unlocalize }}%"></div>
-            <div class="bar-seg bar-cost" style="height:{{ m.cost_pct|unlocalize }}%"></div>
-          </div>
-        </div>
-        <span class="bar-label">{{ m.label }}</span>
+    <div class="line-chart">
+      <svg class="line-svg" viewBox="{{ monthly.viewbox }}" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="revFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.22"/>
+            <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <polygon class="line-area" points="{{ monthly.rev_area|unlocalize }}" fill="url(#revFill)"/>
+        <polyline class="line-path line-revenue" points="{{ monthly.rev_line|unlocalize }}"/>
+        <polyline class="line-path line-profit" points="{{ monthly.profit_line|unlocalize }}"/>
+        {% for m in monthly.rows %}
+        <circle class="line-dot line-dot--revenue" cx="{{ m.x|unlocalize }}" cy="{{ m.y_rev|unlocalize }}" r="4">
+          <title>{{ m.label }} — savdo: {{ m.revenue|floatformat:'0g' }} so'm · foyda: {{ m.profit|floatformat:'0g' }} so'm</title>
+        </circle>
+        <circle class="line-dot line-dot--profit" cx="{{ m.x|unlocalize }}" cy="{{ m.y_profit|unlocalize }}" r="4">
+          <title>{{ m.label }} — foyda: {{ m.profit|floatformat:'0g' }} so'm</title>
+        </circle>
+        {% endfor %}
+      </svg>
+      <div class="line-labels">
+        {% for m in monthly.rows %}<a class="line-label" href="{% qs_replace dan=m.dan gacha=m.gacha %}" title="{{ m.label }} oyini ko'rish">{{ m.label }}</a>{% endfor %}
       </div>
-      {% endfor %}
     </div>
   </div>
 
@@ -120,7 +165,7 @@
       </div>
       <div class="legend legend-col">
         {% for s in donut.segments %}
-        <span class="legend-item"><i class="dot" style="background:{{ s.color }}"></i>{{ s.label }} <strong>{{ s.pct }}%</strong></span>
+        <a class="legend-item xf-link" href="{% qs_replace method=s.key %}" title="{{ s.label }} bo'yicha filtrlash"><i class="dot" style="background:{{ s.color }}"></i>{{ s.label }} <strong>{{ s.pct }}%</strong></a>
         {% endfor %}
       </div>
     </div>
@@ -128,36 +173,19 @@
   </div>
 </div>
 
-<div class="chart-grid">
-  <div class="card chart-card">
-    <div class="card-head"><h2>Top mahsulotlar</h2></div>
-    {% if top_products %}
-    <div class="hbars">
-      {% for p in top_products %}
-      <div class="hbar-row">
-        <span class="hbar-label" title="{{ p.name }}">{{ p.name }}</span>
-        <div class="hbar-track"><div class="hbar-fill" style="width:{{ p.pct|unlocalize }}%"></div></div>
-        <span class="hbar-value">{{ p.revenue|floatformat:"0g" }}</span>
-      </div>
-      {% endfor %}
+<div class="card chart-card">
+  <div class="card-head"><h2>Top mijozlar</h2></div>
+  {% if top_clients %}
+  <div class="hbars">
+    {% for c in top_clients %}
+    <div class="hbar-row">
+      <span class="hbar-label" title="{{ c.name }}"><a class="xf-link" href="{% qs_replace client=c.client_id %}">{{ c.name }}</a></span>
+      <div class="hbar-track"><div class="hbar-fill hbar-fill--gold" style="width:{{ c.pct|unlocalize }}%"></div></div>
+      <span class="hbar-value">{{ c.total|floatformat:"0g" }}</span>
     </div>
-    {% else %}<p class="muted">Hozircha savdo yo'q.</p>{% endif %}
+    {% endfor %}
   </div>
-
-  <div class="card chart-card">
-    <div class="card-head"><h2>Top mijozlar</h2></div>
-    {% if top_clients %}
-    <div class="hbars">
-      {% for c in top_clients %}
-      <div class="hbar-row">
-        <span class="hbar-label" title="{{ c.name }}">{{ c.name }}</span>
-        <div class="hbar-track"><div class="hbar-fill hbar-fill--gold" style="width:{{ c.pct|unlocalize }}%"></div></div>
-        <span class="hbar-value">{{ c.total|floatformat:"0g" }}</span>
-      </div>
-      {% endfor %}
-    </div>
-    {% else %}<p class="muted">Hozircha savdo yo'q.</p>{% endif %}
-  </div>
+  {% else %}<p class="muted">Hozircha savdo yo'q.</p>{% endif %}
 </div>
 
 <div class="card">
@@ -186,4 +214,6 @@
   </div>
   {% else %}<p class="muted">Hozircha sotuvlar yo'q.</p>{% endif %}
 </div>
+
+{% include "crm/_filter_drawer.html" with keep_daterange=True %}
 {% endblock %}
