@@ -1271,6 +1271,16 @@ class KassaScopingTests(BaseSetup):
         self.assertEqual(creators, {self.sales1.pk, self.sales2.pk})
         self.assertIsNotNone(response.context["per_employee"])
 
+    def test_seller_response_hides_employee_table(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"))
+        self.assertNotContains(response, "Xodimlar bo'yicha")
+
+    def test_admin_response_shows_employee_table(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("kassa"))
+        self.assertContains(response, "Xodimlar bo'yicha")
+
 
 class ClientTransferTests(BaseSetup):
     def test_seller_transfers_own_client(self):
@@ -1368,6 +1378,14 @@ class ClientTransferTests(BaseSetup):
         response = self.client.get(reverse("client_list"))
         self.assertContains(response, reverse("client_transfer", args=[self.client1.pk]))
 
+    def test_transfer_non_ajax_get_renders(self):
+        # A direct (non-XHR) GET falls back to the full-page form and still
+        # renders the target dropdown, so the non-modal path is not broken.
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_transfer", args=[self.client1.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'name="new_owner"')
+
 
 class ProductDetailScopingTests(BaseSetup):
     def test_seller_sees_only_own_recent_sales(self):
@@ -1389,6 +1407,16 @@ class ProductDetailScopingTests(BaseSetup):
         self.assertIn(self.sale1.pk, sale_ids)
         self.assertIn(self.sale2.pk, sale_ids)
         self.assertIsNotNone(response.context["entries"])
+
+    def test_seller_response_hides_stock_log(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("product_detail", args=[self.product.pk]))
+        self.assertNotContains(response, "Ombor harakatlari")
+
+    def test_admin_response_shows_stock_log(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("product_detail", args=[self.product.pk]))
+        self.assertContains(response, "Ombor harakatlari")
 
 
 class SellerLabelTests(BaseSetup):
