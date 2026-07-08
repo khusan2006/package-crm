@@ -137,10 +137,17 @@ def _monthly_series(sales, months=6):
     def _y(value):
         return round(baseline - float(value / peak) * inner_h, 2)
 
+    band = inner_w / (n - 1) if n > 1 else inner_w
     for i, d in enumerate(data):
         d["x"] = round(pad_l + (inner_w * i / (n - 1) if n > 1 else inner_w / 2), 2)
         d["y_rev"] = _y(d["revenue"])
         d["y_profit"] = _y(d["profit"])
+        # Full-height transparent hit band so a click anywhere in the month's
+        # column drills into it — not just on the tiny label/point.
+        left = max(d["x"] - band / 2, 0.0)
+        right = min(d["x"] + band / 2, vb_w)
+        d["hit_x"] = round(left, 2)
+        d["hit_w"] = round(right - left, 2)
 
     rev_line = " ".join(f"{d['x']},{d['y_rev']}" for d in data)
     profit_line = " ".join(f"{d['x']},{d['y_profit']}" for d in data)
@@ -153,6 +160,7 @@ def _monthly_series(sales, months=6):
         "rev_line": rev_line,
         "profit_line": profit_line,
         "rev_area": rev_area,
+        "vb_h": vb_h,
         "viewbox": f"0 0 {vb_w:g} {vb_h:g}",
     }
 
@@ -212,22 +220,25 @@ def _payment_donut(sales):
     return _donut([(key, label, totals.get(key, Decimal("0")), color) for key, label, color in palette])
 
 
-def _debt_overview(sales, top=5):
+def _debt_overview(sales, aging_filter=None, top=5):
     """Outstanding receivables split into aging buckets (by days overdue) plus the
     biggest debtors — the dashboard's debt-at-a-glance. A company that sells heavily
-    on credit needs to see which money is at risk and who to collect from first."""
+    on credit needs to see which money is at risk and who to collect from first.
+
+    `aging_filter` (a bucket key) cross-filters the top-debtors list to that bucket
+    while the donut keeps showing the full split, so another bucket stays one click away."""
     today = timezone.localdate()
     open_sales = sales.outstanding().select_related("client")
 
     # Risk gradient: neutral (not yet due) → gold → orange → red (deeply overdue).
     aging_defs = [
-        ("Muddati kelmagan", "color-mix(in srgb, var(--accent) 45%, var(--surface))"),
-        ("1–7 kun kechikkan", "var(--warning)"),
-        ("8–30 kun kechikkan", "color-mix(in srgb, var(--warning) 45%, var(--danger))"),
-        ("30+ kun kechikkan", "var(--danger)"),
+        ("current", "Muddati kelmagan", "color-mix(in srgb, var(--accent) 45%, var(--surface))"),
+        ("d1_7", "1–7 kun kechikkan", "var(--warning)"),
+        ("d8_30", "8–30 kun kechikkan", "color-mix(in srgb, var(--warning) 45%, var(--danger))"),
+        ("d30", "30+ kun kechikkan", "var(--danger)"),
     ]
-    aging = [{"label": lbl, "color": clr, "amount": Decimal("0"), "count": 0}
-             for lbl, clr in aging_defs]
+    aging = [{"key": key, "label": lbl, "color": clr, "amount": Decimal("0"), "count": 0}
+             for key, lbl, clr in aging_defs]
 
     clients = {}
     total = Decimal("0")
@@ -247,6 +258,9 @@ def _debt_overview(sales, top=5):
         aging[idx]["amount"] += rem
         aging[idx]["count"] += 1
 
+        # The donut sees every receipt; the debtor list only the selected bucket.
+        if aging_filter and aging[idx]["key"] != aging_filter:
+            continue
         debtor = clients.get(sale.client_id)
         if debtor is None:
             debtor = clients[sale.client_id] = {
@@ -261,11 +275,12 @@ def _debt_overview(sales, top=5):
     for bucket in aging:
         bucket["pct"] = round(float(bucket["amount"] / grand) * 100, 2)
 
-    # Draw the aging split as a donut, then fold each bucket's receipt count back
-    # onto its arc segment so the legend can show both amount and count.
-    aging_donut = _donut([(None, b["label"], b["amount"], b["color"]) for b in aging])
+    # Draw the aging split as a donut (always the full picture), then fold each
+    # bucket's receipt count back onto its arc segment for the legend.
+    aging_donut = _donut([(b["key"], b["label"], b["amount"], b["color"]) for b in aging])
     for segment, bucket in zip(aging_donut["segments"], aging):
         segment["count"] = bucket["count"]
+        segment["active"] = aging_filter == bucket["key"]
 
     top_debtors = sorted(clients.values(), key=lambda d: d["amount"], reverse=True)[:top]
     peak = max((d["amount"] for d in top_debtors), default=Decimal("1")) or Decimal("1")
@@ -276,6 +291,7 @@ def _debt_overview(sales, top=5):
         "aging": aging,
         "aging_donut": aging_donut,
         "top_debtors": top_debtors,
+        "selected": aging_filter,
         "total": total,
         "overdue_total": overdue_total,
         "overdue_pct": round(float(overdue_total / grand) * 100, 1),
@@ -310,10 +326,11 @@ def dashboard(request):
     # Cross-filters set by clicking a chart element (or the drawer). Rep is
     # admin/manager-only; rep+client scope the whole dashboard, the date window and
     # payment method only the sales "flows" (debt is a method-independent snapshot).
-    filters = {key: request.GET.get(key, "") for key in ("rep", "client", "method")}
+    filters = {key: request.GET.get(key, "") for key in ("rep", "client", "method", "aging")}
     rep_id = filters["rep"] if (filters["rep"].isdigit() and request.user.can_see_all_records) else ""
     client_id = filters["client"] if filters["client"].isdigit() else ""
     method = filters["method"] if filters["method"] in Payment.Method.values else ""
+    aging = filters["aging"] if filters["aging"] in ("current", "d1_7", "d8_30", "d30") else ""
 
     scoped = Sale.objects.visible_to(request.user)
     if rep_id:
@@ -368,6 +385,10 @@ def dashboard(request):
     client_obj = clients.filter(pk=client_id).first() if client_id else None
     rep_obj = reps.filter(pk=rep_id).first() if reps and rep_id else None
     method_labels = dict(Payment.Method.choices)
+    aging_labels = {
+        "current": "Muddati kelmagan", "d1_7": "1–7 kun kechikkan",
+        "d8_30": "8–30 kun kechikkan", "d30": "30+ kun kechikkan",
+    }
     filters["dan"] = date_from.isoformat()
     filters["gacha"] = date_to.isoformat()
     filters["q"] = ""
@@ -375,12 +396,13 @@ def dashboard(request):
         {"param": "rep", "label": "Sotuvchi", "value": str(rep_obj) if rep_obj else ""},
         {"param": "client", "label": "Mijoz", "value": client_obj.name if client_obj else ""},
         {"param": "method", "label": "To'lov usuli", "value": method_labels.get(method, "")},
+        {"param": "aging", "label": "Qarz muddati", "value": aging_labels.get(aging, "")},
     ])
 
     context = {
         "monthly": _monthly_series(flow),
         "donut": _payment_donut(period),
-        "debt": _debt_overview(scoped),
+        "debt": _debt_overview(scoped, aging_filter=aging),
         "top_clients": _top_clients(period),
         "recent_sales": recent_sales,
         "period_revenue": period_revenue,

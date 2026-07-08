@@ -75,7 +75,7 @@
       <div class="donut-wrap">
         <svg class="donut" viewBox="0 0 160 160" aria-hidden="true">
           <circle cx="80" cy="80" r="{{ debt.aging_donut.radius|unlocalize }}" fill="none" stroke="var(--surface-2)" stroke-width="18"/>
-          {% for s in debt.aging_donut.segments %}{% if s.dash %}<circle cx="80" cy="80" r="{{ debt.aging_donut.radius|unlocalize }}" fill="none" stroke="{{ s.color }}" stroke-width="18" stroke-dasharray="{{ s.dash|unlocalize }} {{ s.gap|unlocalize }}" stroke-dashoffset="{{ s.offset|unlocalize }}" transform="rotate(-90 80 80)"/>{% endif %}{% endfor %}
+          {% for s in debt.aging_donut.segments %}{% if s.dash %}<a href="{% qs_replace aging=s.key %}" class="donut-seg{% if debt.selected and not s.active %} is-dimmed{% endif %}"><circle cx="80" cy="80" r="{{ debt.aging_donut.radius|unlocalize }}" fill="none" stroke="{{ s.color }}" stroke-width="18" stroke-dasharray="{{ s.dash|unlocalize }} {{ s.gap|unlocalize }}" stroke-dashoffset="{{ s.offset|unlocalize }}" transform="rotate(-90 80 80)"><title>{{ s.label }} bo'yicha filtrlash</title></circle></a>{% endif %}{% endfor %}
         </svg>
         <div class="donut-center">
           <span class="donut-total">{{ debt.aging_donut.grand_short }}</span>
@@ -84,11 +84,11 @@
       </div>
       <div class="legend legend-col">
         {% for s in debt.aging_donut.segments %}
-        <span class="legend-item legend-item--debt">
+        <a class="legend-item legend-item--debt xf-link{% if s.active %} is-active{% endif %}" href="{% qs_replace aging=s.key %}" title="{{ s.label }} bo'yicha filtrlash">
           <i class="dot" style="background:{{ s.color }}"></i>
           <span class="lg-label">{{ s.label }}<small>{{ s.count }} ta</small></span>
           <strong>{{ s.total|floatformat:"0g" }}</strong>
-        </span>
+        </a>
         {% endfor %}
       </div>
     </div>
@@ -98,16 +98,16 @@
   <div class="card chart-card">
     <div class="card-head">
       <h2>Eng katta qarzdorlar</h2>
-      <a class="head-note" href="{% url 'debt_list' %}">Barchasi →</a>
+      {% if debt.selected %}<span class="head-note">{% for s in debt.aging_donut.segments %}{% if s.active %}{{ s.label }}{% endif %}{% endfor %} · <a href="{% qs_replace aging='' %}">tozalash</a></span>{% else %}<a class="head-note" href="{% url 'debt_list' %}">Barchasi →</a>{% endif %}
     </div>
     {% if debt.top_debtors %}
     <div class="hbars">
       {% for d in debt.top_debtors %}
-      <div class="hbar-row">
-        <span class="hbar-label" title="{{ d.name }}"><a class="xf-link" href="{% qs_replace client=d.client_id %}">{{ d.name }}</a>{% if d.overdue %} <i class="overdue-mark" title="Muddati o'tgan qarzi bor">●</i>{% endif %}</span>
+      <a class="hbar-row xf-row" href="{% qs_replace client=d.client_id %}" title="{{ d.name }} bo'yicha filtrlash">
+        <span class="hbar-label">{{ d.name }}{% if d.overdue %} <i class="overdue-mark" title="Muddati o'tgan qarzi bor">●</i>{% endif %}</span>
         <div class="hbar-track"><div class="hbar-fill{% if d.overdue %} hbar-fill--danger{% endif %}" style="width:{{ d.pct|unlocalize }}%"></div></div>
         <span class="hbar-value">{{ d.amount|floatformat:"0g" }}</span>
-      </div>
+      </a>
       {% endfor %}
     </div>
     {% else %}<p class="muted">Hozircha qarzlar yo'q.</p>{% endif %}
@@ -142,6 +142,7 @@
           <title>{{ m.label }} — foyda: {{ m.profit|floatformat:'0g' }} so'm</title>
         </circle>
         {% endfor %}
+        {% for m in monthly.rows %}<a href="{% qs_replace dan=m.dan gacha=m.gacha %}"><rect class="line-hit" x="{{ m.hit_x|unlocalize }}" y="0" width="{{ m.hit_w|unlocalize }}" height="{{ monthly.vb_h|unlocalize }}"><title>{{ m.label }} oyini ko'rish</title></rect></a>{% endfor %}
       </svg>
       <div class="line-labels">
         {% for m in monthly.rows %}<a class="line-label" href="{% qs_replace dan=m.dan gacha=m.gacha %}" title="{{ m.label }} oyini ko'rish">{{ m.label }}</a>{% endfor %}
@@ -156,7 +157,7 @@
       <div class="donut-wrap">
         <svg class="donut" viewBox="0 0 160 160" aria-hidden="true">
           <circle cx="80" cy="80" r="{{ donut.radius|unlocalize }}" fill="none" stroke="var(--surface-2)" stroke-width="18"/>
-          {% for s in donut.segments %}{% if s.dash %}<circle cx="80" cy="80" r="{{ donut.radius|unlocalize }}" fill="none" stroke="{{ s.color }}" stroke-width="18" stroke-dasharray="{{ s.dash|unlocalize }} {{ s.gap|unlocalize }}" stroke-dashoffset="{{ s.offset|unlocalize }}" transform="rotate(-90 80 80)"/>{% endif %}{% endfor %}
+          {% for s in donut.segments %}{% if s.dash %}<a href="{% qs_replace method=s.key %}" class="donut-seg"><circle cx="80" cy="80" r="{{ donut.radius|unlocalize }}" fill="none" stroke="{{ s.color }}" stroke-width="18" stroke-dasharray="{{ s.dash|unlocalize }} {{ s.gap|unlocalize }}" stroke-dashoffset="{{ s.offset|unlocalize }}" transform="rotate(-90 80 80)"><title>{{ s.label }} bo'yicha filtrlash</title></circle></a>{% endif %}{% endfor %}
         </svg>
         <div class="donut-center">
           <span class="donut-total">{{ donut.grand_short }}</span>
@@ -178,11 +179,11 @@
   {% if top_clients %}
   <div class="hbars">
     {% for c in top_clients %}
-    <div class="hbar-row">
-      <span class="hbar-label" title="{{ c.name }}"><a class="xf-link" href="{% qs_replace client=c.client_id %}">{{ c.name }}</a></span>
+    <a class="hbar-row xf-row" href="{% qs_replace client=c.client_id %}" title="{{ c.name }} bo'yicha filtrlash">
+      <span class="hbar-label">{{ c.name }}</span>
       <div class="hbar-track"><div class="hbar-fill hbar-fill--gold" style="width:{{ c.pct|unlocalize }}%"></div></div>
       <span class="hbar-value">{{ c.total|floatformat:"0g" }}</span>
-    </div>
+    </a>
     {% endfor %}
   </div>
   {% else %}<p class="muted">Hozircha savdo yo'q.</p>{% endif %}

@@ -1076,6 +1076,20 @@ ul.errorlist li::before { content: "⚠ "; }
 .xf-link { color: inherit; text-decoration: none; cursor: pointer; transition: color 0.12s; }
 .xf-link:hover { color: var(--accent); text-decoration: underline; }
 .legend-item.xf-link:hover { color: var(--accent); text-decoration: none; }
+/* Whole bar row is the click target */
+.xf-row { text-decoration: none; color: inherit; cursor: pointer; }
+.xf-row:hover .hbar-label { color: var(--accent); }
+.xf-row:hover .hbar-fill { filter: brightness(1.12); }
+/* Clickable donut arc + full-height line-chart month band */
+.donut-seg { cursor: pointer; }
+.donut-seg circle { transition: opacity 0.12s, filter 0.12s; }
+.donut-seg:hover circle { filter: brightness(1.12); }
+.donut-seg.is-dimmed circle { opacity: 0.28; }
+.line-hit { fill: transparent; cursor: pointer; transition: fill 0.12s; }
+.line-hit:hover { fill: var(--accent-soft); }
+/* Selected aging bucket in the debt legend */
+.legend-item--debt.is-active { background: var(--accent-soft); border-radius: var(--r-sm); }
+.legend-item--debt.is-active .lg-label { color: var(--accent); font-weight: 700; }
 
 /* Donut */
 .donut-block { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
