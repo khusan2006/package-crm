@@ -36,7 +36,10 @@
     </td>
     <td>{{ client.owner }}</td>
     <td class="num">{{ client.sale_count }}</td>
-    <td><a class="btn btn-sm btn-danger" href="{% url 'client_delete' client.pk %}">O'chirish</a></td>
+    <td class="row-actions">
+      <a class="btn btn-sm btn-ghost" href="{% url 'client_transfer' client.pk %}" data-modal>O'tkazish</a>
+      <a class="btn btn-sm btn-danger" href="{% url 'client_delete' client.pk %}">O'chirish</a>
+    </td>
   </tr>
   {% endfor %}
 </table>

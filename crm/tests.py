@@ -1314,3 +1314,18 @@ class ClientTransferTests(BaseSetup):
         self.client.force_login(self.sales1)
         resp1 = self.client.get(reverse("client_list"))
         self.assertNotIn(self.client1, list(resp1.context["page"].object_list))
+
+    def test_transfer_modal_renders_for_ajax(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(
+            reverse("client_transfer", args=[self.client1.pk]),
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Yangi sotuvchi")
+        self.assertContains(response, "O'tkazish")
+
+    def test_client_list_shows_transfer_action(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_list"))
+        self.assertContains(response, reverse("client_transfer", args=[self.client1.pk]))
