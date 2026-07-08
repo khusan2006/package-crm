@@ -738,9 +738,16 @@ ul.errorlist li::before { content: "⚠ "; }
   margin-bottom: 18px;
   flex-wrap: wrap;
 }
+/* Standalone-page search (Mijozlar / Ombor) reuses the toolbar pill component,
+   just a touch wider, so every search box on the app looks identical. */
+.searchbar .toolbar-search { flex: 0 1 420px; }
 .searchbar input[type=text] { max-width: 320px; }
 .searchbar input[type=date] { max-width: 170px; }
 .searchbar label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); }
+
+/* Location cell in the client list: pin icon + address, easy to scan */
+.cell-loc { display: inline-flex; align-items: center; gap: 6px; }
+.cell-loc svg { width: 15px; height: 15px; color: var(--text-muted); flex-shrink: 0; }
 
 /* Advanced filter bar */
 .filter-grid {
@@ -835,6 +842,17 @@ ul.errorlist li::before { content: "⚠ "; }
 .daterange-trigger .daterange-text { white-space: nowrap; }
 .daterange-trigger .cal-ico { width: 16px; height: 16px; color: var(--text-muted); flex-shrink: 0; }
 .daterange.is-open .daterange-trigger .cal-ico { color: var(--accent); }
+
+/* Toolbar action buttons (Bugun / Filtrlash / Excel) share the segmented date
+   control's look, so the whole toolbar row reads as one consistent set. */
+.table-toolbar .btn-ghost {
+  border-radius: var(--r);
+  background: var(--surface);
+  padding: 8px 14px;
+  font-size: 13.5px;
+  line-height: 1;  /* so <a> and <button> resolve to the same height as the date control */
+}
+.table-toolbar .btn-ghost:hover { background: var(--surface-hover); }
 
 /* Calendar popover */
 .daterange-pop {

@@ -48,6 +48,7 @@
   </div>
 </div>
 
+{% if user.can_see_all_records %}
 <div class="card">
   <h2>Ombor harakatlari</h2>
   {% if entries %}
@@ -66,6 +67,7 @@
   </div>
   {% else %}<p class="muted">Hozircha harakat yo'q.</p>{% endif %}
 </div>
+{% endif %}
 
 <div class="card">
   <h2>So'nggi sotuvlar</h2>

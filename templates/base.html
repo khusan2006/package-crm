@@ -42,19 +42,19 @@
         <div class="nav-group-label">Savdo</div>
         <a class="nav-item {% if 'sale' in url_name %}active{% endif %}" href="{% url 'sale_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span>
-          <span>Sotuvlar</span>
+          <span>{% if user.can_see_all_records %}Sotuvlar{% else %}Mening sotuvlarim{% endif %}</span>
         </a>
         <a class="nav-item {% if 'debt' in url_name %}active{% endif %}" href="{% url 'debt_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
-          <span>Qarzlar</span>
+          <span>{% if user.can_see_all_records %}Qarzlar{% else %}Mening qarzlarim{% endif %}</span>
         </a>
         <a class="nav-item {% if 'kassa' in url_name or 'expense' in url_name %}active{% endif %}" href="{% url 'kassa' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4"/><path d="M4 6v12a2 2 0 0 0 2 2h14v-4"/><path d="M18 12a2 2 0 0 0-2 2c0 1.1.9 2 2 2h4v-4Z"/></svg></span>
-          <span>Kassa</span>
+          <span>{% if user.can_see_all_records %}Kassa{% else %}Mening kassam{% endif %}</span>
         </a>
         <a class="nav-item {% if 'client' in url_name %}active{% endif %}" href="{% url 'client_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
-          <span>Mijozlar</span>
+          <span>{% if user.can_see_all_records %}Mijozlar{% else %}Mening mijozlarim{% endif %}</span>
         </a>
         <a class="nav-item {% if 'product' in url_name %}active{% endif %}" href="{% url 'product_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg></span>
@@ -834,6 +834,33 @@
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && drawer.classList.contains('open')) { closeDrawer(); }
     });
+  })();
+
+  // Live search: forms marked [data-live-search] submit themselves ~350ms after
+  // the user stops typing, so the list filters without a button. Clearing the box
+  // submits an empty query (removing the filter). After the reload we restore focus
+  // to the search input so the user can keep typing seamlessly.
+  (function () {
+    var timers = new WeakMap();
+    document.addEventListener('input', function (e) {
+      var input = e.target;
+      if (!input.matches || !input.matches('[data-live-search] input[name=q]')) { return; }
+      var form = input.closest('form');
+      if (!form) { return; }
+      clearTimeout(timers.get(form));
+      timers.set(form, setTimeout(function () {
+        if (form.requestSubmit) { form.requestSubmit(); } else { form.submit(); }
+      }, 350));
+    });
+    function restoreFocus() {
+      var input = document.querySelector('[data-live-search] input[name=q]');
+      if (input && input.value) {
+        input.focus();
+        var v = input.value; input.value = ''; input.value = v;  // caret to the end
+      }
+    }
+    if (document.readyState !== 'loading') { restoreFocus(); }
+    else { document.addEventListener('DOMContentLoaded', restoreFocus); }
   })();
 
   // Searchable combobox: progressively enhances <select data-combobox> into a

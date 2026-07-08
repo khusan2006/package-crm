@@ -44,7 +44,6 @@ RETURN_WEIGHT_KG = Case(
 class Client(models.Model):
     name = models.CharField("Ismi", max_length=200)
     company = models.CharField("Kompaniya", max_length=200, blank=True)
-    email = models.EmailField("Email", blank=True)
     phone = models.CharField("Telefon", max_length=30, blank=True)
     address = models.CharField("Manzil", max_length=300, blank=True)
     notes = models.TextField("Izoh", blank=True)
@@ -592,6 +591,7 @@ class AuditLog(models.Model):
         VOID = "void", "Bekor qilindi"
         PAYMENT = "payment", "To'lov"
         RETURN = "return", "Qaytarish"
+        TRANSFER = "transfer", "Sotuvchi o'zgartirildi"
 
     created_at = models.DateTimeField(auto_now_add=True)
     user = models.ForeignKey(

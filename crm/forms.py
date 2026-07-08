@@ -5,6 +5,8 @@ from django import forms
 from django.forms import inlineformset_factory
 from django.utils import timezone
 
+from accounts.models import User
+
 from .models import Client, Expense, Payment, Product, Return, Sale, SaleItem, StockEntry
 
 DEFAULT_DEBT_DAYS = 7
@@ -29,7 +31,7 @@ class ClientForm(forms.ModelForm):
 
     class Meta:
         model = Client
-        fields = ["name", "company", "email", "phone", "address", "notes"]
+        fields = ["name", "company", "owner", "phone", "address", "notes"]
         widgets = {"notes": forms.Textarea(attrs={"rows": 3})}
 
     def __init__(self, *args, user=None, check_duplicates=True, **kwargs):
@@ -37,6 +39,19 @@ class ClientForm(forms.ModelForm):
         self.check_duplicates = check_duplicates
         super().__init__(*args, **kwargs)
         self.fields["phone"].widget.attrs["data-phone"] = ""
+        # "Mas'ul xodim" — which employee this client is attached to. Only
+        # admins/managers assign it across the team; a seller's clients stay
+        # owned by themselves (the view fills that in), so drop the field for them.
+        if user is not None and user.can_see_all_records:
+            self.fields["owner"].label = "Mas'ul xodim"
+            self.fields["owner"].queryset = User.objects.filter(is_active=True).order_by(
+                "first_name", "last_name", "username"
+            )
+            self.fields["owner"].widget.attrs["data-combobox"] = ""
+            if user is not None and not self.instance.pk:
+                self.fields["owner"].initial = user.pk
+        else:
+            self.fields.pop("owner", None)
         # The override checkbox is only meaningful when creating a new client
         if not check_duplicates:
             self.fields.pop("allow_duplicate", None)
@@ -372,3 +387,25 @@ class ReturnForm(forms.ModelForm):
                     "Qaytarilayotgan miqdor sotilganidan ko'p bo'lishi mumkin emas."
                 )
         return cleaned
+
+
+class ClientTransferForm(forms.Form):
+    """Reassign a client to another seller. The target list excludes the current
+    owner, so transferring to who already owns them is not selectable."""
+
+    new_owner = forms.ModelChoiceField(
+        label="Yangi sotuvchi",
+        queryset=User.objects.none(),
+        empty_label="— tanlang —",
+    )
+
+    def __init__(self, *args, client=None, **kwargs):
+        self.client = client
+        super().__init__(*args, **kwargs)
+        qs = User.objects.filter(is_active=True)
+        if client is not None:
+            qs = qs.exclude(pk=client.owner_id)
+        self.fields["new_owner"].queryset = qs.order_by(
+            "first_name", "last_name", "username"
+        )
+        self.fields["new_owner"].widget.attrs["data-combobox"] = ""

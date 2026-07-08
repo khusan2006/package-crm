@@ -1,9 +1,11 @@
 from datetime import timedelta
 from decimal import Decimal
+from io import BytesIO
 
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
+from openpyxl import load_workbook
 
 from accounts.models import User
 
@@ -17,7 +19,12 @@ from .models import (
     SaleItem,
     StockEntry,
 )
-from .views import _kassa_summary, _per_employee_kassa
+from .views import XLSX_CONTENT_TYPE, _kassa_summary, _per_employee_kassa
+
+
+def read_xlsx(response):
+    """Return an .xlsx export response as a list of row tuples (header first)."""
+    return list(load_workbook(BytesIO(response.content)).active.iter_rows(values_only=True))
 
 
 def make_sale(client, rep, product, weight="10", price="24000", **kwargs):
@@ -256,11 +263,11 @@ class AuthTests(BaseSetup):
         self.client.force_login(self.admin)
         response = self.client.get(reverse("dashboard"))
         ctx = response.context
-        self.assertEqual(len(ctx["monthly"]), 6)              # 6-month trend
-        self.assertIn("cost_pct", ctx["monthly"][0])
+        self.assertEqual(len(ctx["monthly"]["rows"]), 6)      # 6-month trend
+        self.assertIn("revenue", ctx["monthly"]["rows"][0])
         self.assertEqual(len(ctx["donut"]["segments"]), 3)    # cash / card / transfer
         self.assertIsNotNone(ctx["donut"]["grand_short"])
-        self.assertTrue(all(hasattr(c, "pct") for c in ctx["top_clients"]))
+        self.assertTrue(all("pct" in c for c in ctx["top_clients"]))
         # Numbers inside style/SVG attributes must stay unlocalised — a comma
         # decimal separator silently breaks CSS lengths and SVG dash arrays.
         body = response.content.decode()
@@ -476,23 +483,23 @@ class SaleFilterExportTests(BaseSetup):
         self.assertIn(self.debt_sale, sales)
         self.assertTrue(all(s.is_outstanding for s in sales))
 
-    def test_export_returns_csv_scoped_and_filtered(self):
+    def test_export_returns_xlsx_scoped_and_filtered(self):
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("sale_export"), {"status": "debt"})
         self.assertEqual(response.status_code, 200)
-        self.assertIn("text/csv", response["Content-Type"])
+        self.assertIn("spreadsheetml", response["Content-Type"])
         self.assertIn("attachment", response["Content-Disposition"])
-        body = response.content.decode("utf-8")
-        lines = [ln for ln in body.splitlines() if ln.strip()]
+        self.assertIn(".xlsx", response["Content-Disposition"])
+        rows = read_xlsx(response)
         # header + exactly the one debt sale owned by sales1
-        self.assertEqual(len(lines), 2)
-        self.assertIn("Mijoz", lines[0])
+        self.assertEqual(len(rows), 2)
+        self.assertIn("Mijoz", rows[0])
 
     def test_sales_export_excludes_other_reps(self):
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("sale_export"))
-        body = response.content.decode("utf-8")
-        self.assertNotIn(self.client2.name, body)  # client2 belongs to sales2
+        values = {str(v) for row in read_xlsx(response) for v in row}
+        self.assertNotIn(self.client2.name, values)  # client2 belongs to sales2
 
 
 class FilterChipTests(BaseSetup):
@@ -899,7 +906,10 @@ class ClientDuplicateTests(BaseSetup):
 
     def test_manager_duplicate_checks_all_clients(self):
         self.client.force_login(self.manager)
-        self.client.post(reverse("client_create"), {"name": "Mijoz A"})
+        # Managers pick the responsible employee (required for them on the form).
+        self.client.post(
+            reverse("client_create"), {"name": "Mijoz A", "owner": self.manager.pk}
+        )
         self.assertEqual(Client.objects.filter(name="Mijoz A").count(), 1)  # blocked
 
     def test_quick_create_reports_duplicate(self):
@@ -917,6 +927,32 @@ class ClientDuplicateTests(BaseSetup):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(Client.objects.filter(name="Mijoz A").count(), 2)
+
+
+class ClientSearchTests(BaseSetup):
+    def test_search_matches_location(self):
+        Client.objects.create(name="Dala Mijoz", address="Sergeli tumani, 5-uy", owner=self.sales1)
+        Client.objects.create(name="Chekka Mijoz", address="Chilonzor", owner=self.sales1)
+        self.client.force_login(self.admin)  # admin sees every client
+        resp = self.client.get(reverse("client_list"), {"q": "sergeli"})
+        names = [c.name for c in resp.context["page"].object_list]
+        self.assertIn("Dala Mijoz", names)
+        self.assertNotIn("Chekka Mijoz", names)
+
+
+class ClientRepresentativeTests(BaseSetup):
+    def test_admin_assigns_representative(self):
+        self.client.force_login(self.admin)
+        self.client.post(
+            reverse("client_create"), {"name": "Vakil Mijoz", "owner": self.sales2.pk}
+        )
+        self.assertEqual(Client.objects.get(name="Vakil Mijoz").owner, self.sales2)
+
+    def test_seller_client_owned_by_self(self):
+        # Sellers don't see the representative field; their client stays theirs.
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("client_create"), {"name": "O'z Mijozim"})
+        self.assertEqual(Client.objects.get(name="O'z Mijozim").owner, self.sales1)
 
 
 class AuditLogTests(BaseSetup):
@@ -1160,23 +1196,23 @@ class KassaCurrencyTests(BaseSetup):
             self.client.get(reverse("expense_edit", args=[expense.pk])).status_code, 403
         )
 
-    def test_expense_csv_export(self):
+    def test_expense_xlsx_export(self):
         self.client.force_login(self.admin)
         self.client.post(
             reverse("expense_create"),
             {
                 "date": timezone.localdate().isoformat(),
                 "amount": "20", "currency": "usd", "exchange_rate": "12700",
-                "category": "purchase", "method": "cash", "note": "csv-row",
+                "category": "purchase", "method": "cash", "note": "xlsx-row",
             },
         )
         response = self.client.get(reverse("expense_export"))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "text/csv; charset=utf-8")
-        body = response.content.decode("utf-8")
-        self.assertIn("csv-row", body)
-        self.assertIn("254000.00", body)  # so'm value
-        self.assertIn("Dollar", body)     # currency label
+        self.assertEqual(response["Content-Type"], XLSX_CONTENT_TYPE)
+        cells = {v for row in read_xlsx(response) for v in row}
+        self.assertIn("xlsx-row", cells)
+        self.assertIn(254000.0, cells)  # so'm value (numeric cell)
+        self.assertIn("Dollar", cells)  # currency label
 
     def test_per_employee_net_subtracts_expense_from_profit(self):
         # sales2's only sale earns 60000 profit; a 20000 expense they record
@@ -1196,3 +1232,202 @@ class KassaCurrencyTests(BaseSetup):
         self.assertEqual(row["profit"], Decimal("60000"))
         self.assertEqual(row["out_som"], Decimal("20000"))
         self.assertEqual(row["net"], Decimal("40000"))  # 60000 − 20000
+
+
+class KassaScopingTests(BaseSetup):
+    def setUp(self):
+        today = timezone.localdate()
+        Expense.objects.create(
+            amount=Decimal("50000"), category=Expense.Category.OTHER,
+            method=Payment.Method.CASH, created_by=self.sales2, date=today,
+        )
+        Expense.objects.create(
+            amount=Decimal("30000"), category=Expense.Category.OTHER,
+            method=Payment.Method.CASH, created_by=self.sales1, date=today,
+        )
+
+    def test_seller_sees_only_own_expenses(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"))
+        creators = {e.created_by_id for e in response.context["expenses"]}
+        self.assertEqual(creators, {self.sales1.pk})
+
+    def test_seller_cannot_widen_scope_via_rep_param(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"), {"rep": self.sales2.pk})
+        creators = {e.created_by_id for e in response.context["expenses"]}
+        self.assertEqual(creators, {self.sales1.pk})
+
+    def test_seller_has_no_per_employee_table(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"))
+        self.assertIsNone(response.context["per_employee"])
+        self.assertIsNone(response.context["reps"])
+
+    def test_admin_sees_all_expenses_and_per_employee(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("kassa"))
+        creators = {e.created_by_id for e in response.context["expenses"]}
+        self.assertEqual(creators, {self.sales1.pk, self.sales2.pk})
+        self.assertIsNotNone(response.context["per_employee"])
+
+    def test_seller_response_hides_employee_table(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"))
+        self.assertNotContains(response, "Xodimlar bo'yicha")
+
+    def test_admin_response_shows_employee_table(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("kassa"))
+        self.assertContains(response, "Xodimlar bo'yicha")
+
+
+class ClientTransferTests(BaseSetup):
+    def test_seller_transfers_own_client(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("client_transfer", args=[self.client1.pk]),
+            {"new_owner": self.sales2.pk},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.client1.refresh_from_db()
+        self.assertEqual(self.client1.owner, self.sales2)
+        self.assertEqual(
+            list(Sale.objects.filter(client=self.client1).values_list("sales_rep", flat=True)),
+            [self.sales2.pk],
+        )
+
+    def test_transfer_moves_all_of_a_clients_sales(self):
+        make_sale(self.client1, self.sales1, self.product)  # a second sale
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("client_transfer", args=[self.client1.pk]),
+            {"new_owner": self.sales2.pk},
+        )
+        reps = set(
+            Sale.objects.filter(client=self.client1).values_list("sales_rep", flat=True)
+        )
+        self.assertEqual(reps, {self.sales2.pk})
+
+    def test_seller_cannot_transfer_another_sellers_client(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("client_transfer", args=[self.client2.pk]),
+            {"new_owner": self.sales1.pk},
+        )
+        self.assertEqual(response.status_code, 404)
+        self.client2.refresh_from_db()
+        self.assertEqual(self.client2.owner, self.sales2)
+
+    def test_admin_can_transfer_any_client(self):
+        self.client.force_login(self.admin)
+        response = self.client.post(
+            reverse("client_transfer", args=[self.client2.pk]),
+            {"new_owner": self.sales1.pk},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.client2.refresh_from_db()
+        self.assertEqual(self.client2.owner, self.sales1)
+
+    def test_cannot_transfer_to_current_owner(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("client_transfer", args=[self.client1.pk]),
+            {"new_owner": self.sales1.pk},
+        )
+        self.assertEqual(response.status_code, 200)  # re-rendered with error
+        self.client1.refresh_from_db()
+        self.assertEqual(self.client1.owner, self.sales1)
+
+    def test_transfer_writes_audit_log(self):
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("client_transfer", args=[self.client1.pk]),
+            {"new_owner": self.sales2.pk},
+        )
+        log = AuditLog.objects.filter(action=AuditLog.Action.TRANSFER).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.target_id, self.client1.pk)
+
+    def test_new_owner_gains_and_old_owner_loses_visibility(self):
+        make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("client_transfer", args=[self.client1.pk]),
+            {"new_owner": self.sales2.pk},
+        )
+        self.client.force_login(self.sales2)
+        resp2 = self.client.get(reverse("client_list"))
+        self.assertIn(self.client1, list(resp2.context["page"].object_list))
+        self.client.force_login(self.sales1)
+        resp1 = self.client.get(reverse("client_list"))
+        self.assertNotIn(self.client1, list(resp1.context["page"].object_list))
+
+    def test_transfer_modal_renders_for_ajax(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(
+            reverse("client_transfer", args=[self.client1.pk]),
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Yangi sotuvchi")
+        self.assertContains(response, "O'tkazish")
+
+    def test_client_list_shows_transfer_action(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_list"))
+        self.assertContains(response, reverse("client_transfer", args=[self.client1.pk]))
+
+    def test_transfer_non_ajax_get_renders(self):
+        # A direct (non-XHR) GET falls back to the full-page form and still
+        # renders the target dropdown, so the non-modal path is not broken.
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_transfer", args=[self.client1.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'name="new_owner"')
+
+
+class ProductDetailScopingTests(BaseSetup):
+    def test_seller_sees_only_own_recent_sales(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("product_detail", args=[self.product.pk]))
+        sale_ids = {i.sale_id for i in response.context["recent_items"]}
+        self.assertIn(self.sale1.pk, sale_ids)
+        self.assertNotIn(self.sale2.pk, sale_ids)
+
+    def test_seller_has_no_stock_entries(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("product_detail", args=[self.product.pk]))
+        self.assertIsNone(response.context["entries"])
+
+    def test_admin_sees_all_recent_sales_and_entries(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("product_detail", args=[self.product.pk]))
+        sale_ids = {i.sale_id for i in response.context["recent_items"]}
+        self.assertIn(self.sale1.pk, sale_ids)
+        self.assertIn(self.sale2.pk, sale_ids)
+        self.assertIsNotNone(response.context["entries"])
+
+    def test_seller_response_hides_stock_log(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("product_detail", args=[self.product.pk]))
+        self.assertNotContains(response, "Ombor harakatlari")
+
+    def test_admin_response_shows_stock_log(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("product_detail", args=[self.product.pk]))
+        self.assertContains(response, "Ombor harakatlari")
+
+
+class SellerLabelTests(BaseSetup):
+    def test_seller_sees_personalized_labels(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_list"))
+        self.assertContains(response, "Mening mijozlarim")
+        response = self.client.get(reverse("sale_list"))
+        self.assertContains(response, "Mening sotuvlarim")
+
+    def test_admin_sees_neutral_labels(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("client_list"))
+        self.assertNotContains(response, "Mening mijozlarim")

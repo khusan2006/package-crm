@@ -1,0 +1,17 @@
+<div class="modal-head">
+  <h2>{{ title }}</h2>
+  <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
+</div>
+<p class="field-hint">
+  Hozirgi sotuvchi: <strong>{{ client.owner }}</strong> · {{ sales_count }} ta sotuv.
+  Mijoz va uning barcha sotuvlari yangi sotuvchiga o'tadi.
+</p>
+<form method="post" action="{{ request.path }}" class="stacked">
+  {% csrf_token %}
+  {% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
+  <p>{{ form.new_owner.label_tag }}{{ form.new_owner }}{{ form.new_owner.errors }}</p>
+  <div class="modal-actions">
+    <button type="submit" class="btn">O'tkazish</button>
+    <button type="button" class="btn btn-ghost" data-modal-close>Bekor qilish</button>
+  </div>
+</form>

@@ -1,4 +1,3 @@
-import csv
 import math
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -12,12 +11,16 @@ from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from openpyxl import Workbook
+from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
 
 from accounts.decorators import role_required
 from accounts.models import User
 
 from .forms import (
     ClientForm,
+    ClientTransferForm,
     DebtPaymentForm,
     ExpenseForm,
     ProductForm,
@@ -421,9 +424,18 @@ def client_list(request):
     )
     q = request.GET.get("q", "").strip()
     if q:
+        # Broad match: name, company, phone, location, notes, or responsible
+        # employee — so "sergeli" finds every client in that district.
         clients = clients.filter(
-            Q(name__icontains=q) | Q(company__icontains=q) | Q(phone__icontains=q)
-        )
+            Q(name__icontains=q)
+            | Q(company__icontains=q)
+            | Q(phone__icontains=q)
+            | Q(address__icontains=q)
+            | Q(notes__icontains=q)
+            | Q(owner__first_name__icontains=q)
+            | Q(owner__last_name__icontains=q)
+            | Q(owner__username__icontains=q)
+        ).distinct()
     page = Paginator(clients, 25).get_page(request.GET.get("page"))
     return render(request, "crm/client_list.html", {"page": page, "q": q})
 
@@ -433,7 +445,10 @@ def client_create(request):
     if request.method == "POST":
         if form.is_valid():
             client = form.save(commit=False)
-            client.owner = request.user
+            # Admins/managers pick the responsible employee on the form; sellers'
+            # clients are always owned by themselves.
+            if not client.owner_id:
+                client.owner = request.user
             client.save()
             messages.success(request, f"“{client.name}” mijozi qo'shildi.")
             return form_success(request, reverse("client_list"))
@@ -498,6 +513,51 @@ def client_delete(request, pk):
     return render(request, "crm/confirm_delete.html", {"object": client, "back": "client_list"})
 
 
+def _render_client_transfer(request, client, form, invalid=False):
+    context = {
+        "form": form,
+        "client": client,
+        "sales_count": Sale.objects.filter(client=client).count(),
+        "title": f"Mijozni o'tkazish: {client.name}",
+    }
+    if is_ajax(request):
+        return render(
+            request, "crm/_client_transfer_modal.html", context,
+            status=422 if invalid else 200,
+        )
+    return render(request, "crm/form.html", context)
+
+
+def client_transfer(request, pk):
+    """Hand a client — and their whole sales history — to another seller.
+
+    Full handover: the client's owner and every one of their sales' sales_rep
+    move to the target, atomically. Sellers may transfer only clients they own
+    (a non-owned client 404s via the visible-clients scope); admins/managers
+    may transfer anyone's."""
+    client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    if request.method == "POST":
+        form = ClientTransferForm(request.POST, client=client)
+        if form.is_valid():
+            target = form.cleaned_data["new_owner"]
+            old_owner = client.owner
+            with transaction.atomic():
+                moved = Sale.objects.filter(client=client).update(sales_rep=target)
+                client.owner = target
+                client.save(update_fields=["owner"])
+                AuditLog.record(
+                    request.user, AuditLog.Action.TRANSFER, "Mijoz", client.pk,
+                    f"{client.name}: {old_owner} → {target} ({moved} ta sotuv)",
+                )
+            messages.success(
+                request, f"“{client.name}” {target}ga o'tkazildi ({moved} ta sotuv)."
+            )
+            return form_reload(request, reverse("client_list"))
+        return _render_client_transfer(request, client, form, invalid=True)
+    form = ClientTransferForm(client=client)
+    return _render_client_transfer(request, client, form)
+
+
 # --- Products -----------------------------------------------------------------
 
 def product_list(request):
@@ -511,11 +571,17 @@ def product_list(request):
 
 def product_detail(request, pk):
     product = get_object_or_404(Product, pk=pk)
-    entries = product.stock_entries.select_related("created_by")[:50]
-    recent_items = (
-        product.sale_items.select_related("sale", "sale__client")
-        .order_by("-sale__date", "-sale__created_at")[:10]
+    recent_items = product.sale_items.select_related("sale", "sale__client").order_by(
+        "-sale__date", "-sale__created_at"
     )
+    # Sellers see only their OWN recent sales of the product, and not the
+    # warehouse-movement log (which exposes other staff). Filter before slicing.
+    if request.user.can_see_all_records:
+        entries = product.stock_entries.select_related("created_by")[:50]
+    else:
+        entries = None
+        recent_items = recent_items.filter(sale__sales_rep=request.user)
+    recent_items = recent_items[:10]
     context = {
         "product": product,
         "current_stock": product.current_stock,
@@ -602,13 +668,14 @@ def stock_adjust(request, pk):
 # --- Sales --------------------------------------------------------------------
 
 def _client_search_q(term, base):
-    """Q matching a client by name/company/phone (case-insensitive) for the
-    toolbar's name-search box. `base` is the lookup path to the Client — e.g.
+    """Q matching a client by name/company/phone/location (case-insensitive) for
+    the toolbar's search box. `base` is the lookup path to the Client — e.g.
     "client" for Sale, "sale__client" for Payment."""
     return (
         Q(**{f"{base}__name__icontains": term})
         | Q(**{f"{base}__company__icontains": term})
         | Q(**{f"{base}__phone__icontains": term})
+        | Q(**{f"{base}__address__icontains": term})
     )
 
 
@@ -1179,8 +1246,14 @@ def _kassa_expenses(request):
     filters = {key: request.GET.get(key, "") for key in ("method", "category", "currency", "rep")}
     filters["dan"] = dates["date_from"].isoformat()
     filters["gacha"] = dates["date_to"].isoformat()
-    reps = User.objects.filter(is_active=True).order_by("first_name", "username")
-    rep = reps.filter(pk=filters["rep"]).first() if filters["rep"].isdigit() else None
+    # Admins/managers may filter by any employee; a seller is locked to their own
+    # till, so the employee filter is never offered to them.
+    if request.user.can_see_all_records:
+        reps = User.objects.filter(is_active=True).order_by("first_name", "username")
+        rep = reps.filter(pk=filters["rep"]).first() if filters["rep"].isdigit() else None
+    else:
+        reps = None
+        rep = request.user
     expenses = Expense.objects.select_related("created_by").filter(
         date__gte=dates["date_from"], date__lte=dates["date_to"]
     )
@@ -1207,8 +1280,10 @@ def kassa_view(request):
     method_labels = dict(Payment.Method.choices)
     category_labels = dict(Expense.Category.choices)
     currency_labels = dict(Payment.Currency.choices)
+    # Only the company view exposes a rep chip; a seller's own scope isn't a filter.
+    rep_chip = str(rep) if (reps is not None and rep) else ""
     active_filters = _filter_chips(request, [
-        {"param": "rep", "label": "Xodim", "value": str(rep) if rep else ""},
+        {"param": "rep", "label": "Xodim", "value": rep_chip},
         {"param": "category", "label": "Turkum", "value": category_labels.get(filters["category"], "")},
         {"param": "method", "label": "Usul", "value": method_labels.get(filters["method"], "")},
         {"param": "currency", "label": "Valyuta", "value": currency_labels.get(filters["currency"], "")},
@@ -1217,7 +1292,7 @@ def kassa_view(request):
     return render(request, "crm/kassa.html", {
         "summary": summary,
         "expenses": expenses,
-        "per_employee": _per_employee_kassa(date_from, date_to),
+        "per_employee": _per_employee_kassa(date_from, date_to) if request.user.can_see_all_records else None,
         "filters": filters,
         "reps": reps,
         "active_filters": active_filters,
@@ -1235,31 +1310,60 @@ def kassa_view(request):
     })
 
 
+XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _xlsx_response(filename, sheet_title, headers, rows, number_formats=None):
+    """Build an .xlsx download: bold frozen header, one row per record, columns
+    sized to their widest value. `number_formats` maps a 1-based column index to
+    an Excel format string, applied to that column's data cells."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_title
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    ws.freeze_panes = "A2"
+    for row in rows:
+        ws.append(row)
+    number_formats = number_formats or {}
+    for i, header in enumerate(headers, start=1):
+        letter = get_column_letter(i)
+        longest = max([len(str(header))] + [len(str(r[i - 1])) for r in rows])
+        ws.column_dimensions[letter].width = min(longest + 2, 40)
+        fmt = number_formats.get(i)
+        if fmt:
+            for cell in ws[letter][1:]:  # data cells only, skip the header
+                cell.number_format = fmt
+    response = HttpResponse(content_type=XLSX_CONTENT_TYPE)
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    wb.save(response)
+    return response
+
+
 def expense_export(request):
-    """CSV of the kassa expenses for the current window and drawer filters."""
+    """Excel (.xlsx) of the kassa expenses for the current window and drawer filters."""
     expenses = _kassa_expenses(request)[0]
-    response = HttpResponse(content_type="text/csv; charset=utf-8")
-    response["Content-Disposition"] = 'attachment; filename="chiqimlar.csv"'
-    response.write("﻿")  # UTF-8 BOM so Excel reads Uzbek text correctly
-    writer = csv.writer(response)
-    writer.writerow([
+    headers = [
         "Sana", "Turkum", "Usul", "Valyuta", "Summa (so'm)",
         "Asl summa", "Kurs", "Izoh", "Kim kiritdi",
-    ])
+    ]
+    rows = []
     for e in expenses:
         is_usd = e.currency == Payment.Currency.USD
-        writer.writerow([
+        rows.append([
             e.date.isoformat(),
             e.get_category_display(),
             e.get_method_display(),
             e.get_currency_display(),
-            f"{e.amount:.2f}",
-            f"{e.original_amount:.2f}",
-            f"{e.exchange_rate:.2f}" if is_usd else "",
+            float(e.amount),
+            float(e.original_amount),
+            float(e.exchange_rate) if is_usd else "",
             e.note,
             str(e.created_by),
         ])
-    return response
+    number_formats = {5: "#,##0.00", 6: "#,##0.00", 7: "#,##0.00"}
+    return _xlsx_response("chiqimlar.xlsx", "Chiqimlar", headers, rows, number_formats)
 
 
 def expense_create(request):
@@ -1335,34 +1439,32 @@ def sale_export(request):
     sales, _, _, _, _ = _filter_sales(request, base)
     sales = sales.order_by("-date", "-created_at").prefetch_related("items__product")
 
-    response = HttpResponse(content_type="text/csv; charset=utf-8")
-    response["Content-Disposition"] = 'attachment; filename="sotuvlar.csv"'
-    response.write("\ufeff")  # UTF-8 BOM so Excel reads Uzbek text correctly
-    writer = csv.writer(response)
-    writer.writerow([
+    headers = [
         "Sana", "Mijoz", "Mahsulot", "Sotuvchi", "O'lchov", "Og'irligi",
         "Narxi", "Umumiy narx", "Tannarx", "Foyda", "To'lov", "Qarz muddati",
-    ])
+    ]
     # One row per line item, so a multi-product receipt still exports cleanly.
+    rows = []
     for s in sales:
         deadline = s.debt_deadline.isoformat() if s.debt_deadline else ""
         status = "Qarz" if s.remaining > 0 else "To'langan"
         for item in s.items.all():
-            writer.writerow([
+            rows.append([
                 s.date.isoformat(),
                 s.client.name,
                 item.product.name,
                 str(s.sales_rep),
                 item.get_dimension_display(),
-                f"{item.weight:.3f}",
-                f"{item.price:.2f}",
-                f"{item.total_price:.2f}",
-                f"{item.total_cost:.2f}",
-                f"{item.profit:.2f}",
+                float(item.weight),
+                float(item.price),
+                float(item.total_price),
+                float(item.total_cost),
+                float(item.profit),
                 status,
                 deadline,
             ])
-    return response
+    number_formats = {6: "0.000", 7: "#,##0.00", 8: "#,##0.00", 9: "#,##0.00", 10: "#,##0.00"}
+    return _xlsx_response("sotuvlar.xlsx", "Sotuvlar", headers, rows, number_formats)
 
 
 def sale_detail(request, pk):
