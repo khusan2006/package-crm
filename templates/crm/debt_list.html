@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% load crm_extras %}
-{% block title %}Qarzlar · Paket CRM{% endblock %}
-{% block topbar_title %}Qarzlar{% endblock %}
+{% block title %}{% if user.can_see_all_records %}Qarzlar{% else %}Mening qarzlarim{% endif %} · Paket CRM{% endblock %}
+{% block topbar_title %}{% if user.can_see_all_records %}Qarzlar{% else %}Mening qarzlarim{% endif %}{% endblock %}
 {% block content %}
 
 <div class="kpi-grid">

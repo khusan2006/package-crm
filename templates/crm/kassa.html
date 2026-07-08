@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% load crm_extras %}
-{% block title %}Kassa · Paket CRM{% endblock %}
-{% block topbar_title %}Kassa{% endblock %}
+{% block title %}{% if user.can_see_all_records %}Kassa{% else %}Mening kassam{% endif %} · Paket CRM{% endblock %}
+{% block topbar_title %}{% if user.can_see_all_records %}Kassa{% else %}Mening kassam{% endif %}{% endblock %}
 {% block topbar_actions %}
 <a class="btn" href="{% url 'expense_create' %}" data-modal>+ Chiqim qo'shish</a>
 {% endblock %}

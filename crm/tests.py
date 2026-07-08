@@ -1389,3 +1389,17 @@ class ProductDetailScopingTests(BaseSetup):
         self.assertIn(self.sale1.pk, sale_ids)
         self.assertIn(self.sale2.pk, sale_ids)
         self.assertIsNotNone(response.context["entries"])
+
+
+class SellerLabelTests(BaseSetup):
+    def test_seller_sees_personalized_labels(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_list"))
+        self.assertContains(response, "Mening mijozlarim")
+        response = self.client.get(reverse("sale_list"))
+        self.assertContains(response, "Mening sotuvlarim")
+
+    def test_admin_sees_neutral_labels(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("client_list"))
+        self.assertNotContains(response, "Mening mijozlarim")
