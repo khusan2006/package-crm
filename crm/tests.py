@@ -1367,3 +1367,25 @@ class ClientTransferTests(BaseSetup):
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("client_list"))
         self.assertContains(response, reverse("client_transfer", args=[self.client1.pk]))
+
+
+class ProductDetailScopingTests(BaseSetup):
+    def test_seller_sees_only_own_recent_sales(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("product_detail", args=[self.product.pk]))
+        sale_ids = {i.sale_id for i in response.context["recent_items"]}
+        self.assertIn(self.sale1.pk, sale_ids)
+        self.assertNotIn(self.sale2.pk, sale_ids)
+
+    def test_seller_has_no_stock_entries(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("product_detail", args=[self.product.pk]))
+        self.assertIsNone(response.context["entries"])
+
+    def test_admin_sees_all_recent_sales_and_entries(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("product_detail", args=[self.product.pk]))
+        sale_ids = {i.sale_id for i in response.context["recent_items"]}
+        self.assertIn(self.sale1.pk, sale_ids)
+        self.assertIn(self.sale2.pk, sale_ids)
+        self.assertIsNotNone(response.context["entries"])

@@ -571,11 +571,17 @@ def product_list(request):
 
 def product_detail(request, pk):
     product = get_object_or_404(Product, pk=pk)
-    entries = product.stock_entries.select_related("created_by")[:50]
-    recent_items = (
-        product.sale_items.select_related("sale", "sale__client")
-        .order_by("-sale__date", "-sale__created_at")[:10]
+    recent_items = product.sale_items.select_related("sale", "sale__client").order_by(
+        "-sale__date", "-sale__created_at"
     )
+    # Sellers see only their OWN recent sales of the product, and not the
+    # warehouse-movement log (which exposes other staff). Filter before slicing.
+    if request.user.can_see_all_records:
+        entries = product.stock_entries.select_related("created_by")[:50]
+    else:
+        entries = None
+        recent_items = recent_items.filter(sale__sales_rep=request.user)
+    recent_items = recent_items[:10]
     context = {
         "product": product,
         "current_stock": product.current_stock,
