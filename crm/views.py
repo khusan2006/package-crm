@@ -680,12 +680,10 @@ def product_detail(request, pk):
     recent_items = product.sale_items.select_related("sale", "sale__client").order_by(
         "-sale__date", "-sale__created_at"
     )
-    # Sellers see only their OWN recent sales of the product, and not the
-    # warehouse-movement log (which exposes other staff). Filter before slicing.
-    if request.user.can_see_all_records:
-        entries = product.stock_entries.select_related("created_by")[:50]
-    else:
-        entries = None
+    # The warehouse is shared, so everyone sees the stock-movement log. Sellers
+    # still see only their OWN recent sales of the product. Filter before slicing.
+    entries = product.stock_entries.select_related("created_by")[:50]
+    if not request.user.can_see_all_records:
         recent_items = recent_items.filter(sale__sales_rep=request.user)
     recent_items = recent_items[:10]
     context = {
@@ -699,7 +697,6 @@ def product_detail(request, pk):
     return render(request, "crm/product_detail.html", context)
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
 def product_create(request):
     form = ProductForm(request.POST or None)
     if request.method == "POST":
@@ -711,7 +708,6 @@ def product_create(request):
     return form_response(request, form, "Yangi mahsulot")
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
 def product_edit(request, pk):
     product = get_object_or_404(Product, pk=pk)
     form = ProductForm(request.POST or None, instance=product)
@@ -724,7 +720,28 @@ def product_edit(request, pk):
     )
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def product_delete(request, pk):
+    """Remove a product from the shared catalogue. Blocked (ProtectedError) when
+    it has any sales or returns — those records must keep pointing at a real
+    product. A product with only stock entries deletes cleanly (entries cascade)."""
+    product = get_object_or_404(Product, pk=pk)
+    if request.method == "POST":
+        name = product.name
+        try:
+            product.delete()
+        except ProtectedError:
+            messages.error(
+                request,
+                f"“{name}” mahsulotini o'chirib bo'lmaydi — sotuv yoki "
+                f"qaytarishlarda ishlatilgan.",
+            )
+            return redirect("product_detail", pk=product.pk)
+        AuditLog.record(request.user, AuditLog.Action.DELETE, "Mahsulot", pk, name)
+        messages.success(request, f"“{name}” mahsuloti o'chirildi.")
+        return redirect("product_list")
+    return render(request, "crm/confirm_delete.html", {"object": product, "back": "product_list"})
+
+
 def stock_entry_create(request, pk):
     product = get_object_or_404(Product, pk=pk)
     title = f"Kirim qo'shish: {product.name}"
@@ -743,7 +760,6 @@ def stock_entry_create(request, pk):
     return form_response(request, form, title)
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
 def stock_adjust(request, pk):
     product = get_object_or_404(Product, pk=pk)
     title = f"Miqdorni tuzatish: {product.name}"
@@ -1199,14 +1215,14 @@ def client_debt_pay(request, pk):
     return _render_client_pay(request, client, total, form)
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
 def payment_delete(request, pk):
     """Void a mistaken payment by removing it. The debt it covered is restored
-    automatically (remaining is derived). Admin/manager only — sellers must not
-    be able to erase money records."""
-    payment = get_object_or_404(
-        Payment.objects.select_related("sale", "sale__client"), pk=pk
-    )
+    automatically (remaining is derived). Admins/managers may void any payment;
+    a seller may void only payments they took in themselves."""
+    qs = Payment.objects.select_related("sale", "sale__client")
+    if not request.user.can_see_all_records:
+        qs = qs.filter(created_by=request.user)
+    payment = get_object_or_404(qs, pk=pk)
     if request.method == "POST":
         sale_pk = payment.sale_id
         summary = f"{payment.sale.client.name} — {payment.amount:,.0f} so'm ({payment.get_method_display()})"
@@ -1225,10 +1241,12 @@ def payment_delete(request, pk):
     )
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
 def audit_list(request):
-    """The money-action audit trail (admin/manager only)."""
+    """The money-action audit trail. Admins/managers see every action; a seller
+    sees only their own."""
     logs = AuditLog.objects.select_related("user")
+    if not request.user.can_see_all_records:
+        logs = logs.filter(user=request.user)
     page = Paginator(logs, 50).get_page(request.GET.get("page"))
     return render(request, "crm/audit_list.html", {"page": page})
 
@@ -1540,10 +1558,12 @@ def expense_create(request):
     return form_response(request, form, title, modal_template="crm/_expense_modal.html")
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
 def expense_edit(request, pk):
-    """Fix a mistaken expense. Admin/manager only — sellers add but can't edit."""
-    expense = get_object_or_404(Expense, pk=pk)
+    """Fix a mistaken expense. Admins/managers may edit any; a seller may edit
+    only expenses they entered themselves."""
+    qs = Expense.objects.all() if request.user.can_see_all_records \
+        else Expense.objects.filter(created_by=request.user)
+    expense = get_object_or_404(qs, pk=pk)
     title = "Chiqimni tahrirlash"
     form = ExpenseForm(request.POST or None, instance=expense)
     if request.method == "POST":
@@ -1559,10 +1579,13 @@ def expense_edit(request, pk):
     return form_response(request, form, title, modal_template="crm/_expense_modal.html")
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
 def expense_delete(request, pk):
-    """Remove a mistaken expense. Admin/manager only — sellers add but can't erase."""
-    expense = get_object_or_404(Expense.objects.select_related("created_by"), pk=pk)
+    """Remove a mistaken expense. Admins/managers may erase any; a seller may
+    erase only expenses they entered themselves."""
+    qs = Expense.objects.select_related("created_by")
+    if not request.user.can_see_all_records:
+        qs = qs.filter(created_by=request.user)
+    expense = get_object_or_404(qs, pk=pk)
     if request.method == "POST":
         summary = f"{expense.get_category_display()} — {expense.amount:,.0f} so'm"
         expense.delete()

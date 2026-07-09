@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block title %}{{ product.name }} · Paket CRM{% endblock %}
 {% block topbar_title %}{{ product.name }}{% endblock %}
-{% block fab %}{% if user.can_see_all_records %}
+{% block fab %}
 <a class="fab" href="{% url 'stock_entry_create' product.pk %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Kirim qo'shish</a>
 <a class="fab fab--muted" href="{% url 'stock_adjust' product.pk %}" data-modal>Miqdorni tuzatish</a>
 <a class="fab fab--muted" href="{% url 'product_edit' product.pk %}">Tahrirlash</a>
-{% endif %}{% endblock %}
+<a class="fab fab--muted" href="{% url 'product_delete' product.pk %}">O'chirish</a>
+{% endblock %}
 {% block content %}
 
 <div class="kpi-grid">
@@ -46,7 +47,6 @@
   </div>
 </div>
 
-{% if user.can_see_all_records %}
 <div class="card">
   <h2>Ombor harakatlari</h2>
   {% if entries %}
@@ -65,7 +65,6 @@
   </div>
   {% else %}<p class="muted">Hozircha harakat yo'q.</p>{% endif %}
 </div>
-{% endif %}
 
 <div class="card">
   <h2>So'nggi sotuvlar</h2>

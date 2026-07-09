@@ -12,6 +12,18 @@
       "runtimeExecutable": "venv/Scripts/python.exe",
       "runtimeArgs": ["manage.py", "runserver", "127.0.0.1:8010"],
       "port": 8010
+    },
+    {
+      "name": "django-preview-2",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["manage.py", "runserver", "127.0.0.1:8020"],
+      "port": 8020
+    },
+    {
+      "name": "django-audit",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["manage.py", "runserver", "127.0.0.1:8035"],
+      "port": 8035
     }
   ]
 }

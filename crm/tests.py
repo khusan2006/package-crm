@@ -228,9 +228,12 @@ class RoleScopingTests(BaseSetup):
         response = self.client.get(reverse("client_list"))
         self.assertEqual(list(response.context["page"].object_list), [self.client1])
 
-    def test_sales_cannot_create_product(self):
+    def test_sales_can_create_product(self):
+        # Products/warehouse are a shared company section: every role, sellers
+        # included, may manage them. Only per-seller data (clients, sales, own
+        # money actions) is owner-scoped.
         self.client.force_login(self.sales1)
-        self.assertEqual(self.client.get(reverse("product_create")).status_code, 403)
+        self.assertEqual(self.client.get(reverse("product_create")).status_code, 200)
 
     def test_manager_can_create_product(self):
         self.client.force_login(self.manager)
@@ -397,10 +400,11 @@ class StockTests(BaseSetup):
         entry = StockEntry.objects.latest("created_at")
         self.assertEqual(entry.created_by, self.manager)
 
-    def test_sales_cannot_add_kirim(self):
+    def test_sales_can_add_kirim(self):
+        # The warehouse is shared, so a seller may record a stock kirim.
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("stock_entry_create", args=[self.product.pk]))
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 200)
 
     def test_sale_beyond_stock_warns_but_saves(self):
         self.client.force_login(self.sales1)
@@ -446,10 +450,49 @@ class StockTests(BaseSetup):
         self.assertEqual(self.product.current_stock, Decimal("50.000"))
         self.assertEqual(StockEntry.objects.latest("created_at").quantity_kg, Decimal("-30.000"))
 
-    def test_sales_cannot_adjust(self):
+    def test_sales_can_adjust(self):
+        # Warehouse is shared — a seller may correct the stock quantity too.
         self.client.force_login(self.sales1)
         self.assertEqual(
-            self.client.get(reverse("stock_adjust", args=[self.product.pk])).status_code, 403
+            self.client.get(reverse("stock_adjust", args=[self.product.pk])).status_code, 200
+        )
+
+
+class ProductDeleteTests(BaseSetup):
+    def test_seller_deletes_unsold_product(self):
+        # Ombor is a shared section — a seller may delete a product too, as long
+        # as it has no sales history tying it down.
+        product = Product.objects.create(name="Vaqtinchalik", sku="TMP-1", price=Decimal("1000"))
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("product_delete", args=[product.pk]))
+        self.assertRedirects(response, reverse("product_list"))
+        self.assertFalse(Product.objects.filter(pk=product.pk).exists())
+
+    def test_product_with_sales_is_protected(self):
+        # The base fixture product has sales; deletion is blocked and it survives.
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("product_delete", args=[self.product.pk]))
+        self.assertTrue(Product.objects.filter(pk=self.product.pk).exists())
+
+    def test_delete_cascades_stock_entries(self):
+        # A product with only stock entries deletes cleanly (entries cascade away).
+        product = Product.objects.create(name="Faqat kirim", sku="TMP-2", price=Decimal("1000"))
+        StockEntry.objects.create(
+            product=product, quantity_kg=Decimal("5"), created_by=self.sales1
+        )
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("product_delete", args=[product.pk]))
+        self.assertFalse(Product.objects.filter(pk=product.pk).exists())
+        self.assertFalse(StockEntry.objects.filter(product_id=product.pk).exists())
+
+    def test_delete_writes_audit_log(self):
+        product = Product.objects.create(name="Audit paket", sku="TMP-3", price=Decimal("1000"))
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("product_delete", args=[product.pk]))
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action=AuditLog.Action.DELETE, target_type="Mahsulot", summary="Audit paket"
+            ).exists()
         )
 
 
@@ -817,12 +860,23 @@ class PaymentVoidTests(BaseSetup):
         self.assertTrue(sale.is_outstanding)
         self.assertEqual(sale.debt_remaining, Decimal("240000"))
 
-    def test_sales_cannot_void_payment(self):
+    def test_sales_can_void_own_payment(self):
+        # A seller manages their own money actions: they may void a payment they
+        # recorded themselves (the debt is restored automatically).
         sale = make_sale(self.client1, self.sales1, self.product)
-        payment = sale.payments.get()
+        payment = sale.payments.get()  # created_by == sales1
         self.client.force_login(self.sales1)
         response = self.client.post(reverse("payment_delete", args=[payment.pk]))
-        self.assertEqual(response.status_code, 403)
+        self.assertIn(response.status_code, (200, 302))
+        self.assertFalse(Payment.objects.filter(pk=payment.pk).exists())
+
+    def test_sales_cannot_void_others_payment(self):
+        # Owner scoping still holds — another seller's payment is out of reach (404).
+        sale = make_sale(self.client2, self.sales2, self.product)
+        payment = sale.payments.get()  # created_by == sales2
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("payment_delete", args=[payment.pk]))
+        self.assertEqual(response.status_code, 404)
         self.assertTrue(Payment.objects.filter(pk=payment.pk).exists())
 
     def test_void_frees_sale_for_deletion(self):
@@ -980,9 +1034,16 @@ class AuditLogTests(BaseSetup):
         self.client.post(reverse("payment_delete", args=[payment.pk]))
         self.assertTrue(AuditLog.objects.filter(action="void", target_id=sale.pk).exists())
 
-    def test_audit_list_is_admin_manager_only(self):
+    def test_audit_list_open_to_all_but_scoped_for_seller(self):
+        # Audit is an "own work" view: a seller may open it but sees only their
+        # own actions; admins/managers see everyone's.
+        AuditLog.record(self.sales1, AuditLog.Action.CREATE, "Sotuv", 1, "own")
+        AuditLog.record(self.manager, AuditLog.Action.CREATE, "Sotuv", 2, "boshqa")
         self.client.force_login(self.sales1)
-        self.assertEqual(self.client.get(reverse("audit_list")).status_code, 403)
+        response = self.client.get(reverse("audit_list"))
+        self.assertEqual(response.status_code, 200)
+        user_ids = {log.user_id for log in response.context["page"].object_list}
+        self.assertEqual(user_ids, {self.sales1.pk})  # only their own rows
         self.client.force_login(self.manager)
         self.assertEqual(self.client.get(reverse("audit_list")).status_code, 200)
 
@@ -1181,19 +1242,34 @@ class KassaCurrencyTests(BaseSetup):
         self.assertEqual(expense.amount_original, Decimal("30.00"))
         self.assertEqual(expense.amount, Decimal("381000.00"))  # 30 × 12700
 
-    def test_seller_cannot_edit_expense(self):
-        self.client.force_login(self.admin)
+    def test_seller_can_edit_own_but_not_others_expense(self):
+        # Kassa is shared, but an expense stays owner-scoped: a seller may edit
+        # the expense they entered, not one an admin (or another seller) entered.
+        self.client.force_login(self.sales1)
         self.client.post(
             reverse("expense_create"),
             {
                 "date": timezone.localdate().isoformat(), "amount": "50000",
-                "currency": "uzs", "category": "fuel", "method": "cash", "note": "x",
+                "currency": "uzs", "category": "fuel", "method": "cash", "note": "own",
             },
         )
-        expense = Expense.objects.get(note="x")
+        own = Expense.objects.get(note="own")
+        self.assertEqual(
+            self.client.get(reverse("expense_edit", args=[own.pk])).status_code, 200
+        )
+        # An admin-entered expense is outside the seller's scope → 404.
+        self.client.force_login(self.admin)
+        self.client.post(
+            reverse("expense_create"),
+            {
+                "date": timezone.localdate().isoformat(), "amount": "70000",
+                "currency": "uzs", "category": "fuel", "method": "cash", "note": "admins",
+            },
+        )
+        others = Expense.objects.get(note="admins")
         self.client.force_login(self.sales1)
         self.assertEqual(
-            self.client.get(reverse("expense_edit", args=[expense.pk])).status_code, 403
+            self.client.get(reverse("expense_edit", args=[others.pk])).status_code, 404
         )
 
     def test_expense_xlsx_export(self):
@@ -1406,10 +1482,11 @@ class ProductDetailScopingTests(BaseSetup):
         self.assertIn(self.sale1.pk, sale_ids)
         self.assertNotIn(self.sale2.pk, sale_ids)
 
-    def test_seller_has_no_stock_entries(self):
+    def test_seller_sees_stock_entries(self):
+        # Warehouse is shared — a seller sees the stock-movement log context too.
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("product_detail", args=[self.product.pk]))
-        self.assertIsNone(response.context["entries"])
+        self.assertIsNotNone(response.context["entries"])
 
     def test_admin_sees_all_recent_sales_and_entries(self):
         self.client.force_login(self.admin)
@@ -1419,10 +1496,11 @@ class ProductDetailScopingTests(BaseSetup):
         self.assertIn(self.sale2.pk, sale_ids)
         self.assertIsNotNone(response.context["entries"])
 
-    def test_seller_response_hides_stock_log(self):
+    def test_seller_response_shows_stock_log(self):
+        # The shared warehouse log renders for sellers as well as admins.
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("product_detail", args=[self.product.pk]))
-        self.assertNotContains(response, "Ombor harakatlari")
+        self.assertContains(response, "Ombor harakatlari")
 
     def test_admin_response_shows_stock_log(self):
         self.client.force_login(self.admin)

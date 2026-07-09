@@ -3,5 +3,8 @@ __pycache__/
 *.pyc
 .env
 db.sqlite3
+test_db.sqlite3
 .DS_Store
 staticfiles/
+.pytest_cache/
+test-results/

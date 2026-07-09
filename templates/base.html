@@ -62,7 +62,6 @@
         </a>
       </div>
 
-      {% if user.can_see_all_records %}
       <div class="nav-group">
         <div class="nav-group-label">Nazorat</div>
         <a class="nav-item {% if 'audit' in url_name %}active{% endif %}" href="{% url 'audit_list' %}">
@@ -70,7 +69,6 @@
           <span>Hisobotlar</span>
         </a>
       </div>
-      {% endif %}
 
       {% if user.is_admin_role %}
       <div class="nav-group">
