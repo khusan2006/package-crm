@@ -202,14 +202,14 @@
     <tr><th>Sana</th><th class="sticky-col">Mijoz</th><th>Mahsulotlar</th><th class="num">Umumiy narx</th><th class="num">Foyda</th><th>To'lov</th></tr>
     {% for sale in recent_sales %}
     <tr>
-      <td><a href="{% url 'sale_detail' sale.pk %}">{{ sale.date|date:"Y-m-d" }}</a></td>
+      <td><a href="{% url 'sale_detail' sale.pk %}">{{ sale.date|date:"d.m.Y" }}</a></td>
       <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=sale.client.name %}<a href="{% url 'sale_detail' sale.pk %}">{{ sale.client.name }}</a></span></td>
       <td>{{ sale.item_summary }}</td>
       <td class="num">{{ sale.total|floatformat:"0g" }}</td>
       <td class="num">{{ sale.profit_total|floatformat:"0g" }}</td>
       <td>
         {% if sale.is_outstanding %}
-          <span class="badge {% if sale.is_overdue %}badge-cancelled{% else %}badge-shipped{% endif %}">Qarz · {{ sale.debt_deadline|date:"Y-m-d" }}</span>
+          <span class="badge {% if sale.is_overdue %}badge-cancelled{% else %}badge-shipped{% endif %}">Qarz · {{ sale.debt_deadline|date:"d.m.Y" }}</span>
         {% else %}
           <span class="badge badge-paid">To'langan</span>
         {% endif %}

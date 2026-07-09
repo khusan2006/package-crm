@@ -67,7 +67,7 @@
         <div class="nav-group-label">Nazorat</div>
         <a class="nav-item {% if 'audit' in url_name %}active{% endif %}" href="{% url 'audit_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/><line x1="9" y1="11" x2="12" y2="11"/></svg></span>
-          <span>Audit jurnali</span>
+          <span>Hisobotlar</span>
         </a>
       </div>
       {% endif %}
@@ -386,6 +386,17 @@
       return p.length === 3 ? new Date(+p[0], +p[1] - 1, +p[2]) : null;
     }
     function fmt(s) { var d = parseIso(s); return d ? d.getDate() + '-' + MONTHS[d.getMonth()] : ''; }
+    // ISO ⇄ hand-typed dd.mm.yyyy, for the manually editable Dan/Gacha fields.
+    function disp(s) { var d = parseIso(s); return d ? pad(d.getDate()) + '.' + pad(d.getMonth() + 1) + '.' + d.getFullYear() : ''; }
+    function fromDisp(s) {
+      var m = (s || '').trim().match(/^(\d{1,2})[.,\/\-](\d{1,2})[.,\/\-](\d{4})$/);
+      if (!m) { return ''; }
+      var dd = +m[1], mm = +m[2], yy = +m[3];
+      var d = new Date(yy, mm - 1, dd);
+      // reject impossible dates (e.g. 31.02.2026 rolls over to March)
+      if (d.getFullYear() !== yy || d.getMonth() !== mm - 1 || d.getDate() !== dd) { return ''; }
+      return iso(d);
+    }
     function selLabel() {
       if (!selStart) { return 'Sana tanlang'; }
       if (!selEnd || selEnd === selStart) { return fmt(selStart); }
@@ -400,21 +411,12 @@
     var CHEV_L = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>';
     var CHEV_R = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>';
 
-    function render() {
+    function daysHtml() {
       var y = view.getFullYear(), m = view.getMonth();
       var firstWeekday = (new Date(y, m, 1).getDay() + 6) % 7; // Monday-first
       var days = new Date(y, m + 1, 0).getDate();
       var hasRange = selStart && selEnd && selEnd !== selStart;
-      var h = '<div class="cal-top">'
-        + '<button type="button" class="cal-nav" data-nav="-1" aria-label="Oldingi oy">' + CHEV_L + '</button>'
-        + '<span class="cal-title">' + MONTHS[m] + ' ' + y + '</span>'
-        + '<button type="button" class="cal-nav" data-nav="1" aria-label="Keyingi oy">' + CHEV_R + '</button>'
-        + '</div><div class="cal-inputs">'
-        + '<label class="cal-in-field">Dan<input type="date" class="cal-in" data-input="from" value="' + (selStart || '') + '"></label>'
-        + '<label class="cal-in-field">Gacha<input type="date" class="cal-in" data-input="to" value="' + (selEnd || selStart || '') + '"></label>'
-        + '</div><div class="cal-wd">';
-      for (var w = 0; w < 7; w++) { h += '<span>' + WD[w] + '</span>'; }
-      h += '</div><div class="cal-days">';
+      var h = '';
       for (var i = 0; i < firstWeekday; i++) { h += '<span></span>'; }
       for (var d = 1; d <= days; d++) {
         var ds = y + '-' + pad(m + 1) + '-' + pad(d);
@@ -426,7 +428,20 @@
         if (ds === todayIso) { cls += ' is-today'; }
         h += '<button type="button" class="' + cls + '" data-day="' + ds + '">' + d + '</button>';
       }
-      h += '</div><div class="cal-foot">'
+      return h;
+    }
+
+    function render() {
+      var h = '<div class="cal-top">'
+        + '<button type="button" class="cal-nav" data-nav="-1" aria-label="Oldingi oy">' + CHEV_L + '</button>'
+        + '<span class="cal-title">' + MONTHS[view.getMonth()] + ' ' + view.getFullYear() + '</span>'
+        + '<button type="button" class="cal-nav" data-nav="1" aria-label="Keyingi oy">' + CHEV_R + '</button>'
+        + '</div><div class="cal-inputs">'
+        + '<label class="cal-in-field">Dan<input type="text" inputmode="numeric" autocomplete="off" placeholder="kk.oo.yyyy" maxlength="10" class="cal-in" data-input="from" value="' + disp(selStart) + '"></label>'
+        + '<label class="cal-in-field">Gacha<input type="text" inputmode="numeric" autocomplete="off" placeholder="kk.oo.yyyy" maxlength="10" class="cal-in" data-input="to" value="' + disp(selEnd || selStart) + '"></label>'
+        + '</div><div class="cal-wd">';
+      for (var w = 0; w < 7; w++) { h += '<span>' + WD[w] + '</span>'; }
+      h += '</div><div class="cal-days">' + daysHtml() + '</div><div class="cal-foot">'
         + '<button type="button" class="cal-preset" data-preset="today">Bugun</button>'
         + '<button type="button" class="cal-preset" data-preset="7">7 kun</button>'
         + '<button type="button" class="cal-preset" data-preset="30">30 kun</button>'
@@ -435,6 +450,24 @@
         + '<button type="button" class="btn btn-sm" data-apply>Tanlash</button>'
         + '</div>';
       pop.innerHTML = h;
+    }
+
+    // Repaint only the month title + day grid, leaving the Dan/Gacha inputs in the
+    // DOM. A full render() rebuilds those inputs, which fights the user mid-edit
+    // (a cleared field instantly refills, the native picker re-opens).
+    function paintGrid() {
+      var title = pop.querySelector('.cal-title');
+      var grid = pop.querySelector('.cal-days');
+      if (title) { title.textContent = MONTHS[view.getMonth()] + ' ' + view.getFullYear(); }
+      if (grid) { grid.innerHTML = daysHtml(); }
+    }
+
+    // Push the current selection back into the inputs (after a day click).
+    function syncInputs() {
+      var fromEl = pop.querySelector('[data-input="from"]');
+      var toEl = pop.querySelector('[data-input="to"]');
+      if (fromEl) { fromEl.value = disp(selStart); }
+      if (toEl) { toEl.value = disp(selEnd || selStart); }
     }
 
     function openPop() {
@@ -475,14 +508,15 @@
     pop.addEventListener('click', function (e) {
       e.stopPropagation();
       var nav = e.target.closest('[data-nav]');
-      if (nav) { view.setMonth(view.getMonth() + parseInt(nav.getAttribute('data-nav'), 10)); render(); return; }
+      if (nav) { view.setMonth(view.getMonth() + parseInt(nav.getAttribute('data-nav'), 10)); paintGrid(); return; }
       var day = e.target.closest('[data-day]');
       if (day) {
         var v = day.getAttribute('data-day');
         if (selEnd) { selStart = v; selEnd = null; }        // both set → start a fresh range
         else if (v < selStart) { selEnd = selStart; selStart = v; } // picked earlier → swap
         else { selEnd = v; }                                 // complete the range
-        render();
+        syncInputs();
+        paintGrid();
         return;
       }
       var preset = e.target.closest('[data-preset]');
@@ -495,14 +529,14 @@
       var fromEl = pop.querySelector('[data-input="from"]');
       var toEl = pop.querySelector('[data-input="to"]');
       if (!fromEl || !toEl) { return; }
-      var f = fromEl.value || '';
-      var t = toEl.value || '';
+      var f = fromDisp(fromEl.value);
+      var t = fromDisp(toEl.value);
       if (f && t && t < f) { var s = f; f = t; t = s; }
       selStart = f || t || todayIso;
       selEnd = t || null;
-      var focus = parseIso((focusEl && focusEl.value) || selStart);
+      var focus = parseIso(fromDisp((focusEl && focusEl.value) || '') || selStart);
       if (focus) { view = new Date(focus.getFullYear(), focus.getMonth(), 1); }
-      render();
+      paintGrid();
     }
     pop.addEventListener('change', function (e) {
       var el = e.target.closest('[data-input]');
@@ -513,8 +547,8 @@
       var el = e.target.closest('[data-input]');
       if (!el) { return; }
       e.preventDefault();
-      var f = pop.querySelector('[data-input="from"]').value || '';
-      var t = pop.querySelector('[data-input="to"]').value || f;
+      var f = fromDisp(pop.querySelector('[data-input="from"]').value);
+      var t = fromDisp(pop.querySelector('[data-input="to"]').value) || f;
       if (f) { apply(f, t); }
     });
 

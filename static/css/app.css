@@ -37,6 +37,8 @@
   --warning-soft: #fbeec4;
   --danger: #cc2a29;
   --danger-soft: #fbe0e0;
+  --violet: #6d3bd4;
+  --violet-soft: #ece3fb;
 
   --topbar-bg: rgba(255, 255, 255, 0.9);
 
@@ -86,6 +88,8 @@ html[data-theme="dark"] {
   --warning-soft: #3A3421;
   --danger: #E61918;
   --danger-soft: #321B1A;
+  --violet: #b191f7;
+  --violet-soft: #2b2440;
 
   --topbar-bg: rgba(28, 28, 28, 0.9);
 
@@ -416,7 +420,7 @@ html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
 
 .table-wrap {
   border: 1px solid var(--border);
-  border-radius: var(--r-lg);
+  border-radius: 18px;
   overflow-x: auto;
   background: var(--table-bg);
 }
@@ -526,6 +530,26 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 .badge-neutral { background: var(--surface-2); color: var(--text-muted); }
 .badge-draft { background: var(--surface-2); color: var(--text-muted); }
 
+/* Payment methods — colour-coded so naqd / karta / bank stand apart at a glance */
+.badge-cash { background: var(--success-soft); color: var(--success); }
+.badge-card { background: var(--accent-soft); color: var(--accent); }
+.badge-transfer { background: var(--violet-soft); color: var(--violet); }
+
+/* Blue badge — for events that are neither a plain income nor an outflow (e.g. a
+   new sale / receivable), so they don't read the same green as a debt payment */
+.badge-info { background: var(--accent-soft); color: var(--accent); }
+
+/* Signed money — income green, outflow red, sale (receivable) blue */
+.amt-in { color: var(--success); }
+.amt-out { color: var(--danger); }
+.amt-sale { color: var(--accent); }
+
+/* Event badge (reports feed) — icon instead of the plain dot, a touch roomier
+   with a hairline border for a softer, more finished look */
+.badge-evt { padding: 4px 11px; gap: 6px; border: 1px solid color-mix(in srgb, currentColor 22%, transparent); }
+.badge-evt::before { content: none; }
+.badge-evt svg { width: 13px; height: 13px; flex: 0 0 auto; }
+
 /* ============================================================
    Buttons
    ============================================================ */
@@ -559,7 +583,12 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 
 .inline-form { display: inline; margin: 0; }
 
-.row-actions { display: flex; gap: 6px; }
+/* Keep the cell a real table-cell — `display:flex` here drops it from the table's
+   column model, so on a horizontally-scrolling table it escapes the wrap and floats
+   off to the right. Lay the buttons out inline instead. */
+.row-actions { white-space: nowrap; }
+.row-actions > * { vertical-align: middle; }
+.row-actions > * + * { margin-left: 6px; }
 
 .icon-action {
   display: inline-grid;
@@ -707,6 +736,9 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 
 .helptext, form.stacked .helptext { color: var(--text-faint); font-size: 12.5px; }
 .field-hint { display: block; margin-top: 5px; color: var(--text-faint); font-size: 12.5px; }
+/* An intro hint sitting directly under a modal title (outside the padded form):
+   give it the form's side padding and breathing room from the heading. */
+.modal-head + .field-hint { margin-top: 0; padding: 14px 22px 0; line-height: 1.5; }
 /* Live "returns on <date>" hint under the debt-days input */
 .deadline-preview { display: block; margin-top: 5px; color: var(--accent); font-size: 13px; font-weight: 600; }
 .deadline-preview[hidden] { display: none; }

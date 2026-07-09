@@ -1374,6 +1374,46 @@ def _kassa_expenses(request):
     return expenses.order_by("-date", "-created_at"), dates, filters, rep, reps
 
 
+def _kassa_transactions(expenses, dates, filters, rep):
+    """A unified chronological ledger for the window: every incoming payment (kirim)
+    and every expense (chiqim), newest first. Shares the drawer filters (xodim, usul,
+    valyuta). A `category` filter is expense-only, so when one is active the incoming
+    payments are omitted — the list then reads as a pure expense view."""
+    rows = []
+    if filters["category"] not in dict(Expense.Category.choices):
+        payments = Payment.objects.select_related(
+            "sale", "sale__client", "created_by"
+        ).filter(date__gte=dates["date_from"], date__lte=dates["date_to"])
+        if rep is not None:
+            payments = payments.filter(created_by=rep)
+        if filters["method"] in dict(Payment.Method.choices):
+            payments = payments.filter(method=filters["method"])
+        if filters["currency"] in dict(Payment.Currency.choices):
+            payments = payments.filter(currency=filters["currency"])
+        for p in payments:
+            rows.append({
+                "date": p.date, "created_at": p.created_at, "direction": "in",
+                "title": p.sale.client.name, "subtitle": p.get_kind_display(),
+                "method": p.get_method_display(), "method_code": p.method,
+                "currency": p.currency,
+                "amount_som": p.net_amount, "amount_original": p.original_amount,
+                "exchange_rate": p.exchange_rate, "created_by": p.created_by,
+                "sale_pk": p.sale_id, "kind": "payment",
+            })
+    for e in expenses:
+        rows.append({
+            "date": e.date, "created_at": e.created_at, "direction": "out",
+            "title": e.get_category_display(), "subtitle": e.note,
+            "method": e.get_method_display(), "method_code": e.method,
+            "currency": e.currency,
+            "amount_som": e.amount, "amount_original": e.original_amount,
+            "exchange_rate": e.exchange_rate, "created_by": e.created_by,
+            "pk": e.pk, "kind": "expense",
+        })
+    rows.sort(key=lambda r: (r["date"], r["created_at"]), reverse=True)
+    return rows
+
+
 def kassa_view(request):
     """The cash register (Kassa): two till drawers (so'm + dollar) with income by
     method and running balance, per-employee kassa & performance, and the expense
@@ -1382,6 +1422,8 @@ def kassa_view(request):
     expenses, dates, filters, rep, reps = _kassa_expenses(request)
     date_from, date_to = dates["date_from"], dates["date_to"]
     summary = _kassa_summary(date_from, date_to, rep=rep)
+    transactions = _kassa_transactions(expenses, dates, filters, rep)
+    txn_page = Paginator(transactions, 30).get_page(request.GET.get("page"))
 
     method_labels = dict(Payment.Method.choices)
     category_labels = dict(Expense.Category.choices)
@@ -1397,6 +1439,7 @@ def kassa_view(request):
     export_qs = request.GET.urlencode()
     return render(request, "crm/kassa.html", {
         "summary": summary,
+        "txn_page": txn_page,
         "expenses": expenses,
         "per_employee": _per_employee_kassa(date_from, date_to) if request.user.can_see_all_records else None,
         "filters": filters,
@@ -1458,7 +1501,7 @@ def expense_export(request):
     for e in expenses:
         is_usd = e.currency == Payment.Currency.USD
         rows.append([
-            e.date.isoformat(),
+            e.date.strftime("%d.%m.%Y"),
             e.get_category_display(),
             e.get_method_display(),
             e.get_currency_display(),
@@ -1552,11 +1595,11 @@ def sale_export(request):
     # One row per line item, so a multi-product receipt still exports cleanly.
     rows = []
     for s in sales:
-        deadline = s.debt_deadline.isoformat() if s.debt_deadline else ""
+        deadline = s.debt_deadline.strftime("%d.%m.%Y") if s.debt_deadline else ""
         status = "Qarz" if s.remaining > 0 else "To'langan"
         for item in s.items.all():
             rows.append([
-                s.date.isoformat(),
+                s.date.strftime("%d.%m.%Y"),
                 s.client.name,
                 item.product.name,
                 str(s.sales_rep),

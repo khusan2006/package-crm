@@ -1,4 +1,5 @@
 import os
+import re
 
 from django import template
 from django.contrib.staticfiles import finders
@@ -6,6 +7,26 @@ from django.templatetags.static import static
 from django.utils import timezone
 
 register = template.Library()
+
+# Audit summaries embed the amount as "… — 1,210,000 so'm …". Pull it out so the
+# reports feed can show it in a dedicated, colour-coded Summa column, and strip it
+# from the descriptive text so the amount isn't printed twice.
+_MONEY_RE = re.compile(r"\s*—\s*([\d,]+)\s*so['’]m")
+
+
+@register.filter
+def money_of(summary):
+    """The so'm amount embedded in an audit summary, e.g. "1,210,000" (or "")."""
+    m = _MONEY_RE.search(summary or "")
+    return m.group(1) if m else ""
+
+
+@register.filter
+def without_money(summary):
+    """The audit summary with its "— <amount> so'm" chunk removed and spaces tidied,
+    so the Tafsilot column reads cleanly next to the Summa column."""
+    text = _MONEY_RE.sub(" ", summary or "")
+    return re.sub(r"\s{2,}", " ", text).strip()
 
 
 @register.inclusion_tag("crm/_deadline_badge.html")

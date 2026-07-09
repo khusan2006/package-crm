@@ -57,7 +57,7 @@
     <tr><th>Sana</th><th class="num">Miqdori (kg)</th><th>Izoh</th><th>Kim qo'shdi</th></tr>
     {% for entry in entries %}
     <tr>
-      <td>{{ entry.date|date:"Y-m-d" }}</td>
+      <td>{{ entry.date|date:"d.m.Y" }}</td>
       <td class="num">{% if entry.quantity_kg >= 0 %}<span style="color: var(--success);">+{{ entry.quantity_kg|floatformat:"-3g" }}</span>{% else %}<span style="color: var(--danger);">{{ entry.quantity_kg|floatformat:"-3g" }}</span>{% endif %}</td>
       <td>{{ entry.note|default:"—" }}</td>
       <td>{{ entry.created_by }}</td>
@@ -77,7 +77,7 @@
     <tr><th>Sana</th><th>Mijoz</th><th class="num">Og'irligi</th><th class="num">Umumiy narx</th><th>To'lov</th></tr>
     {% for item in recent_items %}
     <tr>
-      <td><a href="{% url 'sale_detail' item.sale.pk %}">{{ item.sale.date|date:"Y-m-d" }}</a></td>
+      <td><a href="{% url 'sale_detail' item.sale.pk %}">{{ item.sale.date|date:"d.m.Y" }}</a></td>
       <td>{{ item.sale.client.name }}</td>
       <td class="num">{{ item.weight|floatformat:"-3g" }} {{ item.dimension }}</td>
       <td class="num">{{ item.total_price|floatformat:"0g" }}</td>

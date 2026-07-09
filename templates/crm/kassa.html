@@ -35,11 +35,11 @@
   <div class="table-wrap">
   <table>
     <tr><th>Ko'rsatkich</th><th class="num">So'm</th><th class="num">Dollar</th></tr>
-    <tr><td>Naqd kirim</td><td class="num">{{ summary.som.cash|floatformat:"0g" }}</td><td class="num">${{ summary.usd.cash|floatformat:"2g" }}</td></tr>
-    <tr><td>Karta kirim</td><td class="num">{{ summary.som.card|floatformat:"0g" }}</td><td class="num">${{ summary.usd.card|floatformat:"2g" }}</td></tr>
-    <tr><td>Bank o'tkazma (sof)</td><td class="num">{{ summary.som.bank|floatformat:"0g" }}</td><td class="num">${{ summary.usd.bank|floatformat:"2g" }}</td></tr>
-    <tr><td><strong>Jami kirim</strong></td><td class="num"><strong>{{ summary.som.income|floatformat:"0g" }}</strong></td><td class="num"><strong>${{ summary.usd.income|floatformat:"2g" }}</strong></td></tr>
-    <tr><td>Chiqim</td><td class="num">−{{ summary.som.expense|floatformat:"0g" }}</td><td class="num">−${{ summary.usd.expense|floatformat:"2g" }}</td></tr>
+    <tr><td>Naqd kirim</td><td class="num amt-in">{{ summary.som.cash|floatformat:"0g" }}</td><td class="num amt-in">${{ summary.usd.cash|floatformat:"2g" }}</td></tr>
+    <tr><td>Karta kirim</td><td class="num amt-in">{{ summary.som.card|floatformat:"0g" }}</td><td class="num amt-in">${{ summary.usd.card|floatformat:"2g" }}</td></tr>
+    <tr><td>Bank o'tkazma (sof)</td><td class="num amt-in">{{ summary.som.bank|floatformat:"0g" }}</td><td class="num amt-in">${{ summary.usd.bank|floatformat:"2g" }}</td></tr>
+    <tr><td><strong>Jami kirim</strong></td><td class="num amt-in"><strong>{{ summary.som.income|floatformat:"0g" }}</strong></td><td class="num amt-in"><strong>${{ summary.usd.income|floatformat:"2g" }}</strong></td></tr>
+    <tr><td>Chiqim</td><td class="num amt-out">−{{ summary.som.expense|floatformat:"0g" }}</td><td class="num amt-out">−${{ summary.usd.expense|floatformat:"2g" }}</td></tr>
     <tr><td>Boshlang'ich qoldiq</td><td class="num muted">{{ summary.som.opening|floatformat:"0g" }}</td><td class="num muted">${{ summary.usd.opening|floatformat:"2g" }}</td></tr>
     <tr><td><strong>Kassa qoldig'i</strong></td><td class="num"><strong>{{ summary.som.closing|floatformat:"0g" }}</strong></td><td class="num"><strong>${{ summary.usd.closing|floatformat:"2g" }}</strong></td></tr>
   </table>
@@ -77,31 +77,35 @@
 {% endif %}
 
 <div class="card">
-  <h2>Chiqimlar</h2>
-  {% if expenses %}
+  <h2>Tranzaksiyalar</h2>
+  <p class="field-hint" style="margin-top:-6px;">Har bir kirim (to'lov) va chiqim (rasxot) — eng yangisi yuqorida.</p>
+  {% if txn_page.object_list %}
   <div class="table-wrap">
   <table>
     <tr>
-      <th>Sana</th><th>Turkum</th><th>Usul</th><th>Valyuta</th><th class="num">Summa</th>
-      <th>Izoh</th><th>Kim kiritdi</th><th></th>
+      <th>Sana</th><th>Turi</th><th>Tavsif</th><th>Usul</th>
+      <th class="num">Summa</th><th>Kim</th><th></th>
     </tr>
-    {% for e in expenses %}
+    {% for t in txn_page %}
     <tr>
-      <td>{{ e.date|date:"Y-m-d" }}</td>
-      <td>{{ e.get_category_display }}</td>
-      <td>{{ e.get_method_display }}</td>
-      <td>{% if e.currency == 'usd' %}<span class="badge badge-neutral">Dollar</span>{% else %}So'm{% endif %}</td>
-      <td class="num"><strong>{{ e.amount|floatformat:"0g" }}</strong> so'm
-        {% if e.currency == 'usd' %}<span class="cell-sub">${{ e.original_amount|floatformat:"2g" }} × {{ e.exchange_rate|floatformat:"0g" }} kurs</span>{% endif %}
+      <td>{{ t.date|date:"d.m.Y" }}</td>
+      <td>{% if t.direction == 'in' %}<span class="badge badge-ok">Kirim</span>{% else %}<span class="badge badge-danger">Chiqim</span>{% endif %}</td>
+      <td>{{ t.title }}{% if t.subtitle %}<span class="cell-sub">{{ t.subtitle }}</span>{% endif %}</td>
+      <td>{% include "crm/_method_badge.html" with code=t.method_code label=t.method %}</td>
+      <td class="num">
+        {% if t.direction == 'in' %}<strong style="color:var(--success)">+{{ t.amount_som|floatformat:"0g" }}</strong>{% else %}<strong style="color:var(--danger)">−{{ t.amount_som|floatformat:"0g" }}</strong>{% endif %} so'm
+        {% if t.currency == 'usd' %}<span class="cell-sub">${{ t.amount_original|floatformat:"2g" }} × {{ t.exchange_rate|floatformat:"0g" }} kurs</span>{% endif %}
       </td>
-      <td class="muted">{{ e.note|default:"—" }}</td>
-      <td>{{ e.created_by }}</td>
-      <td class="row-actions">{% if user.can_see_all_records %}<a class="icon-action" href="{% url 'expense_edit' e.pk %}" data-modal title="Tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a><a class="icon-action danger" href="{% url 'expense_delete' e.pk %}" data-modal title="Chiqimni o'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>{% endif %}</td>
+      <td>{{ t.created_by }}</td>
+      <td class="row-actions">
+        {% if t.kind == 'payment' %}<a class="icon-action" href="{% url 'sale_detail' t.sale_pk %}" title="Sotuvni ochish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></a>{% elif user.can_see_all_records %}<a class="icon-action" href="{% url 'expense_edit' t.pk %}" data-modal title="Tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a><a class="icon-action danger" href="{% url 'expense_delete' t.pk %}" data-modal title="Chiqimni o'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>{% endif %}
+      </td>
     </tr>
     {% endfor %}
   </table>
   </div>
-  {% else %}<p class="muted">Bu davrda chiqim yo'q.</p>{% endif %}
+  {% include "crm/_pagination.html" with page=txn_page %}
+  {% else %}<p class="muted">Bu davrda tranzaksiya yo'q.</p>{% endif %}
 </div>
 
 {% include "crm/_filter_drawer.html" %}

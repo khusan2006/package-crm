@@ -71,7 +71,7 @@
 <div class="card">
   <h2>Ma'lumot</h2>
   <div class="detail-grid">
-    <div class="detail-row"><span class="k">Sana</span><span class="v">{{ sale.date|date:"Y-m-d" }}</span></div>
+    <div class="detail-row"><span class="k">Sana</span><span class="v">{{ sale.date|date:"d.m.Y" }}</span></div>
     <div class="detail-row"><span class="k">Mijoz</span><span class="v">{{ sale.client.name }}</span></div>
     <div class="detail-row"><span class="k">Sotuvchi</span><span class="v">{{ sale.sales_rep }}</span></div>
     <div class="detail-row"><span class="k">Umumiy narx</span><span class="v">{{ sale.total_price|floatformat:"0g" }} so'm</span></div>
@@ -81,13 +81,13 @@
       <span class="k">To'lov holati</span>
       <span class="v">
         {% if sale.is_outstanding %}
-          <span class="badge {% if sale.is_overdue %}badge-cancelled{% else %}badge-shipped{% endif %}">Qarz · {{ sale.debt_deadline|date:"Y-m-d" }}</span>
+          <span class="badge {% if sale.is_overdue %}badge-cancelled{% else %}badge-shipped{% endif %}">Qarz · {{ sale.debt_deadline|date:"d.m.Y" }}</span>
         {% else %}
           <span class="badge badge-paid">To'langan</span>
         {% endif %}
       </span>
     </div>
-    <div class="detail-row"><span class="k">To'lov muddati</span><span class="v">{{ sale.debt_deadline|date:"Y-m-d" }}{% if sale.is_outstanding %} · {% deadline_badge sale.debt_deadline %}{% endif %}</span></div>
+    <div class="detail-row"><span class="k">To'lov muddati</span><span class="v">{{ sale.debt_deadline|date:"d.m.Y" }}{% if sale.is_outstanding %} · {% deadline_badge sale.debt_deadline %}{% endif %}</span></div>
     {% if sale.is_outstanding %}
     <div class="detail-row"><span class="k">To'langan</span><span class="v">{{ paid|floatformat:"0g" }} so'm</span></div>
     <div class="detail-row"><span class="k">Qoldiq</span><span class="v">{{ remaining|floatformat:"0g" }} so'm</span></div>
@@ -103,11 +103,11 @@
     <tr><th>Sana</th><th class="num">Miqdor</th><th>Usul</th><th>Turi</th><th>Qabul qildi</th>{% if user.can_see_all_records %}<th></th>{% endif %}</tr>
     {% for p in payments %}
     <tr>
-      <td>{{ p.date|date:"Y-m-d" }}</td>
+      <td>{{ p.date|date:"d.m.Y" }}</td>
       <td class="num"><strong>{{ p.amount|floatformat:"0g" }}</strong>
         {% if p.commission %}<span class="cell-sub">komissiya −{{ p.commission|floatformat:"0g" }} ({{ p.commission_percent|floatformat:"-2" }}%) · qo'lga {{ p.net_amount|floatformat:"0g" }}</span>{% endif %}
       </td>
-      <td><span class="badge badge-neutral">{{ p.get_method_display }}</span>
+      <td>{% include "crm/_method_badge.html" with code=p.method label=p.get_method_display %}
         {% if p.note %}<span class="cell-sub">{{ p.note }}</span>{% endif %}
       </td>
       <td>{% if p.kind == 'debt' %}<span class="badge badge-shipped">Qarz to'lovi</span>{% else %}<span class="badge badge-paid">Sotuvda</span>{% endif %}</td>
@@ -134,7 +134,7 @@
     <tr><th>Sana</th><th>Mahsulot</th><th class="num">Og'irligi</th><th class="num">Narxi</th><th class="num">Summa</th><th>Ombor</th><th>Kim</th></tr>
     {% for r in returns %}
     <tr>
-      <td>{{ r.date|date:"Y-m-d" }}</td>
+      <td>{{ r.date|date:"d.m.Y" }}</td>
       <td>{{ r.product.name }}</td>
       <td class="num">{{ r.weight|floatformat:"-3g" }} {{ r.dimension }}</td>
       <td class="num">{{ r.price|floatformat:"0g" }}</td>

@@ -49,7 +49,7 @@
   <tr>
     <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=g.client.name %}<a href="{% url 'debt_client' g.client.pk %}">{{ g.client.name }}</a></span></td>
     <td class="num">{{ g.count }}{% if g.overdue_count %} <span class="muted">({{ g.overdue_count }} o'tgan)</span>{% endif %}</td>
-    <td>{{ g.earliest|date:"Y-m-d" }} · {% deadline_badge g.earliest %}</td>
+    <td>{{ g.earliest|date:"d.m.Y" }} · {% deadline_badge g.earliest %}</td>
     <td class="num"><strong>{{ g.remaining|floatformat:"0g" }}</strong> so'm</td>
     <td><a class="btn btn-sm btn-ghost" href="{% url 'debt_client' g.client.pk %}">Ko'rish</a></td>
   </tr>

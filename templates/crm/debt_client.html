@@ -33,12 +33,12 @@
     </tr>
     {% for sale in sales %}
     <tr>
-      <td><a href="{% url 'sale_detail' sale.pk %}">{{ sale.date|date:"Y-m-d" }}</a></td>
+      <td><a href="{% url 'sale_detail' sale.pk %}">{{ sale.date|date:"d.m.Y" }}</a></td>
       <td><a href="{% url 'sale_detail' sale.pk %}">{{ sale.item_summary }}</a></td>
       <td class="num">{{ sale.total|floatformat:"0g" }}</td>
       <td class="num">{{ sale.paid|floatformat:"0g" }}</td>
       <td class="num"><strong>{{ sale.remaining|floatformat:"0g" }}</strong></td>
-      <td>{{ sale.debt_deadline|date:"Y-m-d" }} · {% deadline_badge sale.debt_deadline %}</td>
+      <td>{{ sale.debt_deadline|date:"d.m.Y" }} · {% deadline_badge sale.debt_deadline %}</td>
       <td>
         <div class="row-actions">
           <a class="icon-action settle" href="{% url 'sale_mark_paid' sale.pk %}" data-modal title="To'landi (naqd, to'liq)">

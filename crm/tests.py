@@ -1258,6 +1258,17 @@ class KassaScopingTests(BaseSetup):
         creators = {e.created_by_id for e in response.context["expenses"]}
         self.assertEqual(creators, {self.sales1.pk})
 
+    def test_seller_transactions_scoped_to_self(self):
+        # The unified ledger (kirim + chiqim) shows only the seller's own rows.
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"))
+        txns = response.context["txn_page"].object_list
+        creators = {t["created_by"].pk for t in txns}
+        self.assertEqual(creators, {self.sales1.pk})
+        directions = {t["direction"] for t in txns}
+        self.assertIn("in", directions)   # own sale payment
+        self.assertIn("out", directions)  # own expense
+
     def test_seller_has_no_per_employee_table(self):
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("kassa"))

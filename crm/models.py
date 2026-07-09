@@ -621,5 +621,39 @@ class AuditLog(models.Model):
             summary=summary,
         )
 
+    @property
+    def event(self):
+        """A domain-level view of the log line for the reports feed, derived from
+        the action and what it acted on (e.g. a created sale reads "Sotuv bo'ldi").
+        Returns a dict: label, cls (badge colour), icon (key), flow ('in'/'out'/'').
+        `flow` drives the signed, coloured amount in the Summa column."""
+        a, t = self.action, self.target_type
+        GREEN, RED, AMBER, GREY = "badge-ok", "badge-danger", "badge-shipped", "badge-neutral"
+
+        def e(label, cls, icon, flow=""):
+            return {"label": label, "cls": cls, "icon": icon, "flow": flow}
+
+        if t == "Sotuv":
+            if a == self.Action.CREATE:
+                return e("Sotuv bo'ldi", "badge-info", "sale", "sale")
+            if a == self.Action.DELETE:
+                return e("Sotuv o'chirildi", RED, "trash")
+            return e("Sotuv o'zgartirildi", AMBER, "edit")
+        if t == "Chiqim":
+            if a == self.Action.DELETE:
+                return e("Chiqim o'chirildi", RED, "trash")
+            if a == self.Action.UPDATE:
+                return e("Chiqim o'zgartirildi", AMBER, "edit")
+            return e("Chiqim bo'ldi", RED, "out", "out")
+        if t == "To'lov":
+            if a == self.Action.VOID:
+                return e("To'lov bekor qilindi", RED, "trash")
+            return e("Qarz to'landi", GREEN, "in", "in")
+        if t == "Qaytarish":
+            return e("Mahsulot qaytdi", AMBER, "return")
+        if a == self.Action.TRANSFER:
+            return e("Sotuvchi o'zgardi", GREY, "transfer")
+        return e(self.get_action_display(), GREY, "dot")
+
     def __str__(self):
         return f"{self.get_action_display()} · {self.target_type} · {self.summary}"
