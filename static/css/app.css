@@ -682,10 +682,19 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
   background: var(--surface);
   color: var(--text);
   padding: 0;
-  width: min(560px, calc(100vw - 32px));
+  /* Centre within the content area (right of the docked sidebar), not the whole
+     viewport — otherwise the sidebar makes the dialog look shifted to the left. */
+  inset: 0 0 0 var(--sidebar-w);
+  margin: auto;
+  width: min(560px, calc(100vw - var(--sidebar-w) - 32px));
   max-height: calc(100vh - 72px);
   overflow: auto;
   box-shadow: var(--shadow-lg);
+}
+/* On phones the sidebar is an off-canvas overlay (no layout width), so the
+   dialog centres in the full viewport again. */
+@media (max-width: 560px) {
+  .modal { inset: 0; width: min(560px, calc(100vw - 32px)); }
 }
 .modal::backdrop {
   background: rgba(4, 6, 10, 0.62);
