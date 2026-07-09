@@ -496,6 +496,40 @@ class ProductDeleteTests(BaseSetup):
         )
 
 
+class ProductCreateStockTests(BaseSetup):
+    def _post(self, **extra):
+        data = {
+            "name": "Yangi tovar", "sku": "NEW-1", "description": "",
+            "cost_price": "10000", "price": "15000",
+            "low_stock_threshold": "5", "is_active": "on",
+        }
+        data.update(extra)
+        return self.client.post(reverse("product_create"), data)
+
+    def test_initial_quantity_recorded_as_kirim(self):
+        # Creating a product with a starting quantity books it as the first kirim.
+        self.client.force_login(self.sales1)
+        self._post(initial_quantity="100")
+        product = Product.objects.get(sku="NEW-1")
+        self.assertEqual(product.current_stock, Decimal("100"))
+        entry = product.stock_entries.get()
+        self.assertEqual(entry.quantity_kg, Decimal("100"))
+        self.assertEqual(entry.created_by, self.sales1)
+
+    def test_no_initial_quantity_leaves_stock_empty(self):
+        self.client.force_login(self.sales1)
+        self._post()  # no initial_quantity
+        product = Product.objects.get(sku="NEW-1")
+        self.assertEqual(product.stock_entries.count(), 0)
+        self.assertEqual(product.current_stock, Decimal("0"))
+
+    def test_edit_form_omits_initial_quantity(self):
+        # Existing stock is changed via Kirim / tuzatish, not the edit form.
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("product_edit", args=[self.product.pk]))
+        self.assertNotIn("initial_quantity", response.context["form"].fields)
+
+
 class SaleFilterExportTests(BaseSetup):
     def setUp(self):
         self.debt_sale = make_sale(

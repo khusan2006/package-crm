@@ -605,6 +605,14 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 .icon-action.danger:hover { color: var(--danger); border-color: var(--danger); }
 .icon-action.settle:hover { color: var(--success); border-color: var(--success); }
 
+/* Coloured row-action icons (clients list): tinted at rest, soft fill on hover. */
+.icon-action.act-edit { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 32%, var(--border-strong)); }
+.icon-action.act-edit:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.icon-action.act-transfer { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 36%, var(--border-strong)); }
+.icon-action.act-transfer:hover { background: var(--warning-soft); border-color: var(--warning); color: var(--warning); }
+.icon-action.act-delete { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 32%, var(--border-strong)); }
+.icon-action.act-delete:hover { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
+
 /* ============================================================
    Floating action button
    ============================================================ */

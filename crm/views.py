@@ -595,13 +595,14 @@ def client_edit(request, pk):
     form = ClientForm(
         request.POST or None, instance=client, user=request.user, check_duplicates=False
     )
-    if request.method == "POST" and form.is_valid():
-        form.save()
-        messages.success(request, f"“{client.name}” mijozi yangilandi.")
-        return redirect("client_list")
-    return render(
-        request, "crm/form.html", {"form": form, "title": f"Tahrirlash: {client.name}"}
-    )
+    title = f"Tahrirlash: {client.name}"
+    if request.method == "POST":
+        if form.is_valid():
+            form.save()
+            messages.success(request, f"“{client.name}” mijozi yangilandi.")
+            return form_reload(request, reverse("client_list"))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
 
 
 def client_delete(request, pk):
@@ -615,8 +616,14 @@ def client_delete(request, pk):
                 request,
                 f"“{client.name}” mijozini o'chirib bo'lmaydi — sotuvlari mavjud.",
             )
-        return redirect("client_list")
-    return render(request, "crm/confirm_delete.html", {"object": client, "back": "client_list"})
+        return form_reload(request, reverse("client_list"))
+    return render_confirm(
+        request,
+        "Mijozni o'chirish",
+        f"“{client.name}” mijozi o'chiriladi. Bu amalni qaytarib bo'lmaydi.",
+        "Ha, o'chirish",
+        confirm_class="btn-danger",
+    )
 
 
 def _render_client_transfer(request, client, form, invalid=False):
@@ -698,10 +705,17 @@ def product_detail(request, pk):
 
 
 def product_create(request):
-    form = ProductForm(request.POST or None)
+    form = ProductForm(request.POST or None, with_stock=True)
     if request.method == "POST":
         if form.is_valid():
             product = form.save()
+            # A starting quantity is booked as the product's first warehouse kirim.
+            qty = form.cleaned_data.get("initial_quantity")
+            if qty and qty > 0:
+                StockEntry.objects.create(
+                    product=product, quantity_kg=qty,
+                    note="Boshlang'ich qoldiq", created_by=request.user,
+                )
             messages.success(request, f"“{product.name}” mahsuloti qo'shildi.")
             return form_success(request, reverse("product_detail", args=[product.pk]))
         return form_response(request, form, "Yangi mahsulot", invalid=True)
@@ -711,13 +725,14 @@ def product_create(request):
 def product_edit(request, pk):
     product = get_object_or_404(Product, pk=pk)
     form = ProductForm(request.POST or None, instance=product)
-    if request.method == "POST" and form.is_valid():
-        form.save()
-        messages.success(request, f"“{product.name}” mahsuloti yangilandi.")
-        return redirect("product_detail", pk=product.pk)
-    return render(
-        request, "crm/form.html", {"form": form, "title": f"Tahrirlash: {product.name}"}
-    )
+    title = f"Tahrirlash: {product.name}"
+    if request.method == "POST":
+        if form.is_valid():
+            form.save()
+            messages.success(request, f"“{product.name}” mahsuloti yangilandi.")
+            return form_reload(request, reverse("product_detail", args=[product.pk]))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
 
 
 def product_delete(request, pk):
@@ -735,11 +750,17 @@ def product_delete(request, pk):
                 f"“{name}” mahsulotini o'chirib bo'lmaydi — sotuv yoki "
                 f"qaytarishlarda ishlatilgan.",
             )
-            return redirect("product_detail", pk=product.pk)
+            return form_reload(request, reverse("product_list"))
         AuditLog.record(request.user, AuditLog.Action.DELETE, "Mahsulot", pk, name)
         messages.success(request, f"“{name}” mahsuloti o'chirildi.")
-        return redirect("product_list")
-    return render(request, "crm/confirm_delete.html", {"object": product, "back": "product_list"})
+        return form_reload(request, reverse("product_list"))
+    return render_confirm(
+        request,
+        "Mahsulotni o'chirish",
+        f"“{product.name}” mahsuloti o'chiriladi. Bu amalni qaytarib bo'lmaydi.",
+        "Ha, o'chirish",
+        confirm_class="btn-danger",
+    )
 
 
 def stock_entry_create(request, pk):
