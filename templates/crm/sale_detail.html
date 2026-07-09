@@ -2,9 +2,9 @@
 {% load crm_extras %}
 {% block title %}Sotuv · {{ sale.client.name }} · Paket CRM{% endblock %}
 {% block topbar_title %}Sotuv — {{ sale.client.name }}{% endblock %}
-{% block topbar_actions %}
-<a class="btn btn-ghost" href="{% url 'sale_return' sale.pk %}" data-modal>Qaytarish</a>
-<a class="btn btn-ghost" href="{% url 'sale_edit' sale.pk %}" data-modal>Tahrirlash</a>
+{% block fab %}
+<a class="fab fab--muted" href="{% url 'sale_edit' sale.pk %}" data-modal>Tahrirlash</a>
+<a class="fab fab--muted" href="{% url 'sale_return' sale.pk %}" data-modal>Qaytarish</a>
 {% endblock %}
 {% block content %}
 

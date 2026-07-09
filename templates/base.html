@@ -96,7 +96,6 @@
         <span class="topbar-title">{% block topbar_title %}Paket CRM{% endblock %}</span>
       </div>
       <div class="topbar-right">
-        <div class="page-actions">{% block topbar_actions %}{% endblock %}</div>
         <div class="user-chip">
           <span class="avatar sm">{{ user.username|slice:":1"|upper }}</span>
           <div class="meta">
@@ -121,7 +120,7 @@
     <main class="content">
       {% block content %}{% endblock %}
     </main>
-    {% if user.is_authenticated %}{% block fab %}{% endblock %}{% endif %}
+    {% if user.is_authenticated %}<div class="fab-stack">{% block fab %}{% endblock %}</div>{% endif %}
   </div>
 </div>
 
@@ -231,7 +230,15 @@
       }
     });
 
-    dlg.addEventListener('click', function (e) { if (e.target === dlg) { dlg.close(); } });
+    // Light-dismiss: close only when the press BOTH started and ended on the
+    // backdrop. A drag that begins on an inner input and releases over the
+    // backdrop still synthesizes a click targeted at <dialog>, so gating on the
+    // pointerdown target prevents the modal from closing mid-drag.
+    var pressStartedOnBackdrop = false;
+    dlg.addEventListener('pointerdown', function (e) { pressStartedOnBackdrop = (e.target === dlg); });
+    dlg.addEventListener('click', function (e) {
+      if (e.target === dlg && pressStartedOnBackdrop) { dlg.close(); }
+    });
     dlg.addEventListener('close', function () { body.innerHTML = ''; });
   })();
 

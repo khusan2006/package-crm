@@ -3,8 +3,10 @@
   <h2>{{ title }}</h2>
   <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
 </div>
-{% comment %}data-debt-pay reuses the payment form's JS: it toggles the dollar block and
-shows the live "$X × kurs = so'm" breakdown (no commission fields here).{% endcomment %}
+{% comment %}
+  data-debt-pay reuses the payment form's JS: it toggles the dollar block and
+  shows the live "$X × kurs = so'm" breakdown (no commission fields here).
+{% endcomment %}
 <form method="post" action="{{ request.path }}" class="stacked" data-debt-pay>
   {% csrf_token %}
   {% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}

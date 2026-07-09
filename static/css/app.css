@@ -236,8 +236,6 @@ html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
 
 .content { padding: 22px 24px 48px; max-width: none; width: 100%; margin: 0; }
 
-.page-actions { display: flex; align-items: center; gap: 10px; }
-
 /* ============================================================
    Cards & stats
    ============================================================ */
@@ -611,11 +609,22 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
    Floating action button
    ============================================================ */
 
-.fab {
+/* Floating action stack: every page CTA lives here, pinned bottom-right.
+   column-reverse puts the first-listed (primary) button in the corner and
+   stacks any secondary actions upward above it. */
+.fab-stack {
   position: fixed;
   right: 28px;
   bottom: 28px;
   z-index: 60;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-end;
+  gap: 12px;
+}
+.fab-stack:empty { display: none; }
+
+.fab {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -638,8 +647,21 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 }
 .fab svg { width: 20px; height: 20px; }
 
+/* Secondary / navigation actions: lower-priority than the accent primary. */
+.fab--muted {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+}
+.fab--muted:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
 @media (max-width: 560px) {
-  .fab { right: 18px; bottom: 18px; padding: 12px 16px; }
+  .fab-stack { right: 18px; bottom: 18px; gap: 10px; }
+  .fab { padding: 12px 16px; }
 }
 
 /* ============================================================
