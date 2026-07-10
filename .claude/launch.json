@@ -24,6 +24,12 @@
       "runtimeExecutable": ".venv/Scripts/python.exe",
       "runtimeArgs": ["manage.py", "runserver", "127.0.0.1:8035"],
       "port": 8035
+    },
+    {
+      "name": "django-mac",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["manage.py", "runserver", "127.0.0.1:8040"],
+      "port": 8040
     }
   ]
 }
