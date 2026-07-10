@@ -23,6 +23,7 @@ from .forms import (
     ClientTransferForm,
     DebtPaymentForm,
     ExpenseForm,
+    PaymentEditForm,
     ProductForm,
     ReturnForm,
     SaleForm,
@@ -1262,6 +1263,39 @@ def payment_delete(request, pk):
     )
 
 
+def payment_edit(request, pk):
+    """Fix a mistaken payment (Kirim) — amount, currency, method, commission, note.
+    The sale's remaining debt re-derives from the new net automatically. Admins/
+    managers may edit any payment; a seller may edit only payments they took in
+    themselves. The net is capped so the sale can't become over-paid."""
+    qs = Payment.objects.select_related("sale", "sale__client")
+    if not request.user.can_see_all_records:
+        qs = qs.filter(created_by=request.user)
+    payment = get_object_or_404(qs, pk=pk)
+    # This receipt's ceiling: the sale's remaining already excludes this payment's
+    # current net, so add it back to get how much this one may cover.
+    max_amount = payment.sale.debt_remaining + payment.net_amount
+    title = "To'lovni tahrirlash"
+    form = PaymentEditForm(request.POST or None, instance=payment, max_amount=max_amount)
+    if request.method == "POST":
+        if form.is_valid():
+            form.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "To'lov", payment.sale_id,
+                f"{payment.sale.client.name} — {payment.amount:,.0f} so'm "
+                f"({payment.get_method_display()}){_usd_note(form.cleaned_data)}",
+            )
+            messages.success(request, "To'lov yangilandi.")
+            return form_success(request, reverse("kassa"))
+        return form_response(
+            request, form, title, invalid=True,
+            modal_template="crm/_payment_edit_modal.html",
+        )
+    return form_response(
+        request, form, title, modal_template="crm/_payment_edit_modal.html"
+    )
+
+
 def audit_list(request):
     """The money-action audit trail. Admins/managers see every action; a seller
     sees only their own."""
@@ -1437,7 +1471,7 @@ def _kassa_transactions(expenses, dates, filters, rep):
                 "currency": p.currency,
                 "amount_som": p.net_amount, "amount_original": p.original_amount,
                 "exchange_rate": p.exchange_rate, "created_by": p.created_by,
-                "sale_pk": p.sale_id, "kind": "payment",
+                "sale_pk": p.sale_id, "pk": p.pk, "kind": "payment",
             })
     for e in expenses:
         rows.append({

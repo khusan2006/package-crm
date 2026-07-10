@@ -648,6 +648,8 @@ class AuditLog(models.Model):
         if t == "To'lov":
             if a == self.Action.VOID:
                 return e("To'lov bekor qilindi", RED, "trash")
+            if a == self.Action.UPDATE:
+                return e("To'lov o'zgartirildi", AMBER, "edit")
             return e("Qarz to'landi", GREEN, "in", "in")
         if t == "Qaytarish":
             return e("Mahsulot qaytdi", AMBER, "return")

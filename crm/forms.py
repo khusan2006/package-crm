@@ -202,6 +202,90 @@ class DebtPaymentForm(forms.Form):
         return cleaned
 
 
+class PaymentEditForm(forms.ModelForm):
+    """Fix a mistaken payment (Kirim). Full edit of a single receipt: amount,
+    currency + rate, method, bank commission and note. `amount` persists as so'm
+    (a dollar payment is entered in dollars and converted at the hand-typed rate);
+    `net` (amount − commission) is what pays down the debt, so it may not exceed
+    `max_amount` — the sale's remaining plus whatever this payment already covers,
+    which keeps the sale from becoming over-paid. `kind`/`sale`/`created_by` are
+    fixed; only the money figures are editable."""
+
+    class Meta:
+        model = Payment
+        fields = ["date", "amount", "currency", "exchange_rate", "method",
+                  "commission_percent", "note"]
+        widgets = {
+            "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — qo'shimcha ma'lumot"}),
+        }
+
+    def __init__(self, *args, max_amount=None, **kwargs):
+        self.max_amount = max_amount
+        super().__init__(*args, **kwargs)
+        self.fields["amount"].label = "Miqdor"
+        self.fields["amount"].help_text = "Tanlangan valyutada — dollar tanlansa, dollardagi summa"
+        self.fields["currency"].required = False
+        self.fields["exchange_rate"].required = False
+        self.fields["exchange_rate"].help_text = "Faqat dollar to'lovi uchun — har safar qo'lda kiritiladi"
+        self.fields["commission_percent"].required = False
+        self.fields["commission_percent"].help_text = "Faqat bank o'tkazmasi uchun — bank ushlab qoladigan foiz"
+        _mark_money(self.fields["amount"], self.fields["exchange_rate"])
+        # Editing a dollar payment: show the original dollars in the amount field
+        # (not the stored so'm), so re-saving converts at the rate correctly.
+        if self.instance.pk and self.instance.currency == Payment.Currency.USD:
+            self.initial["amount"] = self.instance.amount_original
+
+    def clean_amount(self):
+        amount = self.cleaned_data.get("amount")
+        if amount is not None and amount <= 0:
+            raise forms.ValidationError("Miqdor 0 dan katta bo'lishi kerak.")
+        return amount
+
+    def clean(self):
+        cleaned = super().clean()
+        # Convert the entered amount to so'm — the base currency the debt lives in.
+        currency = cleaned.get("currency") or Payment.Currency.UZS
+        entered = cleaned.get("amount") or Decimal("0")
+        rate = cleaned.get("exchange_rate") or Decimal("0")
+        if currency == Payment.Currency.USD:
+            if rate <= 0:
+                self.add_error("exchange_rate", "Dollar to'lovi uchun kursni kiriting.")
+                rate = Decimal("0")
+            amount = (entered * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        else:
+            rate = Decimal("0")
+            amount = entered
+
+        percent = cleaned.get("commission_percent") or Decimal("0")
+        # Commission only applies to bank transfers; ignore it otherwise.
+        if cleaned.get("method") != Payment.Method.TRANSFER:
+            percent = Decimal("0")
+        commission = (amount * percent / Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if commission > amount:
+            self.add_error(
+                "commission_percent", "Komissiya to'lov summasidan ko'p bo'lishi mumkin emas."
+            )
+        # Only the net (amount − commission) pays down the debt, so the net — not
+        # the gross — is what may not exceed the room left on the sale.
+        net = amount - commission
+        if self.max_amount is not None and net > self.max_amount:
+            self.add_error(
+                "amount", f"Qoldiqdan ({self.max_amount:.0f} so'm) ko'p bo'lishi mumkin emas."
+            )
+        # `amount`/`exchange_rate`/`commission_percent` are form fields (persisted
+        # via cleaned); `commission`/`amount_original` are not, so set them on the
+        # instance directly.
+        self.instance.commission = commission
+        self.instance.amount_original = entered
+        cleaned["amount"] = amount
+        cleaned["exchange_rate"] = rate
+        cleaned["commission_percent"] = percent
+        return cleaned
+
+
 class ExpenseForm(forms.ModelForm):
     """A payout from the till. `method` records which wallet it left (cash/card/bank);
     `currency` records whether it left the so'm or the dollar till. A dollar expense is
