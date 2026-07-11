@@ -308,6 +308,7 @@ html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
 .kpi--green { --kpi: var(--success); }
 .kpi--red { --kpi: var(--danger); }
 .kpi--gold { --kpi: var(--warning); }
+.kpi--violet { --kpi: var(--violet); }
 
 .kpi-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; position: relative; }
 .kpi-icon {
@@ -368,6 +369,56 @@ html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
 @media (max-width: 1100px) {
   .kpi-grid--compact { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 }
+
+/* Kassa: five production-flow cards forced onto one row (drops to 2-up on narrow) */
+.kpi-grid--kassa { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .kpi-grid--kassa { grid-template-columns: repeat(2, 1fr); } }
+
+/* ============================================================
+   Kassa — production flow strip + seller-debt widgets
+   ============================================================ */
+
+/* The Ishlab chiqarish → Sotuvchi → Mijoz → Topshiradi flow banner */
+.flow {
+  display: flex;
+  align-items: stretch;
+  margin-bottom: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background: var(--surface);
+}
+.flow-step { flex: 1; display: flex; align-items: center; gap: 12px; padding: 14px 18px; }
+.flow-step:not(:last-child) { border-right: 1px solid var(--border); }
+.flow-ic { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; flex-shrink: 0; color: #fff; }
+.flow-ic svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.flow-t { font-size: 13px; font-weight: 700; letter-spacing: -0.01em; }
+.flow-s { font-size: 11.5px; color: var(--text-muted); }
+@media (max-width: 900px) {
+  .flow { flex-direction: column; }
+  .flow-step:not(:last-child) { border-right: none; border-bottom: 1px solid var(--border); }
+}
+
+/* Two-column card row (production till + handover panel) */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+@media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+
+/* A single production-till figure line */
+.prod-stat { display: flex; justify-content: space-between; align-items: baseline; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.prod-stat:last-child { border-bottom: none; }
+.prod-stat .k { font-size: 13px; color: var(--text-muted); }
+.prod-stat .v { font-size: 18px; font-weight: 750; font-variant-numeric: tabular-nums; }
+
+/* Per-seller remaining-debt bars */
+.dbar { display: flex; flex-direction: column; gap: 13px; }
+.dbar-row { display: grid; grid-template-columns: 130px 1fr auto; align-items: center; gap: 12px; }
+.dbar-label { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dbar-track { height: 9px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.dbar-fill { height: 100%; border-radius: 999px; background: var(--warning); }
+.dbar-val { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--warning); }
+
+/* Handover (topshirish) transaction badge */
+.badge-remit { background: var(--violet-soft); color: var(--violet); }
 
 /* Debt deadline "days left / overdue" chip */
 .daybadge {
@@ -579,6 +630,9 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 
 .btn-danger { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 .btn-danger:hover { background: var(--danger); color: #fff; }
+
+.btn-violet { background: var(--violet); color: #fff; border-color: transparent; }
+.btn-violet:hover { background: color-mix(in srgb, var(--violet) 82%, #000); color: #fff; }
 
 .btn-sm { padding: 5px 11px; font-size: 13px; }
 

@@ -1358,13 +1358,32 @@ def _kassa_remitted(date_from, date_to, rep=None):
     return qs.aggregate(s=Sum("amount"))["s"] or Decimal("0")
 
 
-def _kassa_profit(date_from, date_to, rep=None):
-    """Total gross profit (sotish − tannarx) of goods sold in the window. Scoped to
-    one seller when `rep` is given."""
-    items = SaleItem.objects.filter(sale__date__gte=date_from, sale__date__lte=date_to)
+def _realized_profit_by_seller(date_from, date_to, rep=None):
+    """Cost-first realized profit per seller, for sales dated in the window.
+
+    Profit is recognised only as money is collected, and a sale's collections cover
+    its tannarx FIRST — only the surplus above cost counts as profit. So an unpaid
+    debt sale earns nothing yet, and a part-paid one earns only what's collected
+    beyond its cost:  realized = max(0, min(paid, revenue) − cost).
+
+    Returns {seller_pk: realized_profit}. (Returned goods aren't netted out here —
+    they're a rare edge and only make the figure marginally conservative.)"""
+    sales = Sale.objects.filter(date__gte=date_from, date__lte=date_to)
     if rep is not None:
-        items = items.filter(sale__sales_rep=rep)
-    return items.aggregate(s=Sum(PROFIT))["s"] or Decimal("0")
+        sales = sales.filter(sales_rep=rep)
+    by_seller = {}
+    for s in sales.with_balance().values("sales_rep", "total", "cost_total", "paid"):
+        realized = max(Decimal("0"), min(s["paid"], s["total"]) - s["cost_total"])
+        by_seller[s["sales_rep"]] = by_seller.get(s["sales_rep"], Decimal("0")) + realized
+    return by_seller
+
+
+def _kassa_profit(date_from, date_to, rep=None):
+    """Total realized (cost-first) profit in the window. Scoped to one seller when
+    `rep` is given. See `_realized_profit_by_seller` for how it's recognised."""
+    return sum(
+        _realized_profit_by_seller(date_from, date_to, rep).values(), Decimal("0")
+    )
 
 
 def _kassa_summary(date_from, date_to, rep=None):
@@ -1384,6 +1403,13 @@ def _kassa_summary(date_from, date_to, rep=None):
     )
     cost = _kassa_supplier_cost(date_from, date_to, rep)
     remitted = _kassa_remitted(date_from, date_to, rep)
+    profit = _kassa_profit(date_from, date_to, rep)
+    # Every expense's so'm value, both currencies — the same figure the per-seller
+    # rows sum, so the Jami row equals the sum of its columns.
+    expense_total = (
+        expenses.filter(date__gte=date_from, date__lte=date_to)
+        .aggregate(s=Sum("amount"))["s"] or Decimal("0")
+    )
     return {
         "som": som,
         "usd": _currency_till(
@@ -1392,11 +1418,13 @@ def _kassa_summary(date_from, date_to, rep=None):
         ),
         "cost": cost,
         # Production-debt block (so'm). Cash on hand = so'm income net of fees, less
-        # expenses, less what's already been handed to production.
+        # every expense, less what's already been handed to production.
         "remitted": remitted,
         "production_debt": cost - remitted,
-        "cash": som["income"] - som["expense"] - remitted,
-        "profit": _kassa_profit(date_from, date_to, rep),
+        "cash": som["income"] - expense_total - remitted,
+        "profit": profit,
+        "expense_total": expense_total,
+        "net_profit": profit - expense_total,
     }
 
 
@@ -1408,9 +1436,11 @@ def _per_employee_kassa(date_from, date_to, rep=None):
 
       cash            = so'm income − expenses − remitted   (naqd qo'lida)
       production_debt = sold tannarx − remitted             (ishlab chiqarishga qarz)
-      net             = profit − expenses                   (samaradorlik)
+      net             = realized profit − expenses          (samaradorlik)
 
-    Scoped to one seller when `rep` is given (a seller sees only their own row)."""
+    `profit` is realized cost-first (see `_realized_profit_by_seller`): an unpaid
+    debt sale earns nothing until its tannarx is collected. Scoped to one seller
+    when `rep` is given (a seller sees only their own row)."""
     window = {"date__gte": date_from, "date__lte": date_to}
     sale_window = {"sale__date__gte": date_from, "sale__date__lte": date_to}
     payments = Payment.objects.filter(**window)
@@ -1462,13 +1492,13 @@ def _per_employee_kassa(date_from, date_to, rep=None):
         else:
             rr["out_som"] += r["som"] or Decimal("0")
 
-    for r in (
-        sale_items.values("sale__sales_rep")
-        .annotate(profit=Sum(PROFIT), cost=Sum(COST))
-    ):
-        rr = row(r["sale__sales_rep"])
-        rr["profit"] += r["profit"] or Decimal("0")
-        rr["sold_cost"] += r["cost"] or Decimal("0")  # tannarx = debt to production
+    for r in sale_items.values("sale__sales_rep").annotate(cost=Sum(COST)):
+        row(r["sale__sales_rep"])["sold_cost"] += r["cost"] or Decimal("0")  # tannarx = debt
+
+    # Profit is realized cost-first (only collections above a sale's tannarx count),
+    # so it can't be a flat SaleItem sum — pull the per-seller figure instead.
+    for uid, realized in _realized_profit_by_seller(date_from, date_to, rep).items():
+        row(uid)["profit"] += realized
 
     for r in remittances.values("seller").annotate(s=Sum("amount")):
         row(r["seller"])["remitted"] += r["s"] or Decimal("0")
@@ -1602,6 +1632,12 @@ def kassa_view(request):
     my_row = None
     if not request.user.can_see_all_records:
         my_row = seller_rows[0] if seller_rows else None
+    # Sellers who still owe production, biggest first — drives the debt bars.
+    debtors = sorted(
+        (r for r in seller_rows if r["production_debt"] > 0),
+        key=lambda r: r["production_debt"], reverse=True,
+    )
+    debt_max = debtors[0]["production_debt"] if debtors else Decimal("0")
 
     export_qs = request.GET.urlencode()
     return render(request, "crm/kassa.html", {
@@ -1610,6 +1646,8 @@ def kassa_view(request):
         "expenses": expenses,
         "per_employee": seller_rows if request.user.can_see_all_records else None,
         "my_row": my_row,
+        "debtors": debtors if request.user.can_see_all_records else None,
+        "debt_max": debt_max,
         "filters": filters,
         "reps": reps,
         "active_filters": active_filters,
@@ -1761,8 +1799,13 @@ def _remit_summary(remit):
 
 def remittance_create(request):
     """Record cash a seller hands back to production. A seller may only file their
-    own; admins/managers may file on behalf of any seller."""
-    form = ProductionRemittanceForm(request.POST or None, user=request.user)
+    own; admins/managers may file on behalf of any seller (and can preselect one via
+    ?seller= from the per-seller control table)."""
+    initial = {}
+    seller_pk = request.GET.get("seller", "")
+    if request.method == "GET" and request.user.can_see_all_records and seller_pk.isdigit():
+        initial["seller"] = seller_pk
+    form = ProductionRemittanceForm(request.POST or None, user=request.user, initial=initial)
     title = "Ishlab chiqarishga topshirish"
     if request.method == "POST":
         if form.is_valid():
