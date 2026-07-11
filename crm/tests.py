@@ -21,7 +21,12 @@ from .models import (
     SaleItem,
     StockEntry,
 )
-from .views import XLSX_CONTENT_TYPE, _kassa_summary, _per_employee_kassa
+from .views import (
+    XLSX_CONTENT_TYPE,
+    _kassa_summary,
+    _per_employee_kassa,
+    _realized_profit_by_seller,
+)
 
 
 def read_xlsx(response):
@@ -1509,6 +1514,37 @@ class RemittanceTests(BaseSetup):
         log = AuditLog.objects.filter(target_type="Topshiruv").first()
         self.assertIsNotNone(log)
         self.assertEqual(log.action, AuditLog.Action.CREATE)
+
+
+class RealizedProfitTests(BaseSetup):
+    """Kassa profit is realized cost-first: an unpaid debt sale earns nothing until
+    its tannarx is collected; only collections above cost count as profit."""
+
+    def _pay(self, sale, amount):
+        Payment.objects.create(
+            sale=sale, amount=Decimal(amount), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=timezone.localdate(), created_by=self.manager,
+        )
+
+    def test_cost_first_realization(self):
+        # revenue 2,000,000 · tannarx 1,500,000 · unpaid (manager has no other sales)
+        sale = make_sale(
+            self.client1, self.manager, self.product,
+            weight="100", price="20000", cost_price="15000", is_debt=True,
+        )
+        today = timezone.localdate()
+
+        def realized():
+            got = _realized_profit_by_seller(today, today, rep=self.manager)
+            return got.get(self.manager.pk, Decimal("0"))
+
+        self.assertEqual(realized(), Decimal("0"))         # nothing collected yet
+        self._pay(sale, "1000000")
+        self.assertEqual(realized(), Decimal("0"))         # 1.0M < 1.5M cost → still 0
+        self._pay(sale, "750000")                          # collected 1.75M
+        self.assertEqual(realized(), Decimal("250000"))    # 1.75M − 1.5M
+        self._pay(sale, "250000")                          # collected 2.0M (full)
+        self.assertEqual(realized(), Decimal("500000"))    # capped at the full margin
 
 
 class ClientTransferTests(BaseSetup):
