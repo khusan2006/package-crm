@@ -952,6 +952,7 @@
       input.setAttribute('role', 'combobox');
       input.setAttribute('aria-autocomplete', 'list');
       input.setAttribute('aria-expanded', 'false');
+      input.placeholder = select.dataset.placeholder || '';
       var pop = document.createElement('div');
       pop.className = 'combobox-pop';
       pop.setAttribute('role', 'listbox');
@@ -973,17 +974,44 @@
       function syncInput() { input.value = selectedText(); }
 
       function build(filter) {
-        var q = (filter || '').toLowerCase();
+        var tokens = (filter || '').toLowerCase().split(/\s+/).filter(Boolean);
         pop.innerHTML = '';
         visible = [];
         Array.prototype.forEach.call(select.options, function (opt, i) {
           var text = opt.textContent.trim();
-          if (q && text.toLowerCase().indexOf(q) === -1) { return; }
+          // Never list the invisible placeholder row (empty value + empty label);
+          // a labelled empty choice like the filters' "Barchasi" still shows.
+          if (!opt.value && !text) { return; }
+          // Match against the option's data-search haystack (name + phone +
+          // address, set server-side) when present; else the visible text.
+          var haystack = (opt.dataset.search || text).toLowerCase();
+          // Every typed word must appear, so "Ali Chilonzor" (name + address)
+          // narrows. A word matches literally, or — for phone input — by its
+          // digits alone, so "+99877" (mixing "+" and the number's spaces) still
+          // finds the digits-only copy of "+998 77 777 77 77" in the haystack.
+          if (!tokens.every(function (t) {
+            if (haystack.indexOf(t) !== -1) { return true; }
+            var d = t.replace(/\D/g, '');
+            return d && haystack.indexOf(d) !== -1;
+          })) { return; }
           var item = document.createElement('div');
           item.className = 'combobox-option';
           item.setAttribute('role', 'option');
-          item.textContent = text;
           item.dataset.index = i;
+          // Two-line result (name + muted phone · address) when the option carries
+          // a subtitle; otherwise a plain single-line option as before.
+          if (opt.dataset.subtitle) {
+            var main = document.createElement('span');
+            main.className = 'combobox-main';
+            main.textContent = text;
+            var sub = document.createElement('span');
+            sub.className = 'combobox-sub';
+            sub.textContent = opt.dataset.subtitle;
+            item.appendChild(main);
+            item.appendChild(sub);
+          } else {
+            item.textContent = text;
+          }
           if (i === select.selectedIndex) { item.setAttribute('aria-selected', 'true'); }
           pop.appendChild(item);
           visible.push(item);

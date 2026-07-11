@@ -9,6 +9,7 @@ from openpyxl import load_workbook
 
 from accounts.models import User
 
+from .forms import SaleForm
 from .models import (
     AuditLog,
     Client,
@@ -1554,3 +1555,100 @@ class SellerLabelTests(BaseSetup):
         self.client.force_login(self.admin)
         response = self.client.get(reverse("client_list"))
         self.assertNotContains(response, "Mening mijozlarim")
+
+
+class SaleFormClientSearchTests(TestCase):
+    """The client picker on the sale form must be searchable by name, phone or
+    address. The widget carries that data on each <option> so the front-end
+    combobox can filter on it and show a phone · address subtitle."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = User.objects.create_user("cs_admin", password="x", role=User.Role.ADMIN)
+        cls.client_obj = Client.objects.create(
+            name="Ali Valiyev",
+            company="Valiyev Savdo",
+            phone="+998 90 123 45 67",
+            address="Chilonzor, Toshkent",
+            owner=cls.admin,
+        )
+
+    def test_option_carries_search_haystack_with_digits_only_phone(self):
+        html = str(SaleForm(user=self.admin)["client"])
+        # Name, company, phone and address are all searchable, lowercased, plus a
+        # digits-only copy of the phone so "998901234567" matches too.
+        self.assertIn(
+            'data-search="ali valiyev valiyev savdo +998 90 123 45 67 '
+            'chilonzor, toshkent 998901234567"',
+            html,
+        )
+
+    def test_option_carries_phone_address_subtitle(self):
+        html = str(SaleForm(user=self.admin)["client"])
+        self.assertIn(
+            'data-subtitle="+998 90 123 45 67 · Chilonzor, Toshkent"', html
+        )
+
+    def test_empty_choice_has_no_search_metadata(self):
+        # Only the one real client option is searchable; the "— choose —" blank
+        # option carries no metadata (nothing to guard against a missing instance).
+        html = str(SaleForm(user=self.admin)["client"])
+        self.assertEqual(html.count("data-search="), 1)
+
+    def test_blank_option_has_no_dashes_and_shows_placeholder(self):
+        html = str(SaleForm(user=self.admin)["client"])
+        # Django's "---------" placeholder row is gone; the combobox shows a real
+        # placeholder in the input instead.
+        self.assertNotIn("---------", html)
+        self.assertIn('data-placeholder="Mijozni qidiring yoki tanlang"', html)
+        # The blank option itself stays (so a required pick is still enforced),
+        # just with an empty label.
+        self.assertIn('<option value=""', html)
+
+
+class SaleItemSummaryTests(BaseSetup):
+    """The sales-list product summary shows the first product's name and SKU,
+    plus a "+N" when the sale has more than one product."""
+
+    def test_summary_shows_first_product_name_and_sku(self):
+        self.assertEqual(self.sale1.item_summary, "Polietilen paket · PKT-1")
+
+    def test_summary_appends_plus_n_for_extra_products(self):
+        other = Product.objects.create(name="Qora paket", sku="PKT-2", price=Decimal("10000"))
+        SaleItem.objects.create(
+            sale=self.sale1, product=other, dimension="kg",
+            weight=Decimal("2"), price=Decimal("10000"), cost_price=Decimal("8000"),
+        )
+        self.assertEqual(self.sale1.item_summary, "Polietilen paket · PKT-1  +1")
+
+
+class TimeagoUzTests(TestCase):
+    """The Uzbek relative-time filter used for a client's last-sale column."""
+
+    def test_relative_phrases(self):
+        from crm.templatetags.crm_extras import timeago_uz
+
+        today = timezone.localdate()
+        self.assertEqual(timeago_uz(None), "")
+        self.assertEqual(timeago_uz(today), "Bugun")
+        self.assertEqual(timeago_uz(today - timedelta(days=1)), "Kecha")
+        self.assertEqual(timeago_uz(today - timedelta(days=5)), "5 kun oldin")
+        self.assertEqual(timeago_uz(today - timedelta(days=60)), "2 oy oldin")
+        self.assertEqual(timeago_uz(today - timedelta(days=400)), "1 yil oldin")
+
+
+class ClientLastSaleTests(BaseSetup):
+    """The client list shows how long ago each customer's last sale was, and
+    "Hech qachon" for a customer who has never bought."""
+
+    def test_list_shows_time_since_last_sale(self):
+        recent = Client.objects.create(name="Yaqin mijoz", owner=self.sales1)
+        make_sale(recent, self.sales1, self.product,
+                  date=timezone.localdate() - timedelta(days=3))
+        Client.objects.create(name="Sotuvsiz mijoz", owner=self.sales1)  # never bought
+
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("client_list"))
+        self.assertContains(response, "Oxirgi sotuv")
+        self.assertContains(response, "3 kun oldin")
+        self.assertContains(response, "Hech qachon")
