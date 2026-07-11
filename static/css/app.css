@@ -543,6 +543,7 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 .amt-in { color: var(--success); }
 .amt-out { color: var(--danger); }
 .amt-sale { color: var(--accent); }
+.amt-debt { color: var(--warning); font-weight: 600; }
 
 /* Event badge (reports feed) — icon instead of the plain dot, a touch roomier
    with a hairline border for a softer, more finished look */

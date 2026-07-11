@@ -582,6 +582,49 @@ class Expense(models.Model):
         return f"{self.get_category_display()}: {self.amount} so'm ({self.date})"
 
 
+class ProductionRemittance(models.Model):
+    """Money a seller hands back to production (Ishlab chiqarishga topshirish).
+
+    The firm's flow: a seller takes goods from the shared warehouse and sells them
+    on to clients at a markup; the *cost price* (tannarx) of what they've sold is
+    the seller's debt to production. When the seller hands their collected cash to
+    production, that debt shrinks and the cash leaves the seller's till. So a
+    remittance is both a till outflow AND a repayment of the seller→production debt —
+    it is NOT an ordinary expense (an expense is the business's own cost).
+
+    Always so'm: the production debt is denominated in so'm (tannarx is stored in
+    so'm), so a handover is recorded in so'm too."""
+
+    date = models.DateField("Sana", default=timezone.localdate)
+    seller = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="remittances",
+        verbose_name="Sotuvchi",
+    )
+    amount = models.DecimalField("Summa (so'm)", max_digits=18, decimal_places=2)
+    method = models.CharField(
+        "To'lov usuli", max_length=8, choices=Payment.Method.choices,
+        default=Payment.Method.CASH,
+    )
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="recorded_remittances",
+        verbose_name="Kim kiritdi",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date", "-created_at"]
+        verbose_name = "Ishlab chiqarishga topshiruv"
+        verbose_name_plural = "Ishlab chiqarishga topshiruvlar"
+
+    def __str__(self):
+        return f"Topshiruv · {self.seller}: {self.amount:,.0f} so'm ({self.date})"
+
+
 class AuditLog(models.Model):
     """An append-only trail of money-relevant actions: who did what, and when.
     Written explicitly from the views so the acting user is always known."""
@@ -653,6 +696,12 @@ class AuditLog(models.Model):
             if a == self.Action.UPDATE:
                 return e("To'lov o'zgartirildi", AMBER, "edit")
             return e("Qarz to'landi", GREEN, "in", "in")
+        if t == "Topshiruv":
+            if a == self.Action.DELETE:
+                return e("Topshiruv o'chirildi", RED, "trash")
+            if a == self.Action.UPDATE:
+                return e("Topshiruv o'zgartirildi", AMBER, "edit")
+            return e("Ishlab chiqarishga topshirildi", "badge-info", "out", "out")
         if t == "Qaytarish":
             return e("Mahsulot qaytdi", AMBER, "return")
         if a == self.Action.TRANSFER:

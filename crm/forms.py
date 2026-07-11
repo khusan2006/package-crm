@@ -8,7 +8,17 @@ from django.utils import timezone
 
 from accounts.models import User
 
-from .models import Client, Expense, Payment, Product, Return, Sale, SaleItem, StockEntry
+from .models import (
+    Client,
+    Expense,
+    Payment,
+    Product,
+    ProductionRemittance,
+    Return,
+    Sale,
+    SaleItem,
+    StockEntry,
+)
 
 DEFAULT_DEBT_DAYS = 7
 
@@ -350,6 +360,42 @@ class ExpenseForm(forms.ModelForm):
         cleaned["amount"] = som
         cleaned["exchange_rate"] = rate
         return cleaned
+
+
+class ProductionRemittanceForm(forms.ModelForm):
+    """A seller handing collected cash back to production. So'm only — the debt it
+    repays is a so'm figure. A seller records only their own handovers, so for a
+    non-privileged user the `seller` field is fixed to themselves and hidden."""
+
+    class Meta:
+        model = ProductionRemittance
+        fields = ["date", "seller", "amount", "method", "note"]
+        widgets = {
+            "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — izoh"}),
+        }
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user = user
+        self.fields["amount"].label = "Summa (so'm)"
+        _mark_money(self.fields["amount"])
+        sellers = User.objects.filter(is_active=True).order_by(
+            "first_name", "last_name", "username"
+        )
+        self.fields["seller"].queryset = sellers
+        _searchable_select(self.fields["seller"], "Sotuvchini tanlang")
+        # A seller only ever hands over their own cash: lock the picker to them.
+        if user is not None and not user.can_see_all_records:
+            self.fields["seller"].queryset = sellers.filter(pk=user.pk)
+            self.fields["seller"].initial = user
+            self.fields["seller"].disabled = True
+
+    def clean_amount(self):
+        amount = self.cleaned_data.get("amount")
+        if amount is not None and amount <= 0:
+            raise forms.ValidationError("Summa 0 dan katta bo'lishi kerak.")
+        return amount
 
 
 class StockAdjustForm(forms.Form):

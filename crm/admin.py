@@ -1,6 +1,14 @@
 from django.contrib import admin
 
-from .models import Client, Payment, Product, Sale, SaleItem, StockEntry
+from .models import (
+    Client,
+    Payment,
+    Product,
+    ProductionRemittance,
+    Sale,
+    SaleItem,
+    StockEntry,
+)
 
 
 @admin.register(Client)
@@ -29,6 +37,13 @@ class StockEntryAdmin(admin.ModelAdmin):
 class PaymentAdmin(admin.ModelAdmin):
     list_display = ["date", "sale", "amount", "method", "kind", "created_by"]
     list_filter = ["method", "kind", "date"]
+    date_hierarchy = "date"
+
+
+@admin.register(ProductionRemittance)
+class ProductionRemittanceAdmin(admin.ModelAdmin):
+    list_display = ["date", "seller", "amount", "method", "created_by"]
+    list_filter = ["method", "date", "seller"]
     date_hierarchy = "date"
 
 
