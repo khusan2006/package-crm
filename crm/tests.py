@@ -16,6 +16,7 @@ from .models import (
     Expense,
     Payment,
     Product,
+    ProductionRemittance,
     Sale,
     SaleItem,
     StockEntry,
@@ -1421,12 +1422,93 @@ class KassaScopingTests(BaseSetup):
     def test_seller_response_hides_employee_table(self):
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("kassa"))
-        self.assertNotContains(response, "Xodimlar bo'yicha")
+        self.assertNotContains(response, "Sotuvchilar nazorati")
 
     def test_admin_response_shows_employee_table(self):
         self.client.force_login(self.admin)
         response = self.client.get(reverse("kassa"))
-        self.assertContains(response, "Xodimlar bo'yicha")
+        self.assertContains(response, "Sotuvchilar nazorati")
+
+
+class RemittanceTests(BaseSetup):
+    """Ishlab chiqarishga topshirish — a seller handing cash back to production.
+    It repays the seller→production debt (= tannarx of goods they've sold) and
+    leaves their till, without touching client debts."""
+
+    def setUp(self):
+        today = timezone.localdate()
+        # sales1 sells 10 kg on debt: revenue 240k, tannarx (cost) 180k.
+        self.sale = make_sale(
+            self.client1, self.sales1, self.product, weight="10",
+            date=today, is_debt=True,
+        )
+        # Client repays 200k so the seller has cash on hand to remit.
+        Payment.objects.create(
+            sale=self.sale, amount=Decimal("200000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=today, created_by=self.sales1,
+        )
+
+    def _remit(self, user, amount, seller=None):
+        self.client.force_login(user)
+        data = {
+            "date": timezone.localdate().isoformat(),
+            "amount": amount, "method": "cash",
+        }
+        if seller is not None:
+            data["seller"] = seller.pk
+        return self.client.post(reverse("remittance_create"), data)
+
+    def test_seller_remittance_reduces_debt_and_cash(self):
+        today = timezone.localdate()
+        before = _kassa_summary(today, today, rep=self.sales1)
+
+        self._remit(self.sales1, "150000")
+        remit = ProductionRemittance.objects.get()
+        self.assertEqual(remit.seller, self.sales1)
+        self.assertEqual(remit.amount, Decimal("150000"))
+
+        after = _kassa_summary(today, today, rep=self.sales1)
+        # A handover drops BOTH the production debt and the cash on hand by its
+        # amount — and nothing else.
+        self.assertEqual(before["production_debt"] - after["production_debt"], Decimal("150000"))
+        self.assertEqual(before["cash"] - after["cash"], Decimal("150000"))
+        self.assertEqual(after["remitted"], Decimal("150000.00"))
+        # The client's debt is untouched by a production handover.
+        self.assertEqual(self.sale.debt_remaining, Decimal("40000.00"))  # 240k − 200k
+
+    def test_seller_field_is_pinned_to_self(self):
+        # A seller cannot file a handover on another seller's behalf, even by
+        # POSTing a different seller id — it snaps back to themselves.
+        self._remit(self.sales1, "10000", seller=self.sales2)
+        remit = ProductionRemittance.objects.get()
+        self.assertEqual(remit.seller, self.sales1)
+
+    def test_admin_can_file_for_any_seller(self):
+        self._remit(self.admin, "20000", seller=self.sales2)
+        remit = ProductionRemittance.objects.get()
+        self.assertEqual(remit.seller, self.sales2)
+        self.assertEqual(remit.created_by, self.admin)
+
+    def test_seller_sees_only_own_remittance_in_ledger(self):
+        ProductionRemittance.objects.create(
+            seller=self.sales2, amount=Decimal("9999"), method=Payment.Method.CASH,
+            created_by=self.sales2, date=timezone.localdate(),
+        )
+        self._remit(self.sales1, "5000")
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"))
+        remits = [
+            t for t in response.context["txn_page"].object_list
+            if t["kind"] == "remittance"
+        ]
+        self.assertTrue(remits)
+        self.assertTrue(all(t["created_by"].pk == self.sales1.pk for t in remits))
+
+    def test_remittance_is_audited(self):
+        self._remit(self.sales1, "12000")
+        log = AuditLog.objects.filter(target_type="Topshiruv").first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.action, AuditLog.Action.CREATE)
 
 
 class ClientTransferTests(BaseSetup):

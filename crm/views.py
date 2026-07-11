@@ -25,6 +25,7 @@ from .forms import (
     ExpenseForm,
     PaymentEditForm,
     ProductForm,
+    ProductionRemittanceForm,
     ReturnForm,
     SaleForm,
     SaleItemFormSet,
@@ -42,6 +43,7 @@ from .models import (
     Expense,
     Payment,
     Product,
+    ProductionRemittance,
     Return,
     Sale,
     SaleItem,
@@ -1347,43 +1349,91 @@ def _kassa_supplier_cost(date_from, date_to, rep=None):
     return items.aggregate(s=Sum(COST))["s"] or Decimal("0")
 
 
+def _kassa_remitted(date_from, date_to, rep=None):
+    """Total cash handed back to production (Ishlab chiqarishga topshirilgan) in the
+    window. Scoped to one seller when `rep` is given. Always so'm."""
+    qs = ProductionRemittance.objects.filter(date__gte=date_from, date__lte=date_to)
+    if rep is not None:
+        qs = qs.filter(seller=rep)
+    return qs.aggregate(s=Sum("amount"))["s"] or Decimal("0")
+
+
+def _kassa_profit(date_from, date_to, rep=None):
+    """Total gross profit (sotish − tannarx) of goods sold in the window. Scoped to
+    one seller when `rep` is given."""
+    items = SaleItem.objects.filter(sale__date__gte=date_from, sale__date__lte=date_to)
+    if rep is not None:
+        items = items.filter(sale__sales_rep=rep)
+    return items.aggregate(s=Sum(PROFIT))["s"] or Decimal("0")
+
+
 def _kassa_summary(date_from, date_to, rep=None):
     """Two side-by-side till drawers — so'm and dollar — each with its income by
-    method, expense and running balance, plus the period's supplier cost. Scoped to
-    one employee when `rep` is given."""
+    method, expense and running balance, plus the period's supplier cost. Also the
+    production-debt view: cash on hand, tannarx sold, remitted, and remaining debt.
+    Scoped to one employee when `rep` is given."""
     payments = Payment.objects.all()
     expenses = Expense.objects.all()
     if rep is not None:
         payments = payments.filter(created_by=rep)
         expenses = expenses.filter(created_by=rep)
     uzs, usd = Payment.Currency.UZS, Payment.Currency.USD
+    som = _currency_till(
+        payments.filter(currency=uzs), expenses.filter(currency=uzs),
+        date_from, date_to, som=True,
+    )
+    cost = _kassa_supplier_cost(date_from, date_to, rep)
+    remitted = _kassa_remitted(date_from, date_to, rep)
     return {
-        "som": _currency_till(
-            payments.filter(currency=uzs), expenses.filter(currency=uzs),
-            date_from, date_to, som=True,
-        ),
+        "som": som,
         "usd": _currency_till(
             payments.filter(currency=usd), expenses.filter(currency=usd),
             date_from, date_to, som=False,
         ),
-        "cost": _kassa_supplier_cost(date_from, date_to, rep),
+        "cost": cost,
+        # Production-debt block (so'm). Cash on hand = so'm income net of fees, less
+        # expenses, less what's already been handed to production.
+        "remitted": remitted,
+        "production_debt": cost - remitted,
+        "cash": som["income"] - som["expense"] - remitted,
+        "profit": _kassa_profit(date_from, date_to, rep),
     }
 
 
-def _per_employee_kassa(date_from, date_to):
-    """Per-employee kassa flow + sales performance for the window: money they took in
-    (so'm net / dollars), money they paid out, the profit their sales earned, and the
-    net of that profit less all their expenses (in so'm)."""
+def _per_employee_kassa(date_from, date_to, rep=None):
+    """Per-seller kassa control for the window. Each row carries: money taken in
+    (so'm net / dollars), money paid out, the profit their sales earned, the tannarx
+    of what they sold (= their production debt before handovers), how much they've
+    handed back to production, and two derived figures —
+
+      cash            = so'm income − expenses − remitted   (naqd qo'lida)
+      production_debt = sold tannarx − remitted             (ishlab chiqarishga qarz)
+      net             = profit − expenses                   (samaradorlik)
+
+    Scoped to one seller when `rep` is given (a seller sees only their own row)."""
     window = {"date__gte": date_from, "date__lte": date_to}
+    sale_window = {"sale__date__gte": date_from, "sale__date__lte": date_to}
+    payments = Payment.objects.filter(**window)
+    expenses = Expense.objects.filter(**window)
+    sale_items = SaleItem.objects.filter(**sale_window)
+    remittances = ProductionRemittance.objects.filter(**window)
+    if rep is not None:
+        payments = payments.filter(created_by=rep)
+        expenses = expenses.filter(created_by=rep)
+        sale_items = sale_items.filter(sale__sales_rep=rep)
+        remittances = remittances.filter(seller=rep)
+
     users = {u.pk: u for u in User.objects.all()}
     usd = Payment.Currency.USD
 
     def blank(uid):
         return {
+            "uid": uid,
             "employee": str(users.get(uid)) if users.get(uid) else "—",
             "in_som": Decimal("0"), "in_usd": Decimal("0"),
             "out_som": Decimal("0"), "out_usd": Decimal("0"),
             "expense_total": Decimal("0"), "profit": Decimal("0"),
+            "sold_cost": Decimal("0"), "remitted": Decimal("0"),
         }
 
     rows = {}
@@ -1392,8 +1442,7 @@ def _per_employee_kassa(date_from, date_to):
         return rows.setdefault(uid, blank(uid))
 
     for r in (
-        Payment.objects.filter(**window)
-        .values("created_by", "currency")
+        payments.values("created_by", "currency")
         .annotate(som=Sum(PAYMENT_NET), usd_amt=Sum("amount_original"))
     ):
         rr = row(r["created_by"])
@@ -1403,8 +1452,7 @@ def _per_employee_kassa(date_from, date_to):
             rr["in_som"] += r["som"] or Decimal("0")
 
     for r in (
-        Expense.objects.filter(**window)
-        .values("created_by", "currency")
+        expenses.values("created_by", "currency")
         .annotate(som=Sum("amount"), usd_amt=Sum("amount_original"))
     ):
         rr = row(r["created_by"])
@@ -1415,14 +1463,20 @@ def _per_employee_kassa(date_from, date_to):
             rr["out_som"] += r["som"] or Decimal("0")
 
     for r in (
-        SaleItem.objects.filter(sale__date__gte=date_from, sale__date__lte=date_to)
-        .values("sale__sales_rep")
-        .annotate(profit=Sum(PROFIT))
+        sale_items.values("sale__sales_rep")
+        .annotate(profit=Sum(PROFIT), cost=Sum(COST))
     ):
-        row(r["sale__sales_rep"])["profit"] += r["profit"] or Decimal("0")
+        rr = row(r["sale__sales_rep"])
+        rr["profit"] += r["profit"] or Decimal("0")
+        rr["sold_cost"] += r["cost"] or Decimal("0")  # tannarx = debt to production
+
+    for r in remittances.values("seller").annotate(s=Sum("amount")):
+        row(r["seller"])["remitted"] += r["s"] or Decimal("0")
 
     result = []
     for rr in rows.values():
+        rr["cash"] = rr["in_som"] - rr["expense_total"] - rr["remitted"]
+        rr["production_debt"] = rr["sold_cost"] - rr["remitted"]
         rr["net"] = rr["profit"] - rr["expense_total"]  # samaradorlik: foyda − rasxot
         result.append(rr)
     result.sort(key=lambda r: (r["in_som"] + r["profit"]), reverse=True)
@@ -1465,6 +1519,8 @@ def _kassa_transactions(expenses, dates, filters, rep):
     valyuta). A `category` filter is expense-only, so when one is active the incoming
     payments are omitted — the list then reads as a pure expense view."""
     rows = []
+    # A category filter is expense-only; when one is active the incoming payments and
+    # production handovers are omitted, so the list reads as a pure expense view.
     if filters["category"] not in dict(Expense.Category.choices):
         payments = Payment.objects.select_related(
             "sale", "sale__client", "created_by"
@@ -1485,6 +1541,25 @@ def _kassa_transactions(expenses, dates, filters, rep):
                 "exchange_rate": p.exchange_rate, "created_by": p.created_by,
                 "sale_pk": p.sale_id, "pk": p.pk, "kind": "payment",
             })
+        # Production handovers — so'm only, so a dollar-currency filter hides them.
+        if filters["currency"] != Payment.Currency.USD:
+            remittances = ProductionRemittance.objects.select_related(
+                "seller", "created_by"
+            ).filter(date__gte=dates["date_from"], date__lte=dates["date_to"])
+            if rep is not None:
+                remittances = remittances.filter(seller=rep)
+            if filters["method"] in dict(Payment.Method.choices):
+                remittances = remittances.filter(method=filters["method"])
+            for m in remittances:
+                rows.append({
+                    "date": m.date, "created_at": m.created_at, "direction": "remit",
+                    "title": str(m.seller), "subtitle": "Ishlab chiqarishga topshiruv",
+                    "method": m.get_method_display(), "method_code": m.method,
+                    "currency": Payment.Currency.UZS,
+                    "amount_som": m.amount, "amount_original": m.amount,
+                    "exchange_rate": Decimal("0"), "created_by": m.created_by,
+                    "pk": m.pk, "kind": "remittance",
+                })
     for e in expenses:
         rows.append({
             "date": e.date, "created_at": e.created_at, "direction": "out",
@@ -1521,12 +1596,20 @@ def kassa_view(request):
         {"param": "method", "label": "Usul", "value": method_labels.get(filters["method"], "")},
         {"param": "currency", "label": "Valyuta", "value": currency_labels.get(filters["currency"], "")},
     ])
+    # Per-seller control rows. Admins/managers see everyone (or one, if they filtered
+    # by a rep); a seller sees only their own row.
+    seller_rows = _per_employee_kassa(date_from, date_to, rep=rep)
+    my_row = None
+    if not request.user.can_see_all_records:
+        my_row = seller_rows[0] if seller_rows else None
+
     export_qs = request.GET.urlencode()
     return render(request, "crm/kassa.html", {
         "summary": summary,
         "txn_page": txn_page,
         "expenses": expenses,
-        "per_employee": _per_employee_kassa(date_from, date_to) if request.user.can_see_all_records else None,
+        "per_employee": seller_rows if request.user.can_see_all_records else None,
+        "my_row": my_row,
         "filters": filters,
         "reps": reps,
         "active_filters": active_filters,
@@ -1664,6 +1747,83 @@ def expense_delete(request, pk):
         "Chiqimni o'chirish",
         f"{expense.get_category_display()} — {expense.amount:,.0f} so'm chiqim "
         f"o'chiriladi. Davom etasizmi?",
+        "Ha, o'chirish",
+        confirm_class="btn-danger",
+    )
+
+
+def _remit_summary(remit):
+    return (
+        f"{remit.seller} — {remit.amount:,.0f} so'm "
+        f"({remit.get_method_display()}) ishlab chiqarishga"
+    )
+
+
+def remittance_create(request):
+    """Record cash a seller hands back to production. A seller may only file their
+    own; admins/managers may file on behalf of any seller."""
+    form = ProductionRemittanceForm(request.POST or None, user=request.user)
+    title = "Ishlab chiqarishga topshirish"
+    if request.method == "POST":
+        if form.is_valid():
+            remit = form.save(commit=False)
+            # A seller cannot spoof the seller field (it's disabled, so absent from
+            # POST) — pin it to themselves.
+            if not request.user.can_see_all_records:
+                remit.seller = request.user
+            remit.created_by = request.user
+            remit.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Topshiruv", remit.pk,
+                _remit_summary(remit),
+            )
+            messages.success(request, f"Topshirildi: {remit.amount:,.0f} so'm.")
+            return form_success(request, reverse("kassa"))
+        return form_response(request, form, title, invalid=True, modal_template="crm/_remittance_modal.html")
+    return form_response(request, form, title, modal_template="crm/_remittance_modal.html")
+
+
+def remittance_edit(request, pk):
+    """Fix a mistaken handover. Admins/managers may edit any; a seller may edit only
+    their own."""
+    qs = ProductionRemittance.objects.all() if request.user.can_see_all_records \
+        else ProductionRemittance.objects.filter(seller=request.user)
+    remit = get_object_or_404(qs, pk=pk)
+    title = "Topshiruvni tahrirlash"
+    form = ProductionRemittanceForm(request.POST or None, instance=remit, user=request.user)
+    if request.method == "POST":
+        if form.is_valid():
+            remit = form.save(commit=False)
+            if not request.user.can_see_all_records:
+                remit.seller = request.user
+            remit.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Topshiruv", remit.pk,
+                _remit_summary(remit),
+            )
+            messages.success(request, "Topshiruv yangilandi.")
+            return form_success(request, reverse("kassa"))
+        return form_response(request, form, title, invalid=True, modal_template="crm/_remittance_modal.html")
+    return form_response(request, form, title, modal_template="crm/_remittance_modal.html")
+
+
+def remittance_delete(request, pk):
+    """Remove a mistaken handover. Admins/managers may erase any; a seller may erase
+    only their own."""
+    qs = ProductionRemittance.objects.select_related("seller", "created_by")
+    if not request.user.can_see_all_records:
+        qs = qs.filter(seller=request.user)
+    remit = get_object_or_404(qs, pk=pk)
+    if request.method == "POST":
+        summary = _remit_summary(remit)
+        remit.delete()
+        AuditLog.record(request.user, AuditLog.Action.DELETE, "Topshiruv", pk, summary)
+        messages.success(request, "Topshiruv o'chirildi.")
+        return form_reload(request, reverse("kassa"))
+    return render_confirm(
+        request,
+        "Topshiruvni o'chirish",
+        f"{remit.amount:,.0f} so'm topshiruv o'chiriladi. Davom etasizmi?",
         "Ha, o'chirish",
         confirm_class="btn-danger",
     )

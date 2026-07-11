@@ -1,0 +1,24 @@
+{% load crm_extras %}
+<div class="modal-head">
+  <h2>{{ title }}</h2>
+  <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
+</div>
+{% comment %}
+  Ishlab chiqarishga topshirish — sotuvchi yig'gan naqd pulni ishlab chiqarishga
+  qaytaradi. So'mda. Saqlangach: sotuvchi kassasidan chiqim + ishlab chiqarishga
+  qarzi shu miqdorda kamayadi.
+{% endcomment %}
+<form method="post" action="{{ request.path }}" class="stacked">
+  {% csrf_token %}
+  {% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
+  <p>{{ form.date.label_tag }}{{ form.date }}{{ form.date.errors }}</p>
+  <p>{{ form.seller.label_tag }}{{ form.seller }}{{ form.seller.errors }}</p>
+  <p>{{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}</p>
+  <p>{{ form.method.label_tag }}{{ form.method }}{{ form.method.errors }}</p>
+  <p>{{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}</p>
+  <p class="field-hint">Saqlangach: sotuvchi kassasidan chiqadi va ishlab chiqarishga qarzi shu miqdorda kamayadi.</p>
+  <div class="modal-actions">
+    <button type="submit" class="btn">Saqlash</button>
+    <button type="button" class="btn btn-ghost" data-modal-close>Bekor qilish</button>
+  </div>
+</form>
