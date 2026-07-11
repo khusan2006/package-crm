@@ -1345,6 +1345,31 @@ class KassaCurrencyTests(BaseSetup):
         self.assertEqual(row["net"], Decimal("40000"))  # 60000 − 20000
 
 
+class KassaSupplierCostTests(BaseSetup):
+    """'Jami tannarx' — supplier cost (asl narx) of goods sold in the window, so
+    the middleman knows what it owes suppliers. Base fixtures: two sales today,
+    each 10 kg × 18 000 tannarx = 180 000 → 360 000 total."""
+
+    def test_supplier_cost_sums_window_sales(self):
+        today = timezone.localdate()
+        self.assertEqual(_kassa_summary(today, today)["cost"], Decimal("360000"))
+
+    def test_supplier_cost_excludes_out_of_window_sales(self):
+        # A sale dated last week must not count toward today's supplier cost.
+        make_sale(
+            self.client1, self.sales1, self.product,
+            date=timezone.localdate() - timedelta(days=7),
+        )
+        today = timezone.localdate()
+        self.assertEqual(_kassa_summary(today, today)["cost"], Decimal("360000"))
+
+    def test_supplier_cost_respects_employee_filter(self):
+        # Scoped to one seller → only that seller's sale cost (180 000).
+        today = timezone.localdate()
+        summary = _kassa_summary(today, today, rep=self.sales1)
+        self.assertEqual(summary["cost"], Decimal("180000"))
+
+
 class KassaScopingTests(BaseSetup):
     def setUp(self):
         today = timezone.localdate()

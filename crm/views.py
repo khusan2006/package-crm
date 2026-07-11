@@ -1337,9 +1337,20 @@ def _currency_till(payments, expenses, date_from, date_to, *, som):
     }
 
 
+def _kassa_supplier_cost(date_from, date_to, rep=None):
+    """Total supplier cost (Tannarx / asl narx) of goods sold in the window — what
+    the business owes suppliers for the goods it moved this period. Scoped to one
+    employee when `rep` is given. Always so'm (cost prices are stored in so'm)."""
+    items = SaleItem.objects.filter(sale__date__gte=date_from, sale__date__lte=date_to)
+    if rep is not None:
+        items = items.filter(sale__sales_rep=rep)
+    return items.aggregate(s=Sum(COST))["s"] or Decimal("0")
+
+
 def _kassa_summary(date_from, date_to, rep=None):
     """Two side-by-side till drawers — so'm and dollar — each with its income by
-    method, expense and running balance. Scoped to one employee when `rep` is given."""
+    method, expense and running balance, plus the period's supplier cost. Scoped to
+    one employee when `rep` is given."""
     payments = Payment.objects.all()
     expenses = Expense.objects.all()
     if rep is not None:
@@ -1355,6 +1366,7 @@ def _kassa_summary(date_from, date_to, rep=None):
             payments.filter(currency=usd), expenses.filter(currency=usd),
             date_from, date_to, som=False,
         ),
+        "cost": _kassa_supplier_cost(date_from, date_to, rep),
     }
 
 
