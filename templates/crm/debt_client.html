@@ -41,9 +41,6 @@
       <td>{{ sale.debt_deadline|date:"d.m.Y" }} · {% deadline_badge sale.debt_deadline %}</td>
       <td>
         <div class="row-actions">
-          <a class="icon-action settle" href="{% url 'sale_mark_paid' sale.pk %}" data-modal title="To'landi (naqd, to'liq)">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          </a>
           <a class="icon-action" href="{% url 'sale_pay' sale.pk %}" data-modal title="Qisman to'lov">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg>
           </a>
