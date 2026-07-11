@@ -5,7 +5,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from django.contrib import messages
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Count, F, ProtectedError, Q, Sum
+from django.db.models import Count, F, Max, ProtectedError, Q, Sum
 from django.db.models.functions import TruncMonth
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -526,7 +526,7 @@ def dashboard(request):
 def client_list(request):
     clients = (
         _visible_clients(request.user)
-        .annotate(sale_count=Count("sales"))
+        .annotate(sale_count=Count("sales"), last_sale=Max("sales__date"))
         .order_by("name")
     )
     q = request.GET.get("q", "").strip()

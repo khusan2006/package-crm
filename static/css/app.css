@@ -463,6 +463,8 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 
 .cell-user { display: flex; align-items: center; gap: 11px; }
 .cell-sub { display: block; margin-top: 3px; font-size: 11.5px; font-weight: 400; color: var(--text-faint); }
+/* Faint SKU shown inline beside a product name in tables (e.g. sale detail). */
+.cell-sku { color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 /* Standalone table section heading (e.g. payments page) */
 .table-heading { font-size: 15px; font-weight: 600; margin: 0 0 12px; letter-spacing: -0.01em; }
@@ -1460,3 +1462,29 @@ ul.errorlist li::before { content: "⚠ "; }
 .combobox-option.is-active { background: var(--surface-hover); }
 .combobox-option[aria-selected="true"] { color: var(--accent); font-weight: 600; }
 .combobox-empty { padding: 8px 10px; color: var(--text-muted); font-size: 13px; }
+/* Two-line result for the searchable client picker: the client name over a
+   muted "phone · address" line. Options with no subtitle (other comboboxes)
+   keep the single-line style above, untouched. */
+.combobox-option:has(.combobox-sub) { padding-top: 7px; padding-bottom: 7px; }
+.combobox-main {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+  line-height: 1.35;
+}
+.combobox-sub {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.3;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.combobox-option[aria-selected="true"] .combobox-sub {
+  color: var(--text-faint);
+  font-weight: 400;
+}

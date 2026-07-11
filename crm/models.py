@@ -279,11 +279,13 @@ class Sale(models.Model):
 
     @property
     def item_summary(self):
-        """Short label for list rows: first product name plus a "+N" for the rest."""
+        """Short label for list rows: first product (name · SKU) plus a "+N" for
+        the rest."""
         items = list(self.items.all())
         if not items:
             return "—"
-        first = items[0].product.name
+        product = items[0].product
+        first = f"{product.name} · {product.sku}"
         extra = len(items) - 1
         return f"{first}  +{extra}" if extra > 0 else first
 

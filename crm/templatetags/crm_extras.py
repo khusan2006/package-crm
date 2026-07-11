@@ -29,6 +29,24 @@ def without_money(summary):
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
+@register.filter
+def timeago_uz(value):
+    """Uzbek relative time for a past date: "Bugun", "Kecha", "N kun oldin",
+    "N oy oldin", "N yil oldin". Blank for None (e.g. a client with no sales)."""
+    if not value:
+        return ""
+    days = (timezone.localdate() - value).days
+    if days <= 0:
+        return "Bugun"
+    if days == 1:
+        return "Kecha"
+    if days < 30:
+        return f"{days} kun oldin"
+    if days < 365:
+        return f"{days // 30} oy oldin"
+    return f"{days // 365} yil oldin"
+
+
 @register.inclusion_tag("crm/_deadline_badge.html")
 def deadline_badge(deadline):
     """Render a "X kun qoldi / X kun o'tgan / Bugun" chip for a debt deadline."""

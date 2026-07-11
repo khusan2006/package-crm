@@ -1,3 +1,4 @@
+import re
 from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -21,6 +22,18 @@ def _mark_money(*fields):
     for field in fields:
         if field is not None:
             field.widget.attrs.update(MONEY_WIDGET_ATTRS)
+
+
+def _searchable_select(field, placeholder=""):
+    """Turn a model-choice field into a searchable combobox picker: drop Django's
+    "---------" blank label so the box shows `placeholder` instead of a dashed
+    row, and mark it for the front-end enhancement. The empty choice stays in the
+    <select> (so a required field still forces a real pick), but the combobox
+    hides that blank row and shows the placeholder in the input."""
+    field.empty_label = ""
+    field.widget.attrs["data-combobox"] = ""
+    if placeholder:
+        field.widget.attrs["data-placeholder"] = placeholder
 
 
 class ClientForm(forms.ModelForm):
@@ -47,7 +60,7 @@ class ClientForm(forms.ModelForm):
             self.fields["owner"].queryset = User.objects.filter(is_active=True).order_by(
                 "first_name", "last_name", "username"
             )
-            self.fields["owner"].widget.attrs["data-combobox"] = ""
+            _searchable_select(self.fields["owner"], "Xodimni tanlang")
             if user is not None and not self.instance.pk:
                 self.fields["owner"].initial = user.pk
         else:
@@ -348,6 +361,37 @@ class StockAdjustForm(forms.Form):
     note = forms.CharField(label="Izoh (ixtiyoriy)", max_length=255, required=False)
 
 
+class ClientSelect(forms.Select):
+    """A client picker whose <option>s carry the data the front-end combobox
+    needs to search by name, phone or address (and combinations of them):
+
+    - ``data-search``: a lowercased haystack of name + company + phone + address,
+      plus a digits-only copy of the phone so "998901234567" matches a stored
+      "+998 90 123 45 67". The combobox keeps an option when every typed word is
+      a substring of this — so "Ali Chilonzor" (name + address) narrows too.
+    - ``data-subtitle``: "phone · address" for the muted second line in results.
+
+    The blank "— choose —" option has no client instance and is left untouched.
+    """
+
+    def create_option(self, name, value, label, selected, index, subindex=None, attrs=None):
+        option = super().create_option(
+            name, value, label, selected, index, subindex=subindex, attrs=attrs
+        )
+        client = getattr(value, "instance", None)
+        if client is not None:
+            phone = client.phone or ""
+            digits = re.sub(r"\D", "", phone)
+            parts = [p for p in (client.name, client.company, phone, client.address) if p]
+            if digits:
+                parts.append(digits)
+            option["attrs"]["data-search"] = " ".join(parts).lower()
+            subtitle = " · ".join(p for p in (phone, client.address) if p)
+            if subtitle:
+                option["attrs"]["data-subtitle"] = subtitle
+        return option
+
+
 class SaleForm(forms.ModelForm):
     """The sale receipt header. Every sale is a receivable. The deadline is
     entered as a number of days from the sale date (the model stores the
@@ -368,13 +412,14 @@ class SaleForm(forms.ModelForm):
         fields = ["date", "client"]
         widgets = {
             "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "client": ClientSelect,
         }
 
     def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
         if user is not None and not user.can_see_all_records:
             self.fields["client"].queryset = Client.objects.filter(owner=user)
-        self.fields["client"].widget.attrs["data-combobox"] = ""
+        _searchable_select(self.fields["client"], "Mijozni qidiring yoki tanlang")
         # Pre-fill the days input: on edit, derive it from the stored deadline;
         # on create, seed with the default so the preview shows a date up front.
         if self.instance.pk and self.instance.debt_deadline and self.instance.date:
@@ -403,7 +448,7 @@ class SaleItemForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["product"].queryset = Product.objects.filter(is_active=True)
-        self.fields["product"].widget.attrs["data-combobox"] = ""
+        _searchable_select(self.fields["product"], "Mahsulotni tanlang")
         self.fields["cost_price"].required = False
         self.fields["cost_price"].widget.attrs["placeholder"] = "Bo'sh qolsa — mahsulot tannarxi"
         _mark_money(self.fields["price"], self.fields["cost_price"])
@@ -458,7 +503,7 @@ class ReturnForm(forms.ModelForm):
             self.fields["product"].queryset = Product.objects.filter(
                 sale_items__sale=sale
             ).distinct()
-        self.fields["product"].widget.attrs["data-combobox"] = ""
+        _searchable_select(self.fields["product"], "Mahsulotni tanlang")
 
     def clean_weight(self):
         weight = self.cleaned_data.get("weight")
@@ -503,7 +548,6 @@ class ClientTransferForm(forms.Form):
     new_owner = forms.ModelChoiceField(
         label="Yangi sotuvchi",
         queryset=User.objects.none(),
-        empty_label="— tanlang —",
     )
 
     def __init__(self, *args, client=None, **kwargs):
@@ -515,4 +559,4 @@ class ClientTransferForm(forms.Form):
         self.fields["new_owner"].queryset = qs.order_by(
             "first_name", "last_name", "username"
         )
-        self.fields["new_owner"].widget.attrs["data-combobox"] = ""
+        _searchable_select(self.fields["new_owner"], "Sotuvchini tanlang")

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load crm_extras %}
 {% block title %}{% if user.can_see_all_records %}Mijozlar{% else %}Mening mijozlarim{% endif %} · Paket CRM{% endblock %}
 {% block topbar_title %}{% if user.can_see_all_records %}Mijozlar{% else %}Mening mijozlarim{% endif %}{% endblock %}
 {% block fab %}<a class="fab" href="{% url 'client_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi mijoz</a>{% endblock %}
@@ -15,7 +16,7 @@
 {% if page.object_list %}
 <div class="table-wrap">
 <table>
-  <tr><th class="sticky-col">Ismi</th><th>Kompaniya</th><th>Telefon</th><th>Manzil</th><th>Mas'ul</th><th class="num">Sotuvlar</th><th></th></tr>
+  <tr><th class="sticky-col">Ismi</th><th>Kompaniya</th><th>Telefon</th><th>Manzil</th><th>Mas'ul</th><th class="num">Sotuvlar</th><th>Oxirgi sotuv</th><th></th></tr>
   {% for client in page %}
   <tr>
     <td class="sticky-col">
@@ -36,6 +37,10 @@
     </td>
     <td>{{ client.owner }}</td>
     <td class="num">{{ client.sale_count }}</td>
+    <td>
+      {% if client.last_sale %}<span title="{{ client.last_sale|date:'d.m.Y' }}">{{ client.last_sale|timeago_uz }}</span>
+      {% else %}<span class="muted">Hech qachon</span>{% endif %}
+    </td>
     <td class="row-actions">
       <a class="icon-action act-edit" href="{% url 'client_edit' client.pk %}" data-modal title="Tahrirlash">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
