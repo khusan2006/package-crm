@@ -23,6 +23,14 @@
     <div class="kpi-value">${{ summary.usd.closing|floatformat:"2g" }}</div>
     <div class="kpi-meta muted">boshlang'ich ${{ summary.usd.opening|floatformat:"2g" }}</div>
   </div>
+  <div class="kpi kpi--gold">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.27 6.96 12 12.01l8.73-5.05"/><path d="M12 22.08V12"/></svg></span>
+      <span class="kpi-label">Jami tannarx</span>
+    </div>
+    <div class="kpi-value">{{ summary.cost|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">yetkazib beruvchiga · shu davr</div>
+  </div>
 </div>
 
 {% include "crm/_filter_toolbar.html" %}
@@ -35,6 +43,7 @@
     <tr><td>Naqd kirim</td><td class="num amt-in">{{ summary.som.cash|floatformat:"0g" }}</td><td class="num amt-in">${{ summary.usd.cash|floatformat:"2g" }}</td></tr>
     <tr><td>Karta kirim</td><td class="num amt-in">{{ summary.som.card|floatformat:"0g" }}</td><td class="num amt-in">${{ summary.usd.card|floatformat:"2g" }}</td></tr>
     <tr><td>Bank o'tkazma (sof)</td><td class="num amt-in">{{ summary.som.bank|floatformat:"0g" }}</td><td class="num amt-in">${{ summary.usd.bank|floatformat:"2g" }}</td></tr>
+    <tr><td><strong>Jami tannarx</strong> <span class="cell-sub">yetkazib beruvchiga</span></td><td class="num"><strong>{{ summary.cost|floatformat:"0g" }}</strong></td><td class="num muted">—</td></tr>
     <tr><td><strong>Jami kirim</strong></td><td class="num amt-in"><strong>{{ summary.som.income|floatformat:"0g" }}</strong></td><td class="num amt-in"><strong>${{ summary.usd.income|floatformat:"2g" }}</strong></td></tr>
     <tr><td>Chiqim</td><td class="num amt-out">−{{ summary.som.expense|floatformat:"0g" }}</td><td class="num amt-out">−${{ summary.usd.expense|floatformat:"2g" }}</td></tr>
     <tr><td>Boshlang'ich qoldiq</td><td class="num muted">{{ summary.som.opening|floatformat:"0g" }}</td><td class="num muted">${{ summary.usd.opening|floatformat:"2g" }}</td></tr>
