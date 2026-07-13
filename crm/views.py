@@ -1963,6 +1963,12 @@ def sale_create(request):
     formset = SaleItemFormSet(request.POST or None, instance=Sale(), prefix="items")
     if request.method == "POST":
         if form.is_valid() and formset.is_valid():
+            from manufacturing.queries import sale_stock_errors
+            stock_errors = sale_stock_errors(request.user, formset)
+            if stock_errors:
+                for msg in stock_errors:
+                    form.add_error(None, msg)
+                return _render_sale_form(request, form, formset, "Yangi sotuv", invalid=True)
             sale = form.save(commit=False)
             sale.sales_rep = request.user
             sale.save()
@@ -2009,6 +2015,12 @@ def sale_edit(request, pk):
                     f"Jami summa ({new_total:,.0f} so'm) allaqachon to'langan "
                     f"puldan ({paid:,.0f} so'm) kam bo'lishi mumkin emas.",
                 )
+                return _render_sale_form(request, form, formset, "Sotuvni tahrirlash", invalid=True)
+            from manufacturing.queries import sale_stock_errors
+            stock_errors = sale_stock_errors(request.user, formset, exclude_sale_id=sale.pk)
+            if stock_errors:
+                for msg in stock_errors:
+                    form.add_error(None, msg)
                 return _render_sale_form(request, form, formset, "Sotuvni tahrirlash", invalid=True)
             sale = form.save()
             formset.save()

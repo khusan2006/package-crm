@@ -81,6 +81,53 @@ def seller_ombor(user, product):
     return transferred_in + own - sold + returned
 
 
+def available_for_sale(user, product, exclude_sale_id=None):
+    """Stock a user may sell of a product: their ombor, or sklad for an omborchi.
+    When editing a sale, add back that sale's own items so its lines don't count
+    against themselves."""
+    from accounts.models import User
+    from crm.models import ITEM_WEIGHT_KG, SaleItem
+
+    if user.role == User.Role.OMBORCHI:
+        base = sklad_stock(product)
+    else:
+        base = seller_ombor(user, product)
+    if exclude_sale_id is not None:
+        back = (
+            SaleItem.objects.filter(sale_id=exclude_sale_id, product=product)
+            .aggregate(s=Sum(ITEM_WEIGHT_KG))["s"] or Decimal("0")
+        )
+        base += back
+    return base
+
+
+def sale_stock_errors(user, formset, exclude_sale_id=None):
+    """Return a list of Uzbek error strings for each product on the sale formset
+    that exceeds the seller's available stock. Empty list = OK to save."""
+    from crm.models import Sale
+
+    requested = {}
+    for form in formset.forms:
+        cd = getattr(form, "cleaned_data", None)
+        if not cd or cd.get("DELETE"):
+            continue
+        product = cd.get("product")
+        weight = cd.get("weight")
+        if not product or weight is None:
+            continue
+        kg = weight / Decimal("1000") if cd.get("dimension") == Sale.Dimension.G else weight
+        requested[product] = requested.get(product, Decimal("0")) + kg
+
+    errors = []
+    for product, kg in requested.items():
+        avail = available_for_sale(user, product, exclude_sale_id)
+        if kg > avail:
+            errors.append(
+                f"“{product.name}”: omborda {avail:.3f} kg bor, {kg:.3f} kg so'raldi."
+            )
+    return errors
+
+
 def annotate_seller_ombor(product_qs, user):
     """Annotate products with `ombor` = this seller's balance per product."""
     from crm.models import (

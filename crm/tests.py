@@ -111,6 +111,15 @@ class BaseSetup(TestCase):
         )
         cls.sale1 = make_sale(cls.client1, cls.sales1, cls.product)
         cls.sale2 = make_sale(cls.client2, cls.sales2, cls.product)
+        # A sale is now blocked if it would exceed the seller's personal ombor
+        # (Task 7). Seed each seller with a generous opening balance so the
+        # sale_create/sale_edit POSTs in these tests have stock to draw on.
+        from manufacturing.models import SellerStockEntry
+        for seller in (cls.sales1, cls.sales2):
+            SellerStockEntry.objects.create(
+                seller=seller, product=cls.product, quantity_kg=Decimal("1000"),
+                note="test opening balance", created_by=cls.admin,
+            )
 
 
 class SaleMathTests(BaseSetup):
@@ -189,6 +198,11 @@ class MultiItemSaleTests(BaseSetup):
         cls.product2 = Product.objects.create(
             name="Mayka paket", sku="MYK-1",
             cost_price=Decimal("17000"), price=Decimal("23000"),
+        )
+        from manufacturing.models import SellerStockEntry
+        SellerStockEntry.objects.create(
+            seller=cls.sales1, product=cls.product2, quantity_kg=Decimal("1000"),
+            note="test opening balance", created_by=cls.admin,
         )
 
     def test_creates_one_sale_with_multiple_items(self):
@@ -433,19 +447,19 @@ class StockTests(BaseSetup):
         response = self.client.get(reverse("stock_entry_create", args=[self.product.pk]))
         self.assertEqual(response.status_code, 200)
 
-    def test_sale_beyond_stock_warns_but_saves(self):
-        # Only a direct (omborchi) sale draws from sklad stock, so use an omborchi
-        # rep to push sklad negative and trigger the warning.
+    def test_sale_beyond_stock_is_blocked(self):
+        # Only a direct (omborchi) sale draws from sklad stock. A sale that would
+        # exceed what's on hand is now blocked outright (Task 7) rather than saved
+        # with a warning — use an omborchi rep to exceed the 100 kg on hand.
         self.client.force_login(self.omborchi)
         data = sale_post(
             self.omborchi_client.pk,
             [one_item(self.product, weight="500")],  # far beyond the 100 kg on hand
         )
-        response = self.client.post(reverse("sale_create"), data, follow=True)
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(SaleItem.objects.filter(weight=Decimal("500")).exists())
-        msgs = [m.message for m in response.context["messages"]]
-        self.assertTrue(any("yetarli emas" in m for m in msgs))
+        response = self.client.post(reverse("sale_create"), data)
+        self.assertEqual(response.status_code, 200)  # re-rendered, not saved
+        self.assertFalse(SaleItem.objects.filter(weight=Decimal("500")).exists())
+        self.assertIn("omborda", response.content.decode().lower())
 
     def test_low_stock_flag(self):
         self.product.low_stock_threshold = Decimal("110")

@@ -170,3 +170,25 @@ def test_seller_sale_reduces_ombor(material, finished_product, admin_user, selle
     assert seller_ombor(seller_user, finished_product) == Decimal("5.000")
     # ...and the seller sale did NOT touch sklad:
     assert sklad_stock(finished_product) == Decimal("25.000")
+
+
+from django.urls import reverse
+
+
+def test_sale_blocked_when_seller_ombor_short(client, material, finished_product,
+                                               admin_user, seller_user):
+    _stock_40(material, finished_product, admin_user)
+    create_transfer(product=finished_product, seller=seller_user, quantity_kg=Decimal("5"),
+                    date="2026-07-05", note="", user=admin_user)
+    c = Client.objects.create(name="Mijoz", owner=seller_user)
+    client.force_login(seller_user)
+    resp = client.post(reverse("sale_create"), {
+        "date": "2026-07-06", "client": c.pk, "debt_deadline": "2026-07-20",
+        "items-TOTAL_FORMS": "1", "items-INITIAL_FORMS": "0",
+        "items-MIN_NUM_FORMS": "0", "items-MAX_NUM_FORMS": "1000",
+        "items-0-product": finished_product.pk, "items-0-dimension": "kg",
+        "items-0-weight": "10", "items-0-price": "20000",
+    })
+    assert resp.status_code in (200, 422)                 # re-rendered form, not a redirect
+    assert SaleItem.objects.count() == 0                  # nothing saved
+    assert "omborda" in resp.content.decode().lower()
