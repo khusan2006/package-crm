@@ -1,7 +1,9 @@
 from django.contrib import admin
 
 from .models import (
+    Attendance,
     Client,
+    Employee,
     Payment,
     Product,
     ProductionRemittance,
@@ -45,6 +47,21 @@ class ProductionRemittanceAdmin(admin.ModelAdmin):
     list_display = ["date", "seller", "amount", "method", "created_by"]
     list_filter = ["method", "date", "seller"]
     date_hierarchy = "date"
+
+
+@admin.register(Employee)
+class EmployeeAdmin(admin.ModelAdmin):
+    list_display = ["name", "salary_type", "hourly_rate", "monthly_salary", "is_active"]
+    list_filter = ["salary_type", "is_active"]
+    search_fields = ["name"]
+
+
+@admin.register(Attendance)
+class AttendanceAdmin(admin.ModelAdmin):
+    list_display = ["employee", "date", "hours", "shift"]
+    list_filter = ["date", "shift", "employee"]
+    date_hierarchy = "date"
+    search_fields = ["employee__name"]
 
 
 class SaleItemInline(admin.TabularInline):

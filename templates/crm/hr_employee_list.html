@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Xodimlar · Paket CRM{% endblock %}
+{% block topbar_title %}Xodimlar{% endblock %}
+{% block fab %}<a class="fab" href="{% url 'employee_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi xodim</a>{% endblock %}
+{% block content %}
+
+<form method="get" class="searchbar" role="search" data-live-search>
+  <div class="toolbar-search{% if q %} is-active{% endif %}">
+    <svg class="toolbar-search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input type="search" name="q" value="{{ q }}" placeholder="Ism bo'yicha qidirish…" autocomplete="off" aria-label="Ism bo'yicha qidirish">
+    {% if q %}<a href="?" class="toolbar-search-x" title="Qidiruvni tozalash" aria-label="Qidiruvni tozalash">&times;</a>{% endif %}
+  </div>
+</form>
+
+{% if employees %}
+<div class="table-wrap">
+<table>
+  <tr>
+    <th class="sticky-col">Ismi</th>
+    <th>Ish haqi turi</th>
+    <th class="num">Soat narxi</th>
+    <th class="num">Oylik</th>
+    <th class="num">Kunlik soat</th>
+    <th>Holati</th>
+    <th></th>
+  </tr>
+  {% for e in employees %}
+  <tr>
+    <td class="sticky-col">{{ e.name }}</td>
+    <td>{{ e.get_salary_type_display }}</td>
+    <td class="num">{% if e.is_fixed %}—{% else %}{{ e.hourly_rate|floatformat:"0g" }}{% endif %}</td>
+    <td class="num">{% if e.is_fixed %}{{ e.monthly_salary|floatformat:"0g" }}{% else %}—{% endif %}</td>
+    <td class="num">{% if e.is_fixed %}{{ e.standard_daily_hours|floatformat:"-2g" }}{% else %}—{% endif %}</td>
+    <td>
+      {% if e.is_active %}
+        <span class="badge badge-ok">Faol</span>
+      {% else %}
+        <span class="badge badge-neutral">Nofaol</span>
+      {% endif %}
+    </td>
+    <td class="row-actions">
+      <a class="icon-action act-edit" href="{% url 'employee_edit' e.pk %}" data-modal title="Tahrirlash">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+      </a>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% elif q %}
+<p class="muted">“{{ q }}” bo'yicha xodim topilmadi.</p>
+{% else %}
+<p class="muted">Hali xodim qo'shilmagan. “Yangi xodim” tugmasi bilan qo'shing.</p>
+{% endif %}
+{% endblock %}

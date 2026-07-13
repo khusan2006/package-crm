@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Davomad · Paket CRM{% endblock %}
+{% block topbar_title %}Davomad{% endblock %}
+{% block fab %}<a class="fab" href="{% url 'attendance_cell' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Davomad kiritish</a>{% endblock %}
+{% block content %}
+
+{% include "crm/_hr_toolbar.html" %}
+
+{% if has_employees %}
+<div class="table-wrap">
+<table class="matrix">
+  <tr>
+    <th class="sticky-col">Xodim</th>
+    {% for day in days %}
+      <th class="num day-col{% if day.weekday == 6 %} col-sunday{% endif %}{% if day.weekday == 0 %} week-start{% endif %}" title="{{ day|date:'d.m.Y' }}">{{ day|date:'j' }}</th>
+    {% endfor %}
+    <th class="num col-total">Jami</th>
+  </tr>
+  {% for row in matrix %}
+  <tr>
+    <td class="sticky-col">{{ row.employee.name }}</td>
+    {% for cell in row.cells %}
+      <td class="num cell-att{% if cell.is_sunday %} col-sunday{% endif %}{% if cell.is_week_start %} week-start{% endif %}">
+        <a href="{% url 'attendance_cell' %}?employee={{ row.employee.pk }}&date={{ cell.date|date:'Y-m-d' }}" data-modal title="{{ cell.date|date:'d.m.Y' }}">
+          {% if cell.att %}<span class="hchip hchip-{{ cell.att.shift|default:'none' }}">{{ cell.att.hours|floatformat:"-2g" }}</span>{% else %}<span class="cell-empty">·</span>{% endif %}
+        </a>
+      </td>
+    {% endfor %}
+    <td class="num col-total"><strong>{{ row.total|floatformat:"-2g" }}</strong></td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+<p class="muted" style="margin-top:8px;">Katakni bosib o'sha kun soatini kiriting. Yakshanba kunlari ajratib ko'rsatilgan.</p>
+{% elif q %}
+<p class="muted">“{{ q }}” bo'yicha xodim topilmadi.</p>
+{% else %}
+<p class="muted">Faol xodim yo'q. Avval <a href="{% url 'employee_list' %}">xodim qo'shing</a>.</p>
+{% endif %}
+{% endblock %}

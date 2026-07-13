@@ -19,14 +19,17 @@ from accounts.decorators import role_required
 from accounts.models import User
 
 from .forms import (
+    AttendanceForm,
     ClientForm,
     ClientTransferForm,
     DebtPaymentForm,
+    EmployeeForm,
     ExpenseForm,
     PaymentEditForm,
     ProductForm,
     ProductionRemittanceForm,
     ReturnForm,
+    SalaryPaymentForm,
     SaleForm,
     SaleItemFormSet,
     StockAdjustForm,
@@ -42,6 +45,8 @@ from .models import (
     Client,
     Expense,
     Payment,
+    Attendance,
+    Employee,
     Product,
     ProductionRemittance,
     Return,
@@ -2152,3 +2157,237 @@ def sale_delete(request, pk):
         "Ha, o'chirish",
         confirm_class="btn-danger",
     )
+
+
+# ─── HR / oylik ──────────────────────────────────────────────────────────────
+# Factory-worker payroll. Admin/manager only (not a shared section — sellers have
+# no HR access). See TZ docs/specs/2026-07-13-hr-oylik-tz.md.
+
+HR_ROLES = (User.Role.ADMIN, User.Role.MANAGER)
+
+
+def _hr_range(request):
+    """Parse ?dan/?gacha into a window for the HR pages, defaulting to the current
+    month. Same shape as the sales date-range toolbar (so it reuses the same picker),
+    plus a `days` list for the attendance matrix. Payroll math is range-correct for
+    any window (see Employee.payroll)."""
+    today = timezone.localdate()
+    dan = _parse_date(request.GET.get("dan"))
+    gacha = _parse_date(request.GET.get("gacha"))
+    if dan is None and gacha is None:
+        date_from = today.replace(day=1)
+        nxt = date(today.year + 1, 1, 1) if today.month == 12 \
+            else date(today.year, today.month + 1, 1)
+        date_to = nxt - timedelta(days=1)
+    else:
+        date_from = dan or gacha or today
+        date_to = gacha or dan or today
+        if date_to < date_from:
+            date_from, date_to = date_to, date_from
+    days = [date_from + timedelta(days=i) for i in range((date_to - date_from).days + 1)]
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "days": days,
+        "filters": {"dan": date_from.isoformat(), "gacha": date_to.isoformat()},
+        "range_days": (date_to - date_from).days + 1,
+        "is_single_day": date_from == date_to,
+        "is_today": date_from == today and date_to == today,
+        "prev_from": (date_from - timedelta(days=1)).isoformat(),
+        "prev_to": (date_to - timedelta(days=1)).isoformat(),
+        "next_from": (date_from + timedelta(days=1)).isoformat(),
+        "next_to": (date_to + timedelta(days=1)).isoformat(),
+        "today_iso": today.isoformat(),
+    }
+
+
+def _month_window_qs(d):
+    """?dan..&gacha.. spanning the whole month of `d` — where an attendance edit
+    returns the user, so the matrix reopens on the month they were working in."""
+    first = d.replace(day=1)
+    nxt = date(d.year + 1, 1, 1) if d.month == 12 else date(d.year, d.month + 1, 1)
+    last = nxt - timedelta(days=1)
+    return f"?dan={first.isoformat()}&gacha={last.isoformat()}"
+
+
+@role_required(*HR_ROLES)
+def employee_list(request):
+    """Roster of factory workers (inactive shown last), searchable by name."""
+    q = request.GET.get("q", "").strip()
+    employees = Employee.objects.order_by("-is_active", "name")
+    if q:
+        employees = employees.filter(name__icontains=q)
+    return render(request, "crm/hr_employee_list.html", {"employees": employees, "q": q})
+
+
+@role_required(*HR_ROLES)
+def employee_create(request):
+    form = EmployeeForm(request.POST or None)
+    title = "Yangi xodim"
+    if request.method == "POST":
+        if form.is_valid():
+            emp = form.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Xodim", emp.pk,
+                f"{emp.name} — {emp.get_salary_type_display()}",
+            )
+            messages.success(request, f"“{emp.name}” xodim qo'shildi.")
+            return form_success(request, reverse("employee_list"))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
+
+
+@role_required(*HR_ROLES)
+def employee_edit(request, pk):
+    emp = get_object_or_404(Employee, pk=pk)
+    form = EmployeeForm(request.POST or None, instance=emp)
+    title = f"Tahrirlash: {emp.name}"
+    if request.method == "POST":
+        if form.is_valid():
+            form.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Xodim", emp.pk,
+                f"{emp.name} — {emp.get_salary_type_display()}",
+            )
+            messages.success(request, "Xodim ma'lumoti yangilandi.")
+            return form_success(request, reverse("employee_list"))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
+
+
+@role_required(*HR_ROLES)
+def hr_attendance(request):
+    """The davomad matrix: active workers × days of the chosen month, each cell the
+    hours worked. Clicking a cell opens the upsert modal."""
+    rng = _hr_range(request)
+    q = request.GET.get("q", "").strip()
+    emp_qs = Employee.objects.filter(is_active=True).order_by("name")
+    if q:
+        emp_qs = emp_qs.filter(name__icontains=q)
+    employees = list(emp_qs)
+    rows = Attendance.objects.filter(date__gte=rng["date_from"], date__lte=rng["date_to"])
+    amap = {(a.employee_id, a.date): a for a in rows}
+    matrix = []
+    for emp in employees:
+        cells, total = [], Decimal("0")
+        for day in rng["days"]:
+            att = amap.get((emp.id, day))
+            if att:
+                total += att.hours
+            cells.append({
+                "date": day,
+                "att": att,
+                "is_sunday": day.weekday() == 6,
+                "is_week_start": day.weekday() == 0,  # Monday → thicker separator
+            })
+        matrix.append({"employee": emp, "cells": cells, "total": total})
+    return render(request, "crm/hr_attendance.html", {
+        "matrix": matrix,
+        "has_employees": bool(employees),
+        "q": q,
+        "filter_url": reverse("hr_attendance"),
+        **rng,
+    })
+
+
+@role_required(*HR_ROLES)
+def attendance_cell(request):
+    """Upsert one worker's hours for one day. Keyed by (employee, date): an existing
+    row is edited (no duplicate), a new pair is created."""
+    emp_id = request.POST.get("employee") or request.GET.get("employee")
+    day = request.POST.get("date") or request.GET.get("date")
+    instance = None
+    if emp_id and day:
+        instance = Attendance.objects.filter(employee_id=emp_id, date=day).first()
+    initial = {}
+    if request.method == "GET":
+        if emp_id:
+            initial["employee"] = emp_id
+        if day:
+            initial["date"] = day
+    form = AttendanceForm(request.POST or None, instance=instance, initial=initial)
+    title = "Davomad kiritish"
+    if request.method == "POST":
+        if form.is_valid():
+            att = form.save()
+            action = AuditLog.Action.UPDATE if instance else AuditLog.Action.CREATE
+            AuditLog.record(
+                request.user, action, "Davomad", att.pk,
+                f"{att.employee} · {att.date}: {att.hours} soat",
+            )
+            messages.success(request, "Davomad saqlandi.")
+            back = reverse("hr_attendance") + _month_window_qs(att.date)
+            return form_success(request, back)
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
+
+
+@role_required(*HR_ROLES)
+def attendance_delete(request, pk):
+    att = get_object_or_404(Attendance, pk=pk)
+    if request.method == "POST":
+        summary = f"{att.employee} · {att.date}: {att.hours} soat"
+        window = _month_window_qs(att.date)
+        att.delete()
+        AuditLog.record(request.user, AuditLog.Action.DELETE, "Davomad", pk, summary)
+        messages.success(request, "Davomad o'chirildi.")
+        return form_reload(request, reverse("hr_attendance") + window)
+    return render_confirm(
+        request,
+        "Davomadni o'chirish",
+        f"{att.employee} — {att.date} kunidagi {att.hours} soat o'chiriladi. Davom etasizmi?",
+        "Ha, o'chirish",
+        confirm_class="btn-danger",
+    )
+
+
+@role_required(*HR_ROLES)
+def hr_payroll(request):
+    """Per-worker computed pay for the chosen month (hisoblangan / avans / qoldiq)."""
+    rng = _hr_range(request)
+    q = request.GET.get("q", "").strip()
+    employees = Employee.objects.filter(is_active=True).order_by("name")
+    if q:
+        employees = employees.filter(name__icontains=q)
+    payrolls = [emp.payroll(rng["date_from"], rng["date_to"]) for emp in employees]
+    totals = {
+        "computed": sum((p.computed for p in payrolls), Decimal("0")),
+        "advance": sum((p.advance for p in payrolls), Decimal("0")),
+        "remaining": sum((p.remaining for p in payrolls), Decimal("0")),
+    }
+    return render(request, "crm/hr_payroll.html", {
+        "payrolls": payrolls,
+        "totals": totals,
+        "has_employees": bool(payrolls),
+        "q": q,
+        "filter_url": reverse("hr_payroll"),
+        **rng,
+    })
+
+
+@role_required(*HR_ROLES)
+def salary_pay(request):
+    """Pay an advance or final salary — recorded as Expense(SALARY, employee), the
+    single source the payroll calc reads. So'm only. Preselect via ?employee=."""
+    initial = {}
+    emp_id = request.GET.get("employee", "")
+    if request.method == "GET" and emp_id.isdigit():
+        initial["employee"] = emp_id
+    form = SalaryPaymentForm(request.POST or None, initial=initial)
+    title = "Avans / oylik to'lash"
+    if request.method == "POST":
+        if form.is_valid():
+            exp = form.save(commit=False)
+            exp.category = Expense.Category.SALARY
+            exp.currency = Payment.Currency.UZS
+            exp.created_by = request.user
+            exp.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Chiqim", exp.pk,
+                f"Oylik/avans: {exp.employee} — {exp.amount:,.0f} so'm "
+                f"({exp.get_method_display()})",
+            )
+            messages.success(request, f"To'landi: {exp.amount:,.0f} so'm.")
+            return form_success(request, reverse("hr_payroll"))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)

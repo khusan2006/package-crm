@@ -70,6 +70,24 @@
         </a>
       </div>
 
+      {% if user.can_see_all_records %}
+      <div class="nav-group">
+        <div class="nav-group-label">Xodimlar</div>
+        <a class="nav-item {% if 'attendance' in url_name %}active{% endif %}" href="{% url 'hr_attendance' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></span>
+          <span>Davomad</span>
+        </a>
+        <a class="nav-item {% if 'payroll' in url_name or 'salary' in url_name %}active{% endif %}" href="{% url 'hr_payroll' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/><circle cx="12" cy="15" r="1.5"/></svg></span>
+          <span>Oylik</span>
+        </a>
+        <a class="nav-item {% if 'employee' in url_name %}active{% endif %}" href="{% url 'employee_list' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+          <span>Xodimlar</span>
+        </a>
+      </div>
+      {% endif %}
+
       {% if user.is_admin_role %}
       <div class="nav-group">
         <div class="nav-group-label">Boshqaruv</div>

@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
@@ -559,6 +561,18 @@ class Expense(models.Model):
         "To'lov usuli", max_length=8, choices=Payment.Method.choices,
         default=Payment.Method.CASH,
     )
+    # A salary/advance expense is tagged with the factory worker it was paid to.
+    # This is the SINGLE source for HR advances — the payroll calc reads these rows,
+    # so a handout is never counted twice (once as an expense, once as an advance).
+    # Only meaningful when category == SALARY; blank for every other expense.
+    employee = models.ForeignKey(
+        "Employee",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="salary_expenses",
+        verbose_name="Xodim (oylik/avans)",
+    )
     note = models.CharField("Izoh", max_length=255, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -710,3 +724,160 @@ class AuditLog(models.Model):
 
     def __str__(self):
         return f"{self.get_action_display()} · {self.target_type} · {self.summary}"
+
+
+def workdays_mon_sat(start, end):
+    """Number of Mon–Sat days in [start, end] inclusive. Sunday (weekday 6) is the
+    firm's rest day, so it is the only day excluded from a fixed worker's norm."""
+    if end < start:
+        return 0
+    n, day, one = 0, start, timedelta(days=1)
+    while day <= end:
+        if day.weekday() != 6:
+            n += 1
+        day += one
+    return n
+
+
+@dataclass
+class Payroll:
+    """One employee's computed pay for a period. Both salary types funnel into the
+    same `soat × soat_narxi` shape (see TZ §5), so the template renders them uniformly."""
+
+    employee: "Employee"
+    total_hours: Decimal   # jami ishlagan soat (davr)
+    norm_hours: Decimal    # dush–shanba soat (fiks maxraj bilan hisoblanadi)
+    sunday_hours: Decimal  # yakshanba soat (fiks: qo'shimcha)
+    workdays: int          # oy ish kunlari (fiks maxraj) — soatbayda 0
+    hour_rate: Decimal     # amaldagi 1 soat narxi (so'm)
+    computed: Decimal      # hisoblangan (so'm)
+    advance: Decimal       # davr avanslari (so'm)
+    remaining: Decimal     # qoldiq = hisoblangan − avans (so'm)
+
+
+class Employee(models.Model):
+    """A factory worker (salafan ishlab chiqarish). Not a system user — they don't
+    log in — so this is a separate model from `accounts.User`. Pay is always
+    hour-based (§1); the two types differ only in how the hourly rate is derived."""
+
+    class SalaryType(models.TextChoices):
+        HOURLY = "hourly", "Soatbay (smena)"
+        FIXED = "fixed", "Fiks oylik"
+
+    name = models.CharField("Ismi", max_length=200)
+    salary_type = models.CharField(
+        "Ish haqi turi", max_length=6, choices=SalaryType.choices, default=SalaryType.HOURLY
+    )
+    # Soatbay uchun: 1 soat narxi. Fiks ishchida ishlatilmaydi.
+    hourly_rate = models.DecimalField(
+        "Soat narxi (so'm)", max_digits=14, decimal_places=2, default=0
+    )
+    # Fiks uchun: oylik summa. Soatbayda ishlatilmaydi.
+    monthly_salary = models.DecimalField(
+        "Oylik summa (so'm)", max_digits=14, decimal_places=2, default=0
+    )
+    # Fiks soat narxi maxraji: oylik ÷ (oy ish kunlari × shu son). Kunduzi 8:00–19:00 = 11.
+    standard_daily_hours = models.DecimalField(
+        "Kunlik standart soat", max_digits=5, decimal_places=2, default=Decimal("11")
+    )
+    works_shifts = models.BooleanField("Smena bilan ishlaydi", default=True)
+    is_active = models.BooleanField("Faol", default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Xodim"
+        verbose_name_plural = "Xodimlar"
+
+    @property
+    def is_fixed(self):
+        return self.salary_type == self.SalaryType.FIXED
+
+    def payroll(self, date_from, date_to):
+        """Compute this worker's pay for [date_from, date_to] (see TZ §5). Reads
+        attendance hours and SALARY-category advances tagged to this employee."""
+        q = Decimal("0.01")
+        rows = list(self.attendances.filter(date__gte=date_from, date__lte=date_to))
+        total_hours = sum((r.hours for r in rows), Decimal("0"))
+        advance = self.salary_expenses.filter(
+            category=Expense.Category.SALARY, date__gte=date_from, date__lte=date_to
+        ).aggregate(s=Sum("amount"))["s"] or Decimal("0")
+
+        if self.is_fixed:
+            std = self.standard_daily_hours or Decimal("0")
+            # A fixed worker's hourly rate is a per-MONTH figure:
+            # monthly_salary ÷ (that month's Mon–Sat days × standard_daily_hours).
+            # Applying it day-by-day keeps ANY date range correct — a full month pays
+            # exactly monthly_salary, a partial or cross-month range pays pro-rata.
+            rate_cache = {}
+
+            def _month_rate(day):
+                key = (day.year, day.month)
+                if key not in rate_cache:
+                    first = day.replace(day=1)
+                    nxt = date(day.year + 1, 1, 1) if day.month == 12 \
+                        else date(day.year, day.month + 1, 1)
+                    wd = workdays_mon_sat(first, nxt - timedelta(days=1))
+                    denom = Decimal(wd) * std
+                    rate_cache[key] = (self.monthly_salary / denom) if denom > 0 else Decimal("0")
+                return rate_cache[key]
+
+            norm_hours = sum((r.hours for r in rows if r.date.weekday() != 6), Decimal("0"))
+            sunday_hours = sum((r.hours for r in rows if r.date.weekday() == 6), Decimal("0"))
+            computed = sum((r.hours * _month_rate(r.date) for r in rows), Decimal("0"))
+            workdays = workdays_mon_sat(date_from, date_to)
+            # Representative rate to display: the effective so'm/soat over the range
+            # (falls back to the start month's rate when no hours are logged).
+            hour_rate = (computed / total_hours) if total_hours else _month_rate(date_from)
+        else:
+            workdays = 0
+            hour_rate = self.hourly_rate
+            norm_hours, sunday_hours = total_hours, Decimal("0")
+            computed = total_hours * hour_rate
+
+        computed = computed.quantize(q, rounding=ROUND_HALF_UP)
+        return Payroll(
+            employee=self,
+            total_hours=total_hours,
+            norm_hours=norm_hours,
+            sunday_hours=sunday_hours,
+            workdays=workdays,
+            hour_rate=hour_rate.quantize(q, rounding=ROUND_HALF_UP),
+            computed=computed,
+            advance=advance,
+            remaining=(computed - advance).quantize(q, rounding=ROUND_HALF_UP),
+        )
+
+    def __str__(self):
+        return self.name
+
+
+class Attendance(models.Model):
+    """One worker's hours on one day. The single source for payroll — kelmagan kun
+    is simply no row (or 0 hours), kech qolish is fewer hours (§1)."""
+
+    class Shift(models.TextChoices):
+        DAY = "day", "Kunduzi"
+        NIGHT = "night", "Kechki"
+
+    employee = models.ForeignKey(
+        Employee, on_delete=models.CASCADE, related_name="attendances", verbose_name="Xodim"
+    )
+    date = models.DateField("Sana", default=timezone.localdate)
+    hours = models.DecimalField("Ishlagan soat", max_digits=5, decimal_places=2)
+    shift = models.CharField("Smena", max_length=5, choices=Shift.choices, blank=True)
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["employee", "date"], name="uniq_attendance_employee_date"
+            )
+        ]
+        verbose_name = "Davomad"
+        verbose_name_plural = "Davomad"
+
+    def __str__(self):
+        return f"{self.employee} · {self.date}: {self.hours} soat"

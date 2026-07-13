@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from io import BytesIO
 
@@ -11,8 +11,10 @@ from accounts.models import User
 
 from .forms import SaleForm
 from .models import (
+    Attendance,
     AuditLog,
     Client,
+    Employee,
     Expense,
     Payment,
     Product,
@@ -20,6 +22,7 @@ from .models import (
     Sale,
     SaleItem,
     StockEntry,
+    workdays_mon_sat,
 )
 from .views import (
     XLSX_CONTENT_TYPE,
@@ -1795,3 +1798,209 @@ class ClientLastSaleTests(BaseSetup):
         self.assertContains(response, "Oxirgi sotuv")
         self.assertContains(response, "3 kun oldin")
         self.assertContains(response, "Hech qachon")
+
+
+class WorkdaysHelperTests(TestCase):
+    def test_excludes_sundays(self):
+        # July 2026: 31 days, includes 4 Sundays (5,12,19,26) → 27 Mon–Sat days.
+        self.assertEqual(workdays_mon_sat(date(2026, 7, 1), date(2026, 7, 31)), 27)
+
+    def test_single_sunday_is_zero(self):
+        self.assertEqual(workdays_mon_sat(date(2026, 7, 5), date(2026, 7, 5)), 0)
+
+    def test_reversed_range_is_zero(self):
+        self.assertEqual(workdays_mon_sat(date(2026, 7, 31), date(2026, 7, 1)), 0)
+
+
+class PayrollCalcTests(TestCase):
+    """The core §5 math: both salary types reduce to soat × soat_narxi."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user("p_admin", password="x", role=User.Role.ADMIN)
+        self.m_from = date(2026, 7, 1)
+        self.m_to = date(2026, 7, 31)
+
+    def _advance(self, employee, amount, day=10):
+        return Expense.objects.create(
+            date=date(2026, 7, day), amount=Decimal(amount),
+            category=Expense.Category.SALARY, employee=employee, created_by=self.admin,
+        )
+
+    def test_hourly_pay_is_hours_times_rate(self):
+        emp = Employee.objects.create(
+            name="Soatbay", salary_type=Employee.SalaryType.HOURLY, hourly_rate=Decimal("25000"),
+        )
+        Attendance.objects.create(employee=emp, date=date(2026, 7, 1), hours=Decimal("11"))
+        Attendance.objects.create(employee=emp, date=date(2026, 7, 2), hours=Decimal("13"))
+        p = emp.payroll(self.m_from, self.m_to)
+        self.assertEqual(p.total_hours, Decimal("24"))
+        self.assertEqual(p.computed, Decimal("600000.00"))
+        self.assertEqual(p.remaining, Decimal("600000.00"))
+
+    def test_fixed_fully_present_equals_monthly_salary(self):
+        """A fully-present fixed worker earns exactly monthly_salary — the calendar
+        denominator self-balances (TZ §5)."""
+        emp = Employee.objects.create(
+            name="Fiks", salary_type=Employee.SalaryType.FIXED,
+            monthly_salary=Decimal("3000000"), standard_daily_hours=Decimal("11"),
+            works_shifts=False,
+        )
+        day = self.m_from
+        while day <= self.m_to:
+            if day.weekday() != 6:  # every Mon–Sat at the standard 11h
+                Attendance.objects.create(employee=emp, date=day, hours=Decimal("11"))
+            day += timedelta(days=1)
+        p = emp.payroll(self.m_from, self.m_to)
+        self.assertEqual(p.workdays, 27)
+        self.assertEqual(p.computed, Decimal("3000000.00"))
+
+    def test_fixed_missing_day_reduces_pay(self):
+        emp = Employee.objects.create(
+            name="Fiks2", salary_type=Employee.SalaryType.FIXED,
+            monthly_salary=Decimal("3000000"), standard_daily_hours=Decimal("11"),
+        )
+        # Present every Mon–Sat except skip one working day (2026-07-01, a Wednesday).
+        day = self.m_from
+        while day <= self.m_to:
+            if day.weekday() != 6 and day != date(2026, 7, 1):
+                Attendance.objects.create(employee=emp, date=day, hours=Decimal("11"))
+            day += timedelta(days=1)
+        p = emp.payroll(self.m_from, self.m_to)
+        # One 11h day short of full → less than the full monthly salary.
+        self.assertLess(p.computed, Decimal("3000000.00"))
+
+    def test_fixed_sunday_work_adds_pay(self):
+        emp = Employee.objects.create(
+            name="Fiks3", salary_type=Employee.SalaryType.FIXED,
+            monthly_salary=Decimal("3000000"), standard_daily_hours=Decimal("11"),
+        )
+        day = self.m_from
+        while day <= self.m_to:
+            if day.weekday() != 6:
+                Attendance.objects.create(employee=emp, date=day, hours=Decimal("11"))
+            day += timedelta(days=1)
+        # Plus one Sunday shift → paid above the full monthly salary.
+        Attendance.objects.create(employee=emp, date=date(2026, 7, 5), hours=Decimal("11"))
+        p = emp.payroll(self.m_from, self.m_to)
+        self.assertEqual(p.sunday_hours, Decimal("11"))
+        self.assertGreater(p.computed, Decimal("3000000.00"))
+
+    def test_fixed_partial_range_prorates(self):
+        """A sub-month window pays pro-rata: the fixed rate is the month's rate, so
+        four full days of an 11h standard bill 44h × (monthly ÷ 297)."""
+        emp = Employee.objects.create(
+            name="Qisman", salary_type=Employee.SalaryType.FIXED,
+            monthly_salary=Decimal("3000000"), standard_daily_hours=Decimal("11"),
+        )
+        for d in (date(2026, 7, 1), date(2026, 7, 2), date(2026, 7, 3), date(2026, 7, 4)):
+            Attendance.objects.create(employee=emp, date=d, hours=Decimal("11"))
+        # Window is just those 4 days, but the rate stays the July rate (÷297), so a
+        # full month would still total exactly monthly_salary.
+        p = emp.payroll(date(2026, 7, 1), date(2026, 7, 4))
+        self.assertEqual(p.computed, Decimal("444444.44"))  # 44 × 3000000/297
+
+    def test_advance_reduces_remaining_once(self):
+        """Advance is a single-source Expense(SALARY, employee): it lowers `remaining`
+        exactly once, never double-counted."""
+        emp = Employee.objects.create(
+            name="Avansli", salary_type=Employee.SalaryType.HOURLY, hourly_rate=Decimal("25000"),
+        )
+        Attendance.objects.create(employee=emp, date=date(2026, 7, 1), hours=Decimal("24"))
+        self._advance(emp, "200000")
+        p = emp.payroll(self.m_from, self.m_to)
+        self.assertEqual(p.computed, Decimal("600000.00"))
+        self.assertEqual(p.advance, Decimal("200000"))
+        self.assertEqual(p.remaining, Decimal("400000.00"))
+
+    def test_advance_outside_period_ignored(self):
+        emp = Employee.objects.create(
+            name="Chegara", salary_type=Employee.SalaryType.HOURLY, hourly_rate=Decimal("25000"),
+        )
+        Attendance.objects.create(employee=emp, date=date(2026, 7, 1), hours=Decimal("10"))
+        self._advance(emp, "100000", day=1)                       # in period
+        Expense.objects.create(                                    # next month — excluded
+            date=date(2026, 8, 1), amount=Decimal("500000"),
+            category=Expense.Category.SALARY, employee=emp, created_by=self.admin,
+        )
+        p = emp.payroll(self.m_from, self.m_to)
+        self.assertEqual(p.advance, Decimal("100000"))
+
+
+class HRAccessTests(TestCase):
+    """HR is admin/manager only — not a shared section (sellers have no access)."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user("h_admin", password="x", role=User.Role.ADMIN)
+        self.manager = User.objects.create_user("h_manager", password="x", role=User.Role.MANAGER)
+        self.seller = User.objects.create_user("h_sales", password="x", role=User.Role.SALES)
+
+    def test_admin_and_manager_reach_hr(self):
+        for user in (self.admin, self.manager):
+            self.client.force_login(user)
+            for name in ("hr_attendance", "hr_payroll", "employee_list"):
+                self.assertEqual(self.client.get(reverse(name)).status_code, 200)
+
+    def test_seller_blocked(self):
+        self.client.force_login(self.seller)
+        for name in ("hr_attendance", "hr_payroll", "employee_list", "salary_pay"):
+            self.assertEqual(self.client.get(reverse(name)).status_code, 403)
+
+
+class HRViewTests(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user("v_admin", password="x", role=User.Role.ADMIN)
+        self.client.force_login(self.admin)
+
+    def test_create_employee(self):
+        resp = self.client.post(reverse("employee_create"), {
+            "name": "Yangi Ishchi", "salary_type": "hourly", "hourly_rate": "25000",
+            "standard_daily_hours": "11", "works_shifts": "on", "is_active": "on",
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(Employee.objects.filter(name="Yangi Ishchi").exists())
+
+    def test_hourly_employee_requires_rate(self):
+        resp = self.client.post(reverse("employee_create"), {
+            "name": "Rate yo'q", "salary_type": "hourly", "hourly_rate": "0",
+            "standard_daily_hours": "11",
+        })
+        self.assertEqual(resp.status_code, 200)  # re-rendered with error, not saved
+        self.assertFalse(Employee.objects.filter(name="Rate yo'q").exists())
+
+    def test_attendance_cell_upserts(self):
+        emp = Employee.objects.create(
+            name="Upsert", salary_type=Employee.SalaryType.HOURLY, hourly_rate=Decimal("25000"),
+        )
+        url = reverse("attendance_cell")
+        self.client.post(url, {"employee": emp.pk, "date": "2026-07-01", "hours": "11"})
+        self.client.post(url, {"employee": emp.pk, "date": "2026-07-01", "hours": "13"})
+        rows = Attendance.objects.filter(employee=emp, date=date(2026, 7, 1))
+        self.assertEqual(rows.count(), 1)             # edited, not duplicated
+        self.assertEqual(rows.first().hours, Decimal("13"))
+
+    def test_hr_pages_filter_by_name(self):
+        Employee.objects.create(
+            name="Alisher", salary_type=Employee.SalaryType.HOURLY, hourly_rate=Decimal("22000"),
+        )
+        Employee.objects.create(
+            name="Bekzod", salary_type=Employee.SalaryType.HOURLY, hourly_rate=Decimal("22000"),
+        )
+        for name in ("employee_list", "hr_attendance", "hr_payroll"):
+            resp = self.client.get(reverse(name), {"q": "alisher"})
+            self.assertContains(resp, "Alisher")
+            self.assertNotContains(resp, "Bekzod")
+
+    def test_salary_pay_creates_salary_expense(self):
+        emp = Employee.objects.create(
+            name="To'lov", salary_type=Employee.SalaryType.HOURLY, hourly_rate=Decimal("25000"),
+        )
+        resp = self.client.post(reverse("salary_pay"), {
+            "date": "2026-07-10", "employee": emp.pk, "amount": "300000", "method": "cash",
+        })
+        self.assertEqual(resp.status_code, 302)
+        exp = Expense.objects.get(employee=emp)
+        self.assertEqual(exp.category, Expense.Category.SALARY)
+        self.assertEqual(exp.amount, Decimal("300000"))
+        # And it shows up as this month's advance in the payroll.
+        p = emp.payroll(date(2026, 7, 1), date(2026, 7, 31))
+        self.assertEqual(p.advance, Decimal("300000"))

@@ -9,7 +9,9 @@ from django.utils import timezone
 from accounts.models import User
 
 from .models import (
+    Attendance,
     Client,
+    Employee,
     Expense,
     Payment,
     Product,
@@ -606,3 +608,93 @@ class ClientTransferForm(forms.Form):
             "first_name", "last_name", "username"
         )
         _searchable_select(self.fields["new_owner"], "Sotuvchini tanlang")
+
+
+class EmployeeForm(forms.ModelForm):
+    """A factory worker. Which rate field matters depends on `salary_type`:
+    soatbay uses `hourly_rate`, fiks uses `monthly_salary` + `standard_daily_hours`."""
+
+    class Meta:
+        model = Employee
+        fields = [
+            "name", "salary_type", "hourly_rate", "monthly_salary",
+            "standard_daily_hours", "works_shifts", "is_active",
+        ]
+        widgets = {
+            "name": forms.TextInput(attrs={"placeholder": "Ism familiya"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _mark_money(self.fields["hourly_rate"], self.fields["monthly_salary"])
+        self.fields["hourly_rate"].required = False
+        self.fields["monthly_salary"].required = False
+        self.fields["hourly_rate"].help_text = "Soatbay ishchi uchun — 1 soat narxi"
+        self.fields["monthly_salary"].help_text = "Fiks ishchi uchun — oylik summa"
+        self.fields["standard_daily_hours"].help_text = (
+            "Fiks uchun soat narxi maxraji (kunduzi 8:00–19:00 = 11)"
+        )
+
+    def clean(self):
+        cleaned = super().clean()
+        salary_type = cleaned.get("salary_type")
+        if salary_type == Employee.SalaryType.HOURLY:
+            if not cleaned.get("hourly_rate"):
+                self.add_error("hourly_rate", "Soatbay ishchi uchun soat narxini kiriting.")
+        elif salary_type == Employee.SalaryType.FIXED:
+            if not cleaned.get("monthly_salary"):
+                self.add_error("monthly_salary", "Fiks ishchi uchun oylik summani kiriting.")
+            if not cleaned.get("standard_daily_hours"):
+                self.add_error("standard_daily_hours", "Kunlik standart soatni kiriting.")
+        return cleaned
+
+
+class AttendanceForm(forms.ModelForm):
+    """One worker's hours on one day. The view upserts by (employee, date), so a
+    cell that already has a row is edited, not duplicated."""
+
+    class Meta:
+        model = Attendance
+        fields = ["employee", "date", "hours", "shift", "note"]
+        widgets = {
+            "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — izoh"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["employee"].queryset = Employee.objects.filter(is_active=True)
+        _searchable_select(self.fields["employee"], "Xodimni tanlang")
+        self.fields["hours"].help_text = "Kunduzi 11, kechki 13; kelmasa 0"
+
+    def clean_hours(self):
+        hours = self.cleaned_data.get("hours")
+        if hours is not None and (hours < 0 or hours > 24):
+            raise forms.ValidationError("Soat 0 va 24 orasida bo'lishi kerak.")
+        return hours
+
+
+class SalaryPaymentForm(forms.ModelForm):
+    """Pay an advance or final salary to a worker. Persists as Expense(SALARY,
+    employee) — the single source for HR advances (so'm only, no dollar/commission)."""
+
+    class Meta:
+        model = Expense
+        fields = ["date", "employee", "amount", "method", "note"]
+        widgets = {
+            "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — avans/oylik izohi"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["amount"].label = "Summa (so'm)"
+        _mark_money(self.fields["amount"])
+        self.fields["employee"].queryset = Employee.objects.filter(is_active=True)
+        _searchable_select(self.fields["employee"], "Xodimni tanlang")
+
+    def clean_amount(self):
+        amount = self.cleaned_data.get("amount")
+        if amount is not None and amount <= 0:
+            raise forms.ValidationError("Summa 0 dan katta bo'lishi kerak.")
+        return amount

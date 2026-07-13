@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Oylik · Paket CRM{% endblock %}
+{% block topbar_title %}Oylik hisob{% endblock %}
+{% block fab %}<a class="fab" href="{% url 'salary_pay' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Avans / oylik to'lash</a>{% endblock %}
+{% block content %}
+
+{% include "crm/_hr_toolbar.html" %}
+
+<div class="kpi-grid">
+  <div class="kpi kpi--blue">
+    <div class="kpi-head"><span class="kpi-label">Hisoblangan</span></div>
+    <div class="kpi-value">{{ totals.computed|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">jami ishlagan haq</div>
+  </div>
+  <div class="kpi kpi--gold">
+    <div class="kpi-head"><span class="kpi-label">Berilgan avans</span></div>
+    <div class="kpi-value">{{ totals.advance|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">shu oy ichida</div>
+  </div>
+  <div class="kpi kpi--green">
+    <div class="kpi-head"><span class="kpi-label">Qoldiq (to'lanadi)</span></div>
+    <div class="kpi-value">{{ totals.remaining|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">hisoblangan − avans</div>
+  </div>
+</div>
+
+{% if has_employees %}
+<div class="table-wrap">
+<table>
+  <tr>
+    <th class="sticky-col">Xodim</th>
+    <th>Turi</th>
+    <th class="num">Jami soat</th>
+    <th class="num">Soat narxi</th>
+    <th class="num">Hisoblangan</th>
+    <th class="num">Avans</th>
+    <th class="num">Qoldiq</th>
+    <th></th>
+  </tr>
+  {% for p in payrolls %}
+  <tr>
+    <td class="sticky-col">{{ p.employee.name }}</td>
+    <td>{{ p.employee.get_salary_type_display }}</td>
+    <td class="num">{{ p.total_hours|floatformat:"-2g" }}</td>
+    <td class="num">{{ p.hour_rate|floatformat:"0g" }}</td>
+    <td class="num">{{ p.computed|floatformat:"0g" }}</td>
+    <td class="num">{{ p.advance|floatformat:"0g" }}</td>
+    <td class="num"><strong>{{ p.remaining|floatformat:"0g" }}</strong></td>
+    <td class="row-actions">
+      <a class="btn btn-sm" href="{% url 'salary_pay' %}?employee={{ p.employee.pk }}" data-modal>To'lash</a>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% elif q %}
+<p class="muted">“{{ q }}” bo'yicha xodim topilmadi.</p>
+{% else %}
+<p class="muted">Faol xodim yo'q. Avval <a href="{% url 'employee_list' %}">xodim qo'shing</a>.</p>
+{% endif %}
+{% endblock %}

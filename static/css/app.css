@@ -1543,3 +1543,56 @@ ul.errorlist li::before { content: "⚠ "; }
   color: var(--text-faint);
   font-weight: 400;
 }
+
+/* ── HR / oylik (davomad, oylik hisob) ─────────────────────────────── */
+.month-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.month-nav-label {
+  min-width: 170px;
+  text-align: center;
+  font-weight: 600;
+  font-size: 15px;
+}
+table.matrix th,
+table.matrix td {
+  padding-left: 6px;
+  padding-right: 6px;
+  text-align: center;
+}
+table.matrix .sticky-col { text-align: left; white-space: nowrap; }
+/* Sunday (rest day) gets a neutral tint so it doesn't clash with the blue day chips. */
+.matrix .col-sunday { background: var(--surface-2); }
+/* Column separators: a hairline between every day, a stronger rule at each week
+   start (Monday) and before the Jami total. */
+.matrix th.day-col,
+.matrix td.cell-att { border-left: 0.5px solid var(--border); }
+.matrix th.week-start,
+.matrix td.week-start { border-left: 2px solid var(--border-strong); }
+.matrix th.col-total,
+.matrix td.col-total { border-left: 2px solid var(--border-strong); }
+.matrix td.cell-att { padding: 0; }
+.matrix td.cell-att a {
+  display: block;
+  padding: 5px 3px;
+  border-radius: 6px;
+}
+.matrix td.cell-att a:hover { background: var(--surface-hover); }
+.matrix .cell-empty { color: var(--text-faint); }
+/* Hour chips, coloured by shift: kunduzi = blue, kechki = amber, fiks/none = neutral. */
+.matrix .hchip {
+  display: inline-block;
+  min-width: 22px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  background: var(--surface-hover);
+  color: var(--text-muted);
+}
+.matrix .hchip-day { background: var(--accent-soft); color: var(--accent); }
+.matrix .hchip-night { background: var(--warning-soft); color: var(--warning); }

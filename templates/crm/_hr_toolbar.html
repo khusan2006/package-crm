@@ -1,0 +1,39 @@
+{% load crm_extras %}
+{% comment %}
+  Shared HR toolbar: name search + the same date-range picker the sales pages use
+  (defaults to the current month). Needs filter_url, q, and the _hr_range() context.
+{% endcomment %}
+<div class="table-toolbar">
+  <div class="toolbar-left">
+    <form method="get" action="{{ filter_url }}" class="toolbar-search{% if q %} is-active{% endif %}" role="search" data-live-search>
+      <input type="hidden" name="dan" value="{{ filters.dan }}">
+      <input type="hidden" name="gacha" value="{{ filters.gacha }}">
+      <svg class="toolbar-search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="search" name="q" value="{{ q }}" placeholder="Ism bo'yicha qidirish…" autocomplete="off" aria-label="Ism bo'yicha qidirish">
+      {% if q %}<a href="{% qs_replace q='' %}" class="toolbar-search-x" title="Qidiruvni tozalash" aria-label="Qidiruvni tozalash">&times;</a>{% endif %}
+    </form>
+    <div class="toolbar-label">
+      {% if is_today %}<span class="today-chip">Bugun</span>
+      {% elif is_single_day %}{{ date_from|date:"j-F, l" }}
+      {% else %}{{ range_days }} kunlik oraliq{% endif %}
+    </div>
+  </div>
+  <div class="toolbar-right">
+    {% if not is_today %}<a class="btn btn-sm btn-ghost" href="{% qs_replace dan=today_iso gacha=today_iso %}">Bugun</a>{% endif %}
+    <div class="daterange" data-from="{{ filters.dan }}" data-to="{{ filters.gacha }}" data-today="{{ today_iso }}">
+      <a class="datebar-btn" href="{% qs_replace dan=prev_from gacha=prev_to %}" title="Oldingi kun">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </a>
+      <button type="button" class="daterange-trigger" aria-haspopup="dialog" aria-expanded="false">
+        <svg class="cal-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        <span class="daterange-text">
+          {% if is_today %}Bugun{% elif is_single_day %}{{ date_from|date:"j-F" }}{% else %}{{ date_from|date:"j-F" }} – {{ date_to|date:"j-F" }}{% endif %}
+        </span>
+      </button>
+      <a class="datebar-btn" href="{% qs_replace dan=next_from gacha=next_to %}" title="Keyingi kun">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </a>
+      <div class="daterange-pop" role="dialog" aria-label="Sana tanlash" hidden></div>
+    </div>
+  </div>
+</div>
