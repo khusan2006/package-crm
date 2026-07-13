@@ -80,33 +80,11 @@ class Client(models.Model):
 
 class ProductQuerySet(models.QuerySet):
     def with_stock(self):
-        """Annotate each product with stock_in, stock_out, and current stock (kg)."""
-        received = Subquery(
-            StockEntry.objects.filter(product=OuterRef("pk"))
-            .values("product")
-            .annotate(s=Sum("quantity_kg"))
-            .values("s"),
-            output_field=QTY,
-        )
-        sold = Subquery(
-            SaleItem.objects.filter(product=OuterRef("pk"))
-            .values("product")
-            .annotate(s=Sum(ITEM_WEIGHT_KG))
-            .values("s"),
-            output_field=QTY,
-        )
-        returned = Subquery(
-            Return.objects.filter(product=OuterRef("pk"), restock=True)
-            .values("product")
-            .annotate(s=Sum(RETURN_WEIGHT_KG))
-            .values("s"),
-            output_field=QTY,
-        )
-        return self.annotate(
-            stock_in=Coalesce(received, ZERO_QTY),
-            stock_out=Coalesce(sold, ZERO_QTY),
-            stock_returned=Coalesce(returned, ZERO_QTY),
-        ).annotate(stock=F("stock_in") - F("stock_out") + F("stock_returned"))
+        """Annotate each product with sklad (factory-warehouse) stock. The
+        derivation lives in the manufacturing app; imported lazily to avoid a
+        circular import at load time."""
+        from manufacturing.queries import annotate_sklad_stock
+        return annotate_sklad_stock(self)
 
 
 class Product(models.Model):
@@ -154,7 +132,8 @@ class Product(models.Model):
 
     @property
     def current_stock(self):
-        return self.total_received - self.total_sold + self.total_returned
+        from manufacturing.queries import sklad_stock
+        return sklad_stock(self)
 
     @property
     def is_low_stock(self):

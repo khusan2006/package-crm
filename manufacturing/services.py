@@ -56,8 +56,23 @@ class InsufficientStock(Exception):
 
 
 def apply_run_cost(run):
-    """Placeholder — filled in Task 4 to update the finished product's cost_price."""
-    return None
+    """Update the finished product's cost_price as the weighted average of sklad
+    stock on hand and this batch's per-kg cost. If sklad was empty (≤0), the new
+    cost is simply the batch cost."""
+    from .queries import sklad_stock
+
+    product = run.product
+    sklad_after = sklad_stock(product)          # includes this run's output
+    sklad_before = sklad_after - run.output_kg
+    cpk = run.cost_per_kg
+    if sklad_before > 0:
+        new_cost = (sklad_before * product.cost_price + run.output_kg * cpk) / (
+            sklad_before + run.output_kg
+        )
+    else:
+        new_cost = cpk
+    product.cost_price = Decimal(new_cost).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    product.save(update_fields=["cost_price"])
 
 
 @transaction.atomic

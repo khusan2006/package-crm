@@ -148,3 +148,16 @@ class ProductionRunItem(models.Model):
 
     def __str__(self):
         return f"{self.material.name}: {self.quantity_kg} kg"
+
+
+class StockTransfer(models.Model):
+    """A transfer of finished-product stock out of the factory sklad to a seller.
+    Stub for Task 4's queries; fully defined in Task 5."""
+
+    product = models.ForeignKey(
+        "crm.Product", on_delete=models.PROTECT, related_name="stock_transfers"
+    )
+    quantity_kg = models.DecimalField(max_digits=12, decimal_places=3, default=0)
+
+    class Meta:
+        app_label = "manufacturing"
