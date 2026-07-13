@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Xomashyo · Paket CRM{% endblock %}
+{% block topbar_title %}Xomashyo{% endblock %}
+{% block fab %}<a class="fab" href="{% url 'manufacturing:material_create' %}" data-modal>+ Yangi xomashyo</a>{% endblock %}
+{% block content %}
+<form method="get" class="searchbar" role="search" data-live-search>
+  <div class="toolbar-search{% if q %} is-active{% endif %}">
+    <svg class="toolbar-search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input type="search" name="q" value="{{ q }}" placeholder="Nomi yoki SKU bo'yicha qidirish…" autocomplete="off">
+    {% if q %}<a href="?" class="toolbar-search-x">&times;</a>{% endif %}
+  </div>
+</form>
+{% if page.object_list %}
+<div class="table-wrap"><table>
+  <tr><th class="sticky-col">Nomi</th><th>SKU</th><th class="num">O'rtacha tannarx</th><th class="num">Qoldiq (kg)</th><th>Holati</th></tr>
+  {% for m in page %}
+  <tr>
+    <td class="sticky-col"><a href="{% url 'manufacturing:material_detail' m.pk %}">{{ m.name }}</a></td>
+    <td>{{ m.sku }}</td>
+    <td class="num">{{ m.avg_cost|floatformat:"0g" }}</td>
+    <td class="num">{{ m.current_stock|floatformat:"-3g" }}</td>
+    <td>{% if m.is_low_stock %}<span class="badge badge-warning">Kam qoldi</span>{% else %}<span class="badge badge-ok">Yetarli</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table></div>
+{% include "crm/_pagination.html" %}
+{% else %}<p class="muted">Xomashyo topilmadi.</p>{% endif %}
+{% endblock %}

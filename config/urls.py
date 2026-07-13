@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth import views as auth_views
-from django.urls import path
+from django.urls import include, path
 
 from accounts import views as accounts_views
 from crm import views as crm_views
@@ -64,4 +64,6 @@ urlpatterns = [
     path("sales/<int:pk>/return/", crm_views.sale_return, name="sale_return"),
     path("sales/<int:pk>/mark-paid/", crm_views.sale_mark_paid, name="sale_mark_paid"),
     path("sales/<int:pk>/delete/", crm_views.sale_delete, name="sale_delete"),
+    # manufacturing
+    path("ishlab-chiqarish/", include("manufacturing.urls")),
 ]

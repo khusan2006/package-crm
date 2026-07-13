@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}{{ material.name }} · Xomashyo{% endblock %}
+{% block topbar_title %}{{ material.name }}{% endblock %}
+{% block fab %}<a class="fab" href="{% url 'manufacturing:material_edit' material.pk %}" data-modal>Tahrirlash</a>{% endblock %}
+{% block content %}
+<div class="cards">
+  <div class="card"><div class="card-label">O'rtacha tannarx</div><div class="card-value">{{ material.avg_cost|floatformat:"0g" }} so'm</div></div>
+  <div class="card"><div class="card-label">Qoldiq</div><div class="card-value">{{ current_stock|floatformat:"-3g" }} kg</div></div>
+</div>
+<h3>So'nggi xaridlar</h3>
+<div class="table-wrap"><table>
+  <tr><th>Sana</th><th class="num">Miqdor (kg)</th><th class="num">Narx (1 kg)</th><th>Yetkazib beruvchi</th></tr>
+  {% for p in purchases %}
+  <tr><td>{{ p.date }}</td><td class="num">{{ p.quantity_kg|floatformat:"-3g" }}</td><td class="num">{{ p.price_per_kg|floatformat:"0g" }}</td><td>{{ p.supplier }}</td></tr>
+  {% empty %}<tr><td colspan="4" class="muted">Xarid yo'q.</td></tr>{% endfor %}
+</table></div>
+{% endblock %}
