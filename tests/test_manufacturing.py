@@ -192,3 +192,21 @@ def test_sale_blocked_when_seller_ombor_short(client, material, finished_product
     assert resp.status_code in (200, 422)                 # re-rendered form, not a redirect
     assert SaleItem.objects.count() == 0                  # nothing saved
     assert "omborda" in resp.content.decode().lower()
+
+
+from manufacturing.forms import MaterialPurchaseForm, StockTransferForm
+
+
+def test_purchase_form_valid(material, admin_user):
+    form = MaterialPurchaseForm(data={
+        "material": material.pk, "date": "2026-07-01", "quantity_kg": "100",
+        "price_per_kg": "1000", "method": "cash", "supplier": "Ali", "note": "",
+    })
+    assert form.is_valid(), form.errors
+
+
+def test_transfer_form_lists_only_sellers(admin_user, seller_user):
+    form = StockTransferForm(user=admin_user)
+    seller_ids = set(form.fields["seller"].queryset.values_list("pk", flat=True))
+    assert seller_user.pk in seller_ids
+    assert admin_user.pk not in seller_ids            # admins aren't transfer targets
