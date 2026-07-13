@@ -90,10 +90,61 @@ class MaterialPurchase(models.Model):
         return f"{self.material.name}: {self.quantity_kg} kg × {self.price_per_kg} ({self.date})"
 
 
-class ProductionRunItem(models.Model):
-    quantity_kg = models.DecimalField(max_digits=12, decimal_places=3, default=0)
-    material = models.ForeignKey(RawMaterial, on_delete=models.PROTECT, related_name="usages")
-    # Fully defined in Task 3.
+class ProductionRun(models.Model):
+    """One manufacturing batch: raw materials consumed to produce `output_kg` of a
+    finished product. Batch cost is derived from its item lines (materials only)."""
+
+    product = models.ForeignKey(
+        "crm.Product", on_delete=models.PROTECT,
+        related_name="production_runs", verbose_name="Mahsulot",
+    )
+    date = models.DateField("Sana", default=timezone.localdate)
+    output_kg = models.DecimalField("Ishlab chiqarildi (kg)", max_digits=12, decimal_places=3)
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="production_runs", verbose_name="Kim kiritdi",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        app_label = "manufacturing"
+        ordering = ["-date", "-created_at"]
+        verbose_name = "Ishlab chiqarish"
+        verbose_name_plural = "Ishlab chiqarishlar"
+
+    @property
+    def batch_cost(self):
+        total = Decimal("0")
+        for it in self.items.all():
+            total += it.quantity_kg * it.unit_cost
+        return total.quantize(Decimal("0.01"))
+
+    @property
+    def cost_per_kg(self):
+        if self.output_kg:
+            return (self.batch_cost / self.output_kg).quantize(Decimal("0.01"))
+        return Decimal("0")
+
+    def __str__(self):
+        return f"{self.product.name}: {self.output_kg} kg ({self.date})"
+
+
+class ProductionRunItem(models.Model):
+    """A material line of a production run. `unit_cost` snapshots the material's
+    weighted-average cost at run time so history never changes on later purchases."""
+
+    run = models.ForeignKey(
+        ProductionRun, on_delete=models.CASCADE, related_name="items", verbose_name="Ishlab chiqarish"
+    )
+    material = models.ForeignKey(
+        RawMaterial, on_delete=models.PROTECT, related_name="usages", verbose_name="Xomashyo"
+    )
+    quantity_kg = models.DecimalField("Miqdor (kg)", max_digits=12, decimal_places=3)
+    unit_cost = models.DecimalField("Tannarx (1 kg, so'm)", max_digits=14, decimal_places=2)
+
+    class Meta:
+        verbose_name = "Ishlab chiqarish xomashyosi"
+        verbose_name_plural = "Ishlab chiqarish xomashyolari"
+
+    def __str__(self):
+        return f"{self.material.name}: {self.quantity_kg} kg"

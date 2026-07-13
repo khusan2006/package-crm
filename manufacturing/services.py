@@ -14,11 +14,9 @@ def recompute_avg_cost(material: RawMaterial) -> Decimal:
     events = []
     for p in material.purchases.all():
         events.append((p.date, p.created_at, 0, p.quantity_kg, p.price_per_kg))
-    has_run = any(f.name == "run" for f in ProductionRunItem._meta.get_fields())
-    if has_run:
-        usages = ProductionRunItem.objects.filter(material=material).select_related("run")
-        for it in usages:
-            events.append((it.run.date, it.run.created_at, 1, it.quantity_kg, None))
+    usages = ProductionRunItem.objects.filter(material=material).select_related("run")
+    for it in usages:
+        events.append((it.run.date, it.run.created_at, 1, it.quantity_kg, None))
     # Sort by date, then timestamp, then kind (buy=0 before use=1 on ties).
     events.sort(key=lambda e: (e[0], e[1], e[2]))
 
@@ -47,3 +45,39 @@ def create_purchase(*, material, quantity_kg, price_per_kg, date, method, suppli
     )
     recompute_avg_cost(material)
     return purchase
+
+
+class InsufficientStock(Exception):
+    def __init__(self, label, requested, available):
+        self.label = label
+        self.requested = requested
+        self.available = available
+        super().__init__(f"{label}: {available:.3f} bor, {requested:.3f} so'raldi")
+
+
+def apply_run_cost(run):
+    """Placeholder — filled in Task 4 to update the finished product's cost_price."""
+    return None
+
+
+@transaction.atomic
+def create_production_run(*, product, output_kg, date, note, user, items):
+    """Consume materials into a batch. Blocks (InsufficientStock, rolls back) if any
+    material lacks stock. Snapshots each material's avg cost, then updates the
+    product's tannarx via apply_run_cost."""
+    from .models import ProductionRun, ProductionRunItem
+
+    for material, qty in items:
+        if qty > material.current_stock:
+            raise InsufficientStock(material.name, qty, material.current_stock)
+
+    run = ProductionRun.objects.create(
+        product=product, output_kg=output_kg, date=date, note=note, created_by=user,
+    )
+    for material, qty in items:
+        ProductionRunItem.objects.create(
+            run=run, material=material, quantity_kg=qty, unit_cost=material.avg_cost,
+        )
+        recompute_avg_cost(material)
+    apply_run_cost(run)
+    return run
