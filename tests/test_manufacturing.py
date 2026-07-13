@@ -118,3 +118,28 @@ def test_with_stock_annotation_matches(finished_product, material, admin_user):
                           note="", user=admin_user, items=[(material, Decimal("50"))])
     annotated = Product.objects.with_stock().get(pk=finished_product.pk)
     assert annotated.stock == Decimal("40.000")
+
+
+from manufacturing.models import StockTransfer
+from manufacturing.services import create_transfer
+
+
+def _stock_40(material, finished_product, admin_user):
+    _buy(material, "100", "1000", admin_user)
+    create_production_run(product=finished_product, output_kg=Decimal("40"), date="2026-07-03",
+                          note="", user=admin_user, items=[(material, Decimal("50"))])
+
+
+def test_transfer_reduces_sklad(material, finished_product, admin_user, seller_user):
+    _stock_40(material, finished_product, admin_user)
+    create_transfer(product=finished_product, seller=seller_user, quantity_kg=Decimal("15"),
+                    date="2026-07-05", note="", user=admin_user)
+    assert sklad_stock(finished_product) == Decimal("25.000")
+
+
+def test_transfer_blocks_over_sklad(material, finished_product, admin_user, seller_user):
+    _stock_40(material, finished_product, admin_user)
+    with pytest.raises(InsufficientStock):
+        create_transfer(product=finished_product, seller=seller_user, quantity_kg=Decimal("99"),
+                        date="2026-07-05", note="", user=admin_user)
+    assert StockTransfer.objects.count() == 0

@@ -96,3 +96,19 @@ def create_production_run(*, product, output_kg, date, note, user, items):
         recompute_avg_cost(material)
     apply_run_cost(run)
     return run
+
+
+@transaction.atomic
+def create_transfer(*, product, seller, quantity_kg, date, note, user):
+    """Hand off finished-product stock from the sklad to a seller. Blocks
+    (InsufficientStock, rolls back) if the sklad doesn't have enough on hand."""
+    from .models import StockTransfer
+    from .queries import sklad_stock
+
+    available = sklad_stock(product)
+    if quantity_kg > available:
+        raise InsufficientStock(product.name, quantity_kg, available)
+    return StockTransfer.objects.create(
+        product=product, seller=seller, quantity_kg=quantity_kg,
+        date=date, note=note, created_by=user,
+    )

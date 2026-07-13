@@ -151,13 +151,29 @@ class ProductionRunItem(models.Model):
 
 
 class StockTransfer(models.Model):
-    """A transfer of finished-product stock out of the factory sklad to a seller.
-    Stub for Task 4's queries; fully defined in Task 5."""
+    """A hand-off of finished goods from the sklad to a seller's own ombor."""
 
     product = models.ForeignKey(
-        "crm.Product", on_delete=models.PROTECT, related_name="stock_transfers"
+        "crm.Product", on_delete=models.PROTECT,
+        related_name="stock_transfers", verbose_name="Mahsulot",
     )
-    quantity_kg = models.DecimalField(max_digits=12, decimal_places=3, default=0)
+    seller = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="stock_transfers_in", verbose_name="Sotuvchi",
+    )
+    date = models.DateField("Sana", default=timezone.localdate)
+    quantity_kg = models.DecimalField("Miqdor (kg)", max_digits=12, decimal_places=3)
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="stock_transfers_made", verbose_name="Kim topshirdi",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        app_label = "manufacturing"
+        ordering = ["-date", "-created_at"]
+        verbose_name = "Omborga topshiruv"
+        verbose_name_plural = "Omborga topshiruvlar"
+
+    def __str__(self):
+        return f"{self.product.name} → {self.seller}: {self.quantity_kg} kg ({self.date})"
