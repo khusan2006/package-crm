@@ -143,3 +143,30 @@ def test_transfer_blocks_over_sklad(material, finished_product, admin_user, sell
         create_transfer(product=finished_product, seller=seller_user, quantity_kg=Decimal("99"),
                         date="2026-07-05", note="", user=admin_user)
     assert StockTransfer.objects.count() == 0
+
+
+from crm.models import Client, Sale, SaleItem
+from manufacturing.models import SellerStockEntry
+from manufacturing.queries import seller_ombor
+
+
+def test_seller_ombor_from_transfer_and_own_entry(material, finished_product, admin_user, seller_user):
+    _stock_40(material, finished_product, admin_user)
+    create_transfer(product=finished_product, seller=seller_user, quantity_kg=Decimal("15"),
+                    date="2026-07-05", note="", user=admin_user)
+    SellerStockEntry.objects.create(seller=seller_user, product=finished_product,
+                                    quantity_kg=Decimal("3"), note="topildi", created_by=seller_user)
+    assert seller_ombor(seller_user, finished_product) == Decimal("18.000")
+
+
+def test_seller_sale_reduces_ombor(material, finished_product, admin_user, seller_user):
+    _stock_40(material, finished_product, admin_user)
+    create_transfer(product=finished_product, seller=seller_user, quantity_kg=Decimal("15"),
+                    date="2026-07-05", note="", user=admin_user)
+    client = Client.objects.create(name="M", owner=seller_user)
+    sale = Sale.objects.create(client=client, sales_rep=seller_user)
+    SaleItem.objects.create(sale=sale, product=finished_product, dimension=Sale.Dimension.KG,
+                            weight=Decimal("10"), price=Decimal("20000"), cost_price=Decimal("1250"))
+    assert seller_ombor(seller_user, finished_product) == Decimal("5.000")
+    # ...and the seller sale did NOT touch sklad:
+    assert sklad_stock(finished_product) == Decimal("25.000")

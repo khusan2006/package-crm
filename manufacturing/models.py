@@ -177,3 +177,34 @@ class StockTransfer(models.Model):
 
     def __str__(self):
         return f"{self.product.name} → {self.seller}: {self.quantity_kg} kg ({self.date})"
+
+
+class SellerStockEntry(models.Model):
+    """A seller's own adjustment to their personal ombor: positive = goods added
+    themselves, negative = write-off. Also seeds cutover opening balances."""
+
+    seller = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="own_stock_entries", verbose_name="Sotuvchi",
+    )
+    product = models.ForeignKey(
+        "crm.Product", on_delete=models.PROTECT,
+        related_name="seller_stock_entries", verbose_name="Mahsulot",
+    )
+    date = models.DateField("Sana", default=timezone.localdate)
+    quantity_kg = models.DecimalField("Miqdor (kg, +/−)", max_digits=12, decimal_places=3)
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="recorded_seller_entries", verbose_name="Kim kiritdi",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date", "-created_at"]
+        verbose_name = "Sotuvchi ombor harakati"
+        verbose_name_plural = "Sotuvchi ombor harakatlari"
+
+    def __str__(self):
+        sign = "+" if self.quantity_kg >= 0 else ""
+        return f"{self.seller} · {self.product.name}: {sign}{self.quantity_kg} kg"

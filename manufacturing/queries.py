@@ -55,3 +55,53 @@ def annotate_sklad_stock(product_qs):
         stock_out=Coalesce(transferred, ZERO_QTY) + Coalesce(direct_sold, ZERO_QTY),
         stock_returned=Coalesce(direct_ret, ZERO_QTY),
     ).annotate(stock=F("stock_in") - F("stock_out") + F("stock_returned"))
+
+
+def seller_ombor(user, product):
+    """A seller's personal ombor balance (kg) for one product."""
+    from crm.models import ITEM_WEIGHT_KG, RETURN_WEIGHT_KG, Return, SaleItem
+    from .models import SellerStockEntry, StockTransfer
+
+    transferred_in = (
+        StockTransfer.objects.filter(seller=user, product=product)
+        .aggregate(s=Sum("quantity_kg"))["s"] or Decimal("0")
+    )
+    own = (
+        SellerStockEntry.objects.filter(seller=user, product=product)
+        .aggregate(s=Sum("quantity_kg"))["s"] or Decimal("0")
+    )
+    sold = (
+        SaleItem.objects.filter(product=product, sale__sales_rep=user)
+        .aggregate(s=Sum(ITEM_WEIGHT_KG))["s"] or Decimal("0")
+    )
+    returned = (
+        Return.objects.filter(product=product, restock=True, sale__sales_rep=user)
+        .aggregate(s=Sum(RETURN_WEIGHT_KG))["s"] or Decimal("0")
+    )
+    return transferred_in + own - sold + returned
+
+
+def annotate_seller_ombor(product_qs, user):
+    """Annotate products with `ombor` = this seller's balance per product."""
+    from crm.models import (
+        ITEM_WEIGHT_KG, QTY, RETURN_WEIGHT_KG, ZERO_QTY, Return, SaleItem,
+    )
+    from .models import SellerStockEntry, StockTransfer
+
+    def _sub(model, expr, **extra):
+        return Subquery(
+            model.objects.filter(product=OuterRef("pk"), **extra)
+            .values("product").annotate(s=Sum(expr)).values("s"),
+            output_field=QTY,
+        )
+
+    tin = _sub(StockTransfer, "quantity_kg", seller=user)
+    own = _sub(SellerStockEntry, "quantity_kg", seller=user)
+    sold = _sub(SaleItem, ITEM_WEIGHT_KG, sale__sales_rep=user)
+    ret = _sub(Return, RETURN_WEIGHT_KG, restock=True, sale__sales_rep=user)
+    return product_qs.annotate(
+        ombor=(
+            Coalesce(tin, ZERO_QTY) + Coalesce(own, ZERO_QTY)
+            - Coalesce(sold, ZERO_QTY) + Coalesce(ret, ZERO_QTY)
+        )
+    )
