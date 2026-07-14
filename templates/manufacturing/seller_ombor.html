@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Mening omborim · Paket CRM{% endblock %}
+{% block topbar_title %}{% if is_self %}Mening omborim{% else %}{{ target }} ombori{% endif %}{% endblock %}
+{% block fab %}{% if is_self %}<a class="fab" href="{% url 'manufacturing:seller_entry_create' %}" data-modal>+ Qo'shish</a>{% endif %}{% endblock %}
+{% block content %}
+<h3>Qoldiq</h3>
+<div class="table-wrap"><table>
+  <tr><th class="sticky-col">Mahsulot</th><th class="num">Qoldiq (kg)</th></tr>
+  {% for p in products %}
+  <tr><td class="sticky-col">{{ p.name }}</td><td class="num">{{ p.ombor|floatformat:"-3g" }}</td></tr>
+  {% empty %}<tr><td colspan="2" class="muted">Omborda mahsulot yo'q.</td></tr>{% endfor %}
+</table></div>
+<h3>Qabul qilingan topshiruvlar</h3>
+<div class="table-wrap"><table>
+  <tr><th>Sana</th><th>Mahsulot</th><th class="num">Miqdor (kg)</th><th>Kim topshirdi</th></tr>
+  {% for t in transfers %}
+  <tr><td>{{ t.date }}</td><td>{{ t.product.name }}</td><td class="num">{{ t.quantity_kg|floatformat:"-3g" }}</td><td>{{ t.created_by }}</td></tr>
+  {% empty %}<tr><td colspan="4" class="muted">Hali topshiruv yo'q.</td></tr>{% endfor %}
+</table></div>
+{% endblock %}

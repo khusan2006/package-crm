@@ -15,10 +15,11 @@ from .forms import (
     ProductionRunForm,
     ProductionRunItemFormSet,
     RawMaterialForm,
+    SellerStockEntryForm,
     StockTransferForm,
 )
-from .models import MaterialPurchase, ProductionRun, RawMaterial, StockTransfer
-from .queries import annotate_sklad_stock
+from .models import MaterialPurchase, ProductionRun, RawMaterial, SellerStockEntry, StockTransfer
+from .queries import annotate_seller_ombor, annotate_sklad_stock
 from .services import InsufficientStock
 
 SKLAD_ROLES = (User.Role.ADMIN, User.Role.MANAGER, User.Role.OMBORCHI)
@@ -176,3 +177,37 @@ def transfer_create(request):
         messages.success(request, "Topshiruv qo'shildi.")
         return form_success(request, reverse("manufacturing:transfer_list"))
     return form_response(request, form, "Sotuvchiga topshirish", invalid=request.method == "POST")
+
+
+@role_required(User.Role.SALES, User.Role.ADMIN, User.Role.MANAGER)
+def my_ombor(request):
+    target = request.user
+    seller_pk = request.GET.get("seller", "")
+    if request.user.can_see_all_records and seller_pk.isdigit():
+        target = get_object_or_404(User, pk=seller_pk)
+    products = annotate_seller_ombor(
+        Product.objects.filter(is_active=True), target
+    ).filter(ombor__gt=0).order_by("name")
+    transfers = (
+        StockTransfer.objects.filter(seller=target)
+        .select_related("product", "created_by")[:50]
+    )
+    return render(request, "manufacturing/seller_ombor.html", {
+        "products": products, "transfers": transfers, "target": target,
+        "is_self": target == request.user,
+    })
+
+
+@role_required(User.Role.SALES, User.Role.ADMIN, User.Role.MANAGER)
+def seller_entry_create(request):
+    form = SellerStockEntryForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        entry = form.save(commit=False)
+        entry.seller = request.user
+        entry.created_by = request.user
+        entry.save()
+        AuditLog.record(request.user, AuditLog.Action.CREATE, "Sotuvchi ombor", entry.pk,
+                        f"{entry.product.name} — {entry.quantity_kg} kg")
+        messages.success(request, "Ombor harakati qo'shildi.")
+        return form_success(request, reverse("manufacturing:my_ombor"))
+    return form_response(request, form, "Omboriga qo'shish", invalid=request.method == "POST")

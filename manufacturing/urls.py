@@ -16,4 +16,6 @@ urlpatterns = [
     path("ombor/", views.sklad_ombor, name="sklad_ombor"),
     path("topshiruvlar/", views.transfer_list, name="transfer_list"),
     path("topshiruvlar/yangi/", views.transfer_create, name="transfer_create"),
+    path("mening-omborim/", views.my_ombor, name="my_ombor"),
+    path("mening-omborim/qoshish/", views.seller_entry_create, name="seller_entry_create"),
 ]

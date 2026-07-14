@@ -252,3 +252,22 @@ def test_transfer_create_view(client, material, finished_product, admin_user, se
     assert resp.status_code in (204, 302)
     assert StockTransfer.objects.count() == 1
     assert sklad_stock(finished_product) == Decimal("30.000")
+
+
+def test_seller_sees_own_ombor(client, material, finished_product, admin_user, seller_user):
+    _stock_40(material, finished_product, admin_user)
+    create_transfer(product=finished_product, seller=seller_user, quantity_kg=Decimal("12"),
+                    date="2026-07-05", note="", user=admin_user)
+    client.force_login(seller_user)
+    resp = client.get(reverse("manufacturing:my_ombor"))
+    assert resp.status_code == 200
+    assert finished_product.name.encode() in resp.content
+
+
+def test_seller_can_add_own_entry(client, finished_product, seller_user):
+    client.force_login(seller_user)
+    resp = client.post(reverse("manufacturing:seller_entry_create"), {
+        "product": finished_product.pk, "date": "2026-07-06", "quantity_kg": "5", "note": "topildi",
+    })
+    assert resp.status_code in (204, 302)
+    assert SellerStockEntry.objects.filter(seller=seller_user).count() == 1
