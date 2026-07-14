@@ -62,3 +62,23 @@ def test_omborchi_denied_seller_kassa(client, omborchi_user):
 def test_seller_denied_transfer_create(client, seller_user):
     client.force_login(seller_user)
     assert client.get(reverse("manufacturing:transfer_create")).status_code == 403
+
+
+@pytest.mark.parametrize("name", [
+    "manufacturing:material_list",
+    "manufacturing:purchase_list",
+    "manufacturing:production_list",
+    "manufacturing:sklad_ombor",
+    "manufacturing:needs_production",
+    "manufacturing:transfer_list",
+    "manufacturing:sklad_kassa",
+    "dashboard",
+    "product_list",
+    "kassa",
+])
+def test_exactly_one_nav_item_active(client, admin_user, name):
+    """Each page must highlight exactly one sidebar nav item — guards against the
+    substring collisions (product⊂production⊂needs_production, kassa⊂sklad_kassa)."""
+    client.force_login(admin_user)
+    html = client.get(reverse(name)).content.decode()
+    assert html.count("nav-item active") == 1, name
