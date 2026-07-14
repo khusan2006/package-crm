@@ -697,6 +697,18 @@ class AuditLog(models.Model):
             return e("Ishlab chiqarishga topshirildi", "badge-info", "out", "out")
         if t == "Qaytarish":
             return e("Mahsulot qaytdi", AMBER, "return")
+        if t == "Omborga topshiruv":
+            # A warehouse→seller stock hand-off. Must precede the Action.TRANSFER
+            # fallthrough below, which is the "sale's seller was reassigned" label.
+            if a == self.Action.DELETE:
+                return e("Topshiruv o'chirildi", RED, "trash")
+            return e("Sotuvchiga topshirildi", "badge-info", "out")
+        if t in ("Xomashyo", "Xomashyo xaridi", "Ishlab chiqarish", "Sotuvchi ombor"):
+            if a == self.Action.DELETE:
+                return e(f"“{t}” o'chirildi", RED, "trash")
+            if a == self.Action.UPDATE:
+                return e(f"“{t}” o'zgartirildi", AMBER, "edit")
+            return e(f"“{t}” qo'shildi", GREY, "dot")
         if a == self.Action.TRANSFER:
             return e("Sotuvchi o'zgardi", GREY, "transfer")
         return e(self.get_action_display(), GREY, "dot")

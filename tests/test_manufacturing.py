@@ -212,6 +212,21 @@ def test_transfer_form_lists_only_sellers(admin_user, seller_user):
     assert admin_user.pk not in seller_ids            # admins aren't transfer targets
 
 
+def test_transfer_audit_event_label(admin_user):
+    from crm.models import AuditLog
+    log = AuditLog.record(
+        admin_user, AuditLog.Action.TRANSFER, "Omborga topshiruv", 1, "test"
+    )
+    # Must NOT fall through to the "sale's seller reassigned" label.
+    assert log.event["label"] == "Sotuvchiga topshirildi"
+
+
+def test_material_audit_event_label(admin_user):
+    from crm.models import AuditLog
+    log = AuditLog.record(admin_user, AuditLog.Action.CREATE, "Xomashyo", 1, "Karton")
+    assert log.event["label"] == "“Xomashyo” qo'shildi"
+
+
 def test_production_create_view(client, material, finished_product, admin_user):
     _buy(material, "100", "1000", admin_user)
     client.force_login(admin_user)
