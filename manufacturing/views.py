@@ -1,12 +1,15 @@
+from datetime import date
+from decimal import Decimal
+
 from django.contrib import messages
 from django.core.paginator import Paginator
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
 from accounts.decorators import role_required
 from accounts.models import User
-from crm.models import AuditLog, Product
+from crm.models import AuditLog, Expense, Payment, Product, ProductionRemittance
 from crm.utils import form_response, form_success
 
 from . import services
@@ -23,6 +26,47 @@ from .queries import annotate_seller_ombor, annotate_sklad_stock
 from .services import InsufficientStock
 
 SKLAD_ROLES = (User.Role.ADMIN, User.Role.MANAGER, User.Role.OMBORCHI)
+
+
+def _range(request):
+    def parse(v):
+        try:
+            return date.fromisoformat(v)
+        except (TypeError, ValueError):
+            return None
+    today = date.today()
+    d_from = parse(request.GET.get("from")) or today.replace(day=1)
+    d_to = parse(request.GET.get("to")) or today
+    return d_from, d_to
+
+
+@role_required(*SKLAD_ROLES)
+def sklad_kassa(request):
+    d_from, d_to = _range(request)
+    rng = {"date__gte": d_from, "date__lte": d_to}
+
+    remitted = ProductionRemittance.objects.filter(**rng).aggregate(s=Sum("amount"))["s"] or Decimal("0")
+    direct_paid = (
+        Payment.objects.filter(sale__sales_rep__role=User.Role.OMBORCHI, **rng)
+        .aggregate(s=Sum("amount"))["s"] or Decimal("0")
+    )
+    purchases = MaterialPurchase.objects.filter(**rng)
+    purchase_total = sum((p.total for p in purchases), Decimal("0"))
+    expenses = (
+        Expense.objects.filter(created_by__role=User.Role.OMBORCHI, **rng)
+        .aggregate(s=Sum("amount"))["s"] or Decimal("0")
+    )
+
+    inflow = remitted + direct_paid
+    outflow = purchase_total + expenses
+    ctx = {
+        "d_from": d_from, "d_to": d_to,
+        "remitted": remitted, "direct_paid": direct_paid,
+        "purchase_total": purchase_total, "expense_total": expenses,
+        "inflow": inflow, "outflow": outflow, "balance": inflow - outflow,
+        "purchases": purchases.select_related("material")[:100],
+    }
+    return render(request, "manufacturing/sklad_kassa.html", ctx)
 
 
 @role_required(*SKLAD_ROLES)

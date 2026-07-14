@@ -271,3 +271,19 @@ def test_seller_can_add_own_entry(client, finished_product, seller_user):
     })
     assert resp.status_code in (204, 302)
     assert SellerStockEntry.objects.filter(seller=seller_user).count() == 1
+
+
+from crm.models import Payment, ProductionRemittance
+
+
+def test_sklad_kassa_balance(client, material, admin_user, seller_user):
+    _buy(material, "100", "1000", admin_user)   # 100_000 outflow
+    ProductionRemittance.objects.create(seller=seller_user, amount=Decimal("30000"),
+                                        created_by=seller_user)   # 30_000 inflow
+    client.force_login(admin_user)
+    resp = client.get(reverse("manufacturing:sklad_kassa") + "?from=2026-07-01&to=2026-07-31")
+    assert resp.status_code == 200
+    ctx = resp.context
+    assert ctx["inflow"] == Decimal("30000.00")
+    assert ctx["outflow"] == Decimal("100000.00")
+    assert ctx["balance"] == Decimal("-70000.00")

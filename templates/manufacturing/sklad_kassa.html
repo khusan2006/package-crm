@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Sklad kassa · Paket CRM{% endblock %}
+{% block topbar_title %}Sklad kassa{% endblock %}
+{% block content %}
+<form method="get" class="filter-toolbar">
+  <input type="date" name="from" value="{{ d_from|date:'Y-m-d' }}">
+  <input type="date" name="to" value="{{ d_to|date:'Y-m-d' }}">
+  <button type="submit" class="btn btn-ghost">Ko'rsatish</button>
+</form>
+<div class="cards">
+  <div class="card"><div class="card-label">Kirim</div><div class="card-value">{{ inflow|floatformat:"0g" }} so'm</div></div>
+  <div class="card"><div class="card-label">Chiqim</div><div class="card-value">{{ outflow|floatformat:"0g" }} so'm</div></div>
+  <div class="card"><div class="card-label">Qoldiq</div><div class="card-value">{{ balance|floatformat:"0g" }} so'm</div></div>
+</div>
+<h3>Tafsilot</h3>
+<div class="table-wrap"><table>
+  <tr><th>Manba</th><th class="num">Summa (so'm)</th></tr>
+  <tr><td>Sotuvchilardan topshiruv</td><td class="num">{{ remitted|floatformat:"0g" }}</td></tr>
+  <tr><td>To'g'ridan-to'g'ri sotuv to'lovlari</td><td class="num">{{ direct_paid|floatformat:"0g" }}</td></tr>
+  <tr><td>Xomashyo xaridi</td><td class="num">−{{ purchase_total|floatformat:"0g" }}</td></tr>
+  <tr><td>Ishlab chiqarish chiqimlari</td><td class="num">−{{ expense_total|floatformat:"0g" }}</td></tr>
+</table></div>
+{% endblock %}
