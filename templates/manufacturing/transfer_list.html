@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Topshiruvlar · Paket CRM{% endblock %}
+{% block topbar_title %}Sotuvchiga topshiruvlar{% endblock %}
+{% block fab %}<a class="fab" href="{% url 'manufacturing:transfer_create' %}" data-modal>+ Topshirish</a>{% endblock %}
+{% block content %}
+<div class="table-wrap"><table>
+  <tr><th>Sana</th><th>Mahsulot</th><th>Sotuvchi</th><th class="num">Miqdor (kg)</th><th>Kim</th></tr>
+  {% for t in page %}
+  <tr><td>{{ t.date }}</td><td>{{ t.product.name }}</td><td>{{ t.seller }}</td><td class="num">{{ t.quantity_kg|floatformat:"-3g" }}</td><td>{{ t.created_by }}</td></tr>
+  {% empty %}<tr><td colspan="5" class="muted">Topshiruv yo'q.</td></tr>{% endfor %}
+</table></div>
+{% include "crm/_pagination.html" %}
+{% endblock %}

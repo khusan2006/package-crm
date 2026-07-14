@@ -225,3 +225,15 @@ def test_production_create_view(client, material, finished_product, admin_user):
     assert ProductionRun.objects.count() == 1
     finished_product.refresh_from_db()
     assert finished_product.cost_price == Decimal("1250.00")
+
+
+def test_transfer_create_view(client, material, finished_product, admin_user, seller_user):
+    _stock_40(material, finished_product, admin_user)
+    client.force_login(admin_user)
+    resp = client.post(reverse("manufacturing:transfer_create"), {
+        "product": finished_product.pk, "seller": seller_user.pk,
+        "date": "2026-07-05", "quantity_kg": "10", "note": "",
+    })
+    assert resp.status_code in (204, 302)
+    assert StockTransfer.objects.count() == 1
+    assert sklad_stock(finished_product) == Decimal("30.000")

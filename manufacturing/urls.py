@@ -13,4 +13,7 @@ urlpatterns = [
     path("xaridlar/yangi/", views.purchase_create, name="purchase_create"),
     path("ishlab-chiqarish/", views.production_list, name="production_list"),
     path("ishlab-chiqarish/yangi/", views.production_create, name="production_create"),
+    path("ombor/", views.sklad_ombor, name="sklad_ombor"),
+    path("topshiruvlar/", views.transfer_list, name="transfer_list"),
+    path("topshiruvlar/yangi/", views.transfer_create, name="transfer_create"),
 ]

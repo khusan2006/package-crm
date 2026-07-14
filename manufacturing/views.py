@@ -6,7 +6,7 @@ from django.urls import reverse
 
 from accounts.decorators import role_required
 from accounts.models import User
-from crm.models import AuditLog
+from crm.models import AuditLog, Product
 from crm.utils import form_response, form_success
 
 from . import services
@@ -15,8 +15,10 @@ from .forms import (
     ProductionRunForm,
     ProductionRunItemFormSet,
     RawMaterialForm,
+    StockTransferForm,
 )
-from .models import MaterialPurchase, ProductionRun, RawMaterial
+from .models import MaterialPurchase, ProductionRun, RawMaterial, StockTransfer
+from .queries import annotate_sklad_stock
 from .services import InsufficientStock
 
 SKLAD_ROLES = (User.Role.ADMIN, User.Role.MANAGER, User.Role.OMBORCHI)
@@ -136,3 +138,41 @@ def production_create(request):
             return form_success(request, reverse("manufacturing:production_list"))
         return _render_production_form(request, form, formset, invalid=True)
     return _render_production_form(request, form, formset)
+
+
+@role_required(*SKLAD_ROLES)
+def sklad_ombor(request):
+    products = annotate_sklad_stock(Product.objects.filter(is_active=True)).order_by("name")
+    q = request.GET.get("q", "").strip()
+    if q:
+        products = products.filter(Q(name__icontains=q) | Q(sku__icontains=q))
+    page = Paginator(products, 25).get_page(request.GET.get("page"))
+    return render(request, "manufacturing/sklad_ombor.html", {"page": page, "q": q})
+
+
+@role_required(*SKLAD_ROLES)
+def transfer_list(request):
+    transfers = StockTransfer.objects.select_related("product", "seller", "created_by")
+    page = Paginator(transfers, 25).get_page(request.GET.get("page"))
+    return render(request, "manufacturing/transfer_list.html", {"page": page})
+
+
+@role_required(*SKLAD_ROLES)
+def transfer_create(request):
+    form = StockTransferForm(request.POST or None, user=request.user)
+    if request.method == "POST" and form.is_valid():
+        cd = form.cleaned_data
+        try:
+            transfer = services.create_transfer(
+                product=cd["product"], seller=cd["seller"], quantity_kg=cd["quantity_kg"],
+                date=cd["date"], note=cd["note"], user=request.user,
+            )
+        except InsufficientStock as exc:
+            form.add_error("quantity_kg",
+                           f"Omborda {exc.available:.3f} kg bor, {exc.requested:.3f} kg so'raldi.")
+            return form_response(request, form, "Sotuvchiga topshirish", invalid=True)
+        AuditLog.record(request.user, AuditLog.Action.TRANSFER, "Omborga topshiruv", transfer.pk,
+                        f"{transfer.product.name} → {transfer.seller} — {transfer.quantity_kg} kg")
+        messages.success(request, "Topshiruv qo'shildi.")
+        return form_success(request, reverse("manufacturing:transfer_list"))
+    return form_response(request, form, "Sotuvchiga topshirish", invalid=request.method == "POST")
