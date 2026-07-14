@@ -10,8 +10,14 @@ from crm.models import AuditLog
 from crm.utils import form_response, form_success
 
 from . import services
-from .forms import MaterialPurchaseForm, RawMaterialForm
-from .models import MaterialPurchase, RawMaterial
+from .forms import (
+    MaterialPurchaseForm,
+    ProductionRunForm,
+    ProductionRunItemFormSet,
+    RawMaterialForm,
+)
+from .models import MaterialPurchase, ProductionRun, RawMaterial
+from .services import InsufficientStock
 
 SKLAD_ROLES = (User.Role.ADMIN, User.Role.MANAGER, User.Role.OMBORCHI)
 
@@ -81,3 +87,52 @@ def purchase_create(request):
         messages.success(request, "Xarid qo'shildi.")
         return form_success(request, reverse("manufacturing:purchase_list"))
     return form_response(request, form, "Yangi xarid", invalid=request.method == "POST")
+
+
+def _render_production_form(request, form, formset, invalid=False):
+    from crm.utils import is_ajax
+
+    ctx = {"form": form, "formset": formset, "title": "Yangi ishlab chiqarish"}
+    if is_ajax(request):
+        return render(request, "manufacturing/production_form.html", ctx,
+                      status=422 if invalid else 200)
+    return render(request, "manufacturing/production_form.html", ctx)
+
+
+@role_required(*SKLAD_ROLES)
+def production_list(request):
+    runs = ProductionRun.objects.select_related("product", "created_by")
+    page = Paginator(runs, 25).get_page(request.GET.get("page"))
+    return render(request, "manufacturing/production_list.html", {"page": page})
+
+
+@role_required(*SKLAD_ROLES)
+def production_create(request):
+    form = ProductionRunForm(request.POST or None)
+    formset = ProductionRunItemFormSet(request.POST or None, instance=ProductionRun(), prefix="items")
+    if request.method == "POST":
+        if form.is_valid() and formset.is_valid():
+            items = [
+                (f.cleaned_data["material"], f.cleaned_data["quantity_kg"])
+                for f in formset.forms
+                if f.cleaned_data and not f.cleaned_data.get("DELETE")
+                and f.cleaned_data.get("material") and f.cleaned_data.get("quantity_kg")
+            ]
+            try:
+                run = services.create_production_run(
+                    product=form.cleaned_data["product"], output_kg=form.cleaned_data["output_kg"],
+                    date=form.cleaned_data["date"], note=form.cleaned_data["note"],
+                    user=request.user, items=items,
+                )
+            except InsufficientStock as exc:
+                form.add_error(
+                    None,
+                    f"“{exc.label}”: omborda {exc.available:.3f} kg bor, {exc.requested:.3f} kg kerak.",
+                )
+                return _render_production_form(request, form, formset, invalid=True)
+            AuditLog.record(request.user, AuditLog.Action.CREATE, "Ishlab chiqarish", run.pk,
+                            f"{run.product.name} — {run.output_kg} kg")
+            messages.success(request, "Ishlab chiqarish qo'shildi.")
+            return form_success(request, reverse("manufacturing:production_list"))
+        return _render_production_form(request, form, formset, invalid=True)
+    return _render_production_form(request, form, formset)

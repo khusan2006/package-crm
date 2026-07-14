@@ -11,4 +11,6 @@ urlpatterns = [
     path("xomashyo/<int:pk>/edit/", views.material_edit, name="material_edit"),
     path("xaridlar/", views.purchase_list, name="purchase_list"),
     path("xaridlar/yangi/", views.purchase_create, name="purchase_create"),
+    path("ishlab-chiqarish/", views.production_list, name="production_list"),
+    path("ishlab-chiqarish/yangi/", views.production_create, name="production_create"),
 ]

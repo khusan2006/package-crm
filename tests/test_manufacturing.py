@@ -210,3 +210,18 @@ def test_transfer_form_lists_only_sellers(admin_user, seller_user):
     seller_ids = set(form.fields["seller"].queryset.values_list("pk", flat=True))
     assert seller_user.pk in seller_ids
     assert admin_user.pk not in seller_ids            # admins aren't transfer targets
+
+
+def test_production_create_view(client, material, finished_product, admin_user):
+    _buy(material, "100", "1000", admin_user)
+    client.force_login(admin_user)
+    resp = client.post(reverse("manufacturing:production_create"), {
+        "product": finished_product.pk, "date": "2026-07-03", "output_kg": "40", "note": "",
+        "items-TOTAL_FORMS": "1", "items-INITIAL_FORMS": "0",
+        "items-MIN_NUM_FORMS": "1", "items-MAX_NUM_FORMS": "1000",
+        "items-0-material": material.pk, "items-0-quantity_kg": "50",
+    })
+    assert resp.status_code in (204, 302)
+    assert ProductionRun.objects.count() == 1
+    finished_product.refresh_from_db()
+    assert finished_product.cost_price == Decimal("1250.00")
