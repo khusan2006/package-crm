@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Ombor · Paket CRM{% endblock %}
+{% block topbar_title %}Sklad ombori{% endblock %}
+{% block fab %}<a class="fab" href="{% url 'manufacturing:transfer_create' %}" data-modal>+ Topshirish</a>{% endblock %}
+{% block content %}
+<form method="get" class="searchbar" role="search" data-live-search>
+  <div class="toolbar-search{% if q %} is-active{% endif %}">
+    <svg class="toolbar-search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input type="search" name="q" value="{{ q }}" placeholder="Nomi yoki SKU bo'yicha qidirish…" autocomplete="off">
+    {% if q %}<a href="?" class="toolbar-search-x">&times;</a>{% endif %}
+  </div>
+</form>
+{% if page.object_list %}
+<div class="table-wrap"><table>
+  <tr><th class="sticky-col">Nomi</th><th class="num">Tannarx</th><th class="num">Qoldiq (kg)</th></tr>
+  {% for p in page %}
+  <tr>
+    <td class="sticky-col">{{ p.name }}</td>
+    <td class="num">{{ p.cost_price|floatformat:"0g" }}</td>
+    <td class="num">{{ p.stock|floatformat:"-3g" }}</td>
+  </tr>
+  {% endfor %}
+</table></div>
+{% include "crm/_pagination.html" %}
+{% else %}<p class="muted">Mahsulot topilmadi.</p>{% endif %}
+{% endblock %}

@@ -7,6 +7,7 @@ class User(AbstractUser):
         ADMIN = "admin", "Admin"
         MANAGER = "manager", "Menejer"
         SALES = "sales", "Sotuvchi"
+        OMBORCHI = "omborchi", "Omborchi"
 
     role = models.CharField("Rol", max_length=10, choices=Role.choices, default=Role.SALES)
     phone = models.CharField("Telefon", max_length=30, blank=True)

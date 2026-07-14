@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Ishlab chiqarish · Paket CRM{% endblock %}
+{% block topbar_title %}Ishlab chiqarish{% endblock %}
+{% block fab %}<a class="fab" href="{% url 'manufacturing:production_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi</a>{% endblock %}
+{% block content %}
+{% if page.object_list %}
+<div class="table-wrap">
+<table>
+  <tr><th>Sana</th><th>Mahsulot</th><th class="num">Chiqdi (kg)</th><th class="num">Tannarx (1 kg)</th><th>Kim</th></tr>
+  {% for r in page %}
+  <tr>
+    <td>{{ r.date }}</td>
+    <td>{{ r.product.name }}</td>
+    <td class="num">{{ r.output_kg|floatformat:"-3g" }}</td>
+    <td class="num">{{ r.cost_per_kg|floatformat:"0g" }}</td>
+    <td>{{ r.created_by }}</td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% include "crm/_pagination.html" %}
+{% else %}
+<p class="muted">Ishlab chiqarish yozuvlari yo'q.</p>
+{% endif %}
+{% endblock %}

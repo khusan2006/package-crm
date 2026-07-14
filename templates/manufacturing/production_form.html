@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · Paket CRM{% endblock %}
+{% block topbar_title %}{{ title }}{% endblock %}
+{% block content %}
+<div class="card" style="max-width: 720px;">
+  <form method="post" action="{{ request.path }}" class="stacked">
+    {% csrf_token %}
+    {% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
+
+    <p>{{ form.product.label_tag }}{{ form.product }}{{ form.product.errors }}</p>
+    <p>{{ form.date.label_tag }}{{ form.date }}{{ form.date.errors }}</p>
+    <p>{{ form.output_kg.label_tag }}{{ form.output_kg }}{{ form.output_kg.errors }}</p>
+
+    <div class="items-block">
+      <div class="items-label">Sarflangan xomashyo</div>
+      {{ formset.management_form }}
+      {% if formset.non_form_errors %}<div class="flash flash-error">{{ formset.non_form_errors.0 }}</div>{% endif %}
+      <div class="item-rows">
+        {% for f in formset %}
+          <div class="item-row">
+            {{ f.id }}
+            {% if f.non_field_errors %}<div class="flash flash-error">{{ f.non_field_errors.0 }}</div>{% endif %}
+            <div class="item-fields">
+              <label class="if if-product">Xomashyo{{ f.material }}{{ f.material.errors }}</label>
+              <label class="if if-weight">Miqdor (kg){{ f.quantity_kg }}{{ f.quantity_kg.errors }}</label>
+              <button type="button" class="icon-action danger item-remove" title="Qatorni o'chirish">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              </button>
+            </div>
+            <span class="item-del" hidden>{{ f.DELETE }}</span>
+          </div>
+        {% endfor %}
+      </div>
+      <template class="item-empty-tpl">
+        <div class="item-row">
+          <div class="item-fields">
+            <label class="if if-product">Xomashyo{{ formset.empty_form.material }}</label>
+            <label class="if if-weight">Miqdor (kg){{ formset.empty_form.quantity_kg }}</label>
+            <button type="button" class="icon-action danger item-remove" title="Qatorni o'chirish">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            </button>
+          </div>
+          <span class="item-del" hidden>{{ formset.empty_form.DELETE }}</span>
+        </div>
+      </template>
+      <button type="button" class="btn btn-sm btn-ghost item-add">+ Xomashyo qo'shish</button>
+    </div>
+
+    <button type="submit" class="btn">Saqlash</button>
+  </form>
+</div>
+{% endblock %}

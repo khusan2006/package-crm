@@ -2,6 +2,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from io import BytesIO
 
+from django.contrib.messages import get_messages
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -111,6 +112,15 @@ class BaseSetup(TestCase):
         )
         cls.sale1 = make_sale(cls.client1, cls.sales1, cls.product)
         cls.sale2 = make_sale(cls.client2, cls.sales2, cls.product)
+        # A sale is now blocked if it would exceed the seller's personal ombor
+        # (Task 7). Seed each seller with a generous opening balance so the
+        # sale_create/sale_edit POSTs in these tests have stock to draw on.
+        from manufacturing.models import SellerStockEntry
+        for seller in (cls.sales1, cls.sales2):
+            SellerStockEntry.objects.create(
+                seller=seller, product=cls.product, quantity_kg=Decimal("1000"),
+                note="test opening balance", created_by=cls.admin,
+            )
 
 
 class SaleMathTests(BaseSetup):
@@ -189,6 +199,11 @@ class MultiItemSaleTests(BaseSetup):
         cls.product2 = Product.objects.create(
             name="Mayka paket", sku="MYK-1",
             cost_price=Decimal("17000"), price=Decimal("23000"),
+        )
+        from manufacturing.models import SellerStockEntry
+        SellerStockEntry.objects.create(
+            seller=cls.sales1, product=cls.product2, quantity_kg=Decimal("1000"),
+            note="test opening balance", created_by=cls.admin,
         )
 
     def test_creates_one_sale_with_multiple_items(self):
@@ -377,23 +392,40 @@ class DayViewTests(BaseSetup):
 
 class StockTests(BaseSetup):
     def setUp(self):
-        # BaseSetup already created sale1 (10 kg) + sale2 for self.product
+        # BaseSetup already created sale1 (10 kg) + sale2 for self.product, both by
+        # SALES-role reps. Under the sklad (factory-warehouse) stock model, only
+        # OMBORCHI-role direct sales move sklad stock — regular seller sales draw
+        # from stock a seller already carries, not the factory warehouse.
         StockEntry.objects.create(
             product=self.product, quantity_kg=Decimal("100"), created_by=self.admin
         )
+        self.omborchi = User.objects.create_user(
+            "t_omborchi", password="x", role=User.Role.OMBORCHI
+        )
+        self.omborchi_client = Client.objects.create(name="Mijoz Omborchi", owner=self.omborchi)
 
     def test_current_stock_is_received_minus_sold(self):
-        # 100 kg in; two 10 kg sales out (sale1 + sale2) => 80 kg
+        # 100 kg in; sale1 + sale2 are seller (non-omborchi) sales, so they don't
+        # draw down sklad stock => stays 100 kg.
         self.product.refresh_from_db()
         self.assertEqual(self.product.total_received, Decimal("100"))
         self.assertEqual(self.product.total_sold, Decimal("20"))
-        self.assertEqual(self.product.current_stock, Decimal("80"))
+        self.assertEqual(self.product.current_stock, Decimal("100"))
+
+    def test_direct_omborchi_sale_reduces_sklad_stock(self):
+        make_sale(self.client1, self.omborchi, self.product, weight="10")
+        self.assertEqual(self.product.current_stock, Decimal("90.000"))
 
     def test_gram_sale_converts_to_kg(self):
+        # A seller (non-omborchi) gram sale still doesn't touch sklad stock.
         make_sale(self.client1, self.sales1, self.product, weight="500", dimension="g")
-        # 500 g = 0.5 kg extra sold => 20.5 kg out; 100 - 20.5 = 79.5
         self.assertEqual(self.product.total_sold, Decimal("20.500"))
-        self.assertEqual(self.product.current_stock, Decimal("79.500"))
+        self.assertEqual(self.product.current_stock, Decimal("100.000"))
+
+    def test_gram_sale_by_omborchi_converts_to_kg(self):
+        make_sale(self.client1, self.omborchi, self.product, weight="500", dimension="g")
+        # 500 g = 0.5 kg direct sale => 100 - 0.5 = 99.5
+        self.assertEqual(self.product.current_stock, Decimal("99.500"))
 
     def test_with_stock_annotation_matches_property(self):
         annotated = Product.objects.with_stock().get(pk=self.product.pk)
@@ -416,22 +448,24 @@ class StockTests(BaseSetup):
         response = self.client.get(reverse("stock_entry_create", args=[self.product.pk]))
         self.assertEqual(response.status_code, 200)
 
-    def test_sale_beyond_stock_warns_but_saves(self):
-        self.client.force_login(self.sales1)
+    def test_sale_beyond_stock_saves_with_warning(self):
+        # Make-to-order: an order is never blocked for lack of stock. A direct
+        # (omborchi) sale of 500 kg against 100 kg on hand still saves; the sklad
+        # goes negative (demand) and the seller is warned to manufacture.
+        self.client.force_login(self.omborchi)
         data = sale_post(
-            self.client1.pk,
-            [one_item(self.product, weight="500")],  # far beyond the 80 kg on hand
+            self.omborchi_client.pk,
+            [one_item(self.product, weight="500")],  # far beyond the 100 kg on hand
         )
         response = self.client.post(reverse("sale_create"), data, follow=True)
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(SaleItem.objects.filter(weight=Decimal("500")).exists())
-        msgs = [m.message for m in response.context["messages"]]
-        self.assertTrue(any("yetarli emas" in m for m in msgs))
+        self.assertTrue(SaleItem.objects.filter(weight=Decimal("500")).exists())  # saved
+        msgs = " ".join(m.message.lower() for m in get_messages(response.wsgi_request))
+        self.assertIn("ishlab chiqarish kerak", msgs)  # warned, not blocked
 
     def test_low_stock_flag(self):
-        self.product.low_stock_threshold = Decimal("90")
+        self.product.low_stock_threshold = Decimal("110")
         self.product.save()
-        # current stock 80 <= threshold 90 => low
+        # current stock 100 <= threshold 110 => low
         self.assertTrue(self.product.is_low_stock)
 
     def test_product_detail_accessible_to_sales(self):
@@ -440,7 +474,8 @@ class StockTests(BaseSetup):
         self.assertEqual(response.status_code, 200)
 
     def test_adjust_sets_exact_quantity(self):
-        # current stock is 80 (100 in - 20 sold)
+        # current sklad stock is 100 (only the manual kirim; seller sales don't
+        # draw from sklad)
         self.client.force_login(self.manager)
         before = StockEntry.objects.count()
         response = self.client.post(
@@ -448,9 +483,9 @@ class StockTests(BaseSetup):
         )
         self.assertEqual(response.status_code, 302)
         self.assertEqual(self.product.current_stock, Decimal("200.000"))
-        # exactly one movement logged, holding the +120 delta
+        # exactly one movement logged, holding the +100 delta
         self.assertEqual(StockEntry.objects.count(), before + 1)
-        self.assertEqual(StockEntry.objects.latest("created_at").quantity_kg, Decimal("120.000"))
+        self.assertEqual(StockEntry.objects.latest("created_at").quantity_kg, Decimal("100.000"))
 
     def test_adjust_can_decrease_below_current(self):
         self.client.force_login(self.manager)
@@ -458,7 +493,7 @@ class StockTests(BaseSetup):
             reverse("stock_adjust", args=[self.product.pk]), {"quantity": "50"}
         )
         self.assertEqual(self.product.current_stock, Decimal("50.000"))
-        self.assertEqual(StockEntry.objects.latest("created_at").quantity_kg, Decimal("-30.000"))
+        self.assertEqual(StockEntry.objects.latest("created_at").quantity_kg, Decimal("-50.000"))
 
     def test_sales_can_adjust(self):
         # Warehouse is shared — a seller may correct the stock quantity too.
@@ -1093,6 +1128,13 @@ class AuditLogTests(BaseSetup):
 
 
 class ReturnTests(BaseSetup):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.omborchi = User.objects.create_user(
+            "r_omborchi", password="x", role=User.Role.OMBORCHI
+        )
+
     def _return(self, sale, weight, price="24000", restock=True):
         data = {
             "product": self.product.pk, "dimension": "kg",
@@ -1114,15 +1156,18 @@ class ReturnTests(BaseSetup):
         return Product.objects.get(pk=self.product.pk).current_stock
 
     def test_restock_return_increases_stock(self):
-        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True, weight="10")
-        self.client.force_login(self.sales1)
+        # Only a direct (omborchi) sale draws from sklad stock, so a restocked
+        # return of it is what flows back into sklad. The sale is only visible to
+        # its own rep or a manager/admin, so process the return as the manager.
+        sale = make_sale(self.client1, self.omborchi, self.product, is_debt=True, weight="10")
+        self.client.force_login(self.manager)
         before = self._stock()
         self._return(sale, "3", restock=True)
         self.assertEqual(self._stock() - before, Decimal("3"))  # 3 kg back in stock
 
     def test_no_restock_leaves_stock_unchanged(self):
-        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True, weight="10")
-        self.client.force_login(self.sales1)
+        sale = make_sale(self.client1, self.omborchi, self.product, is_debt=True, weight="10")
+        self.client.force_login(self.manager)
         before = self._stock()
         self._return(sale, "3", restock=False)
         self.assertEqual(self._stock() - before, Decimal("0"))  # not restocked

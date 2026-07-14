@@ -80,33 +80,11 @@ class Client(models.Model):
 
 class ProductQuerySet(models.QuerySet):
     def with_stock(self):
-        """Annotate each product with stock_in, stock_out, and current stock (kg)."""
-        received = Subquery(
-            StockEntry.objects.filter(product=OuterRef("pk"))
-            .values("product")
-            .annotate(s=Sum("quantity_kg"))
-            .values("s"),
-            output_field=QTY,
-        )
-        sold = Subquery(
-            SaleItem.objects.filter(product=OuterRef("pk"))
-            .values("product")
-            .annotate(s=Sum(ITEM_WEIGHT_KG))
-            .values("s"),
-            output_field=QTY,
-        )
-        returned = Subquery(
-            Return.objects.filter(product=OuterRef("pk"), restock=True)
-            .values("product")
-            .annotate(s=Sum(RETURN_WEIGHT_KG))
-            .values("s"),
-            output_field=QTY,
-        )
-        return self.annotate(
-            stock_in=Coalesce(received, ZERO_QTY),
-            stock_out=Coalesce(sold, ZERO_QTY),
-            stock_returned=Coalesce(returned, ZERO_QTY),
-        ).annotate(stock=F("stock_in") - F("stock_out") + F("stock_returned"))
+        """Annotate each product with sklad (factory-warehouse) stock. The
+        derivation lives in the manufacturing app; imported lazily to avoid a
+        circular import at load time."""
+        from manufacturing.queries import annotate_sklad_stock
+        return annotate_sklad_stock(self)
 
 
 class Product(models.Model):
@@ -154,7 +132,8 @@ class Product(models.Model):
 
     @property
     def current_stock(self):
-        return self.total_received - self.total_sold + self.total_returned
+        from manufacturing.queries import sklad_stock
+        return sklad_stock(self)
 
     @property
     def is_low_stock(self):
@@ -718,6 +697,18 @@ class AuditLog(models.Model):
             return e("Ishlab chiqarishga topshirildi", "badge-info", "out", "out")
         if t == "Qaytarish":
             return e("Mahsulot qaytdi", AMBER, "return")
+        if t == "Omborga topshiruv":
+            # A warehouse→seller stock hand-off. Must precede the Action.TRANSFER
+            # fallthrough below, which is the "sale's seller was reassigned" label.
+            if a == self.Action.DELETE:
+                return e("Topshiruv o'chirildi", RED, "trash")
+            return e("Sotuvchiga topshirildi", "badge-info", "out")
+        if t in ("Xomashyo", "Xomashyo xaridi", "Ishlab chiqarish", "Sotuvchi ombor"):
+            if a == self.Action.DELETE:
+                return e(f"“{t}” o'chirildi", RED, "trash")
+            if a == self.Action.UPDATE:
+                return e(f"“{t}” o'zgartirildi", AMBER, "edit")
+            return e(f"“{t}” qo'shildi", GREY, "dot")
         if a == self.Action.TRANSFER:
             return e("Sotuvchi o'zgardi", GREY, "transfer")
         return e(self.get_action_display(), GREY, "dot")
