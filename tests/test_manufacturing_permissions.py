@@ -39,6 +39,19 @@ def test_nav_hides_sklad_for_seller(client, seller_user):
     assert reverse("manufacturing:my_ombor") in html      # seller sees own ombor link
 
 
+def test_nav_hides_product_catalog_for_seller(client, seller_user, admin_user):
+    """A seller should not see the shared product catalog ('Ombor') link — it now
+    shows factory/sklad stock and duplicates 'Mening omborim'. Non-sellers keep it."""
+    client.force_login(seller_user)
+    seller_html = client.get(reverse("dashboard")).content.decode()
+    assert reverse("product_list") not in seller_html
+    assert reverse("manufacturing:my_ombor") in seller_html
+
+    client.force_login(admin_user)
+    admin_html = client.get(reverse("dashboard")).content.decode()
+    assert reverse("product_list") in admin_html
+
+
 def test_omborchi_denied_seller_kassa(client, omborchi_user):
     client.force_login(omborchi_user)
     # Sklad pages allowed:
