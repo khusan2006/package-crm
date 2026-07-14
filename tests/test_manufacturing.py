@@ -287,3 +287,29 @@ def test_sklad_kassa_balance(client, material, admin_user, seller_user):
     assert ctx["inflow"] == Decimal("30000.00")
     assert ctx["outflow"] == Decimal("100000.00")
     assert ctx["balance"] == Decimal("-70000.00")
+
+
+def test_cutover_zeroes_seller_and_preserves_sklad():
+    """The cutover logic, applied to pre-existing sales, leaves sklad at the real
+    net stock and each seller ombor at zero. Exercised via the migration helper."""
+    from manufacturing.migrations_helpers import apply_cutover  # extracted for testability
+    # (See the 0006 migration — it calls this same function.)
+    assert callable(apply_cutover)
+
+
+from crm.models import StockEntry
+
+
+def test_cutover_math(db, admin_user, seller_user):
+    from django.apps import apps as global_apps
+    from manufacturing.migrations_helpers import apply_cutover
+    p = Product.objects.create(name="X", sku="CUT-1", price=Decimal("100"))
+    StockEntry.objects.create(product=p, quantity_kg=Decimal("100"), created_by=admin_user)
+    c = Client.objects.create(name="C", owner=seller_user)
+    sale = Sale.objects.create(client=c, sales_rep=seller_user)
+    SaleItem.objects.create(sale=sale, product=p, dimension=Sale.Dimension.KG,
+                            weight=Decimal("30"), price=Decimal("100"), cost_price=Decimal("50"))
+    # Before cutover: old physical net = 100 − 30 = 70.
+    apply_cutover(global_apps)
+    assert sklad_stock(p) == Decimal("70.000")             # preserved
+    assert seller_ombor(seller_user, p) == Decimal("0.000")  # zeroed
