@@ -101,33 +101,6 @@ def available_for_sale(user, product, exclude_sale_id=None):
     return base
 
 
-def sale_stock_errors(user, formset, exclude_sale_id=None):
-    """Return a list of Uzbek error strings for each product on the sale formset
-    that exceeds the seller's available stock. Empty list = OK to save."""
-    from crm.models import Sale
-
-    requested = {}
-    for form in formset.forms:
-        cd = getattr(form, "cleaned_data", None)
-        if not cd or cd.get("DELETE"):
-            continue
-        product = cd.get("product")
-        weight = cd.get("weight")
-        if not product or weight is None:
-            continue
-        kg = weight / Decimal("1000") if cd.get("dimension") == Sale.Dimension.G else weight
-        requested[product] = requested.get(product, Decimal("0")) + kg
-
-    errors = []
-    for product, kg in requested.items():
-        avail = available_for_sale(user, product, exclude_sale_id)
-        if kg > avail:
-            errors.append(
-                f"“{product.name}”: omborda {avail:.3f} kg bor, {kg:.3f} kg so'raldi."
-            )
-    return errors
-
-
 def annotate_seller_ombor(product_qs, user):
     """Annotate products with `ombor` = this seller's balance per product."""
     from crm.models import (
@@ -152,3 +125,72 @@ def annotate_seller_ombor(product_qs, user):
             - Coalesce(sold, ZERO_QTY) + Coalesce(ret, ZERO_QTY)
         )
     )
+
+
+def company_net(product):
+    """Company-wide net stock (kg) of a finished product = sklad + every seller's
+    ombor. Because transfers out of the sklad exactly match transfers into sellers,
+    they cancel, leaving: manual entries + production + seller own-entries − all
+    sales + all restocked returns. A NEGATIVE value is make-to-order demand — goods
+    ordered from customers that the factory has not produced yet."""
+    from crm.models import ITEM_WEIGHT_KG, RETURN_WEIGHT_KG, Return, SaleItem, StockEntry
+
+    from .models import SellerStockEntry
+
+    entries = StockEntry.objects.filter(product=product).aggregate(s=Sum("quantity_kg"))["s"] or Decimal("0")
+    produced = product.production_runs.aggregate(s=Sum("output_kg"))["s"] or Decimal("0")
+    own = SellerStockEntry.objects.filter(product=product).aggregate(s=Sum("quantity_kg"))["s"] or Decimal("0")
+    sold = SaleItem.objects.filter(product=product).aggregate(s=Sum(ITEM_WEIGHT_KG))["s"] or Decimal("0")
+    returned = (
+        Return.objects.filter(product=product, restock=True)
+        .aggregate(s=Sum(RETURN_WEIGHT_KG))["s"] or Decimal("0")
+    )
+    return entries + produced + own - sold + returned
+
+
+def annotate_company_net(product_qs):
+    """Annotate products with `company_net` (sklad + all seller ombors) in one query.
+    Filter `company_net__lt=0` for the make-to-order production backlog."""
+    from crm.models import (
+        ITEM_WEIGHT_KG, QTY, RETURN_WEIGHT_KG, ZERO_QTY, Return, SaleItem, StockEntry,
+    )
+
+    from .models import SellerStockEntry
+
+    def _sub(model, expr, **extra):
+        return Subquery(
+            model.objects.filter(product=OuterRef("pk"), **extra)
+            .values("product").annotate(s=Sum(expr)).values("s"),
+            output_field=QTY,
+        )
+
+    entries = _sub(StockEntry, "quantity_kg")
+    produced = _sub(ProductionRun, "output_kg")
+    own = _sub(SellerStockEntry, "quantity_kg")
+    sold = _sub(SaleItem, ITEM_WEIGHT_KG)
+    ret = _sub(Return, RETURN_WEIGHT_KG, restock=True)
+    return product_qs.annotate(
+        company_net=(
+            Coalesce(entries, ZERO_QTY) + Coalesce(produced, ZERO_QTY)
+            + Coalesce(own, ZERO_QTY) - Coalesce(sold, ZERO_QTY) + Coalesce(ret, ZERO_QTY)
+        )
+    )
+
+
+def ombor_shortfall_warnings(user, sale):
+    """After a make-to-order sale is saved, produce a Uzbek warning for each product
+    whose actor-ombor (seller's ombor, or sklad for an omborchi) is now negative —
+    i.e. sold beyond stock and therefore needs manufacturing. Non-blocking."""
+    msgs = []
+    seen = set()
+    for item in sale.items.select_related("product"):
+        if item.product_id in seen:
+            continue
+        seen.add(item.product_id)
+        available = available_for_sale(user, item.product)
+        if available < 0:
+            msgs.append(
+                f"«{item.product.name}»: ombor manfiy ({available:.3f} kg) — "
+                f"ishlab chiqarish kerak."
+            )
+    return msgs

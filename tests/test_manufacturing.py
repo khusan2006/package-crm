@@ -175,8 +175,11 @@ def test_seller_sale_reduces_ombor(material, finished_product, admin_user, selle
 from django.urls import reverse
 
 
-def test_sale_blocked_when_seller_ombor_short(client, material, finished_product,
-                                               admin_user, seller_user):
+def test_sale_saves_when_seller_ombor_short(client, material, finished_product,
+                                            admin_user, seller_user):
+    """Make-to-order: an order is NEVER blocked for lack of stock. A seller with
+    only 5 kg selling 10 kg still saves the order; ombor goes negative (demand)."""
+    from django.contrib.messages import get_messages
     _stock_40(material, finished_product, admin_user)
     create_transfer(product=finished_product, seller=seller_user, quantity_kg=Decimal("5"),
                     date="2026-07-05", note="", user=admin_user)
@@ -188,10 +191,46 @@ def test_sale_blocked_when_seller_ombor_short(client, material, finished_product
         "items-MIN_NUM_FORMS": "0", "items-MAX_NUM_FORMS": "1000",
         "items-0-product": finished_product.pk, "items-0-dimension": "kg",
         "items-0-weight": "10", "items-0-price": "20000",
-    })
-    assert resp.status_code in (200, 422)                 # re-rendered form, not a redirect
-    assert SaleItem.objects.count() == 0                  # nothing saved
-    assert "omborda" in resp.content.decode().lower()
+    }, follow=True)
+    assert SaleItem.objects.count() == 1                          # order saved
+    assert seller_ombor(seller_user, finished_product) == Decimal("-5.000")  # demand
+    msgs = " ".join(m.message.lower() for m in get_messages(resp.wsgi_request))
+    assert "ishlab chiqarish kerak" in msgs                       # warned, not blocked
+
+
+from manufacturing.queries import company_net
+
+
+def test_company_net_negative_when_oversold(material, finished_product, admin_user, seller_user):
+    """Sell more than exists company-wide → company_net goes negative = to-produce."""
+    _stock_40(material, finished_product, admin_user)          # 40 kg produced into sklad
+    create_transfer(product=finished_product, seller=seller_user, quantity_kg=Decimal("40"),
+                    date="2026-07-05", note="", user=admin_user)
+    c = Client.objects.create(name="M", owner=seller_user)
+    sale = Sale.objects.create(client=c, sales_rep=seller_user)
+    SaleItem.objects.create(sale=sale, product=finished_product, dimension=Sale.Dimension.KG,
+                            weight=Decimal("60"), price=Decimal("20000"), cost_price=Decimal("1250"))
+    # 40 made, 60 sold company-wide → net −20 (must manufacture 20 more).
+    assert company_net(finished_product) == Decimal("-20.000")
+
+
+def test_needs_production_view_lists_shortfall(client, material, finished_product,
+                                               admin_user, seller_user):
+    _stock_40(material, finished_product, admin_user)
+    create_transfer(product=finished_product, seller=seller_user, quantity_kg=Decimal("40"),
+                    date="2026-07-05", note="", user=admin_user)
+    c = Client.objects.create(name="M", owner=seller_user)
+    sale = Sale.objects.create(client=c, sales_rep=seller_user)
+    SaleItem.objects.create(sale=sale, product=finished_product, dimension=Sale.Dimension.KG,
+                            weight=Decimal("60"), price=Decimal("20000"), cost_price=Decimal("1250"))
+    client.force_login(admin_user)
+    resp = client.get(reverse("manufacturing:needs_production"))
+    assert resp.status_code == 200
+    assert finished_product.name.encode() in resp.content
+    # A fully-supplied product (net 0, not < 0) must NOT appear.
+    Product.objects.create(name="Ta'minlangan", sku="FIN-OK-9", price=Decimal("100"))
+    resp2 = client.get(reverse("manufacturing:needs_production"))
+    assert b"FIN-OK-9" not in resp2.content
 
 
 from manufacturing.forms import MaterialPurchaseForm, StockTransferForm

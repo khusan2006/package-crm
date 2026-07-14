@@ -2,6 +2,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from io import BytesIO
 
+from django.contrib.messages import get_messages
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -447,19 +448,19 @@ class StockTests(BaseSetup):
         response = self.client.get(reverse("stock_entry_create", args=[self.product.pk]))
         self.assertEqual(response.status_code, 200)
 
-    def test_sale_beyond_stock_is_blocked(self):
-        # Only a direct (omborchi) sale draws from sklad stock. A sale that would
-        # exceed what's on hand is now blocked outright (Task 7) rather than saved
-        # with a warning — use an omborchi rep to exceed the 100 kg on hand.
+    def test_sale_beyond_stock_saves_with_warning(self):
+        # Make-to-order: an order is never blocked for lack of stock. A direct
+        # (omborchi) sale of 500 kg against 100 kg on hand still saves; the sklad
+        # goes negative (demand) and the seller is warned to manufacture.
         self.client.force_login(self.omborchi)
         data = sale_post(
             self.omborchi_client.pk,
             [one_item(self.product, weight="500")],  # far beyond the 100 kg on hand
         )
-        response = self.client.post(reverse("sale_create"), data)
-        self.assertEqual(response.status_code, 200)  # re-rendered, not saved
-        self.assertFalse(SaleItem.objects.filter(weight=Decimal("500")).exists())
-        self.assertIn("omborda", response.content.decode().lower())
+        response = self.client.post(reverse("sale_create"), data, follow=True)
+        self.assertTrue(SaleItem.objects.filter(weight=Decimal("500")).exists())  # saved
+        msgs = " ".join(m.message.lower() for m in get_messages(response.wsgi_request))
+        self.assertIn("ishlab chiqarish kerak", msgs)  # warned, not blocked
 
     def test_low_stock_flag(self):
         self.product.low_stock_threshold = Decimal("110")

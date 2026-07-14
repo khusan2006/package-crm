@@ -14,6 +14,7 @@ urlpatterns = [
     path("ishlab-chiqarish/", views.production_list, name="production_list"),
     path("ishlab-chiqarish/yangi/", views.production_create, name="production_create"),
     path("ombor/", views.sklad_ombor, name="sklad_ombor"),
+    path("ishlab-chiqarish-kerak/", views.needs_production, name="needs_production"),
     path("topshiruvlar/", views.transfer_list, name="transfer_list"),
     path("topshiruvlar/yangi/", views.transfer_create, name="transfer_create"),
     path("mening-omborim/", views.my_ombor, name="my_ombor"),

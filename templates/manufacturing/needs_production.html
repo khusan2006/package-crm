@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Ishlab chiqarish kerak · Paket CRM{% endblock %}
+{% block topbar_title %}Ishlab chiqarish kerak{% endblock %}
+{% block content %}
+
+<form method="get" class="searchbar" role="search" data-live-search>
+  <div class="toolbar-search{% if q %} is-active{% endif %}">
+    <svg class="toolbar-search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input type="search" name="q" value="{{ q }}" placeholder="Nomi yoki SKU bo'yicha qidirish…" autocomplete="off" aria-label="Mahsulot qidirish">
+    {% if q %}<a href="?" class="toolbar-search-x" title="Qidiruvni tozalash" aria-label="Qidiruvni tozalash">&times;</a>{% endif %}
+  </div>
+</form>
+
+{% if page.object_list %}
+<p class="muted">Mijozlar buyurtma qilgan, lekin hali ishlab chiqarilmagan mahsulotlar. “Ishlab chiqarish kerak” — buyurtmalarni bajarish uchun tayyorlanishi lozim bo'lgan miqdor.</p>
+<div class="table-wrap">
+<table>
+  <tr>
+    <th class="sticky-col">Nomi</th><th>SKU</th>
+    <th class="num">Umumiy qoldiq (kg)</th><th class="num">Ishlab chiqarish kerak (kg)</th>
+  </tr>
+  {% for product in page %}
+  <tr>
+    <td class="sticky-col"><a href="{% url 'product_detail' product.pk %}">{{ product.name }}</a></td>
+    <td>{{ product.sku }}</td>
+    <td class="num">{{ product.company_net|floatformat:"-3g" }}</td>
+    <td class="num"><span class="badge badge-warning">{{ product.company_net|floatformat:"-3g"|cut:"-" }}</span></td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% include "crm/_pagination.html" %}
+{% else %}
+<p class="muted">Ishlab chiqarish kerak bo'lgan mahsulot yo'q — barcha buyurtmalar ta'minlangan.</p>
+{% endif %}
+{% endblock %}

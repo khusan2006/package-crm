@@ -69,25 +69,6 @@ def _sale_totals(sales):
     )
 
 
-def _warn_if_negative_stock(request, product):
-    """Sales are allowed even without stock, but flag it so it's visible."""
-    stock = product.current_stock
-    if stock < 0:
-        messages.warning(
-            request,
-            f"Diqqat: “{product.name}” ombori yetarli emas — qoldiq {stock:.3f} kg.",
-        )
-
-
-def _warn_if_negative_stock_items(request, sale):
-    """Flag every distinct product on the sale whose stock went negative."""
-    seen = set()
-    for item in sale.items.select_related("product"):
-        if item.product_id not in seen:
-            seen.add(item.product_id)
-            _warn_if_negative_stock(request, item.product)
-
-
 def _parse_date(value):
     try:
         return date.fromisoformat(value)
@@ -1963,12 +1944,6 @@ def sale_create(request):
     formset = SaleItemFormSet(request.POST or None, instance=Sale(), prefix="items")
     if request.method == "POST":
         if form.is_valid() and formset.is_valid():
-            from manufacturing.queries import sale_stock_errors
-            stock_errors = sale_stock_errors(request.user, formset)
-            if stock_errors:
-                for msg in stock_errors:
-                    form.add_error(None, msg)
-                return _render_sale_form(request, form, formset, "Yangi sotuv", invalid=True)
             sale = form.save(commit=False)
             sale.sales_rep = request.user
             sale.save()
@@ -1979,7 +1954,11 @@ def sale_create(request):
                 f"{sale.client.name} — {sale.total_price:,.0f} so'm",
             )
             messages.success(request, "Sotuv qo'shildi (qarz sifatida).")
-            _warn_if_negative_stock_items(request, sale)
+            # Make-to-order: an order is never blocked for lack of stock. When it
+            # runs the ombor negative, warn — that shortfall is the production need.
+            from manufacturing.queries import ombor_shortfall_warnings
+            for msg in ombor_shortfall_warnings(request.user, sale):
+                messages.warning(request, msg)
             return form_success(request, reverse("sale_list"))
         return _render_sale_form(request, form, formset, "Yangi sotuv", invalid=True)
     return _render_sale_form(request, form, formset, "Yangi sotuv")
@@ -2016,12 +1995,6 @@ def sale_edit(request, pk):
                     f"puldan ({paid:,.0f} so'm) kam bo'lishi mumkin emas.",
                 )
                 return _render_sale_form(request, form, formset, "Sotuvni tahrirlash", invalid=True)
-            from manufacturing.queries import sale_stock_errors
-            stock_errors = sale_stock_errors(request.user, formset, exclude_sale_id=sale.pk)
-            if stock_errors:
-                for msg in stock_errors:
-                    form.add_error(None, msg)
-                return _render_sale_form(request, form, formset, "Sotuvni tahrirlash", invalid=True)
             sale = form.save()
             formset.save()
             AuditLog.record(
@@ -2029,7 +2002,10 @@ def sale_edit(request, pk):
                 f"{sale.client.name} — {sale.total_price:,.0f} so'm",
             )
             messages.success(request, "Sotuv yangilandi.")
-            _warn_if_negative_stock_items(request, sale)
+            # Make-to-order: never blocked for stock; warn on a negative ombor.
+            from manufacturing.queries import ombor_shortfall_warnings
+            for msg in ombor_shortfall_warnings(request.user, sale):
+                messages.warning(request, msg)
             return form_reload(request, reverse("sale_list"))
         return _render_sale_form(request, form, formset, "Sotuvni tahrirlash", invalid=True)
     return _render_sale_form(request, form, formset, "Sotuvni tahrirlash")

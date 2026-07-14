@@ -22,7 +22,7 @@ from .forms import (
     StockTransferForm,
 )
 from .models import MaterialPurchase, ProductionRun, RawMaterial, SellerStockEntry, StockTransfer
-from .queries import annotate_seller_ombor, annotate_sklad_stock
+from .queries import annotate_company_net, annotate_seller_ombor, annotate_sklad_stock
 from .services import InsufficientStock
 
 SKLAD_ROLES = (User.Role.ADMIN, User.Role.MANAGER, User.Role.OMBORCHI)
@@ -255,3 +255,20 @@ def seller_entry_create(request):
         messages.success(request, "Ombor harakati qo'shildi.")
         return form_success(request, reverse("manufacturing:my_ombor"))
     return form_response(request, form, "Omboriga qo'shish", invalid=request.method == "POST")
+
+
+@role_required(*SKLAD_ROLES)
+def needs_production(request):
+    """Make-to-order backlog: products whose company-wide net stock (sklad + all
+    seller ombors) is negative — i.e. ordered from customers but not yet produced.
+    The shortfall (|company_net|) is how much to manufacture."""
+    products = (
+        annotate_company_net(Product.objects.filter(is_active=True))
+        .filter(company_net__lt=0)
+        .order_by("company_net")
+    )
+    q = request.GET.get("q", "").strip()
+    if q:
+        products = products.filter(Q(name__icontains=q) | Q(sku__icontains=q))
+    page = Paginator(products, 25).get_page(request.GET.get("page"))
+    return render(request, "manufacturing/needs_production.html", {"page": page, "q": q})
