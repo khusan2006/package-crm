@@ -62,6 +62,42 @@
         </a>
       </div>
 
+      {% if user.is_admin_role or user.is_manager_role or user.role == 'omborchi' %}
+      <div class="nav-group">
+        <div class="nav-group-label">Ishlab chiqarish</div>
+        <a class="nav-item {% if 'material' in url_name %}active{% endif %}" href="{% url 'manufacturing:material_list' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg></span>
+          <span>Xomashyo</span>
+        </a>
+        <a class="nav-item {% if 'purchase' in url_name %}active{% endif %}" href="{% url 'manufacturing:purchase_list' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span>
+          <span>Xaridlar</span>
+        </a>
+        <a class="nav-item {% if 'production' in url_name %}active{% endif %}" href="{% url 'manufacturing:production_list' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg></span>
+          <span>Ishlab chiqarish</span>
+        </a>
+        <a class="nav-item {% if url_name == 'sklad_ombor' %}active{% endif %}" href="{% url 'manufacturing:sklad_ombor' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg></span>
+          <span>Sklad ombor</span>
+        </a>
+        <a class="nav-item {% if 'transfer' in url_name %}active{% endif %}" href="{% url 'manufacturing:transfer_list' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+          <span>Topshiruvlar</span>
+        </a>
+        <a class="nav-item {% if url_name == 'sklad_kassa' %}active{% endif %}" href="{% url 'manufacturing:sklad_kassa' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4"/><path d="M4 6v12a2 2 0 0 0 2 2h14v-4"/><path d="M18 12a2 2 0 0 0-2 2c0 1.1.9 2 2 2h4v-4Z"/></svg></span>
+          <span>Sklad kassa</span>
+        </a>
+      </div>
+      {% endif %}
+      <div class="nav-group">
+        <a class="nav-item {% if 'ombor' in url_name and url_name == 'my_ombor' %}active{% endif %}" href="{% url 'manufacturing:my_ombor' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg></span>
+          <span>Mening omborim</span>
+        </a>
+      </div>
+
       <div class="nav-group">
         <div class="nav-group-label">Nazorat</div>
         <a class="nav-item {% if 'audit' in url_name %}active{% endif %}" href="{% url 'audit_list' %}">
