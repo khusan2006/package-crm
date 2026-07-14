@@ -1,7 +1,12 @@
 import pytest
 from django.urls import reverse
 
-MFG_ADMIN_URLS = ["manufacturing:material_list", "manufacturing:purchase_list"]
+MFG_ADMIN_URLS = [
+    "manufacturing:material_list",
+    "manufacturing:purchase_list",
+    "manufacturing:sklad_ombor",
+    "manufacturing:transfer_list",
+]
 
 
 @pytest.mark.parametrize("name", MFG_ADMIN_URLS)
@@ -32,3 +37,15 @@ def test_nav_hides_sklad_for_seller(client, seller_user):
     html = client.get(reverse("dashboard")).content.decode()
     assert reverse("manufacturing:material_list") not in html
     assert reverse("manufacturing:my_ombor") in html      # seller sees own ombor link
+
+
+def test_omborchi_denied_seller_kassa(client, omborchi_user):
+    client.force_login(omborchi_user)
+    # Sklad pages allowed:
+    assert client.get(reverse("manufacturing:material_list")).status_code == 200
+    assert client.get(reverse("manufacturing:sklad_kassa")).status_code == 200
+
+
+def test_seller_denied_transfer_create(client, seller_user):
+    client.force_login(seller_user)
+    assert client.get(reverse("manufacturing:transfer_create")).status_code == 403

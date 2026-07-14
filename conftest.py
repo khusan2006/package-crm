@@ -40,6 +40,14 @@ def seller_user(db):
 
 
 @pytest.fixture
+def omborchi_user(db):
+    return User.objects.create_user(
+        username="e2e_omborchi", password=PASSWORD, role=User.Role.OMBORCHI,
+        first_name="Omb", last_name="Or",
+    )
+
+
+@pytest.fixture
 def sample_data(db, admin_user, seller_user):
     """A minimal but realistic dataset: a product, a client, and one credit sale
     with a partial payment — enough to render every list, the dashboard and kassa."""
