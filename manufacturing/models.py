@@ -7,9 +7,6 @@ from django.utils import timezone
 
 from crm.models import Payment  # Method choices reused
 
-MONEY = models.DecimalField(max_digits=18, decimal_places=2)
-QTY = models.DecimalField(max_digits=18, decimal_places=3)
-
 
 class RawMaterial(models.Model):
     """A raw material (xomashyo) bought to manufacture finished products. Priced
