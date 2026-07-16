@@ -1,0 +1,12 @@
+<div class="item-row">
+  {{ f.id }}
+  {% if f.non_field_errors %}<div class="flash flash-error">{{ f.non_field_errors.0 }}</div>{% endif %}
+  <div class="item-fields item-fields--receipt">
+    <label class="if if-product">Mahsulot{{ f.product }}{{ f.product.errors }}</label>
+    <label class="if if-weight">Miqdori (kg){{ f.quantity_kg }}{{ f.quantity_kg.errors }}</label>
+    <button type="button" class="icon-action danger item-remove" title="Qatorni o'chirish">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </button>
+  </div>
+  <span class="item-del" hidden>{{ f.DELETE }}</span>
+</div>

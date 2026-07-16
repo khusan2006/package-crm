@@ -1,0 +1,19 @@
+{% csrf_token %}
+{% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
+
+<p>{{ form.date.label_tag }}{{ form.date }}{{ form.date.errors }}</p>
+<p>{{ form.seller.label_tag }}{{ form.seller }}{{ form.seller.errors }}</p>
+
+<div class="items-block">
+  <div class="items-label">Qabul qilingan mahsulotlar</div>
+  {{ formset.management_form }}
+  {% if formset.non_form_errors %}<div class="flash flash-error">{{ formset.non_form_errors.0 }}</div>{% endif %}
+  <div class="item-rows">
+    {% for f in formset %}{% include "crm/_receipt_item_row.html" with f=f %}{% endfor %}
+  </div>
+  <template class="item-empty-tpl">{% include "crm/_receipt_item_row.html" with f=formset.empty_form %}</template>
+  <button type="button" class="btn btn-sm btn-ghost item-add">+ Mahsulot qo'shish</button>
+</div>
+
+<p>{{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}</p>
+<p class="field-hint">Saqlangach tovarlar tanlangan sotuvchi omboriga qo'shiladi.</p>

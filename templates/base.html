@@ -56,9 +56,9 @@
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
           <span>{% if user.can_see_all_records %}Mijozlar{% else %}Mening mijozlarim{% endif %}</span>
         </a>
-        <a class="nav-item {% if 'product' in url_name %}active{% endif %}" href="{% url 'product_list' %}">
+        <a class="nav-item {% if 'product' in url_name or url_name == 'ombor' or 'receipt' in url_name %}active{% endif %}" href="{% if user.can_see_all_records %}{% url 'product_list' %}{% else %}{% url 'ombor' %}{% endif %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg></span>
-          <span>Ombor</span>
+          <span>{% if user.can_see_all_records %}Ombor{% else %}Mening omborim{% endif %}</span>
         </a>
       </div>
 
@@ -125,6 +125,19 @@
 {% if user.is_authenticated %}
 <dialog id="modal" class="modal">
   <div id="modal-body" class="modal-body"></div>
+</dialog>
+<dialog id="zakaz-modal" class="modal modal--sm">
+  <div class="modal-body">
+    <div class="modal-head"><h2>Omborda yetarli emas</h2></div>
+    <div class="modal-confirm">
+      <p id="zakaz-msg" class="field-hint" style="margin:0 0 8px;"></p>
+      <p style="margin:0 0 14px;">Sotuvni <strong>zakaz</strong> sifatida saqlaymizmi? Ombor qoldig'i minusga o'tadi.</p>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="zakaz-confirm-btn">Ha, zakaz sifatida saqlash</button>
+        <button type="button" class="btn btn-ghost" id="zakaz-cancel-btn">Bekor qilish</button>
+      </div>
+    </div>
+  </div>
 </dialog>
 {% endif %}
 
@@ -193,15 +206,45 @@
             window.location = r.headers.get('X-Redirect') || window.location.href;
             return null;
           }
+          if (r.headers.get('X-Zakaz-Confirm')) {
+            if (submit) { submit.disabled = false; }
+            return r.json().then(function (d) { showZakazConfirm(form, d.message); return null; });
+          }
           return r.text();
         }).then(function (html) {
-          if (html === null) { return; }
+          if (html === null || html === undefined) { return; }
           body.innerHTML = html;
           bindForm(body.querySelector('form'));
         }).catch(function () {
           if (submit) { submit.disabled = false; }
         });
       });
+    }
+
+    // Oversell confirm: a small popup on top of the sale modal. Confirming adds
+    // allow_zakaz to the (still-intact) sale form and resubmits it as a zakaz.
+    var zdlg = document.getElementById('zakaz-modal');
+    var zakazForm = null;
+    function showZakazConfirm(form, message) {
+      zakazForm = form;
+      var msgEl = document.getElementById('zakaz-msg');
+      if (msgEl) { msgEl.textContent = message || ''; }
+      if (zdlg && !zdlg.open) { zdlg.showModal(); }
+    }
+    if (zdlg) {
+      document.getElementById('zakaz-confirm-btn').addEventListener('click', function () {
+        if (!zakazForm) { zdlg.close(); return; }
+        var inp = zakazForm.querySelector('input[name="allow_zakaz"]');
+        if (!inp) {
+          inp = document.createElement('input');
+          inp.type = 'hidden'; inp.name = 'allow_zakaz'; inp.value = '1';
+          zakazForm.appendChild(inp);
+        }
+        zdlg.close();
+        if (zakazForm.requestSubmit) { zakazForm.requestSubmit(); } else { zakazForm.submit(); }
+      });
+      document.getElementById('zakaz-cancel-btn').addEventListener('click', function () { zdlg.close(); });
+      zdlg.addEventListener('click', function (e) { if (e.target === zdlg) { zdlg.close(); } });
     }
 
     function openModal(url) {

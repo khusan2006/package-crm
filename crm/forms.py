@@ -13,6 +13,8 @@ from .models import (
     Expense,
     Payment,
     Product,
+    ProductionReceipt,
+    ProductionReceiptItem,
     ProductionRemittance,
     Return,
     Sale,
@@ -396,6 +398,62 @@ class ProductionRemittanceForm(forms.ModelForm):
         if amount is not None and amount <= 0:
             raise forms.ValidationError("Summa 0 dan katta bo'lishi kerak.")
         return amount
+
+
+class ProductionReceiptForm(forms.ModelForm):
+    """Header of a production→seller goods handover. A seller logs only their own
+    receipts, so for a non-privileged user the `seller` field is fixed to
+    themselves and disabled (mirrors ProductionRemittanceForm)."""
+
+    class Meta:
+        model = ProductionReceipt
+        fields = ["date", "seller", "note"]
+        widgets = {
+            "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — izoh"}),
+        }
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user = user
+        sellers = User.objects.filter(is_active=True).order_by(
+            "first_name", "last_name", "username"
+        )
+        self.fields["seller"].queryset = sellers
+        _searchable_select(self.fields["seller"], "Sotuvchini tanlang")
+        if user is not None and not user.can_see_all_records:
+            self.fields["seller"].queryset = sellers.filter(pk=user.pk)
+            self.fields["seller"].initial = user
+            self.fields["seller"].disabled = True
+
+
+class ProductionReceiptItemForm(forms.ModelForm):
+    class Meta:
+        model = ProductionReceiptItem
+        fields = ["product", "quantity_kg"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["product"].queryset = Product.objects.filter(is_active=True)
+        _searchable_select(self.fields["product"], "Mahsulotni tanlang")
+
+    def clean_quantity_kg(self):
+        qty = self.cleaned_data.get("quantity_kg")
+        # Negatives are allowed (an admin write-off); only zero is meaningless.
+        if qty is not None and qty == 0:
+            raise forms.ValidationError("Miqdor 0 bo'lishi mumkin emas.")
+        return qty
+
+
+ProductionReceiptItemFormSet = inlineformset_factory(
+    ProductionReceipt,
+    ProductionReceiptItem,
+    form=ProductionReceiptItemForm,
+    extra=1,
+    min_num=1,
+    validate_min=True,
+    can_delete=True,
+)
 
 
 class StockAdjustForm(forms.Form):

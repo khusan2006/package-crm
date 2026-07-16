@@ -77,29 +77,71 @@ class Client(models.Model):
 
 
 class ProductQuerySet(models.QuerySet):
-    def with_stock(self):
-        """Annotate each product with stock_in, stock_out, and current stock (kg)."""
-        received = Subquery(
-            StockEntry.objects.filter(product=OuterRef("pk"))
-            .values("product")
-            .annotate(s=Sum("quantity_kg"))
-            .values("s"),
-            output_field=QTY,
-        )
-        sold = Subquery(
-            SaleItem.objects.filter(product=OuterRef("pk"))
-            .values("product")
-            .annotate(s=Sum(ITEM_WEIGHT_KG))
-            .values("s"),
-            output_field=QTY,
-        )
-        returned = Subquery(
-            Return.objects.filter(product=OuterRef("pk"), restock=True)
-            .values("product")
-            .annotate(s=Sum(RETURN_WEIGHT_KG))
-            .values("s"),
-            output_field=QTY,
-        )
+    def with_stock(self, seller=None):
+        """Annotate each product with stock_in, stock_out, and current stock (kg).
+
+        With `seller`, the numbers are that seller's own ombor: goods received from
+        production (`ProductionReceiptItem`) minus what they've sold, plus their
+        restocked returns — and only movements dated on/after `OMBOR_START_DATE`
+        count. Without a seller it's the legacy shared-warehouse view (StockEntry)."""
+        if seller is not None:
+            start = settings.OMBOR_START_DATE
+            received = Subquery(
+                ProductionReceiptItem.objects.filter(
+                    product=OuterRef("pk"),
+                    receipt__seller=seller,
+                    receipt__date__gte=start,
+                )
+                .values("product")
+                .annotate(s=Sum("quantity_kg"))
+                .values("s"),
+                output_field=QTY,
+            )
+            sold = Subquery(
+                SaleItem.objects.filter(
+                    product=OuterRef("pk"),
+                    sale__sales_rep=seller,
+                    sale__date__gte=start,
+                )
+                .values("product")
+                .annotate(s=Sum(ITEM_WEIGHT_KG))
+                .values("s"),
+                output_field=QTY,
+            )
+            returned = Subquery(
+                Return.objects.filter(
+                    product=OuterRef("pk"),
+                    sale__sales_rep=seller,
+                    restock=True,
+                    date__gte=start,
+                )
+                .values("product")
+                .annotate(s=Sum(RETURN_WEIGHT_KG))
+                .values("s"),
+                output_field=QTY,
+            )
+        else:
+            received = Subquery(
+                StockEntry.objects.filter(product=OuterRef("pk"))
+                .values("product")
+                .annotate(s=Sum("quantity_kg"))
+                .values("s"),
+                output_field=QTY,
+            )
+            sold = Subquery(
+                SaleItem.objects.filter(product=OuterRef("pk"))
+                .values("product")
+                .annotate(s=Sum(ITEM_WEIGHT_KG))
+                .values("s"),
+                output_field=QTY,
+            )
+            returned = Subquery(
+                Return.objects.filter(product=OuterRef("pk"), restock=True)
+                .values("product")
+                .annotate(s=Sum(RETURN_WEIGHT_KG))
+                .values("s"),
+                output_field=QTY,
+            )
         return self.annotate(
             stock_in=Coalesce(received, ZERO_QTY),
             stock_out=Coalesce(sold, ZERO_QTY),
@@ -345,10 +387,27 @@ class SaleItem(models.Model):
     cost_price = models.DecimalField(
         "Tannarxi (1 birlik, so'm)", max_digits=14, decimal_places=2
     )
+    # Order fulfilment: an in-stock line is fulfilled on the sale date; a line sold
+    # short (zakaz) is NULL until the arriving stock is bound to it. Orthogonal to
+    # the ombor stock math — a pending line still counts as sold.
+    fulfilled_at = models.DateField("Bajarilgan sana", null=True, blank=True)
+    fulfilled_by_receipt = models.ForeignKey(
+        "ProductionReceipt",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="fulfilled_items",
+        verbose_name="Qabul (biriktirilgan)",
+    )
 
     class Meta:
         verbose_name = "Sotuv qatori"
         verbose_name_plural = "Sotuv qatorlari"
+
+    @property
+    def is_pending(self):
+        """A zakaz line still waiting for stock to be bound to it."""
+        return self.fulfilled_at is None
 
     @property
     def weight_kg(self):
@@ -625,6 +684,66 @@ class ProductionRemittance(models.Model):
         return f"Topshiruv · {self.seller}: {self.amount:,.0f} so'm ({self.date})"
 
 
+class ProductionReceipt(models.Model):
+    """Goods a seller receives from production into their own ombor (warehouse).
+
+    The mirror of `ProductionRemittance` (the cash a seller hands back): this is
+    the goods handed forward, production → seller. Every seller keeps their own
+    stock; on-hand per product = received − sold + restocked returns (see
+    `ProductQuerySet.with_stock(seller=…)`). Purely an inventory record — it does
+    NOT touch the kassa / production-debt figures."""
+
+    date = models.DateField("Sana", default=timezone.localdate)
+    seller = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="production_receipts",
+        verbose_name="Sotuvchi",
+    )
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="recorded_receipts",
+        verbose_name="Kim kiritdi",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date", "-created_at"]
+        verbose_name = "Ishlab chiqarishdan qabul"
+        verbose_name_plural = "Ishlab chiqarishdan qabullar"
+
+    @property
+    def total_kg(self):
+        return sum((it.quantity_kg for it in self.items.all()), Decimal("0"))
+
+    def __str__(self):
+        return f"Qabul · {self.seller} ({self.date})"
+
+
+class ProductionReceiptItem(models.Model):
+    """One product line on a production receipt, in kg. May be negative for an
+    admin write-off / correction (a line can subtract from the seller's ombor)."""
+
+    receipt = models.ForeignKey(
+        ProductionReceipt, on_delete=models.CASCADE, related_name="items",
+        verbose_name="Qabul",
+    )
+    product = models.ForeignKey(
+        Product, on_delete=models.PROTECT, related_name="receipt_items",
+        verbose_name="Mahsulot",
+    )
+    quantity_kg = models.DecimalField("Miqdori (kg)", max_digits=12, decimal_places=3)
+
+    class Meta:
+        verbose_name = "Qabul qatori"
+        verbose_name_plural = "Qabul qatorlari"
+
+    def __str__(self):
+        return f"{self.product.name}: {self.quantity_kg} kg"
+
+
 class AuditLog(models.Model):
     """An append-only trail of money-relevant actions: who did what, and when.
     Written explicitly from the views so the acting user is always known."""
@@ -704,6 +823,14 @@ class AuditLog(models.Model):
             return e("Ishlab chiqarishga topshirildi", "badge-info", "out", "out")
         if t == "Qaytarish":
             return e("Mahsulot qaytdi", AMBER, "return")
+        if t == "Qabul":
+            if a == self.Action.DELETE:
+                return e("Qabul o'chirildi", RED, "trash")
+            if a == self.Action.UPDATE:
+                return e("Qabul o'zgartirildi", AMBER, "edit")
+            return e("Ombordan qabul qilindi", GREEN, "in")
+        if t == "Zakaz":
+            return e("Zakaz biriktirildi", "badge-info", "in")
         if a == self.Action.TRANSFER:
             return e("Sotuvchi o'zgardi", GREY, "transfer")
         return e(self.get_action_display(), GREY, "dot")

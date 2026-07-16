@@ -25,6 +25,8 @@ from .forms import (
     ExpenseForm,
     PaymentEditForm,
     ProductForm,
+    ProductionReceiptForm,
+    ProductionReceiptItemFormSet,
     ProductionRemittanceForm,
     ReturnForm,
     SaleForm,
@@ -43,6 +45,7 @@ from .models import (
     Expense,
     Payment,
     Product,
+    ProductionReceipt,
     ProductionRemittance,
     Return,
     Sale,
@@ -81,6 +84,70 @@ def _warn_if_negative_stock_items(request, sale):
         if item.product_id not in seen:
             seen.add(item.product_id)
             _warn_if_negative_stock(request, item.product)
+
+
+def _ombor_shortfall(seller, formset, existing_sale=None):
+    """Products on the sale whose requested kg exceed the seller's own ombor.
+
+    Returns a list of (product, requested_kg, available_kg). On edit, this sale's
+    current lines are added back to availability — they're already counted as sold
+    against the seller, so editing must not double-count them."""
+    requested = {}  # product_pk -> {"product": Product, "kg": Decimal}
+    for f in formset.forms:
+        cd = getattr(f, "cleaned_data", None)
+        if not cd or cd.get("DELETE"):
+            continue
+        product, weight = cd.get("product"), cd.get("weight")
+        if not product or weight is None:
+            continue
+        kg = weight / Decimal("1000") if cd.get("dimension") == Sale.Dimension.G else weight
+        row = requested.setdefault(product.pk, {"product": product, "kg": Decimal("0")})
+        row["kg"] += kg
+    if not requested:
+        return []
+    on_hand = {
+        p.pk: p.stock
+        for p in Product.objects.filter(pk__in=requested).with_stock(seller=seller)
+    }
+    freed = {}
+    if existing_sale is not None:
+        for item in existing_sale.items.all():
+            freed[item.product_id] = freed.get(item.product_id, Decimal("0")) + item.weight_kg
+    shortfalls = []
+    for pk, row in requested.items():
+        available = (on_hand.get(pk) or Decimal("0")) + freed.get(pk, Decimal("0"))
+        if row["kg"] > available:
+            shortfalls.append((row["product"], row["kg"], available))
+    return shortfalls
+
+
+def _mark_fulfilment(sale, shortfall, only_unset=False):
+    """Set each line's fulfilment after a sale saves. In-stock lines are ready on
+    the sale date; a line whose product was short is a pending zakaz (fulfilled_at
+    stays NULL until stock is bound to it). On edit (`only_unset`) already-fulfilled
+    lines are left untouched."""
+    short_pks = {p.pk for p, _req, _avail in shortfall}
+    items = sale.items.all()
+    if only_unset:
+        items = items.filter(fulfilled_at__isnull=True)
+    for item in items:
+        item.fulfilled_at = None if item.product_id in short_pks else sale.date
+        item.save(update_fields=["fulfilled_at"])
+
+
+def _zakaz_confirm_response(request, form, formset, title, shortfall):
+    """A modal oversell asks the browser to pop a confirm dialog (the X-Zakaz-Confirm
+    signal) rather than rejecting. Without JS, fall back to the inline warning
+    re-render so the flow still works."""
+    if is_ajax(request):
+        msg = "; ".join(
+            f"{p.name}: qoldiq {available:.0f} kg, so'raldi {requested:.0f} kg"
+            for p, requested, available in shortfall
+        )
+        resp = JsonResponse({"message": msg}, status=409)
+        resp["X-Zakaz-Confirm"] = "1"
+        return resp
+    return _render_sale_form(request, form, formset, title, zakaz_shortfall=shortfall)
 
 
 def _parse_date(value):
@@ -677,7 +744,9 @@ def client_transfer(request, pk):
 # --- Products -----------------------------------------------------------------
 
 def product_list(request):
-    products = Product.objects.with_stock().order_by("name")
+    # Sellers see their own ombor stock; admins/managers see the shared total.
+    seller = None if request.user.can_see_all_records else request.user
+    products = Product.objects.with_stock(seller=seller).order_by("name")
     q = request.GET.get("q", "").strip()
     if q:
         products = products.filter(Q(name__icontains=q) | Q(sku__icontains=q))
@@ -1185,6 +1254,16 @@ def _usd_note(cleaned):
     return ""
 
 
+def _method_label(code):
+    """The Uzbek display name for a payment-method code (naqd/karta/o'tkazma)."""
+    return dict(Payment.Method.choices).get(code, code)
+
+
+def _kg(value):
+    """A kg amount without trailing decimal zeros — '23.000' → '23', '23.5' → '23.5'."""
+    return ("{:,.3f}".format(value)).rstrip("0").rstrip(".")
+
+
 def _render_client_pay(request, client, total, form, invalid=False):
     context = {
         "form": form,
@@ -1223,8 +1302,9 @@ def client_debt_pay(request, pk):
             )
             AuditLog.record(
                 request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
-                f"{client.name} — {form.cleaned_data['amount']:,.0f} so'm "
-                f"({touched} ta chekka, {form.cleaned_data['method']}){_usd_note(form.cleaned_data)}",
+                f"Mijoz {client.name} qarz to'lovi "
+                f"({_method_label(form.cleaned_data['method'])}){_usd_note(form.cleaned_data)} "
+                f"— {form.cleaned_data['amount']:,.0f} so'm",
             )
             messages.success(
                 request,
@@ -1284,8 +1364,9 @@ def payment_edit(request, pk):
             form.save()
             AuditLog.record(
                 request.user, AuditLog.Action.UPDATE, "To'lov", payment.sale_id,
-                f"{payment.sale.client.name} — {payment.amount:,.0f} so'm "
-                f"({payment.get_method_display()}){_usd_note(form.cleaned_data)}",
+                f"Mijoz {payment.sale.client.name} to'lovi "
+                f"({payment.get_method_display()}){_usd_note(form.cleaned_data)} "
+                f"— {payment.amount:,.0f} so'm",
             )
             messages.success(request, "To'lov yangilandi.")
             return form_success(request, reverse("kassa"))
@@ -1342,8 +1423,12 @@ def _currency_till(payments, expenses, date_from, date_to, *, som):
 def _kassa_supplier_cost(date_from, date_to, rep=None):
     """Total supplier cost (Tannarx / asl narx) of goods sold in the window — what
     the business owes suppliers for the goods it moved this period. Scoped to one
-    employee when `rep` is given. Always so'm (cost prices are stored in so'm)."""
-    items = SaleItem.objects.filter(sale__date__gte=date_from, sale__date__lte=date_to)
+    employee when `rep` is given. Always so'm (cost prices are stored in so'm).
+    `date_from=None` drops the lower bound, giving the cumulative (as-of date_to)
+    figure a standing balance needs."""
+    items = SaleItem.objects.filter(sale__date__lte=date_to)
+    if date_from is not None:
+        items = items.filter(sale__date__gte=date_from)
     if rep is not None:
         items = items.filter(sale__sales_rep=rep)
     return items.aggregate(s=Sum(COST))["s"] or Decimal("0")
@@ -1351,8 +1436,11 @@ def _kassa_supplier_cost(date_from, date_to, rep=None):
 
 def _kassa_remitted(date_from, date_to, rep=None):
     """Total cash handed back to production (Ishlab chiqarishga topshirilgan) in the
-    window. Scoped to one seller when `rep` is given. Always so'm."""
-    qs = ProductionRemittance.objects.filter(date__gte=date_from, date__lte=date_to)
+    window. Scoped to one seller when `rep` is given. Always so'm. `date_from=None`
+    drops the lower bound for the cumulative (as-of date_to) total."""
+    qs = ProductionRemittance.objects.filter(date__lte=date_to)
+    if date_from is not None:
+        qs = qs.filter(date__gte=date_from)
     if rep is not None:
         qs = qs.filter(seller=rep)
     return qs.aggregate(s=Sum("amount"))["s"] or Decimal("0")
@@ -1367,8 +1455,11 @@ def _realized_profit_by_seller(date_from, date_to, rep=None):
     beyond its cost:  realized = max(0, min(paid, revenue) − cost).
 
     Returns {seller_pk: realized_profit}. (Returned goods aren't netted out here —
-    they're a rare edge and only make the figure marginally conservative.)"""
-    sales = Sale.objects.filter(date__gte=date_from, date__lte=date_to)
+    they're a rare edge and only make the figure marginally conservative.)
+    `date_from=None` drops the lower bound for the cumulative (as-of date_to) total."""
+    sales = Sale.objects.filter(date__lte=date_to)
+    if date_from is not None:
+        sales = sales.filter(date__gte=date_from)
     if rep is not None:
         sales = sales.filter(sales_rep=rep)
     by_seller = {}
@@ -1401,14 +1492,29 @@ def _kassa_summary(date_from, date_to, rep=None):
         payments.filter(currency=uzs), expenses.filter(currency=uzs),
         date_from, date_to, som=True,
     )
-    cost = _kassa_supplier_cost(date_from, date_to, rep)
-    remitted = _kassa_remitted(date_from, date_to, rep)
+    cost = _kassa_supplier_cost(date_from, date_to, rep)          # period flow
+    remitted = _kassa_remitted(date_from, date_to, rep)           # period flow
     profit = _kassa_profit(date_from, date_to, rep)
     # Every expense's so'm value, both currencies — the same figure the per-seller
     # rows sum, so the Jami row equals the sum of its columns.
     expense_total = (
         expenses.filter(date__gte=date_from, date__lte=date_to)
         .aggregate(s=Sum("amount"))["s"] or Decimal("0")
+    )
+    # Standing balances (as of date_to). Cash on hand and production debt don't reset
+    # with the day filter — they carry every movement up to the window's end, the way
+    # the till's closing balance already does. Only date_to bounds them.
+    cost_cum = _kassa_supplier_cost(None, date_to, rep)
+    remitted_cum = _kassa_remitted(None, date_to, rep)
+    # Cash on hand combines every method AND currency: Payment.amount is always the
+    # so'm value (a dollar payment is converted at entry), so PAYMENT_NET nets a
+    # dollar payment to its so'm too — no currency filter here.
+    income_all_cum = (
+        payments.filter(date__lte=date_to)
+        .aggregate(s=Sum(PAYMENT_NET))["s"] or Decimal("0")
+    )
+    expense_cum = (
+        expenses.filter(date__lte=date_to).aggregate(s=Sum("amount"))["s"] or Decimal("0")
     )
     return {
         "som": som,
@@ -1418,10 +1524,10 @@ def _kassa_summary(date_from, date_to, rep=None):
         ),
         "cost": cost,
         # Production-debt block (so'm). Cash on hand = so'm income net of fees, less
-        # every expense, less what's already been handed to production.
+        # every expense, less what's already been handed to production — cumulative.
         "remitted": remitted,
-        "production_debt": cost - remitted,
-        "cash": som["income"] - expense_total - remitted,
+        "production_debt": cost_cum - remitted_cum,
+        "cash": income_all_cum - expense_cum - remitted_cum,
         "profit": profit,
         "expense_total": expense_total,
         "net_profit": profit - expense_total,
@@ -1440,9 +1546,14 @@ def _per_employee_kassa(date_from, date_to, rep=None):
 
     `profit` is realized cost-first (see `_realized_profit_by_seller`): an unpaid
     debt sale earns nothing until its tannarx is collected. Scoped to one seller
-    when `rep` is given (a seller sees only their own row)."""
-    window = {"date__gte": date_from, "date__lte": date_to}
-    sale_window = {"sale__date__gte": date_from, "sale__date__lte": date_to}
+    when `rep` is given (a seller sees only their own row).
+
+    This is a standing control snapshot: every column is cumulative as of date_to
+    (the day filter's lower bound is dropped), so cash on hand and production debt
+    read as the true outstanding totals and each row reconciles
+    (debt = sold − remitted, cash = income − expenses − remitted)."""
+    window = {"date__lte": date_to}
+    sale_window = {"sale__date__lte": date_to}
     payments = Payment.objects.filter(**window)
     expenses = Expense.objects.filter(**window)
     sale_items = SaleItem.objects.filter(**sale_window)
@@ -1476,10 +1587,11 @@ def _per_employee_kassa(date_from, date_to, rep=None):
         .annotate(som=Sum(PAYMENT_NET), usd_amt=Sum("amount_original"))
     ):
         rr = row(r["created_by"])
+        # Cash combines currencies: PAYMENT_NET is the so'm value of every payment,
+        # so a dollar payment counts toward in_som at its so'm value too.
+        rr["in_som"] += r["som"] or Decimal("0")
         if r["currency"] == usd:
             rr["in_usd"] += r["usd_amt"] or Decimal("0")
-        else:
-            rr["in_som"] += r["som"] or Decimal("0")
 
     for r in (
         expenses.values("created_by", "currency")
@@ -1497,7 +1609,7 @@ def _per_employee_kassa(date_from, date_to, rep=None):
 
     # Profit is realized cost-first (only collections above a sale's tannarx count),
     # so it can't be a flat SaleItem sum — pull the per-seller figure instead.
-    for uid, realized in _realized_profit_by_seller(date_from, date_to, rep).items():
+    for uid, realized in _realized_profit_by_seller(None, date_to, rep).items():
         row(uid)["profit"] += realized
 
     for r in remittances.values("seller").annotate(s=Sum("amount")):
@@ -1568,7 +1680,8 @@ def _kassa_transactions(expenses, dates, filters, rep):
                 "method": p.get_method_display(), "method_code": p.method,
                 "currency": p.currency,
                 "amount_som": p.net_amount, "amount_original": p.original_amount,
-                "exchange_rate": p.exchange_rate, "created_by": p.created_by,
+                "exchange_rate": p.exchange_rate, "commission_percent": p.commission_percent,
+                "created_by": p.created_by,
                 "sale_pk": p.sale_id, "pk": p.pk, "kind": "payment",
             })
         # Production handovers — so'm only, so a dollar-currency filter hides them.
@@ -1613,7 +1726,13 @@ def kassa_view(request):
     date_from, date_to = dates["date_from"], dates["date_to"]
     summary = _kassa_summary(date_from, date_to, rep=rep)
     transactions = _kassa_transactions(expenses, dates, filters, rep)
-    txn_page = Paginator(transactions, 30).get_page(request.GET.get("page"))
+    # Two side-by-side ledgers: kirim (client payments) on the left, chiqim
+    # (expenses + production handovers) on the right. Totals use amount_som so a
+    # USD payment counts at its so'm value. Newest-first order is inherited.
+    income_rows = [t for t in transactions if t["direction"] == "in"]
+    outflow_rows = [t for t in transactions if t["direction"] in ("out", "remit")]
+    income_total = sum((t["amount_som"] for t in income_rows), Decimal("0"))
+    outflow_total = sum((t["amount_som"] for t in outflow_rows), Decimal("0"))
 
     method_labels = dict(Payment.Method.choices)
     category_labels = dict(Expense.Category.choices)
@@ -1629,25 +1748,27 @@ def kassa_view(request):
     # Per-seller control rows. Admins/managers see everyone (or one, if they filtered
     # by a rep); a seller sees only their own row.
     seller_rows = _per_employee_kassa(date_from, date_to, rep=rep)
+    # Column-wise totals for the Jami row — sums the cumulative rows so the footer
+    # always equals the sum of what's shown, whatever the filter.
+    seller_totals = {
+        key: sum((r[key] for r in seller_rows), Decimal("0"))
+        for key in ("cash", "production_debt", "sold_cost", "remitted", "expense_total", "net")
+    }
     my_row = None
     if not request.user.can_see_all_records:
         my_row = seller_rows[0] if seller_rows else None
-    # Sellers who still owe production, biggest first — drives the debt bars.
-    debtors = sorted(
-        (r for r in seller_rows if r["production_debt"] > 0),
-        key=lambda r: r["production_debt"], reverse=True,
-    )
-    debt_max = debtors[0]["production_debt"] if debtors else Decimal("0")
 
     export_qs = request.GET.urlencode()
     return render(request, "crm/kassa.html", {
         "summary": summary,
-        "txn_page": txn_page,
+        "income_rows": income_rows,
+        "outflow_rows": outflow_rows,
+        "income_total": income_total,
+        "outflow_total": outflow_total,
         "expenses": expenses,
         "per_employee": seller_rows if request.user.can_see_all_records else None,
+        "seller_totals": seller_totals,
         "my_row": my_row,
-        "debtors": debtors if request.user.can_see_all_records else None,
-        "debt_max": debt_max,
         "filters": filters,
         "reps": reps,
         "active_filters": active_filters,
@@ -1737,8 +1858,9 @@ def expense_create(request):
             )
             AuditLog.record(
                 request.user, AuditLog.Action.CREATE, "Chiqim", expense.pk,
-                f"{expense.get_category_display()} — {expense.amount:,.0f} so'm "
-                f"({expense.get_method_display()}){usd}",
+                f"{expense.get_category_display()} chiqimi "
+                f"({expense.get_method_display()}){usd} "
+                f"— {expense.amount:,.0f} so'm",
             )
             messages.success(request, f"Chiqim qo'shildi: {expense.amount:,.0f} so'm.")
             return form_success(request, reverse("kassa"))
@@ -1759,7 +1881,7 @@ def expense_edit(request, pk):
             form.save()
             AuditLog.record(
                 request.user, AuditLog.Action.UPDATE, "Chiqim", expense.pk,
-                f"{expense.get_category_display()} — {expense.amount:,.0f} so'm",
+                f"{expense.get_category_display()} chiqimi — {expense.amount:,.0f} so'm",
             )
             messages.success(request, "Chiqim yangilandi.")
             return form_success(request, reverse("kassa"))
@@ -1792,8 +1914,8 @@ def expense_delete(request, pk):
 
 def _remit_summary(remit):
     return (
-        f"{remit.seller} — {remit.amount:,.0f} so'm "
-        f"({remit.get_method_display()}) ishlab chiqarishga"
+        f"Sotuvchi {remit.seller} topshirdi "
+        f"({remit.get_method_display()}) — {remit.amount:,.0f} so'm"
     )
 
 
@@ -1872,6 +1994,183 @@ def remittance_delete(request, pk):
     )
 
 
+def _receipt_summary(receipt):
+    lines = list(receipt.items.select_related("product"))
+    total = sum((it.quantity_kg for it in lines), Decimal("0"))
+    return f"Sotuvchi {receipt.seller}: {len(lines)} ta mahsulot, {_kg(total)} kg"
+
+
+def _pending_zakaz_for_receipt(receipt):
+    """Pending zakaz lines the receipt's stock could fulfil: the seller's own
+    unfulfilled sale lines for any product on the receipt."""
+    product_ids = list(receipt.items.values_list("product_id", flat=True))
+    return (
+        SaleItem.objects.filter(
+            sale__sales_rep=receipt.seller,
+            product_id__in=product_ids,
+            fulfilled_at__isnull=True,
+        )
+        .select_related("sale", "sale__client", "product")
+        .order_by("sale__date")
+    )
+
+
+def _render_receipt_form(request, form, formset, title, invalid=False):
+    context = {"form": form, "formset": formset, "title": title}
+    if is_ajax(request):
+        return render(request, "crm/_receipt_modal.html", context, status=422 if invalid else 200)
+    return render(request, "crm/receipt_form.html", context)
+
+
+def receipt_create(request):
+    """Log goods a seller received from production into their ombor. A seller files
+    only their own; admins/managers may file for any seller (preselect via ?seller=)."""
+    initial = {}
+    seller_pk = request.GET.get("seller", "")
+    if request.method == "GET" and request.user.can_see_all_records and seller_pk.isdigit():
+        initial["seller"] = seller_pk
+    form = ProductionReceiptForm(request.POST or None, user=request.user, initial=initial)
+    formset = ProductionReceiptItemFormSet(
+        request.POST or None, instance=ProductionReceipt(), prefix="items"
+    )
+    title = "Ishlab chiqarishdan qabul"
+    if request.method == "POST":
+        if form.is_valid() and formset.is_valid():
+            receipt = form.save(commit=False)
+            if not request.user.can_see_all_records:
+                receipt.seller = request.user
+            receipt.created_by = request.user
+            receipt.save()
+            formset.instance = receipt
+            formset.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Qabul", receipt.pk,
+                _receipt_summary(receipt),
+            )
+            messages.success(request, "Qabul qilingan tovarlar qo'shildi.")
+            # If this stock could fulfil pending zakaz orders, go bind them.
+            if _pending_zakaz_for_receipt(receipt).exists():
+                return form_success(request, reverse("receipt_bind", args=[receipt.pk]))
+            return form_success(request, reverse("ombor"))
+        return _render_receipt_form(request, form, formset, title, invalid=True)
+    return _render_receipt_form(request, form, formset, title)
+
+
+def receipt_bind(request, pk):
+    """Bind a receipt's arriving stock to pending zakaz orders for the same
+    products, marking those orders fulfilled (ready to hand over)."""
+    qs = ProductionReceipt.objects.all() if request.user.can_see_all_records \
+        else ProductionReceipt.objects.filter(seller=request.user)
+    receipt = get_object_or_404(qs, pk=pk)
+    pending = _pending_zakaz_for_receipt(receipt)
+    if request.method == "POST":
+        ids = request.POST.getlist("bind")
+        n = pending.filter(pk__in=ids).update(
+            fulfilled_at=receipt.date, fulfilled_by_receipt=receipt
+        )
+        if n:
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Zakaz", receipt.pk,
+                f"{n} ta zakaz mijozga biriktirildi",
+            )
+            messages.success(request, f"{n} ta zakaz biriktirildi.")
+        return redirect(reverse("ombor"))
+    return render(request, "crm/receipt_bind.html", {"receipt": receipt, "pending": pending})
+
+
+def receipt_edit(request, pk):
+    """Fix a receipt. Admins/managers may edit any; a seller only their own."""
+    qs = ProductionReceipt.objects.all() if request.user.can_see_all_records \
+        else ProductionReceipt.objects.filter(seller=request.user)
+    receipt = get_object_or_404(qs, pk=pk)
+    form = ProductionReceiptForm(request.POST or None, instance=receipt, user=request.user)
+    formset = ProductionReceiptItemFormSet(request.POST or None, instance=receipt, prefix="items")
+    title = "Qabulni tahrirlash"
+    if request.method == "POST":
+        if form.is_valid() and formset.is_valid():
+            receipt = form.save(commit=False)
+            if not request.user.can_see_all_records:
+                receipt.seller = request.user
+            receipt.save()
+            formset.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Qabul", receipt.pk,
+                _receipt_summary(receipt),
+            )
+            messages.success(request, "Qabul yangilandi.")
+            return form_reload(request, reverse("ombor"))
+        return _render_receipt_form(request, form, formset, title, invalid=True)
+    return _render_receipt_form(request, form, formset, title)
+
+
+def receipt_delete(request, pk):
+    """Remove a receipt. Admins/managers may erase any; a seller only their own."""
+    qs = ProductionReceipt.objects.select_related("seller")
+    if not request.user.can_see_all_records:
+        qs = qs.filter(seller=request.user)
+    receipt = get_object_or_404(qs, pk=pk)
+    if request.method == "POST":
+        summary = _receipt_summary(receipt)
+        receipt.delete()
+        AuditLog.record(request.user, AuditLog.Action.DELETE, "Qabul", pk, summary)
+        messages.success(request, "Qabul o'chirildi.")
+        return form_reload(request, reverse("ombor"))
+    return render_confirm(
+        request,
+        "Qabulni o'chirish",
+        "Bu qabul o'chiriladi va sotuvchi ombori shunga mos kamayadi. Davom etasizmi?",
+        "Ha, o'chirish",
+        confirm_class="btn-danger",
+    )
+
+
+def ombor_view(request):
+    """Per-seller ombor: a seller sees their own on-hand per product and recent
+    receipts; admins/managers see any seller (pick one via ?seller=)."""
+    user = request.user
+    reps = None
+    seller = user
+    if user.can_see_all_records:
+        reps = User.objects.filter(is_active=True).order_by(
+            "first_name", "last_name", "username"
+        )
+        seller_pk = request.GET.get("seller", "")
+        seller = reps.filter(pk=seller_pk).first() if seller_pk.isdigit() else None
+
+    rows = []
+    if seller is not None:
+        rows = [
+            p for p in Product.objects.filter(is_active=True)
+            .with_stock(seller=seller).order_by("name")
+            if p.stock_in or p.stock_out or p.stock_returned
+        ]
+
+    receipts = ProductionReceipt.objects.select_related(
+        "seller", "created_by"
+    ).prefetch_related("items__product")
+    if seller is not None:
+        receipts = receipts.filter(seller=seller)
+    receipts = list(receipts[:30])
+
+    # Pending zakaz — sold but not yet backed by stock (fulfilled_at is null).
+    pending = []
+    if seller is not None:
+        pending = list(
+            SaleItem.objects.filter(sale__sales_rep=seller, fulfilled_at__isnull=True)
+            .select_related("sale", "sale__client", "product")
+            .order_by("sale__date")
+        )
+
+    return render(request, "crm/ombor.html", {
+        "rows": rows,
+        "receipts": receipts,
+        "pending": pending,
+        "seller": seller,
+        "reps": reps,
+        "is_admin_view": user.can_see_all_records,
+    })
+
+
 def sale_export(request):
     base = (
         Sale.objects.visible_to(request.user)
@@ -1933,15 +2232,17 @@ def sale_detail(request, pk):
     )
 
 
-def _render_sale_form(request, form, formset, title, invalid=False):
+def _render_sale_form(request, form, formset, title, invalid=False, zakaz_shortfall=None):
     context = {
         "form": form,
         "formset": formset,
         "title": title,
         "products_json": _product_price_map(),
+        "zakaz_shortfall": zakaz_shortfall,
     }
+    keep_open = invalid or bool(zakaz_shortfall)
     if is_ajax(request):
-        return render(request, "crm/_sale_modal.html", context, status=422 if invalid else 200)
+        return render(request, "crm/_sale_modal.html", context, status=422 if keep_open else 200)
     return render(request, "crm/sale_form.html", context)
 
 
@@ -1958,14 +2259,19 @@ def sale_create(request):
     formset = SaleItemFormSet(request.POST or None, instance=Sale(), prefix="items")
     if request.method == "POST":
         if form.is_valid() and formset.is_valid():
+            shortfall = _ombor_shortfall(request.user, formset)
+            if shortfall and not request.POST.get("allow_zakaz"):
+                return _zakaz_confirm_response(request, form, formset, "Yangi sotuv", shortfall)
             sale = form.save(commit=False)
             sale.sales_rep = request.user
             sale.save()
             formset.instance = sale
             formset.save()
+            _mark_fulfilment(sale, shortfall)
             AuditLog.record(
                 request.user, AuditLog.Action.CREATE, "Sotuv", sale.pk,
-                f"{sale.client.name} — {sale.total_price:,.0f} so'm",
+                f"Mijoz {sale.client.name}, {sale.items.count()} ta mahsulot "
+                f"— {sale.total_price:,.0f} so'm",
             )
             messages.success(request, "Sotuv qo'shildi (qarz sifatida).")
             _warn_if_negative_stock_items(request, sale)
@@ -2005,11 +2311,16 @@ def sale_edit(request, pk):
                     f"puldan ({paid:,.0f} so'm) kam bo'lishi mumkin emas.",
                 )
                 return _render_sale_form(request, form, formset, "Sotuvni tahrirlash", invalid=True)
+            shortfall = _ombor_shortfall(sale.sales_rep, formset, existing_sale=sale)
+            if shortfall and not request.POST.get("allow_zakaz"):
+                return _zakaz_confirm_response(request, form, formset, "Sotuvni tahrirlash", shortfall)
             sale = form.save()
             formset.save()
+            _mark_fulfilment(sale, shortfall, only_unset=True)
             AuditLog.record(
                 request.user, AuditLog.Action.UPDATE, "Sotuv", sale.pk,
-                f"{sale.client.name} — {sale.total_price:,.0f} so'm",
+                f"Mijoz {sale.client.name}, {sale.items.count()} ta mahsulot "
+                f"— {sale.total_price:,.0f} so'm",
             )
             messages.success(request, "Sotuv yangilandi.")
             _warn_if_negative_stock_items(request, sale)
@@ -2031,7 +2342,7 @@ def sale_mark_paid(request, pk):
             )
             AuditLog.record(
                 request.user, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
-                f"{sale.client.name} — {remaining:,.0f} so'm (naqd, to'liq)",
+                f"Mijoz {sale.client.name} to'liq to'ladi (Naqd) — {remaining:,.0f} so'm",
             )
             messages.success(request, "Sotuv to'langan deb belgilandi.")
         return form_reload(request, reverse("sale_list"))
@@ -2080,8 +2391,9 @@ def sale_pay(request, pk):
             )
             AuditLog.record(
                 request.user, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
-                f"{sale.client.name} — {form.cleaned_data['amount']:,.0f} so'm "
-                f"({form.cleaned_data['method']}){_usd_note(form.cleaned_data)}",
+                f"Mijoz {sale.client.name} to'lovi "
+                f"({_method_label(form.cleaned_data['method'])}){_usd_note(form.cleaned_data)} "
+                f"— {form.cleaned_data['amount']:,.0f} so'm",
             )
             if sale.debt_remaining <= 0:
                 messages.success(request, "Qarz to'liq to'landi.")
@@ -2118,7 +2430,7 @@ def sale_return(request, pk):
             ret.save()
             AuditLog.record(
                 request.user, AuditLog.Action.RETURN, "Qaytarish", sale.pk,
-                f"{sale.client.name} — {ret.amount:,.0f} so'm ({ret.product.name})",
+                f"Mijoz {sale.client.name} qaytardi ({ret.product.name}) — {ret.amount:,.0f} so'm",
             )
             messages.success(request, f"Qaytarish qabul qilindi: {ret.amount:,.0f} so'm.")
             return form_reload(request, reverse("sale_detail", args=[sale.pk]))
@@ -2139,7 +2451,7 @@ def sale_delete(request, pk):
         )
         return form_reload(request, reverse("sale_list"))
     if request.method == "POST":
-        summary = f"{sale.client.name} — {sale.total_price:,.0f} so'm"
+        summary = f"Mijoz {sale.client.name} sotuvi — {sale.total_price:,.0f} so'm"
         sale_pk = sale.pk
         sale.delete()
         AuditLog.record(request.user, AuditLog.Action.DELETE, "Sotuv", sale_pk, summary)
