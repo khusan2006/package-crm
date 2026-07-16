@@ -4,6 +4,7 @@
 {% block topbar_title %}{% if user.can_see_all_records %}Kassa{% else %}Mening kassam{% endif %}{% endblock %}
 {% block fab %}
 <a class="fab" href="{% url 'remittance_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v14"/><path d="M5 9l7-7 7 7"/><rect x="4" y="16" width="16" height="6" rx="2"/></svg>Ishlab chiqarishga topshirish</a>
+<a class="fab fab--muted" href="{% url 'profit_payout_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>Foyda topshirish</a>
 <a class="fab fab--muted" href="{% url 'expense_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Chiqim</a>
 {% endblock %}
 {% block content %}
@@ -34,6 +35,11 @@
     <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v14"/><path d="M5 9l7-7 7 7"/><rect x="4" y="16" width="16" height="6" rx="2"/></svg></span><span class="kpi-label">Topshirilgan</span></div>
     <div class="kpi-value">{{ summary.remitted|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta"><a href="{% url 'remittance_create' %}" data-modal>+ Topshirish</a></div>
+  </div>
+  <div class="kpi kpi--green">
+    <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span><span class="kpi-label">Foyda topshirilgan</span></div>
+    <div class="kpi-value">{{ summary.paid_profit|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta"><a href="{% url 'profit_payout_create' %}" data-modal>+ Foyda topshirish</a></div>
   </div>
   <div class="kpi kpi--blue">
     <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span><span class="kpi-label">Sof foyda</span></div>
@@ -104,14 +110,17 @@
       {% for t in outflow_rows %}
       <tr>
         <td>{{ t.date|date:"d.m.Y" }}</td>
-        <td>{% if t.kind == 'remittance' %}<span class="badge badge-remit">Topshirish</span> {% endif %}{{ t.title }}</td>
+        <td>{% if t.kind == 'remittance' %}<span class="badge badge-remit">Topshirish</span> {% elif t.kind == 'profit' %}<span class="badge badge-ok">Foyda</span> {% endif %}{{ t.title }}</td>
         <td>{% include "crm/_method_badge.html" with code=t.method_code label=t.method %}</td>
         <td class="num muted">{% if t.currency == 'usd' %}{{ t.exchange_rate|floatformat:"0g" }}{% else %}—{% endif %}</td>
-        <td class="num">{% if t.kind == 'remittance' %}<strong style="color:var(--violet)">−{{ t.amount_som|floatformat:"0g" }}</strong>{% else %}<strong class="amt-out">−{{ t.amount_som|floatformat:"0g" }}</strong>{% endif %}</td>
+        <td class="num">{% if t.kind == 'remittance' %}<strong style="color:var(--violet)">−{{ t.amount_som|floatformat:"0g" }}</strong>{% elif t.kind == 'profit' %}<strong style="color:var(--success)">−{{ t.amount_som|floatformat:"0g" }}</strong>{% else %}<strong class="amt-out">−{{ t.amount_som|floatformat:"0g" }}</strong>{% endif %}</td>
         <td class="row-actions">
           {% if t.kind == 'remittance' %}
           <a class="icon-action" href="{% url 'remittance_edit' t.pk %}" data-modal title="Topshiruvni tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
           <a class="icon-action danger" href="{% url 'remittance_delete' t.pk %}" data-modal title="Topshiruvni o'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
+          {% elif t.kind == 'profit' %}
+          <a class="icon-action" href="{% url 'profit_payout_edit' t.pk %}" data-modal title="Foyda topshiruvini tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
+          <a class="icon-action danger" href="{% url 'profit_payout_delete' t.pk %}" data-modal title="Foyda topshiruvini o'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
           {% else %}
           <a class="icon-action" href="{% url 'expense_edit' t.pk %}" data-modal title="Tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
           <a class="icon-action danger" href="{% url 'expense_delete' t.pk %}" data-modal title="Chiqimni o'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
@@ -134,10 +143,11 @@
     <tr><td>Topshirdim</td><td class="num amt-in">−{{ my_row.remitted|default:0|floatformat:"0g" }} so'm</td></tr>
     <tr><td><strong>Qolgan qarzim</strong></td><td class="num amt-debt"><strong>{{ my_row.production_debt|default:0|floatformat:"0g" }} so'm</strong></td></tr>
     <tr><td>Kassamdagi naqd</td><td class="num">{{ my_row.cash|default:0|floatformat:"0g" }} so'm</td></tr>
+    <tr><td>Foyda topshirdim</td><td class="num amt-in">−{{ my_row.paid_profit|default:0|floatformat:"0g" }} so'm</td></tr>
     <tr><td>Sof foyda (foyda − chiqim)</td><td class="num">{{ my_row.net|default:0|floatformat:"0g" }} so'm</td></tr>
   </table>
   </div>
-  <p class="field-hint" style="margin-top:10px;">Qarzni yopish uchun yig'ilgan naqd pulni ishlab chiqarishga topshiring.</p>
+  <p class="field-hint" style="margin-top:10px;">Avval qarzni ishlab chiqarishga topshiring; qarz yopilgach kassada qolgan foydani <a href="{% url 'profit_payout_create' %}" data-modal>boshliqqa topshiring</a> — kassa nolga tushadi.</p>
 </div>
 {% endif %}
 
@@ -157,6 +167,7 @@
       <th class="num">Ishlab chiq. qarz</th>
       <th class="num">Sotildi (tannarx)</th>
       <th class="num">Topshirdi</th>
+      <th class="num">Foyda topshirdi</th>
       <th class="num">Chiqim</th>
       <th class="num">Sof foyda</th>
       <th></th>
@@ -168,9 +179,13 @@
       <td class="num amt-debt">{{ r.production_debt|floatformat:"0g" }}</td>
       <td class="num">{{ r.sold_cost|floatformat:"0g" }}</td>
       <td class="num">{{ r.remitted|floatformat:"0g" }}</td>
+      <td class="num">{{ r.paid_profit|floatformat:"0g" }}</td>
       <td class="num amt-out">{{ r.expense_total|floatformat:"0g" }}</td>
       <td class="num"><strong>{{ r.net|floatformat:"0g" }}</strong></td>
-      <td class="num"><a class="btn btn-violet btn-sm" href="{% url 'remittance_create' %}?seller={{ r.uid }}" data-modal>Topshirish</a></td>
+      <td class="num" style="display:flex;gap:4px;justify-content:flex-end;">
+        <a class="btn btn-violet btn-sm" href="{% url 'remittance_create' %}?seller={{ r.uid }}" data-modal>Topshirish</a>
+        <a class="btn btn-sm" href="{% url 'profit_payout_create' %}?seller={{ r.uid }}" data-modal>Foyda</a>
+      </td>
     </tr>
     {% endfor %}
     <tr>
@@ -179,6 +194,7 @@
       <td class="num amt-debt"><strong>{{ seller_totals.production_debt|floatformat:"0g" }}</strong></td>
       <td class="num"><strong>{{ seller_totals.sold_cost|floatformat:"0g" }}</strong></td>
       <td class="num"><strong>{{ seller_totals.remitted|floatformat:"0g" }}</strong></td>
+      <td class="num"><strong>{{ seller_totals.paid_profit|floatformat:"0g" }}</strong></td>
       <td class="num amt-out"><strong>{{ seller_totals.expense_total|floatformat:"0g" }}</strong></td>
       <td class="num"><strong>{{ seller_totals.net|floatformat:"0g" }}</strong></td>
       <td></td>

@@ -16,10 +16,13 @@ from .models import (
     ProductionReceipt,
     ProductionReceiptItem,
     ProductionRemittance,
+    ProfitPayout,
     Return,
     Sale,
     SaleItem,
     StockEntry,
+    seller_cash_on_hand,
+    seller_withdrawable_profit,
 )
 
 DEFAULT_DEBT_DAYS = 7
@@ -398,6 +401,77 @@ class ProductionRemittanceForm(forms.ModelForm):
         if amount is not None and amount <= 0:
             raise forms.ValidationError("Summa 0 dan katta bo'lishi kerak.")
         return amount
+
+    def clean(self):
+        cleaned = super().clean()
+        # Can't hand over more cash than the seller's till actually holds — otherwise
+        # the kassa would go negative. A seller's `seller` field is disabled, so its
+        # value comes from the initial (themselves); admins pick it explicitly.
+        seller = cleaned.get("seller")
+        if self.user is not None and not self.user.can_see_all_records:
+            seller = self.user
+        amount = cleaned.get("amount")
+        if seller is not None and amount:
+            available = seller_cash_on_hand(seller, exclude_remittance_pk=self.instance.pk)
+            if amount > available:
+                raise forms.ValidationError(
+                    f"Kassada yetarli pul yo'q. {seller} qo'lida hozir "
+                    f"{available:,.0f} so'm bor — {amount:,.0f} so'm topshirib bo'lmaydi."
+                )
+        return cleaned
+
+
+class ProfitPayoutForm(forms.ModelForm):
+    """A seller handing realized profit up to the boss (Foyda topshirish). So'm only,
+    and structurally a twin of ProductionRemittanceForm — a non-privileged user's
+    `seller` is fixed to themselves and hidden. The amount can't exceed the profit
+    actually sitting in the till (cash on hand beyond the production debt)."""
+
+    class Meta:
+        model = ProfitPayout
+        fields = ["date", "seller", "amount", "method", "note"]
+        widgets = {
+            "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — izoh"}),
+        }
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user = user
+        self.fields["amount"].label = "Summa (so'm)"
+        _mark_money(self.fields["amount"])
+        sellers = User.objects.filter(is_active=True).order_by(
+            "first_name", "last_name", "username"
+        )
+        self.fields["seller"].queryset = sellers
+        _searchable_select(self.fields["seller"], "Sotuvchini tanlang")
+        if user is not None and not user.can_see_all_records:
+            self.fields["seller"].queryset = sellers.filter(pk=user.pk)
+            self.fields["seller"].initial = user
+            self.fields["seller"].disabled = True
+
+    def clean_amount(self):
+        amount = self.cleaned_data.get("amount")
+        if amount is not None and amount <= 0:
+            raise forms.ValidationError("Summa 0 dan katta bo'lishi kerak.")
+        return amount
+
+    def clean(self):
+        cleaned = super().clean()
+        # Can only hand over profit that's actually in the till (cash beyond the
+        # production debt) — so it never eats into what's still owed to production.
+        seller = cleaned.get("seller")
+        if self.user is not None and not self.user.can_see_all_records:
+            seller = self.user
+        amount = cleaned.get("amount")
+        if seller is not None and amount:
+            available = seller_withdrawable_profit(seller, exclude_payout_pk=self.instance.pk)
+            if amount > available:
+                raise forms.ValidationError(
+                    f"Topshirish uchun yetarli foyda yo'q. {seller} kassasida hozir "
+                    f"{available:,.0f} so'm sof foyda bor — {amount:,.0f} so'm topshirib bo'lmaydi."
+                )
+        return cleaned
 
 
 class ProductionReceiptForm(forms.ModelForm):

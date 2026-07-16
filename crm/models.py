@@ -684,6 +684,95 @@ class ProductionRemittance(models.Model):
         return f"Topshiruv · {self.seller}: {self.amount:,.0f} so'm ({self.date})"
 
 
+class ProfitPayout(models.Model):
+    """Profit a seller hands up to the owner/boss (Foyda topshirish).
+
+    Once a seller has remitted the tannarx of what they've sold to production
+    (ProductionRemittance), the cash left in their till is the markup — their
+    realized profit. Handing it to the boss empties the till: like a remittance it
+    is a cash outflow, but unlike one it does NOT touch the production debt (that's
+    already settled) and it is NOT a business expense (profit earned isn't reduced —
+    this only distributes it). So'm only, mirroring ProductionRemittance."""
+
+    date = models.DateField("Sana", default=timezone.localdate)
+    seller = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="profit_payouts",
+        verbose_name="Sotuvchi",
+    )
+    amount = models.DecimalField("Summa (so'm)", max_digits=18, decimal_places=2)
+    method = models.CharField(
+        "To'lov usuli", max_length=8, choices=Payment.Method.choices,
+        default=Payment.Method.CASH,
+    )
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="recorded_profit_payouts",
+        verbose_name="Kim kiritdi",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date", "-created_at"]
+        verbose_name = "Foyda topshiruvi"
+        verbose_name_plural = "Foyda topshiruvlari"
+
+    def __str__(self):
+        return f"Foyda topshiruvi · {self.seller}: {self.amount:,.0f} so'm ({self.date})"
+
+
+def seller_cash_on_hand(seller, exclude_remittance_pk=None, exclude_payout_pk=None):
+    """Cash physically in a seller's till right now — the same figure the kassa page
+    shows as "Kassadagi pul": net client payments they collected, minus expenses they
+    paid out, minus what they've handed to production, minus profit already handed to
+    the boss. A new handover can't exceed this (otherwise the till would go negative).
+    The `exclude_*_pk` args drop one existing row from the tally so editing it checks
+    against the delta, not itself."""
+    income = (
+        Payment.objects.filter(created_by=seller).aggregate(s=Sum(PAYMENT_NET))["s"]
+        or Decimal("0")
+    )
+    expense = (
+        Expense.objects.filter(created_by=seller).aggregate(s=Sum("amount"))["s"]
+        or Decimal("0")
+    )
+    remitted_qs = ProductionRemittance.objects.filter(seller=seller)
+    if exclude_remittance_pk:
+        remitted_qs = remitted_qs.exclude(pk=exclude_remittance_pk)
+    remitted = remitted_qs.aggregate(s=Sum("amount"))["s"] or Decimal("0")
+    payout_qs = ProfitPayout.objects.filter(seller=seller)
+    if exclude_payout_pk:
+        payout_qs = payout_qs.exclude(pk=exclude_payout_pk)
+    paid_profit = payout_qs.aggregate(s=Sum("amount"))["s"] or Decimal("0")
+    return income - expense - remitted - paid_profit
+
+
+def seller_production_debt(seller):
+    """What a seller still owes production: the tannarx (cost) of everything they've
+    sold, minus what they've already remitted."""
+    sold_cost = (
+        SaleItem.objects.filter(sale__sales_rep=seller).aggregate(s=Sum(COST))["s"]
+        or Decimal("0")
+    )
+    remitted = (
+        ProductionRemittance.objects.filter(seller=seller).aggregate(s=Sum("amount"))["s"]
+        or Decimal("0")
+    )
+    return sold_cost - remitted
+
+
+def seller_withdrawable_profit(seller, exclude_payout_pk=None):
+    """The profit sitting in a seller's till that may be handed to the boss: cash on
+    hand minus what's still owed to production. Handing this over drops the till toward
+    zero without disturbing the production debt. A profit payout can't exceed it."""
+    return seller_cash_on_hand(
+        seller, exclude_payout_pk=exclude_payout_pk
+    ) - seller_production_debt(seller)
+
+
 class ProductionReceipt(models.Model):
     """Goods a seller receives from production into their own ombor (warehouse).
 
@@ -821,6 +910,12 @@ class AuditLog(models.Model):
             if a == self.Action.UPDATE:
                 return e("Topshiruv o'zgartirildi", AMBER, "edit")
             return e("Ishlab chiqarishga topshirildi", "badge-info", "out", "out")
+        if t == "Foyda":
+            if a == self.Action.DELETE:
+                return e("Foyda topshiruvi o'chirildi", RED, "trash")
+            if a == self.Action.UPDATE:
+                return e("Foyda topshiruvi o'zgartirildi", AMBER, "edit")
+            return e("Foyda boshliqqa topshirildi", "badge-info", "out", "out")
         if t == "Qaytarish":
             return e("Mahsulot qaytdi", AMBER, "return")
         if t == "Qabul":

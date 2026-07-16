@@ -5,6 +5,7 @@ from .models import (
     Payment,
     Product,
     ProductionRemittance,
+    ProfitPayout,
     Sale,
     SaleItem,
     StockEntry,
@@ -42,6 +43,13 @@ class PaymentAdmin(admin.ModelAdmin):
 
 @admin.register(ProductionRemittance)
 class ProductionRemittanceAdmin(admin.ModelAdmin):
+    list_display = ["date", "seller", "amount", "method", "created_by"]
+    list_filter = ["method", "date", "seller"]
+    date_hierarchy = "date"
+
+
+@admin.register(ProfitPayout)
+class ProfitPayoutAdmin(admin.ModelAdmin):
     list_display = ["date", "seller", "amount", "method", "created_by"]
     list_filter = ["method", "date", "seller"]
     date_hierarchy = "date"

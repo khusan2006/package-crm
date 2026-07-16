@@ -28,6 +28,7 @@ from .forms import (
     ProductionReceiptForm,
     ProductionReceiptItemFormSet,
     ProductionRemittanceForm,
+    ProfitPayoutForm,
     ReturnForm,
     SaleForm,
     SaleItemFormSet,
@@ -47,6 +48,7 @@ from .models import (
     Product,
     ProductionReceipt,
     ProductionRemittance,
+    ProfitPayout,
     Return,
     Sale,
     SaleItem,
@@ -1446,6 +1448,18 @@ def _kassa_remitted(date_from, date_to, rep=None):
     return qs.aggregate(s=Sum("amount"))["s"] or Decimal("0")
 
 
+def _kassa_paid_profit(date_from, date_to, rep=None):
+    """Total profit handed up to the boss (Foyda topshirilgan) in the window. Scoped
+    to one seller when `rep` is given. Always so'm. `date_from=None` drops the lower
+    bound for the cumulative (as-of date_to) total."""
+    qs = ProfitPayout.objects.filter(date__lte=date_to)
+    if date_from is not None:
+        qs = qs.filter(date__gte=date_from)
+    if rep is not None:
+        qs = qs.filter(seller=rep)
+    return qs.aggregate(s=Sum("amount"))["s"] or Decimal("0")
+
+
 def _realized_profit_by_seller(date_from, date_to, rep=None):
     """Cost-first realized profit per seller, for sales dated in the window.
 
@@ -1494,6 +1508,7 @@ def _kassa_summary(date_from, date_to, rep=None):
     )
     cost = _kassa_supplier_cost(date_from, date_to, rep)          # period flow
     remitted = _kassa_remitted(date_from, date_to, rep)           # period flow
+    paid_profit = _kassa_paid_profit(date_from, date_to, rep)     # period flow
     profit = _kassa_profit(date_from, date_to, rep)
     # Every expense's so'm value, both currencies — the same figure the per-seller
     # rows sum, so the Jami row equals the sum of its columns.
@@ -1506,6 +1521,7 @@ def _kassa_summary(date_from, date_to, rep=None):
     # the till's closing balance already does. Only date_to bounds them.
     cost_cum = _kassa_supplier_cost(None, date_to, rep)
     remitted_cum = _kassa_remitted(None, date_to, rep)
+    paid_profit_cum = _kassa_paid_profit(None, date_to, rep)
     # Cash on hand combines every method AND currency: Payment.amount is always the
     # so'm value (a dollar payment is converted at entry), so PAYMENT_NET nets a
     # dollar payment to its so'm too — no currency filter here.
@@ -1524,10 +1540,15 @@ def _kassa_summary(date_from, date_to, rep=None):
         ),
         "cost": cost,
         # Production-debt block (so'm). Cash on hand = so'm income net of fees, less
-        # every expense, less what's already been handed to production — cumulative.
+        # every expense, less what's already been handed to production, less profit
+        # already handed to the boss — all cumulative.
         "remitted": remitted,
+        "paid_profit": paid_profit,
         "production_debt": cost_cum - remitted_cum,
-        "cash": income_all_cum - expense_cum - remitted_cum,
+        "cash": income_all_cum - expense_cum - remitted_cum - paid_profit_cum,
+        # Profit still sitting in the till, free to hand up: cash beyond the debt.
+        "withdrawable_profit": (income_all_cum - expense_cum - remitted_cum - paid_profit_cum)
+        - (cost_cum - remitted_cum),
         "profit": profit,
         "expense_total": expense_total,
         "net_profit": profit - expense_total,
@@ -1558,11 +1579,13 @@ def _per_employee_kassa(date_from, date_to, rep=None):
     expenses = Expense.objects.filter(**window)
     sale_items = SaleItem.objects.filter(**sale_window)
     remittances = ProductionRemittance.objects.filter(**window)
+    payouts = ProfitPayout.objects.filter(**window)
     if rep is not None:
         payments = payments.filter(created_by=rep)
         expenses = expenses.filter(created_by=rep)
         sale_items = sale_items.filter(sale__sales_rep=rep)
         remittances = remittances.filter(seller=rep)
+        payouts = payouts.filter(seller=rep)
 
     users = {u.pk: u for u in User.objects.all()}
     usd = Payment.Currency.USD
@@ -1575,6 +1598,7 @@ def _per_employee_kassa(date_from, date_to, rep=None):
             "out_som": Decimal("0"), "out_usd": Decimal("0"),
             "expense_total": Decimal("0"), "profit": Decimal("0"),
             "sold_cost": Decimal("0"), "remitted": Decimal("0"),
+            "paid_profit": Decimal("0"),
         }
 
     rows = {}
@@ -1615,9 +1639,14 @@ def _per_employee_kassa(date_from, date_to, rep=None):
     for r in remittances.values("seller").annotate(s=Sum("amount")):
         row(r["seller"])["remitted"] += r["s"] or Decimal("0")
 
+    for r in payouts.values("seller").annotate(s=Sum("amount")):
+        row(r["seller"])["paid_profit"] += r["s"] or Decimal("0")
+
     result = []
     for rr in rows.values():
-        rr["cash"] = rr["in_som"] - rr["expense_total"] - rr["remitted"]
+        # Cash left: income, less expenses, less handed to production, less profit
+        # handed to the boss.
+        rr["cash"] = rr["in_som"] - rr["expense_total"] - rr["remitted"] - rr["paid_profit"]
         rr["production_debt"] = rr["sold_cost"] - rr["remitted"]
         rr["net"] = rr["profit"] - rr["expense_total"]  # samaradorlik: foyda − rasxot
         result.append(rr)
@@ -1703,6 +1732,25 @@ def _kassa_transactions(expenses, dates, filters, rep):
                     "exchange_rate": Decimal("0"), "created_by": m.created_by,
                     "pk": m.pk, "kind": "remittance",
                 })
+        # Profit handovers to the boss — so'm only, so a dollar-currency filter hides them.
+        if filters["currency"] != Payment.Currency.USD:
+            payouts = ProfitPayout.objects.select_related(
+                "seller", "created_by"
+            ).filter(date__gte=dates["date_from"], date__lte=dates["date_to"])
+            if rep is not None:
+                payouts = payouts.filter(seller=rep)
+            if filters["method"] in dict(Payment.Method.choices):
+                payouts = payouts.filter(method=filters["method"])
+            for pp in payouts:
+                rows.append({
+                    "date": pp.date, "created_at": pp.created_at, "direction": "profit",
+                    "title": str(pp.seller), "subtitle": "Foyda topshiruvi",
+                    "method": pp.get_method_display(), "method_code": pp.method,
+                    "currency": Payment.Currency.UZS,
+                    "amount_som": pp.amount, "amount_original": pp.amount,
+                    "exchange_rate": Decimal("0"), "created_by": pp.created_by,
+                    "pk": pp.pk, "kind": "profit",
+                })
     for e in expenses:
         rows.append({
             "date": e.date, "created_at": e.created_at, "direction": "out",
@@ -1730,7 +1778,7 @@ def kassa_view(request):
     # (expenses + production handovers) on the right. Totals use amount_som so a
     # USD payment counts at its so'm value. Newest-first order is inherited.
     income_rows = [t for t in transactions if t["direction"] == "in"]
-    outflow_rows = [t for t in transactions if t["direction"] in ("out", "remit")]
+    outflow_rows = [t for t in transactions if t["direction"] in ("out", "remit", "profit")]
     income_total = sum((t["amount_som"] for t in income_rows), Decimal("0"))
     outflow_total = sum((t["amount_som"] for t in outflow_rows), Decimal("0"))
 
@@ -1752,7 +1800,8 @@ def kassa_view(request):
     # always equals the sum of what's shown, whatever the filter.
     seller_totals = {
         key: sum((r[key] for r in seller_rows), Decimal("0"))
-        for key in ("cash", "production_debt", "sold_cost", "remitted", "expense_total", "net")
+        for key in ("cash", "production_debt", "sold_cost", "remitted", "paid_profit",
+                    "expense_total", "net")
     }
     my_row = None
     if not request.user.can_see_all_records:
@@ -1989,6 +2038,86 @@ def remittance_delete(request, pk):
         request,
         "Topshiruvni o'chirish",
         f"{remit.amount:,.0f} so'm topshiruv o'chiriladi. Davom etasizmi?",
+        "Ha, o'chirish",
+        confirm_class="btn-danger",
+    )
+
+
+def _profit_summary(payout):
+    return (
+        f"Sotuvchi {payout.seller} foyda topshirdi "
+        f"({payout.get_method_display()}) — {payout.amount:,.0f} so'm"
+    )
+
+
+def profit_payout_create(request):
+    """Record realized profit a seller hands up to the boss. A seller may file only
+    their own; admins/managers may file for any seller (and can preselect one via
+    ?seller= from the per-seller control table)."""
+    initial = {}
+    seller_pk = request.GET.get("seller", "")
+    if request.method == "GET" and request.user.can_see_all_records and seller_pk.isdigit():
+        initial["seller"] = seller_pk
+    form = ProfitPayoutForm(request.POST or None, user=request.user, initial=initial)
+    title = "Foyda topshirish"
+    if request.method == "POST":
+        if form.is_valid():
+            payout = form.save(commit=False)
+            if not request.user.can_see_all_records:
+                payout.seller = request.user
+            payout.created_by = request.user
+            payout.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Foyda", payout.pk,
+                _profit_summary(payout),
+            )
+            messages.success(request, f"Foyda topshirildi: {payout.amount:,.0f} so'm.")
+            return form_success(request, reverse("kassa"))
+        return form_response(request, form, title, invalid=True, modal_template="crm/_profit_payout_modal.html")
+    return form_response(request, form, title, modal_template="crm/_profit_payout_modal.html")
+
+
+def profit_payout_edit(request, pk):
+    """Fix a mistaken profit handover. Admins/managers may edit any; a seller may edit
+    only their own."""
+    qs = ProfitPayout.objects.all() if request.user.can_see_all_records \
+        else ProfitPayout.objects.filter(seller=request.user)
+    payout = get_object_or_404(qs, pk=pk)
+    title = "Foyda topshiruvini tahrirlash"
+    form = ProfitPayoutForm(request.POST or None, instance=payout, user=request.user)
+    if request.method == "POST":
+        if form.is_valid():
+            payout = form.save(commit=False)
+            if not request.user.can_see_all_records:
+                payout.seller = request.user
+            payout.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Foyda", payout.pk,
+                _profit_summary(payout),
+            )
+            messages.success(request, "Foyda topshiruvi yangilandi.")
+            return form_success(request, reverse("kassa"))
+        return form_response(request, form, title, invalid=True, modal_template="crm/_profit_payout_modal.html")
+    return form_response(request, form, title, modal_template="crm/_profit_payout_modal.html")
+
+
+def profit_payout_delete(request, pk):
+    """Remove a mistaken profit handover. Admins/managers may erase any; a seller may
+    erase only their own."""
+    qs = ProfitPayout.objects.select_related("seller", "created_by")
+    if not request.user.can_see_all_records:
+        qs = qs.filter(seller=request.user)
+    payout = get_object_or_404(qs, pk=pk)
+    if request.method == "POST":
+        summary = _profit_summary(payout)
+        payout.delete()
+        AuditLog.record(request.user, AuditLog.Action.DELETE, "Foyda", pk, summary)
+        messages.success(request, "Foyda topshiruvi o'chirildi.")
+        return form_reload(request, reverse("kassa"))
+    return render_confirm(
+        request,
+        "Foyda topshiruvini o'chirish",
+        f"{payout.amount:,.0f} so'm foyda topshiruvi o'chiriladi. Davom etasizmi?",
         "Ha, o'chirish",
         confirm_class="btn-danger",
     )

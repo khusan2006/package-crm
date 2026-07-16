@@ -19,6 +19,7 @@ from .models import (
     ProductionReceipt,
     ProductionReceiptItem,
     ProductionRemittance,
+    ProfitPayout,
     Return,
     Sale,
     SaleItem,
@@ -1738,7 +1739,12 @@ class RemittanceTests(BaseSetup):
         }
         if seller is not None:
             data["seller"] = seller.pk
-        return self.client.post(reverse("remittance_create"), data)
+        # The kassa UI posts handovers from an AJAX modal; an invalid one comes back
+        # as a 422 with the modal partial (and its error banner) rather than a redirect.
+        return self.client.post(
+            reverse("remittance_create"), data,
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
 
     def test_seller_remittance_reduces_debt_and_cash(self):
         today = timezone.localdate()
@@ -1766,10 +1772,28 @@ class RemittanceTests(BaseSetup):
         self.assertEqual(remit.seller, self.sales1)
 
     def test_admin_can_file_for_any_seller(self):
+        # sales2 holds 240k cash on hand (their paid sale in BaseSetup), so an admin
+        # can file a handover on their behalf.
         self._remit(self.admin, "20000", seller=self.sales2)
         remit = ProductionRemittance.objects.get()
         self.assertEqual(remit.seller, self.sales2)
         self.assertEqual(remit.created_by, self.admin)
+
+    def test_remittance_blocked_when_cash_insufficient(self):
+        # sales1 holds 440k (240k sale in BaseSetup + 200k repayment in setUp).
+        # Handing over more than the till holds is rejected and nothing is saved.
+        response = self._remit(self.sales1, "500000")
+        self.assertEqual(response.status_code, 422)
+        self.assertContains(response, "Kassada yetarli pul yo&#x27;q", status_code=422)
+        self.assertFalse(ProductionRemittance.objects.exists())
+
+    def test_remittance_blocked_for_empty_till(self):
+        # A seller who has collected nothing has an empty till — even an admin can't
+        # hand cash over on their behalf.
+        empty = User.objects.create_user("t_sales3", password="x", role=User.Role.SALES)
+        response = self._remit(self.admin, "1000", seller=empty)
+        self.assertContains(response, "Kassada yetarli pul yo&#x27;q", status_code=422)
+        self.assertFalse(ProductionRemittance.objects.exists())
 
     def test_seller_sees_only_own_remittance_in_ledger(self):
         ProductionRemittance.objects.create(
@@ -1792,6 +1816,81 @@ class RemittanceTests(BaseSetup):
         log = AuditLog.objects.filter(target_type="Topshiruv").first()
         self.assertIsNotNone(log)
         self.assertEqual(log.action, AuditLog.Action.CREATE)
+
+
+class ProfitPayoutTests(BaseSetup):
+    """Foyda topshirish — a seller hands realized profit up to the boss. It drains
+    the till without touching the production debt (already settled by remittances)
+    and without reducing measured profit (it only distributes it)."""
+
+    def setUp(self):
+        # A clean seller (manager has no BaseSetup payments): one paid 240k sale with
+        # 180k tannarx → cash 240k, production debt 180k, so 60k free profit.
+        self.sale = make_sale(self.client1, self.manager, self.product, weight="10")
+
+    def _payout(self, user, amount, seller=None):
+        self.client.force_login(user)
+        data = {
+            "date": timezone.localdate().isoformat(),
+            "amount": amount, "method": "cash",
+        }
+        if seller is not None:
+            data["seller"] = seller.pk
+        return self.client.post(
+            reverse("profit_payout_create"), data,
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+
+    def test_payout_reduces_cash_not_debt(self):
+        today = timezone.localdate()
+        before = _kassa_summary(today, today, rep=self.manager)
+        self._payout(self.manager, "60000", seller=self.manager)
+        payout = ProfitPayout.objects.get()
+        self.assertEqual(payout.seller, self.manager)
+        self.assertEqual(payout.amount, Decimal("60000"))
+        after = _kassa_summary(today, today, rep=self.manager)
+        # Cash drops by the payout; the production debt is untouched.
+        self.assertEqual(before["cash"] - after["cash"], Decimal("60000"))
+        self.assertEqual(after["production_debt"], before["production_debt"])
+        self.assertEqual(after["paid_profit"], Decimal("60000.00"))
+
+    def test_payout_blocked_beyond_withdrawable_profit(self):
+        # Only 60k of the 240k till is free profit (180k still owed to production);
+        # trying to hand over more is rejected and nothing is saved.
+        response = self._payout(self.manager, "61000", seller=self.manager)
+        self.assertContains(response, "yetarli foyda yo&#x27;q", status_code=422)
+        self.assertFalse(ProfitPayout.objects.exists())
+
+    def test_remit_then_payout_zeroes_the_till(self):
+        today = timezone.localdate()
+        # Settle the full production debt, then hand up the remaining profit.
+        ProductionRemittance.objects.create(
+            seller=self.manager, amount=Decimal("180000"), method=Payment.Method.CASH,
+            created_by=self.manager, date=today,
+        )
+        self._payout(self.manager, "60000", seller=self.manager)
+        summary = _kassa_summary(today, today, rep=self.manager)
+        self.assertEqual(summary["cash"], Decimal("0.00"))
+        self.assertEqual(summary["production_debt"], Decimal("0.00"))
+
+    def test_payout_is_audited(self):
+        self._payout(self.manager, "10000", seller=self.manager)
+        log = AuditLog.objects.filter(target_type="Foyda").first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.action, AuditLog.Action.CREATE)
+
+    def test_kassa_page_renders_payout_for_admin(self):
+        # The admin kassa page must render the new profit column and the payout row
+        # in the chiqim ledger without a template error.
+        ProfitPayout.objects.create(
+            seller=self.manager, amount=Decimal("60000"), method=Payment.Method.CASH,
+            created_by=self.manager, date=timezone.localdate(),
+        )
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("kassa"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Foyda topshirdi")
+        self.assertContains(response, "Foyda topshirilgan")
 
 
 class RealizedProfitTests(BaseSetup):
