@@ -8,14 +8,17 @@
 
 {% if is_admin_view %}
 <div class="card">
-  <form method="get" class="stacked" style="margin:0;">
-    <label>Sotuvchi omborini ko'rish
-      <select name="seller" onchange="this.form.submit()">
-        <option value="">— Sotuvchini tanlang —</option>
-        {% for r in reps %}<option value="{{ r.pk }}" {% if seller and seller.pk == r.pk %}selected{% endif %}>{{ r }}</option>{% endfor %}
-      </select>
-    </label>
-  </form>
+  <div class="card-head" style="display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:0;">
+    <form method="get" class="stacked" style="margin:0;flex:1;max-width:320px;">
+      <label>Sotuvchi omborini ko'rish
+        <select name="seller" onchange="this.form.submit()">
+          <option value="">— Sotuvchini tanlang —</option>
+          {% for r in reps %}<option value="{{ r.pk }}" {% if seller and seller.pk == r.pk %}selected{% endif %}>{{ r }}</option>{% endfor %}
+        </select>
+      </label>
+    </form>
+    <a class="btn btn-ghost btn-sm" href="{% url 'product_list' %}">Mahsulotlar ro'yxati</a>
+  </div>
 </div>
 {% endif %}
 
@@ -55,7 +58,7 @@
       <td>{{ it.sale.date|date:"d.m.Y" }}</td>
       <td>{{ it.sale.client.name }}</td>
       <td>{{ it.product.name }}</td>
-      <td class="num">{{ it.weight|floatformat:"-3g" }} {{ it.dimension }}</td>
+      <td class="num">{{ it.pending_kg|floatformat:"-3g" }} kg</td>
     </tr>
     {% endfor %}
   </table>

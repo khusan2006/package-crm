@@ -2,7 +2,22 @@
   {{ f.id }}
   {% if f.non_field_errors %}<div class="flash flash-error">{{ f.non_field_errors.0 }}</div>{% endif %}
   <div class="item-fields item-fields--receipt">
-    <label class="if if-product">Mahsulot{{ f.product }}{{ f.product.errors }}</label>
+    <label class="if if-product qap-container">Mahsulot
+      <span class="field-with-add">
+        {{ f.product }}
+        <button type="button" class="btn btn-sm qap-toggle"
+                data-quick-url="{% url 'product_quick_create' %}"
+                data-target="{{ f.product.id_for_label }}" title="Yangi mahsulot">+</button>
+      </span>
+      <span class="quick-add-panel qap-panel" hidden>
+        <input type="text" class="qa-name qap-name" placeholder="Mahsulot nomi">
+        <input type="text" class="qap-price" inputmode="decimal" placeholder="Narx (ixtiyoriy)">
+        <input type="text" class="qap-cost" inputmode="decimal" placeholder="Tannarx (ixtiyoriy)">
+        <button type="button" class="btn btn-sm qap-save">Qo'shish</button>
+        <span class="qa-error qap-error"></span>
+      </span>
+      {{ f.product.errors }}
+    </label>
     <label class="if if-weight">Miqdori (kg){{ f.quantity_kg }}{{ f.quantity_kg.errors }}</label>
     <button type="button" class="icon-action danger item-remove" title="Qatorni o'chirish">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>

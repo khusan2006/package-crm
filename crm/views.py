@@ -133,8 +133,13 @@ def _mark_fulfilment(sale, shortfall, only_unset=False):
     if only_unset:
         items = items.filter(fulfilled_at__isnull=True)
     for item in items:
-        item.fulfilled_at = None if item.product_id in short_pks else sale.date
-        item.save(update_fields=["fulfilled_at"])
+        if item.product_id in short_pks:
+            item.fulfilled_kg = Decimal("0")
+            item.fulfilled_at = None
+        else:
+            item.fulfilled_kg = item.weight_kg
+            item.fulfilled_at = sale.date
+        item.save(update_fields=["fulfilled_kg", "fulfilled_at"])
 
 
 def _zakaz_confirm_response(request, form, formset, title, shortfall):
@@ -660,6 +665,46 @@ def client_quick_create(request):
         name=name, phone=request.POST.get("phone", "").strip(), owner=request.user
     )
     return JsonResponse({"id": client.pk, "text": client.name})
+
+
+def _unique_product_sku(name):
+    """A short, unique SKU derived from the product name (auto-assigned on a quick
+    add; the admin can rename it later)."""
+    base = "".join(c for c in name.upper() if c.isalnum())[:8] or "MHS"
+    sku, i = base, 1
+    while Product.objects.filter(sku=sku).exists():
+        i += 1
+        sku = f"{base}{i}"
+    return sku
+
+
+def product_quick_create(request):
+    """Create a product inline (from the receipt form) so a seller can log goods for
+    a product the admin hasn't defined yet. Returns it as JSON. A same-name product
+    is reported back (409) so the caller can reuse it, unless allow_duplicate is set."""
+    if request.method != "POST":
+        return JsonResponse({"error": "POST kerak"}, status=405)
+    name = (request.POST.get("name") or "").strip()
+    if not name:
+        return JsonResponse({"error": "Nom kiriting"}, status=400)
+    if not request.POST.get("allow_duplicate") and Product.objects.filter(name__iexact=name).exists():
+        return JsonResponse({"duplicate": True, "error": "Bu nomli mahsulot bor"}, status=409)
+
+    def _dec(key):
+        raw = (request.POST.get(key) or "").replace(" ", "").replace(",", ".")
+        try:
+            return Decimal(raw) if raw else Decimal("0")
+        except (ArithmeticError, ValueError):
+            return Decimal("0")
+
+    product = Product.objects.create(
+        name=name, sku=_unique_product_sku(name),
+        price=_dec("price"), cost_price=_dec("cost_price"),
+    )
+    AuditLog.record(
+        request.user, AuditLog.Action.CREATE, "Mahsulot", product.pk, f"{name} (tez qo'shildi)"
+    )
+    return JsonResponse({"id": product.pk, "text": str(product)})
 
 
 def client_edit(request, pk):
@@ -2144,6 +2189,42 @@ def _pending_zakaz_for_receipt(receipt):
     )
 
 
+def _auto_bind_receipt(receipt):
+    """Automatically fulfil the seller's oldest pending zakaz for each received
+    product, up to the quantity received. Strict FIFO and whole-order: the oldest
+    unfilled order that the remaining stock can't cover stops that product's binding
+    (it waits for more stock). Returns the number of orders bound."""
+    bound = 0
+    for ri in receipt.items.select_related("product"):
+        remaining = ri.quantity_kg
+        pending = (
+            SaleItem.objects.filter(
+                sale__sales_rep=receipt.seller,
+                product=ri.product,
+                fulfilled_at__isnull=True,
+            )
+            .select_related("sale")
+            .order_by("sale__date", "pk")
+        )
+        for item in pending:
+            need = item.weight_kg - item.fulfilled_kg
+            if need <= 0:
+                continue
+            fill = min(need, remaining)
+            item.fulfilled_kg += fill
+            fields = ["fulfilled_kg"]
+            if item.fulfilled_kg >= item.weight_kg:  # this order is now complete
+                item.fulfilled_at = receipt.date
+                item.fulfilled_by_receipt = receipt
+                fields += ["fulfilled_at", "fulfilled_by_receipt"]
+            item.save(update_fields=fields)
+            remaining -= fill
+            bound += 1
+            if remaining <= 0:
+                break
+    return bound
+
+
 def _render_receipt_form(request, form, formset, title, invalid=False):
     context = {"form": form, "formset": formset, "title": title}
     if is_ajax(request):
@@ -2177,9 +2258,14 @@ def receipt_create(request):
                 _receipt_summary(receipt),
             )
             messages.success(request, "Qabul qilingan tovarlar qo'shildi.")
-            # If this stock could fulfil pending zakaz orders, go bind them.
-            if _pending_zakaz_for_receipt(receipt).exists():
-                return form_success(request, reverse("receipt_bind", args=[receipt.pk]))
+            # Automatically assign the arriving stock to waiting zakaz orders.
+            bound = _auto_bind_receipt(receipt)
+            if bound:
+                AuditLog.record(
+                    request.user, AuditLog.Action.UPDATE, "Zakaz", receipt.pk,
+                    f"{bound} ta zakaz avtomatik biriktirildi",
+                )
+                messages.success(request, f"{bound} ta zakaz mijozga avtomatik biriktirildi.")
             return form_success(request, reverse("ombor"))
         return _render_receipt_form(request, form, formset, title, invalid=True)
     return _render_receipt_form(request, form, formset, title)
@@ -2389,8 +2475,12 @@ def sale_create(request):
     if request.method == "POST":
         if form.is_valid() and formset.is_valid():
             shortfall = _ombor_shortfall(request.user, formset)
-            if shortfall and not request.POST.get("allow_zakaz"):
-                return _zakaz_confirm_response(request, form, formset, "Yangi sotuv", shortfall)
+            # Confirm only when the sale exceeds stock the seller actually holds
+            # (available > 0). Selling a product they have none of is a plain zakaz —
+            # recorded silently; the line is still marked pending below.
+            confirm = [s for s in shortfall if s[2] > 0]
+            if confirm and not request.POST.get("allow_zakaz"):
+                return _zakaz_confirm_response(request, form, formset, "Yangi sotuv", confirm)
             sale = form.save(commit=False)
             sale.sales_rep = request.user
             sale.save()
@@ -2441,8 +2531,9 @@ def sale_edit(request, pk):
                 )
                 return _render_sale_form(request, form, formset, "Sotuvni tahrirlash", invalid=True)
             shortfall = _ombor_shortfall(sale.sales_rep, formset, existing_sale=sale)
-            if shortfall and not request.POST.get("allow_zakaz"):
-                return _zakaz_confirm_response(request, form, formset, "Sotuvni tahrirlash", shortfall)
+            confirm = [s for s in shortfall if s[2] > 0]
+            if confirm and not request.POST.get("allow_zakaz"):
+                return _zakaz_confirm_response(request, form, formset, "Sotuvni tahrirlash", confirm)
             sale = form.save()
             formset.save()
             _mark_fulfilment(sale, shortfall, only_unset=True)

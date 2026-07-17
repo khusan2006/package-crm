@@ -387,10 +387,15 @@ class SaleItem(models.Model):
     cost_price = models.DecimalField(
         "Tannarxi (1 birlik, so'm)", max_digits=14, decimal_places=2
     )
-    # Order fulfilment: an in-stock line is fulfilled on the sale date; a line sold
-    # short (zakaz) is NULL until the arriving stock is bound to it. Orthogonal to
-    # the ombor stock math — a pending line still counts as sold.
-    fulfilled_at = models.DateField("Bajarilgan sana", null=True, blank=True)
+    # Order fulfilment. `fulfilled_kg` is how much of the line has been backed by
+    # stock (partial fills allowed); `fulfilled_at` is set only once it's FULLY
+    # filled. A line sold short (zakaz) starts at 0 and gets topped up as stock
+    # arrives. Orthogonal to the ombor stock math — a pending line still counts as
+    # sold.
+    fulfilled_kg = models.DecimalField(
+        "Bajarilgan miqdor (kg)", max_digits=12, decimal_places=3, default=0
+    )
+    fulfilled_at = models.DateField("To'liq bajarilgan sana", null=True, blank=True)
     fulfilled_by_receipt = models.ForeignKey(
         "ProductionReceipt",
         on_delete=models.SET_NULL,
@@ -406,8 +411,13 @@ class SaleItem(models.Model):
 
     @property
     def is_pending(self):
-        """A zakaz line still waiting for stock to be bound to it."""
+        """A zakaz line not yet fully backed by stock."""
         return self.fulfilled_at is None
+
+    @property
+    def pending_kg(self):
+        """The still-unfilled quantity of this line, in kg."""
+        return max(Decimal("0"), self.weight_kg - self.fulfilled_kg)
 
     @property
     def weight_kg(self):

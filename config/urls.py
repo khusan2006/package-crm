@@ -25,6 +25,7 @@ urlpatterns = [
     path("clients/<int:pk>/transfer/", crm_views.client_transfer, name="client_transfer"),
     # products
     path("products/", crm_views.product_list, name="product_list"),
+    path("products/quick/", crm_views.product_quick_create, name="product_quick_create"),
     path("products/new/", crm_views.product_create, name="product_create"),
     path("products/<int:pk>/", crm_views.product_detail, name="product_detail"),
     path("products/<int:pk>/edit/", crm_views.product_edit, name="product_edit"),
