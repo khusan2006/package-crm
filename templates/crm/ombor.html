@@ -1,101 +1,56 @@
 {% extends "base.html" %}
+{% load crm_extras %}
 {% block title %}{% if is_admin_view %}Ombor{% else %}Mening omborim{% endif %} · Paket CRM{% endblock %}
 {% block topbar_title %}{% if is_admin_view %}Ombor{% else %}Mening omborim{% endif %}{% endblock %}
-{% block fab %}
-<a class="fab" href="{% url 'receipt_create' %}{% if is_admin_view and seller %}?seller={{ seller.pk }}{% endif %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v14"/><path d="M5 9l7-7 7 7"/><rect x="4" y="16" width="16" height="6" rx="2"/></svg>Ishlab chiqarishdan qabul</a>
-{% endblock %}
+{% block fab %}<a class="fab" href="{% url 'product_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi mahsulot</a>{% endblock %}
 {% block content %}
 
-{% if is_admin_view %}
-<div class="card">
-  <div class="card-head" style="display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:0;">
-    <form method="get" class="stacked" style="margin:0;flex:1;max-width:320px;">
-      <label>Sotuvchi omborini ko'rish
-        <select name="seller" onchange="this.form.submit()">
-          <option value="">— Sotuvchini tanlang —</option>
-          {% for r in reps %}<option value="{{ r.pk }}" {% if seller and seller.pk == r.pk %}selected{% endif %}>{{ r }}</option>{% endfor %}
-        </select>
-      </label>
-    </form>
-    <a class="btn btn-ghost btn-sm" href="{% url 'product_list' %}">Mahsulotlar ro'yxati</a>
-  </div>
-</div>
-{% endif %}
-
-{% if seller %}
-<div class="card">
-  <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;">
-    <h2 style="margin:0;">{% if is_admin_view %}{{ seller }} — ombordagi qoldiq{% else %}Ombordagi qoldiq{% endif %}</h2>
-  </div>
-  {% if rows %}
-  <div class="table-wrap">
-  <table>
-    <tr><th>Mahsulot</th><th class="num">Qabul qilindi</th><th class="num">Sotildi</th><th class="num">Qoldiq</th></tr>
-    {% for p in rows %}
-    <tr>
-      <td>{{ p.name }}</td>
-      <td class="num">{{ p.stock_in|floatformat:"-3g" }}</td>
-      <td class="num">{{ p.stock_out|floatformat:"-3g" }}</td>
-      <td class="num {% if p.stock < 0 %}amt-debt{% endif %}"><strong>{{ p.stock|floatformat:"-3g" }}</strong> kg</td>
-    </tr>
-    {% endfor %}
-  </table>
-  </div>
-  {% else %}<p class="muted">Bu sotuvchida hali ombor harakati yo'q.</p>{% endif %}
-</div>
-{% if pending %}
-<div class="card">
-  <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;">
-    <h2 style="margin:0;">Zakaz — kutilmoqda</h2>
-    <span class="badge badge-shipped">{{ pending|length }} ta</span>
-  </div>
-  <p class="field-hint" style="margin-top:0;">Omborsiz sotilgan buyurtmalar. Tovar kelib qabul qilinganda biriktiriladi.</p>
-  <div class="table-wrap">
-  <table>
-    <tr><th>Sana</th><th>Mijoz</th><th>Mahsulot</th><th class="num">Miqdori</th></tr>
-    {% for it in pending %}
-    <tr>
-      <td>{{ it.sale.date|date:"d.m.Y" }}</td>
-      <td>{{ it.sale.client.name }}</td>
-      <td>{{ it.product.name }}</td>
-      <td class="num">{{ it.pending_kg|floatformat:"-3g" }} kg</td>
-    </tr>
-    {% endfor %}
-  </table>
-  </div>
-</div>
-{% endif %}
-{% endif %}
-
-{% if is_admin_view and not seller %}
-<p class="field-hint">Qoldiqni ko'rish uchun yuqoridan sotuvchini tanlang.</p>
-{% endif %}
-
-<div class="card">
-  <h2>So'nggi qabullar</h2>
-  {% if receipts %}
-  <div class="receipt-list">
-    {% for r in receipts %}
-    <div class="receipt-row">
-      <span class="receipt-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg></span>
-      <div class="receipt-main">
-        <div class="receipt-meta">
-          <span class="receipt-date">{{ r.date|date:"d.m.Y" }}</span>
-          {% if is_admin_view %}<span class="receipt-seller">{{ r.seller }}</span>{% endif %}
-          {% if r.note %}<span class="receipt-note">{{ r.note }}</span>{% endif %}
-        </div>
-        <div class="receipt-chips">
-          {% for it in r.items.all %}<span class="receipt-chip">{{ it.product.name }} <b>{{ it.quantity_kg|floatformat:"-3g" }} kg</b></span>{% endfor %}
-        </div>
-      </div>
-      <div class="receipt-total">+{{ r.total_kg|floatformat:"-3g" }}<span class="unit">kg</span></div>
-      <div class="row-actions">
-        <a class="icon-action" href="{% url 'receipt_edit' r.pk %}" data-modal title="Tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
-        <a class="icon-action danger" href="{% url 'receipt_delete' r.pk %}" data-modal title="O'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
-      </div>
+<div class="kpi-grid">
+  <div class="kpi kpi--blue">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg></span>
+      <span class="kpi-label">Sotilgan tovar turlari</span>
     </div>
-    {% endfor %}
+    <div class="kpi-value">{{ product_count }}<span class="unit">tur</span></div>
+    <div class="kpi-meta muted">{% if is_admin_view %}barcha sotuvchilar{% else %}men sotganlarim{% endif %}</div>
   </div>
-  {% else %}<p class="muted">Hali qabul yo'q.</p>{% endif %}
+
+  <div class="kpi kpi--green">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span>
+      <span class="kpi-label">Jami sotilgan</span>
+    </div>
+    <div class="kpi-value">{{ total_kg|floatformat:"-3g" }}<span class="unit">kg</span></div>
+    <div class="kpi-meta muted">tanlangan sana bo'yicha</div>
+  </div>
 </div>
+
+{% include "crm/_filter_toolbar.html" with show_search=True %}
+
+{% if rows %}
+<div class="table-wrap">
+<table>
+  <tr>
+    <th class="sticky-col">Mahsulot</th>
+    <th>SKU</th>
+    <th class="num">Sotuvlar soni</th>
+    <th class="num">Jami sotilgan</th>
+    <th></th>
+  </tr>
+  {% for r in rows %}
+  <tr>
+    <td class="sticky-col"><a href="{% url 'ombor_product' r.product %}">{{ r.product__name }}</a></td>
+    <td class="muted">{{ r.product__sku }}</td>
+    <td class="num">{{ r.sales_count }}</td>
+    <td class="num"><strong>{{ r.total_kg|floatformat:"-3g" }}</strong> kg</td>
+    <td><a class="btn btn-sm btn-ghost" href="{% url 'ombor_product' r.product %}">Ko'rish</a></td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% else %}
+<p class="muted">{% if q %}“{{ q }}” bo'yicha topilmadi.{% else %}Bu davrda sotuv yo'q.{% endif %}</p>
+{% endif %}
+
+{% include "crm/_filter_drawer.html" %}
 {% endblock %}

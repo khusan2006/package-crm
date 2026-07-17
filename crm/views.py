@@ -37,6 +37,7 @@ from .forms import (
 )
 from .models import (
     COST,
+    ITEM_WEIGHT_KG,
     PAYMENT_NET,
     PROFIT,
     RETURN_AMOUNT,
@@ -791,9 +792,8 @@ def client_transfer(request, pk):
 # --- Products -----------------------------------------------------------------
 
 def product_list(request):
-    # Sellers see their own ombor stock; admins/managers see the shared total.
-    seller = None if request.user.can_see_all_records else request.user
-    products = Product.objects.with_stock(seller=seller).order_by("name")
+    # A plain shared catalog — the reference list sellers pick from when selling.
+    products = Product.objects.order_by("name")
     q = request.GET.get("q", "").strip()
     if q:
         products = products.filter(Q(name__icontains=q) | Q(sku__icontains=q))
@@ -824,17 +824,10 @@ def product_detail(request, pk):
 
 
 def product_create(request):
-    form = ProductForm(request.POST or None, with_stock=True)
+    form = ProductForm(request.POST or None)
     if request.method == "POST":
         if form.is_valid():
             product = form.save()
-            # A starting quantity is booked as the product's first warehouse kirim.
-            qty = form.cleaned_data.get("initial_quantity")
-            if qty and qty > 0:
-                StockEntry.objects.create(
-                    product=product, quantity_kg=qty,
-                    note="Boshlang'ich qoldiq", created_by=request.user,
-                )
             messages.success(request, f"“{product.name}” mahsuloti qo'shildi.")
             return form_success(request, reverse("product_detail", args=[product.pk]))
         return form_response(request, form, "Yangi mahsulot", invalid=True)
@@ -2340,48 +2333,99 @@ def receipt_delete(request, pk):
 
 
 def ombor_view(request):
-    """Per-seller ombor: a seller sees their own on-hand per product and recent
-    receipts; admins/managers see any seller (pick one via ?seller=)."""
+    """Ombor = sold-goods report, one row per product with the total kg sold in the
+    selected date window. A seller sees only their own sales; admins/managers see
+    every seller's combined total (and can filter to one seller). Click a product to
+    drill into who bought it. Mirrors the debts page's group-then-detail shape."""
     user = request.user
-    reps = None
-    seller = user
+    dates = _date_range_context(request)
+    date_from, date_to = dates["date_from"], dates["date_to"]
+
+    filters = {"q": request.GET.get("q", "").strip(), "rep": request.GET.get("rep", "")}
+    filters["dan"] = date_from.isoformat()
+    filters["gacha"] = date_to.isoformat()
+
+    items = SaleItem.objects.filter(sale__date__gte=date_from, sale__date__lte=date_to)
+    if not user.can_see_all_records:
+        items = items.filter(sale__sales_rep=user)
+
+    reps = rep_obj = None
     if user.can_see_all_records:
         reps = User.objects.filter(is_active=True).order_by(
             "first_name", "last_name", "username"
         )
-        seller_pk = request.GET.get("seller", "")
-        seller = reps.filter(pk=seller_pk).first() if seller_pk.isdigit() else None
+        if filters["rep"].isdigit():
+            rep_obj = reps.filter(pk=filters["rep"]).first()
+            if rep_obj:
+                items = items.filter(sale__sales_rep=rep_obj)
 
-    rows = []
-    if seller is not None:
-        rows = [
-            p for p in Product.objects.filter(is_active=True)
-            .with_stock(seller=seller).order_by("name")
-            if p.stock_in or p.stock_out or p.stock_returned
-        ]
-
-    receipts = ProductionReceipt.objects.select_related(
-        "seller", "created_by"
-    ).prefetch_related("items__product")
-    if seller is not None:
-        receipts = receipts.filter(seller=seller)
-    receipts = list(receipts[:30])
-
-    # Pending zakaz — sold but not yet backed by stock (fulfilled_at is null).
-    pending = []
-    if seller is not None:
-        pending = list(
-            SaleItem.objects.filter(sale__sales_rep=seller, fulfilled_at__isnull=True)
-            .select_related("sale", "sale__client", "product")
-            .order_by("sale__date")
+    if filters["q"]:
+        items = items.filter(
+            Q(product__name__icontains=filters["q"]) | Q(product__sku__icontains=filters["q"])
         )
+
+    rows = list(
+        items.values("product", "product__name", "product__sku")
+        .annotate(total_kg=Sum(ITEM_WEIGHT_KG), sales_count=Count("sale", distinct=True))
+        .order_by("-total_kg")
+    )
+    total_kg = sum((r["total_kg"] or Decimal("0") for r in rows), Decimal("0"))
+
+    active_filters = _filter_chips(request, [
+        {"param": "rep", "label": "Sotuvchi", "value": str(rep_obj) if rep_obj else ""},
+    ])
 
     return render(request, "crm/ombor.html", {
         "rows": rows,
-        "receipts": receipts,
-        "pending": pending,
-        "seller": seller,
+        "total_kg": total_kg,
+        "product_count": len(rows),
+        "q": filters["q"],
+        "filters": filters,
         "reps": reps,
+        "rep_label": "Sotuvchi",
+        "is_admin_view": user.can_see_all_records,
+        "active_filters": active_filters,
+        "filter_count": len(active_filters),
+        "has_filters": bool(active_filters),
+        "filter_url": reverse("ombor"),
+        "catalog_url": reverse("product_list"),
+        "search_placeholder": "Mahsulot nomi yoki SKU…",
+        "show_daterange_picker": True,
+        "keep_daterange": True,
+        **dates,
+    })
+
+
+def ombor_product(request, pk):
+    """Drill-down for one product: every sale of it, newest first. A seller sees
+    only their own sales; an admin also gets a per-seller summary (which seller sold
+    how much) above the transaction list."""
+    product = get_object_or_404(Product, pk=pk)
+    user = request.user
+    qs = SaleItem.objects.filter(product=product).select_related(
+        "sale", "sale__client", "sale__sales_rep"
+    )
+    if not user.can_see_all_records:
+        qs = qs.filter(sale__sales_rep=user)
+    items = list(qs)
+    items.sort(key=lambda it: (it.sale.date, it.sale.created_at), reverse=True)
+    total_kg = sum((it.weight_kg for it in items), Decimal("0"))
+
+    by_seller = None
+    if user.can_see_all_records:
+        acc = {}
+        for it in items:
+            rep = it.sale.sales_rep
+            row = acc.setdefault(rep.pk, {"seller": rep, "kg": Decimal("0"), "count": 0})
+            row["kg"] += it.weight_kg
+            row["count"] += 1
+        by_seller = sorted(acc.values(), key=lambda r: r["kg"], reverse=True)
+
+    return render(request, "crm/ombor_product.html", {
+        "product": product,
+        "items": items,
+        "total_kg": total_kg,
+        "by_seller": by_seller,
         "is_admin_view": user.can_see_all_records,
     })
 
@@ -2474,26 +2518,19 @@ def sale_create(request):
     formset = SaleItemFormSet(request.POST or None, instance=Sale(), prefix="items")
     if request.method == "POST":
         if form.is_valid() and formset.is_valid():
-            shortfall = _ombor_shortfall(request.user, formset)
-            # Confirm only when the sale exceeds stock the seller actually holds
-            # (available > 0). Selling a product they have none of is a plain zakaz —
-            # recorded silently; the line is still marked pending below.
-            confirm = [s for s in shortfall if s[2] > 0]
-            if confirm and not request.POST.get("allow_zakaz"):
-                return _zakaz_confirm_response(request, form, formset, "Yangi sotuv", confirm)
             sale = form.save(commit=False)
             sale.sales_rep = request.user
             sale.save()
             formset.instance = sale
             formset.save()
-            _mark_fulfilment(sale, shortfall)
+            # No warehouse stock to check against — every line is fulfilled on sale.
+            _mark_fulfilment(sale, [])
             AuditLog.record(
                 request.user, AuditLog.Action.CREATE, "Sotuv", sale.pk,
                 f"Mijoz {sale.client.name}, {sale.items.count()} ta mahsulot "
                 f"— {sale.total_price:,.0f} so'm",
             )
             messages.success(request, "Sotuv qo'shildi (qarz sifatida).")
-            _warn_if_negative_stock_items(request, sale)
             return form_success(request, reverse("sale_list"))
         return _render_sale_form(request, form, formset, "Yangi sotuv", invalid=True)
     return _render_sale_form(request, form, formset, "Yangi sotuv")
@@ -2530,20 +2567,15 @@ def sale_edit(request, pk):
                     f"puldan ({paid:,.0f} so'm) kam bo'lishi mumkin emas.",
                 )
                 return _render_sale_form(request, form, formset, "Sotuvni tahrirlash", invalid=True)
-            shortfall = _ombor_shortfall(sale.sales_rep, formset, existing_sale=sale)
-            confirm = [s for s in shortfall if s[2] > 0]
-            if confirm and not request.POST.get("allow_zakaz"):
-                return _zakaz_confirm_response(request, form, formset, "Sotuvni tahrirlash", confirm)
             sale = form.save()
             formset.save()
-            _mark_fulfilment(sale, shortfall, only_unset=True)
+            _mark_fulfilment(sale, [], only_unset=True)
             AuditLog.record(
                 request.user, AuditLog.Action.UPDATE, "Sotuv", sale.pk,
                 f"Mijoz {sale.client.name}, {sale.items.count()} ta mahsulot "
                 f"— {sale.total_price:,.0f} so'm",
             )
             messages.success(request, "Sotuv yangilandi.")
-            _warn_if_negative_stock_items(request, sale)
             return form_reload(request, reverse("sale_list"))
         return _render_sale_form(request, form, formset, "Sotuvni tahrirlash", invalid=True)
     return _render_sale_form(request, form, formset, "Sotuvni tahrirlash")

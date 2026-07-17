@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}{{ product.name }} — sotuvlar · Paket CRM{% endblock %}
+{% block topbar_title %}{{ product.name }}{% endblock %}
+{% block content %}
+
+<p class="section-eyebrow"><a href="{% url 'ombor' %}">← Ombor</a></p>
+
+<div class="kpi-grid kpi-grid--compact kpi-grid--period" style="margin-bottom:16px;">
+  <div class="kpi kpi--blue">
+    <div class="kpi-head"><span class="kpi-label">Mahsulot</span></div>
+    <div class="kpi-value" style="font-size:18px;">{{ product.name }}</div>
+    <div class="kpi-meta muted">{{ product.sku }}</div>
+  </div>
+  <div class="kpi kpi--green">
+    <div class="kpi-head"><span class="kpi-label">Jami sotilgan</span></div>
+    <div class="kpi-value">{{ total_kg|floatformat:"-3g" }}<span class="unit">kg</span></div>
+    <div class="kpi-meta muted">{{ items|length }} ta sotuv</div>
+  </div>
+</div>
+
+{% if is_admin_view and by_seller %}
+<div class="card">
+  <h2>Qaysi sotuvchi qancha sotgan</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Sotuvchi</th><th class="num">Sotuvlar soni</th><th class="num">Jami sotilgan</th></tr>
+    {% for s in by_seller %}
+    <tr>
+      <td>{{ s.seller }}</td>
+      <td class="num">{{ s.count }}</td>
+      <td class="num"><strong>{{ s.kg|floatformat:"-3g" }}</strong> kg</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Sotuvlar</h2>
+  {% if items %}
+  <div class="table-wrap">
+  <table>
+    <tr>
+      <th>Sana</th>
+      <th>Mijoz</th>
+      {% if is_admin_view %}<th>Sotuvchi</th>{% endif %}
+      <th class="num">Miqdori</th>
+      <th class="num">Narxi</th>
+      <th></th>
+    </tr>
+    {% for it in items %}
+    <tr>
+      <td>{{ it.sale.date|date:"d.m.Y" }}</td>
+      <td>{{ it.sale.client.name }}</td>
+      {% if is_admin_view %}<td>{{ it.sale.sales_rep }}</td>{% endif %}
+      <td class="num"><strong>{{ it.weight|floatformat:"-3g" }}</strong> {{ it.get_dimension_display }}</td>
+      <td class="num">{{ it.total_price|floatformat:"0g" }} so'm</td>
+      <td class="num"><a class="btn btn-ghost btn-sm" href="{% url 'sale_detail' it.sale.pk %}">Chek</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}<p class="muted">Bu mahsulot hali sotilmagan.</p>{% endif %}
+</div>
+{% endblock %}

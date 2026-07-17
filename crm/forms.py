@@ -100,37 +100,18 @@ class ClientForm(forms.ModelForm):
 
 
 class ProductForm(forms.ModelForm):
-    # Starting stock, logged as the first warehouse kirim on create (create only).
-    initial_quantity = forms.DecimalField(
-        label="Boshlang'ich miqdor (kg)",
-        max_digits=12,
-        decimal_places=3,
-        required=False,
-        min_value=Decimal("0"),
-        help_text="Hozir omborda mavjud qoldiq — birinchi kirim sifatida yoziladi",
-    )
+    """The product catalog form — a plain reference list (nomi, narx, tannarx). No
+    stock/qoldiq: goods aren't received into a warehouse anymore, they're just sold."""
 
     class Meta:
         model = Product
-        fields = ["name", "sku", "description", "cost_price", "price", "low_stock_threshold", "is_active"]
+        fields = ["name", "sku", "description", "cost_price", "price", "is_active"]
         widgets = {"description": forms.Textarea(attrs={"rows": 3})}
 
     def __init__(self, *args, with_stock=False, **kwargs):
+        # `with_stock` kept for signature compatibility with older callers; ignored.
         super().__init__(*args, **kwargs)
         _mark_money(self.fields["cost_price"], self.fields["price"])
-        # The threshold is the warning line: stock at or below it flags "Kam qoldi".
-        self.fields["low_stock_threshold"].help_text = (
-            "Ombor shu miqdordan kam yoki teng bo'lsa, “Kam qoldi” ogohlantirishi chiqadi"
-        )
-        # The starting-quantity field only makes sense when creating a product;
-        # existing stock is changed through Kirim / Miqdorni tuzatish, not here.
-        if with_stock:
-            self.order_fields([
-                "name", "sku", "description", "cost_price", "price",
-                "low_stock_threshold", "initial_quantity", "is_active",
-            ])
-        else:
-            self.fields.pop("initial_quantity", None)
 
 
 class StockEntryForm(forms.ModelForm):

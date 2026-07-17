@@ -435,18 +435,6 @@ class StockTests(BaseSetup):
         response = self.client.get(reverse("stock_entry_create", args=[self.product.pk]))
         self.assertEqual(response.status_code, 200)
 
-    def test_sale_beyond_stock_warns_but_saves(self):
-        self.client.force_login(self.sales1)
-        data = sale_post(
-            self.client1.pk,
-            [one_item(self.product, weight="500")],  # far beyond the 80 kg on hand
-        )
-        response = self.client.post(reverse("sale_create"), data, follow=True)
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(SaleItem.objects.filter(weight=Decimal("500")).exists())
-        msgs = [m.message for m in response.context["messages"]]
-        self.assertTrue(any("yetarli emas" in m for m in msgs))
-
     def test_low_stock_flag(self):
         self.product.low_stock_threshold = Decimal("90")
         self.product.save()
@@ -533,25 +521,8 @@ class SellerOmborTests(BaseSetup):
         p2 = Product.objects.with_stock(seller=self.sales2).get(pk=self.p.pk)
         self.assertEqual(p2.stock, Decimal("100"))
 
-    def test_product_list_scoped_to_seller_ombor(self):
-        # BaseSetup seeds sales1 with 100000 of self.product; sale1 sold 10 => 99990
-        self.client.force_login(self.sales1)
-        response = self.client.get(reverse("product_list"))
-        products = {p.pk: p for p in response.context["page"].object_list}
-        self.assertEqual(products[self.product.pk].stock, Decimal("99990"))
-
-    def test_no_stock_sale_records_as_zakaz(self):
-        # sales1 has no receipt for self.p -> ombor 0; selling records silently as a
-        # zakaz (no popup — there's no stock on hand to "exceed").
-        self.client.force_login(self.sales1)
-        data = sale_post(self.client1.pk, [one_item(self.p, weight="3")])
-        response = self.client.post(reverse("sale_create"), data)
-        self.assertEqual(response.status_code, 302)  # saved, no confirmation
-        item = SaleItem.objects.filter(product=self.p).latest("pk")
-        self.assertIsNone(item.fulfilled_at)  # pending zakaz
-
-    def test_sale_allowed_within_ombor(self):
-        self._receive(self.sales1, "100")
+    def test_sale_saves_without_stock(self):
+        # No warehouse gate anymore — a sale always saves straight through.
         self.client.force_login(self.sales1)
         data = sale_post(self.client1.pk, [one_item(self.p, weight="3")])
         response = self.client.post(reverse("sale_create"), data, follow=True)
@@ -638,7 +609,7 @@ class ReceiptCrudTests(BaseSetup):
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("ombor"))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Ombordagi qoldiq")
+        self.assertContains(response, "Jami sotilgan")
 
     def test_ombor_page_renders_for_admin_with_seller(self):
         self.client.force_login(self.admin)
@@ -650,138 +621,6 @@ class ReceiptCrudTests(BaseSetup):
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("receipt_edit", args=[receipt.pk]))
         self.assertEqual(response.status_code, 404)
-
-
-class ZakazFulfillmentTests(BaseSetup):
-    """Selling on zakaz (without stock) and binding arriving stock to orders."""
-
-    def setUp(self):
-        self.p = Product.objects.create(
-            name="Zakaz test", sku="ZK-1",
-            cost_price=Decimal("10000"), price=Decimal("20000"),
-        )
-
-    def test_in_stock_sale_line_is_fulfilled(self):
-        give_ombor(self.sales1, self.p, "100")
-        self.client.force_login(self.sales1)
-        self.client.post(
-            reverse("sale_create"), sale_post(self.client1.pk, [one_item(self.p, weight="10")])
-        )
-        item = SaleItem.objects.filter(product=self.p).latest("pk")
-        self.assertIsNotNone(item.fulfilled_at)
-
-    def test_no_stock_sale_saves_silently_as_zakaz(self):
-        self.client.force_login(self.sales1)  # no ombor for self.p
-        response = self.client.post(
-            reverse("sale_create"), sale_post(self.client1.pk, [one_item(self.p, weight="10")])
-        )
-        self.assertEqual(response.status_code, 302)  # saved silently, no popup
-        item = SaleItem.objects.filter(product=self.p).latest("pk")
-        self.assertIsNone(item.fulfilled_at)  # pending zakaz
-
-    def test_partial_oversell_prompts(self):
-        # seller HOLDS 5 kg but sells 10 -> exceeds stock on hand -> confirm
-        give_ombor(self.sales1, self.p, "5")
-        self.client.force_login(self.sales1)
-        response = self.client.post(
-            reverse("sale_create"), sale_post(self.client1.pk, [one_item(self.p, weight="10")])
-        )
-        self.assertEqual(response.status_code, 200)  # re-prompted, not saved
-        self.assertContains(response, "zakaz")
-        self.assertFalse(SaleItem.objects.filter(product=self.p).exists())
-
-    def test_zakaz_confirm_saves_pending_line(self):
-        self.client.force_login(self.sales1)
-        data = sale_post(self.client1.pk, [one_item(self.p, weight="10")], allow_zakaz="1")
-        response = self.client.post(reverse("sale_create"), data)
-        self.assertEqual(response.status_code, 302)  # saved
-        item = SaleItem.objects.filter(product=self.p).latest("pk")
-        self.assertIsNone(item.fulfilled_at)  # pending zakaz
-
-    def test_partial_oversell_ajax_asks_for_confirmation(self):
-        # In the modal (AJAX), exceeding held stock returns a confirm signal
-        give_ombor(self.sales1, self.p, "5")
-        self.client.force_login(self.sales1)
-        data = sale_post(self.client1.pk, [one_item(self.p, weight="10")])
-        response = self.client.post(
-            reverse("sale_create"), data, HTTP_X_REQUESTED_WITH="XMLHttpRequest"
-        )
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.headers.get("X-Zakaz-Confirm"), "1")
-        self.assertFalse(SaleItem.objects.filter(product=self.p).exists())
-
-    def test_no_stock_sale_ajax_saves_silently(self):
-        self.client.force_login(self.sales1)  # 0 ombor for self.p
-        data = sale_post(self.client1.pk, [one_item(self.p, weight="10")])
-        response = self.client.post(
-            reverse("sale_create"), data, HTTP_X_REQUESTED_WITH="XMLHttpRequest"
-        )
-        self.assertEqual(response.status_code, 204)  # saved silently (modal success)
-        self.assertIsNone(SaleItem.objects.filter(product=self.p).latest("pk").fulfilled_at)
-
-    def test_oversell_ajax_confirmed_saves(self):
-        self.client.force_login(self.sales1)
-        data = sale_post(self.client1.pk, [one_item(self.p, weight="10")], allow_zakaz="1")
-        response = self.client.post(
-            reverse("sale_create"), data, HTTP_X_REQUESTED_WITH="XMLHttpRequest"
-        )
-        self.assertEqual(response.status_code, 204)  # modal success (X-Redirect)
-        self.assertTrue(SaleItem.objects.filter(product=self.p).exists())
-
-    def _receipt_post(self, product, qty="50"):
-        return {
-            "date": timezone.localdate().isoformat(), "note": "",
-            "items-TOTAL_FORMS": "1", "items-INITIAL_FORMS": "0",
-            "items-MIN_NUM_FORMS": "1", "items-MAX_NUM_FORMS": "1000",
-            "items-0-product": product.pk, "items-0-quantity_kg": qty,
-        }
-
-    def _make_zakaz(self):
-        self.client.force_login(self.sales1)
-        self.client.post(
-            reverse("sale_create"),
-            sale_post(self.client1.pk, [one_item(self.p, weight="10")], allow_zakaz="1"),
-        )
-        return SaleItem.objects.filter(product=self.p).latest("pk")
-
-    def test_receipt_auto_binds_pending_zakaz(self):
-        # sales1 sold 10 on zakaz; receiving 50 should auto-fulfil that order and
-        # go straight to the ombor (no manual bind step).
-        item = self._make_zakaz()
-        self.assertIsNone(item.fulfilled_at)
-        response = self.client.post(reverse("receipt_create"), self._receipt_post(self.p, "50"))
-        self.assertRedirects(response, reverse("ombor"), fetch_redirect_response=False)
-        item.refresh_from_db()
-        self.assertIsNotNone(item.fulfilled_at)
-        self.assertEqual(item.fulfilled_by_receipt, ProductionReceipt.objects.latest("created_at"))
-
-    def test_receipt_partially_fills_then_completes(self):
-        item = self._make_zakaz()  # 10 kg zakaz
-        # 6 kg receipt fills 6, leaves 4 pending
-        self.client.post(reverse("receipt_create"), self._receipt_post(self.p, "6"))
-        item.refresh_from_db()
-        self.assertIsNone(item.fulfilled_at)  # not fully filled
-        self.assertEqual(item.fulfilled_kg, Decimal("6.000"))
-        self.assertEqual(item.pending_kg, Decimal("4.000"))
-        # a later 4 kg receipt completes it
-        self.client.post(reverse("receipt_create"), self._receipt_post(self.p, "4"))
-        item.refresh_from_db()
-        self.assertIsNotNone(item.fulfilled_at)
-        self.assertEqual(item.fulfilled_kg, Decimal("10.000"))
-
-    def test_receipt_without_pending_goes_to_ombor(self):
-        self.client.force_login(self.sales1)
-        response = self.client.post(reverse("receipt_create"), self._receipt_post(self.product))
-        self.assertRedirects(response, reverse("ombor"), fetch_redirect_response=False)
-
-    def test_bind_marks_order_fulfilled(self):
-        item = self._make_zakaz()
-        self.assertIsNone(item.fulfilled_at)
-        receipt = give_ombor(self.sales1, self.p, "50")
-        self.client.post(reverse("receipt_bind", args=[receipt.pk]), {"bind": [item.pk]})
-        item.refresh_from_db()
-        self.assertIsNotNone(item.fulfilled_at)
-        self.assertEqual(item.fulfilled_by_receipt, receipt)
 
 
 class KassaCombinedCashTests(BaseSetup):
@@ -859,16 +698,6 @@ class ProductCreateStockTests(BaseSetup):
         }
         data.update(extra)
         return self.client.post(reverse("product_create"), data)
-
-    def test_initial_quantity_recorded_as_kirim(self):
-        # Creating a product with a starting quantity books it as the first kirim.
-        self.client.force_login(self.sales1)
-        self._post(initial_quantity="100")
-        product = Product.objects.get(sku="NEW-1")
-        self.assertEqual(product.current_stock, Decimal("100"))
-        entry = product.stock_entries.get()
-        self.assertEqual(entry.quantity_kg, Decimal("100"))
-        self.assertEqual(entry.created_by, self.sales1)
 
     def test_no_initial_quantity_leaves_stock_empty(self):
         self.client.force_login(self.sales1)
@@ -2241,3 +2070,55 @@ class ClientLastSaleTests(BaseSetup):
         self.assertContains(response, "Oxirgi sotuv")
         self.assertContains(response, "3 kun oldin")
         self.assertContains(response, "Hech qachon")
+
+
+class OmborReportTests(BaseSetup):
+    """Ombor is now a sold-goods report: per-product totals with a per-product
+    drill-down (per-seller for admins)."""
+
+    def setUp(self):
+        # A product only this class sells, so BaseSetup's seeded sales don't skew it.
+        self.p = Product.objects.create(
+            name="Report test", sku="RPT-1",
+            cost_price=Decimal("10000"), price=Decimal("20000"),
+        )
+
+    def _row(self, response):
+        return next(r for r in response.context["rows"] if r["product"] == self.p.pk)
+
+    def test_list_shows_sold_totals_for_seller(self):
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        make_sale(self.client1, self.sales1, self.p, weight="5", price="20000")
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("ombor"))
+        self.assertEqual(response.status_code, 200)
+        row = self._row(response)
+        self.assertEqual(row["total_kg"], Decimal("15"))  # 10 + 5 kg
+        self.assertEqual(row["sales_count"], 2)
+
+    def test_seller_sees_only_own_totals(self):
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        make_sale(self.client2, self.sales2, self.p, weight="7", price="20000")
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("ombor"))
+        self.assertEqual(self._row(response)["total_kg"], Decimal("10"))  # sales2 excluded
+
+    def test_product_detail_admin_shows_per_seller_breakdown(self):
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        make_sale(self.client2, self.sales2, self.p, weight="7", price="20000")
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("ombor_product", args=[self.p.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["total_kg"], Decimal("17"))
+        by_seller = {r["seller"].pk: r["kg"] for r in response.context["by_seller"]}
+        self.assertEqual(by_seller[self.sales1.pk], Decimal("10"))
+        self.assertEqual(by_seller[self.sales2.pk], Decimal("7"))
+
+    def test_product_detail_seller_scoped(self):
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        make_sale(self.client2, self.sales2, self.p, weight="7", price="20000")
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("ombor_product", args=[self.p.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["total_kg"], Decimal("10"))
+        self.assertIsNone(response.context["by_seller"])
