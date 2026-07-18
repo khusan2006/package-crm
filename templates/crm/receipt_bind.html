@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Zakazlarni biriktirish · Paket CRM{% endblock %}
+{% block topbar_title %}Zakazlarni biriktirish{% endblock %}
+{% block content %}
+<div class="card" style="max-width: 760px;">
+  <p class="field-hint" style="margin-top:0;">
+    {{ receipt.date|date:"d.m.Y" }} da qabul qilingan tovarlar bo'yicha kutilayotgan
+    zakazlar. Qaysi mijozlarga biriktirilsa, o'sha buyurtmalar «tayyor» bo'ladi.
+  </p>
+  {% if pending %}
+  <form method="post" action="{{ request.path }}">
+    {% csrf_token %}
+    <div class="table-wrap">
+    <table>
+      <tr><th></th><th>Sana</th><th>Mijoz</th><th>Mahsulot</th><th class="num">Miqdori</th></tr>
+      {% for it in pending %}
+      <tr>
+        <td><input type="checkbox" name="bind" value="{{ it.pk }}" checked></td>
+        <td>{{ it.sale.date|date:"d.m.Y" }}</td>
+        <td>{{ it.sale.client.name }}</td>
+        <td>{{ it.product.name }}</td>
+        <td class="num">{{ it.pending_kg|floatformat:"-3g" }} kg</td>
+      </tr>
+      {% endfor %}
+    </table>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      <button type="submit" class="btn">Biriktirish</button>
+      <a class="btn btn-ghost" href="{% url 'ombor' %}">Keyinroq</a>
+    </div>
+  </form>
+  {% else %}
+  <p class="muted">Bu mahsulotlar bo'yicha kutilayotgan zakaz yo'q.</p>
+  <a class="btn" href="{% url 'ombor' %}">Omborga qaytish</a>
+  {% endif %}
+</div>
+{% endblock %}

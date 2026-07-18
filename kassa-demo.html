@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kassa — demo · Paket CRM</title>
+<style>
+  :root{
+    --bg:#f3f4f6; --sidebar:#ffffff; --surface:#ffffff; --surface-2:#eceef1;
+    --surface-hover:#f1f3f6; --border:#e3e6ea; --border-strong:#ccd1d8;
+    --text:#1b2430; --text-muted:#59626f; --text-faint:#8b94a1;
+    --accent:#2f6fe0; --accent-hover:#2560c8; --accent-soft:rgba(47,111,224,.10); --accent-ring:rgba(47,111,224,.30);
+    --success:#128a54; --success-soft:#dcf3e8; --warning:#9a7500; --warning-soft:#fbeec4;
+    --danger:#cc2a29; --danger-soft:#fbe0e0; --gold:#b0810b; --gold-soft:#fbeec4;
+    --violet:#6d3bd4; --violet-soft:#ece3fb;
+    --r:12px; --r-lg:18px; --r-pill:999px;
+    --shadow:0 1px 2px rgba(20,30,50,.06);
+    --shadow-md:0 4px 16px rgba(20,30,50,.06);
+    --shadow-lg:0 16px 40px rgba(20,30,50,.12);
+    --sidebar-w:250px;
+  }
+  html[data-theme="dark"]{
+    --bg:#252525; --sidebar:#1c1c1c; --surface:#252525; --surface-2:#2e2e2e;
+    --surface-hover:#2a2a2a; --border:#333; --border-strong:#3d3d3d;
+    --text:#e8ebf2; --text-muted:#97a1b5; --text-faint:#616b80;
+    --accent:#4d7cfe; --accent-hover:#6b91ff; --accent-soft:rgba(77,124,254,.14); --accent-ring:rgba(77,124,254,.35);
+    --success:#16A34A; --success-soft:#1B2A21; --warning:#E6B414; --warning-soft:#3A3421;
+    --danger:#E61918; --danger-soft:#321B1A; --gold:#E6B414; --gold-soft:#3A3421;
+    --violet:#b191f7; --violet-soft:#2b2440;
+    --shadow:0 1px 2px rgba(0,0,0,.4); --shadow-md:0 4px 16px rgba(0,0,0,.35); --shadow-lg:0 16px 40px rgba(0,0,0,.5);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+    background:var(--bg);color:var(--text);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  a{color:inherit;text-decoration:none}
+  svg{display:block}
+
+  /* role visibility */
+  body[data-role="seller"] .admin-only{display:none !important}
+  body[data-role="admin"]  .seller-only{display:none !important}
+
+  .app-shell{display:flex;min-height:100vh}
+
+  /* ---------- Sidebar ---------- */
+  .sidebar{width:var(--sidebar-w);flex-shrink:0;background:var(--sidebar);border-right:1px solid var(--border);
+    display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+  .brand{display:flex;align-items:center;gap:11px;padding:20px 22px 16px}
+  .brand-mark{width:36px;height:36px;border-radius:11px;background:linear-gradient(135deg,var(--accent),#7b5cff);
+    display:grid;place-items:center;color:#fff;flex-shrink:0}
+  .brand-mark svg{width:20px;height:20px;stroke:#fff}
+  .brand-text{font-size:16px;font-weight:750;letter-spacing:-.02em}
+  .sidebar-nav{padding:8px 14px;overflow-y:auto;flex:1}
+  .nav-group{margin-top:16px}
+  .nav-group:first-child{margin-top:4px}
+  .nav-group-label{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--text-faint);padding:0 12px 8px}
+  .nav-item{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:11px;color:var(--text-muted);
+    font-weight:550;font-size:14.5px;margin-bottom:2px;transition:background .15s,color .15s;position:relative}
+  .nav-item .ico{width:20px;height:20px;flex-shrink:0}
+  .nav-item .ico svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .nav-item:hover{background:var(--surface-hover);color:var(--text)}
+  .nav-item.active{background:var(--accent-soft);color:var(--accent);font-weight:650}
+  .nav-item.active::before{content:"";position:absolute;left:-14px;top:8px;bottom:8px;width:3px;
+    border-radius:0 3px 3px 0;background:var(--accent)}
+  .sidebar-foot{padding:14px;border-top:1px solid var(--border)}
+  .side-user{display:flex;align-items:center;gap:11px;padding:8px 10px;border-radius:12px}
+  .side-user:hover{background:var(--surface-hover)}
+
+  /* ---------- Main ---------- */
+  .main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:16px;
+    padding:16px 30px;background:color-mix(in srgb,var(--surface) 90%,transparent);
+    backdrop-filter:blur(8px);border-bottom:1px solid var(--border)}
+  .topbar h1{font-size:21px;font-weight:750;margin:0;letter-spacing:-.02em}
+  .topbar .sub{font-size:13px;color:var(--text-muted);margin-top:2px}
+  .topbar-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .icon-btn{width:38px;height:38px;border-radius:11px;border:1px solid var(--border);background:var(--surface);
+    color:var(--text-muted);display:grid;place-items:center;cursor:pointer;transition:.15s}
+  .icon-btn:hover{background:var(--surface-hover);color:var(--text)}
+  .icon-btn svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:9px 16px;border-radius:11px;font-weight:600;
+    font-size:14px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;transition:.15s}
+  .btn:hover{background:var(--surface-hover)}
+  .btn svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn-primary:hover{background:var(--accent-hover)}
+  .btn-violet{background:var(--violet);border-color:var(--violet);color:#fff}
+  .user-chip{display:flex;align-items:center;gap:10px;padding:5px 12px 5px 5px;border-radius:999px;
+    border:1px solid var(--border);background:var(--surface)}
+  .avatar{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--accent),#7b5cff);
+    color:#fff;display:grid;place-items:center;font-weight:700;font-size:14px;flex-shrink:0}
+  .user-chip .name{font-size:13.5px;font-weight:650;line-height:1.1}
+  .user-chip .role{font-size:11.5px;color:var(--text-faint)}
+
+  .content{padding:26px 30px 40px;max-width:1320px;width:100%;margin:0 auto}
+
+  /* role switch (demo control) */
+  .roleswitch{display:flex;align-items:center;gap:12px;margin-bottom:20px;padding:12px 16px;border:1px dashed var(--border-strong);
+    border-radius:var(--r-lg);background:var(--surface);box-shadow:var(--shadow)}
+  .roleswitch .lbl{font-size:12.5px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em}
+  .roleswitch .demo-tag{margin-left:auto;font-size:11.5px;color:var(--text-faint)}
+
+  /* ---------- flow strip ---------- */
+  .flow{display:flex;align-items:stretch;gap:0;margin-bottom:20px;border:1px solid var(--border);
+    border-radius:var(--r-lg);overflow:hidden;background:var(--surface);box-shadow:var(--shadow-md)}
+  .flow-step{flex:1;display:flex;align-items:center;gap:12px;padding:14px 18px;position:relative}
+  .flow-step:not(:last-child)::after{content:"";position:absolute;right:-11px;top:50%;transform:translateY(-50%);
+    width:0;height:0;border-top:11px solid transparent;border-bottom:11px solid transparent;
+    border-left:11px solid var(--surface);z-index:2}
+  .flow-step:not(:last-child){border-right:1px solid var(--border)}
+  .flow-ic{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;flex-shrink:0;color:#fff}
+  .flow-ic svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .flow-t{font-size:13px;font-weight:700;letter-spacing:-.01em}
+  .flow-s{font-size:11.5px;color:var(--text-muted)}
+
+  /* ---------- KPI cards ---------- */
+  .kpi-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:20px}
+  .kpi{--kpi:var(--accent);position:relative;overflow:hidden;background:var(--surface);
+    border:1px solid color-mix(in srgb,var(--kpi) 26%,var(--border));border-radius:14px;padding:15px 17px;box-shadow:var(--shadow-md)}
+  .kpi::after{content:"";position:absolute;top:-55px;right:-30px;width:135px;height:135px;border-radius:50%;
+    background:radial-gradient(circle,var(--kpi),transparent 70%);opacity:.16;pointer-events:none}
+  .kpi--blue{--kpi:var(--accent)} .kpi--green{--kpi:var(--success)}
+  .kpi--red{--kpi:var(--danger)} .kpi--gold{--kpi:var(--warning)} .kpi--violet{--kpi:var(--violet)}
+  .kpi-head{display:flex;align-items:center;gap:10px;margin-bottom:12px;position:relative}
+  .kpi-icon{width:32px;height:32px;flex-shrink:0;border-radius:9px;display:grid;place-items:center;
+    background:color-mix(in srgb,var(--kpi) 20%,transparent);color:var(--kpi)}
+  .kpi-icon svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .kpi-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:var(--text-muted)}
+  .kpi-value{position:relative;font-size:21px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .kpi-value .unit{font-size:13px;font-weight:500;color:var(--text-muted);margin-left:3px}
+  .kpi-meta{position:relative;display:inline-flex;align-items:center;gap:4px;margin-top:9px;
+    font-size:12.5px;font-weight:600;color:var(--kpi)}
+  .kpi-meta.muted{color:var(--text-muted)}
+
+  /* ---------- Cards ---------- */
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);
+    padding:20px 22px;box-shadow:var(--shadow-md);margin-bottom:20px}
+  .card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:12px}
+  .card-head h2{font-size:15.5px;font-weight:700;margin:0;letter-spacing:-.01em}
+  .head-note{font-size:12.5px;color:var(--text-muted)}
+  .hint{font-size:12.5px;color:var(--text-muted);margin:-6px 0 14px}
+
+  /* toolbar */
+  .toolbar{display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+  .seg{display:inline-flex;background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:3px}
+  .seg button{border:none;background:none;padding:7px 15px;border-radius:8px;font-size:13.5px;font-weight:600;
+    color:var(--text-muted);cursor:pointer}
+  .seg button.active{background:var(--accent);color:#fff}
+  .toolbar .spacer{flex:1}
+
+  /* table */
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;font-size:11.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+    color:var(--text-faint);padding:0 14px 12px;border-bottom:1px solid var(--border);white-space:nowrap}
+  th.num,td.num{text-align:right;font-variant-numeric:tabular-nums}
+  td{padding:13px 14px;border-bottom:1px solid var(--border);font-size:14px}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr{transition:background .12s}
+  tbody tr:hover{background:var(--surface-hover)}
+  tfoot td{padding:13px 14px;font-size:14px;font-weight:750;border-top:2px solid var(--border-strong)}
+  .cell-user{display:flex;align-items:center;gap:10px;font-weight:600}
+  .avatar.sm{width:28px;height:28px;font-size:12px}
+  .amt-in{color:var(--success);font-weight:650}
+  .amt-out{color:var(--danger);font-weight:650}
+  .amt-debt{color:var(--warning);font-weight:700}
+  .amt-cash{font-weight:700}
+  .badge{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:650}
+  .badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+  .badge-in{background:var(--success-soft);color:var(--success)}
+  .badge-out{background:var(--danger-soft);color:var(--danger)}
+  .badge-remit{background:var(--violet-soft);color:var(--violet)}
+  .icon-action{width:30px;height:30px;border-radius:8px;border:1px solid var(--border);background:var(--surface);
+    display:inline-grid;place-items:center;color:var(--text-muted);cursor:pointer}
+  .icon-action:hover{background:var(--surface-hover);color:var(--text)}
+  .icon-action svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .btn-sm{padding:6px 12px;font-size:12.5px;border-radius:9px}
+
+  /* mini debt bars in production card */
+  .dbar{display:flex;flex-direction:column;gap:13px}
+  .dbar-row{display:grid;grid-template-columns:120px 1fr auto;align-items:center;gap:12px}
+  .dbar-label{font-size:13.5px;font-weight:600}
+  .dbar-track{height:9px;border-radius:999px;background:var(--surface-2);overflow:hidden}
+  .dbar-fill{height:100%;border-radius:999px;background:var(--warning)}
+  .dbar-val{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--warning)}
+
+  /* demo form */
+  .demo-form{display:flex;flex-direction:column;gap:14px}
+  .frow{display:flex;flex-direction:column;gap:6px}
+  .frow label{font-size:12.5px;font-weight:650;color:var(--text-muted)}
+  .frow .inp{border:1px solid var(--border-strong);background:var(--input,var(--surface));border-radius:10px;
+    padding:10px 12px;font-size:14px;color:var(--text)}
+  .frow-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .form-actions{display:flex;gap:10px;margin-top:4px}
+  .prod-stat{display:flex;justify-content:space-between;align-items:baseline;padding:12px 0;border-bottom:1px solid var(--border)}
+  .prod-stat .k{font-size:13px;color:var(--text-muted)}
+  .prod-stat .v{font-size:18px;font-weight:750;font-variant-numeric:tabular-nums}
+
+  @media(max-width:1100px){.kpi-grid{grid-template-columns:repeat(2,1fr)}.grid-2{grid-template-columns:1fr}.flow{flex-direction:column}}
+</style>
+</head>
+<body data-role="admin">
+<div class="app-shell">
+
+  <!-- ===== Sidebar ===== -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg></span>
+      <span class="brand-text">Paket CRM</span>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-group">
+        <a class="nav-item"><span class="ico"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg></span><span>Asosiy</span></a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-label">Savdo</div>
+        <a class="nav-item"><span class="ico"><svg viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span><span>Sotuvlar</span></a>
+        <a class="nav-item"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span><span>Qarzlar</span></a>
+        <a class="nav-item active"><span class="ico"><svg viewBox="0 0 24 24"><path d="M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4"/><path d="M4 6v12a2 2 0 0 0 2 2h14v-4"/><path d="M18 12a2 2 0 0 0-2 2c0 1.1.9 2 2 2h4v-4Z"/></svg></span><span class="nav-kassa">Kassa</span></a>
+        <a class="nav-item"><span class="ico"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span><span>Mijozlar</span></a>
+        <a class="nav-item"><span class="ico"><svg viewBox="0 0 24 24"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg></span><span>Ombor</span></a>
+      </div>
+      <div class="nav-group admin-only">
+        <div class="nav-group-label">Nazorat</div>
+        <a class="nav-item"><span class="ico"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span><span>Audit jurnali</span></a>
+      </div>
+    </nav>
+    <div class="sidebar-foot">
+      <a class="side-user">
+        <span class="avatar" id="side-avatar">A</span>
+        <div><div class="name" id="side-name" style="font-size:13.5px;font-weight:650">Admin User</div><div class="role" id="side-role" style="font-size:11.5px;color:var(--text-faint)">Administrator</div></div>
+      </a>
+    </div>
+  </aside>
+
+  <!-- ===== Main ===== -->
+  <div class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="page-title">Kassa</h1>
+        <div class="sub" id="page-sub">Sotuvchilar kunlik nazorati · ishlab chiqarishga qarz · pul topshirish</div>
+      </div>
+      <div class="topbar-right">
+        <button class="icon-btn" id="theme-toggle" title="Mavzu">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        </button>
+        <button class="btn"><svg viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12l7 7 7-7"/></svg>Chiqim</button>
+        <button class="btn btn-violet"><svg viewBox="0 0 24 24"><path d="M12 2v14"/><path d="M5 9l7-7 7 7"/><rect x="4" y="16" width="16" height="6" rx="2"/></svg>Ishlab chiqarishga topshirish</button>
+        <div class="user-chip"><span class="avatar sm" id="chip-avatar">A</span><div><div class="name" id="chip-name">Admin User</div><div class="role" id="chip-role">Administrator</div></div></div>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <!-- ===== DEMO ROLE SWITCH (real ilovada bo'lmaydi — rolni ko'rsatish uchun) ===== -->
+      <div class="roleswitch">
+        <span class="lbl">Ko'rinish</span>
+        <div class="seg" id="role-seg">
+          <button data-role="admin" class="active">Admin (hammani ko'radi)</button>
+          <button data-role="seller">Sotuvchi — Aziz (faqat o'zini)</button>
+        </div>
+        <span class="demo-tag">demo · rolni almashtiring</span>
+      </div>
+
+      <!-- flow strip -->
+      <div class="flow">
+        <div class="flow-step">
+          <span class="flow-ic" style="background:var(--violet)"><svg viewBox="0 0 24 24"><path d="M2 20h20"/><path d="M4 20V8l8-5 8 5v12"/><path d="M9 20v-6h6v6"/></svg></span>
+          <div><div class="flow-t">Ishlab chiqarish</div><div class="flow-s">tannarx belgilaydi (10 000)</div></div>
+        </div>
+        <div class="flow-step">
+          <span class="flow-ic" style="background:var(--accent)"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></span>
+          <div><div class="flow-t">Sotuvchi</div><div class="flow-s">qarzga sotadi (12 000) → tannarx qarzi</div></div>
+        </div>
+        <div class="flow-step">
+          <span class="flow-ic" style="background:var(--success)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M9.5 9.5h3.5a2 2 0 0 1 0 4H10a2 2 0 0 0 0 4h4"/></svg></span>
+          <div><div class="flow-t">Mijoz to'laydi</div><div class="flow-s">naqd → sotuvchi kassasiga kirim</div></div>
+        </div>
+        <div class="flow-step">
+          <span class="flow-ic" style="background:var(--violet)"><svg viewBox="0 0 24 24"><path d="M12 2v14"/><path d="M5 9l7-7 7 7"/><rect x="4" y="16" width="16" height="6" rx="2"/></svg></span>
+          <div><div class="flow-t">Topshiradi</div><div class="flow-s">kunlik pul → ishlab chiqarishga, qarz kamayadi</div></div>
+        </div>
+      </div>
+
+      <!-- toolbar -->
+      <div class="toolbar">
+        <div class="seg"><button class="active">Bugun</button><button>7 kun</button><button>30 kun</button><button>Bu oy</button></div>
+        <div class="spacer"></div>
+        <button class="btn"><svg viewBox="0 0 24 24"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>Filtrlar</button>
+        <button class="btn"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>12 Iyul, 2026</button>
+      </div>
+
+      <!-- KPI cards -->
+      <div class="kpi-grid">
+        <div class="kpi kpi--green">
+          <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><circle cx="12" cy="14" r="1.5"/></svg></span><span class="kpi-label">Kassadagi pul</span></div>
+          <div class="kpi-value"><span class="v-num" data-admin="2 250 000" data-seller="1 200 000">2 250 000</span><span class="unit">so'm</span></div>
+          <div class="kpi-meta muted"><span data-admin="sotuvchilar qo'lidagi naqd" data-seller="mening qo'limdagi naqd">sotuvchilar qo'lidagi naqd</span></div>
+        </div>
+        <div class="kpi kpi--gold">
+          <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24"><path d="M2 20h20"/><path d="M4 20V8l8-5 8 5v12"/></svg></span><span class="kpi-label">Ishlab chiq. qarz</span></div>
+          <div class="kpi-value"><span class="v-num" data-admin="4 500 000" data-seller="2 000 000">4 500 000</span><span class="unit">so'm</span></div>
+          <div class="kpi-meta muted"><span data-admin="sotuvchilardan ishlab chiqarishga" data-seller="men ishlab chiqarishga qarzman">sotuvchilardan ishlab chiqarishga</span></div>
+        </div>
+        <div class="kpi kpi--violet">
+          <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24"><path d="M12 2v14"/><path d="M5 9l7-7 7 7"/><rect x="4" y="16" width="16" height="6" rx="2"/></svg></span><span class="kpi-label">Bugun topshirilgan</span></div>
+          <div class="kpi-value"><span class="v-num" data-admin="11 500 000" data-seller="6 000 000">11 500 000</span><span class="unit">so'm</span></div>
+          <div class="kpi-meta muted">ishlab chiqarishga</div>
+        </div>
+        <div class="kpi kpi--blue">
+          <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span><span class="kpi-label">Sof foyda</span></div>
+          <div class="kpi-value"><span class="v-num" data-admin="3 600 000" data-seller="1 700 000">3 600 000</span><span class="unit">so'm</span></div>
+          <div class="kpi-meta">foyda − chiqim</div>
+        </div>
+        <div class="kpi kpi--red">
+          <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24"><path d="M12 19V5"/><path d="M5 12l7 7 7-7"/></svg></span><span class="kpi-label">Chiqim</span></div>
+          <div class="kpi-value"><span class="v-num" data-admin="550 000" data-seller="300 000">550 000</span><span class="unit">so'm</span></div>
+          <div class="kpi-meta muted">benzin, ovqat, ishchi</div>
+        </div>
+      </div>
+
+      <!-- Sellers control table -->
+      <div class="card">
+        <div class="card-head">
+          <h2 id="control-title" data-admin="Sotuvchilar nazorati — bugun" data-seller="Mening bugungi holatim">Sotuvchilar nazorati — bugun</h2>
+          <span class="head-note">Kassadagi pul = kirim − chiqim − topshirilgan · Qarz = sotilgan tannarx − topshirilgan</span>
+        </div>
+        <div style="overflow-x:auto">
+        <table>
+          <thead><tr>
+            <th>Sotuvchi</th>
+            <th class="num">Kassadagi pul</th>
+            <th class="num">Ishlab chiq. qarz</th>
+            <th class="num">Sotildi (tannarx)</th>
+            <th class="num">Topshirdi</th>
+            <th class="num">Chiqim</th>
+            <th class="num">Sof foyda</th>
+            <th></th>
+          </tr></thead>
+          <tbody>
+            <tr data-seller="aziz">
+              <td><span class="cell-user"><span class="avatar sm">A</span>Aziz Karimov</span></td>
+              <td class="num amt-cash">1 200 000</td>
+              <td class="num amt-debt">2 000 000</td>
+              <td class="num">8 000 000</td>
+              <td class="num">6 000 000</td>
+              <td class="num amt-out">−300 000</td>
+              <td class="num amt-in">1 700 000</td>
+              <td class="num"><button class="btn btn-violet btn-sm">Topshirish</button></td>
+            </tr>
+            <tr data-seller="bekzod">
+              <td><span class="cell-user"><span class="avatar sm">B</span>Bekzod Toshev</span></td>
+              <td class="num amt-cash">350 000</td>
+              <td class="num amt-debt">1 500 000</td>
+              <td class="num">5 000 000</td>
+              <td class="num">3 500 000</td>
+              <td class="num amt-out">−150 000</td>
+              <td class="num amt-in">1 100 000</td>
+              <td class="num"><button class="btn btn-violet btn-sm">Topshirish</button></td>
+            </tr>
+            <tr data-seller="dilnoza">
+              <td><span class="cell-user"><span class="avatar sm">D</span>Dilnoza Yusupova</span></td>
+              <td class="num amt-cash">700 000</td>
+              <td class="num amt-debt">1 000 000</td>
+              <td class="num">3 000 000</td>
+              <td class="num">2 000 000</td>
+              <td class="num amt-out">−100 000</td>
+              <td class="num amt-in">800 000</td>
+              <td class="num"><button class="btn btn-violet btn-sm">Topshirish</button></td>
+            </tr>
+          </tbody>
+          <tfoot class="admin-only">
+            <tr>
+              <td>Jami</td>
+              <td class="num">2 250 000</td>
+              <td class="num amt-debt">4 500 000</td>
+              <td class="num">16 000 000</td>
+              <td class="num">11 500 000</td>
+              <td class="num amt-out">−550 000</td>
+              <td class="num amt-in">3 600 000</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+        </div>
+      </div>
+
+      <!-- Production kassa + topshirish form -->
+      <div class="grid-2">
+        <div class="card admin-only" style="margin-bottom:0">
+          <div class="card-head"><h2>Ishlab chiqarish kassasi</h2><span class="head-note">bugun</span></div>
+          <div class="prod-stat"><span class="k">Sotuvchilardan qabul qilindi</span><span class="v amt-in">+11 500 000</span></div>
+          <div class="prod-stat"><span class="k">Qolgan qarz (sotuvchilarda)</span><span class="v amt-debt">4 500 000</span></div>
+          <p class="hint" style="margin:16px 0 12px">Har sotuvchining qolgan qarzi:</p>
+          <div class="dbar">
+            <div class="dbar-row"><span class="dbar-label">Aziz Karimov</span><div class="dbar-track"><div class="dbar-fill" style="width:100%"></div></div><span class="dbar-val">2 000 000</span></div>
+            <div class="dbar-row"><span class="dbar-label">Bekzod Toshev</span><div class="dbar-track"><div class="dbar-fill" style="width:75%"></div></div><span class="dbar-val">1 500 000</span></div>
+            <div class="dbar-row"><span class="dbar-label">Dilnoza Yusupova</span><div class="dbar-track"><div class="dbar-fill" style="width:50%"></div></div><span class="dbar-val">1 000 000</span></div>
+          </div>
+        </div>
+
+        <!-- seller-only: o'zining ishlab chiqarishga qarzi -->
+        <div class="card seller-only" style="margin-bottom:0">
+          <div class="card-head"><h2>Ishlab chiqarishga qarzim</h2><span class="head-note">bugun</span></div>
+          <div class="prod-stat"><span class="k">Bugun sotildi (tannarx)</span><span class="v">8 000 000</span></div>
+          <div class="prod-stat"><span class="k">Bugun topshirdim</span><span class="v amt-in">−6 000 000</span></div>
+          <div class="prod-stat" style="border-bottom:none"><span class="k">Qolgan qarzim</span><span class="v amt-debt">2 000 000</span></div>
+          <p class="hint" style="margin:16px 0 0">Qarzni yopish uchun qolgan naqd pulni ishlab chiqarishga topshiring.</p>
+        </div>
+
+        <div class="card" style="margin-bottom:0">
+          <div class="card-head"><h2>Ishlab chiqarishga topshirish</h2><span class="head-note">yangi amal</span></div>
+          <div class="demo-form">
+            <div class="frow admin-only">
+              <label>Sotuvchi</label>
+              <div class="inp">Aziz Karimov &nbsp;·&nbsp; qarzi 2 000 000 so'm</div>
+            </div>
+            <div class="frow seller-only">
+              <label>Sotuvchi</label>
+              <div class="inp" style="color:var(--text-faint)">Aziz Karimov (siz) — o'zgartirib bo'lmaydi</div>
+            </div>
+            <div class="frow-2">
+              <div class="frow"><label>Summa (so'm)</label><div class="inp">2 000 000</div></div>
+              <div class="frow"><label>To'lov usuli</label><div class="inp">Naqd</div></div>
+            </div>
+            <div class="frow-2">
+              <div class="frow"><label>Sana</label><div class="inp">12.07.2026</div></div>
+              <div class="frow"><label>Izoh</label><div class="inp" style="color:var(--text-faint)">ixtiyoriy…</div></div>
+            </div>
+            <div class="form-actions">
+              <button class="btn btn-violet">Topshirishni saqlash</button>
+              <button class="btn">Bekor qilish</button>
+            </div>
+            <p class="hint" style="margin:2px 0 0">Saqlangach: sotuvchi kassasidan chiqim + ishlab chiqarishga qarzi shu miqdorda kamayadi.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Transactions -->
+      <div class="card">
+        <div class="card-head"><h2 id="txn-title" data-admin="Tranzaksiyalar" data-seller="Mening tranzaksiyalarim">Tranzaksiyalar</h2><span class="head-note">eng yangisi yuqorida</span></div>
+        <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Sana</th><th>Turi</th><th>Tavsif</th><th>Usul</th><th class="num">Summa</th><th>Kim</th><th></th></tr></thead>
+          <tbody>
+            <tr data-seller="aziz">
+              <td>12.07.2026</td>
+              <td><span class="badge badge-remit">Topshirish</span></td>
+              <td>Ishlab chiqarishga<span style="display:block;font-size:12px;color:var(--text-faint)">kunlik topshiruv</span></td>
+              <td>Naqd</td>
+              <td class="num"><strong style="color:var(--violet)">−2 000 000</strong> so'm</td>
+              <td>Aziz Karimov</td>
+              <td><button class="icon-action"><svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></button></td>
+            </tr>
+            <tr data-seller="aziz">
+              <td>12.07.2026</td>
+              <td><span class="badge badge-in">Kirim</span></td>
+              <td>Samarqand Shirinliklari<span style="display:block;font-size:12px;color:var(--text-faint)">qarz to'lovi</span></td>
+              <td>Naqd</td>
+              <td class="num"><strong style="color:var(--success)">+3 200 000</strong> so'm</td>
+              <td>Aziz Karimov</td>
+              <td><button class="icon-action"><svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></button></td>
+            </tr>
+            <tr data-seller="bekzod">
+              <td>12.07.2026</td>
+              <td><span class="badge badge-remit">Topshirish</span></td>
+              <td>Ishlab chiqarishga<span style="display:block;font-size:12px;color:var(--text-faint)">kunlik topshiruv</span></td>
+              <td>Naqd</td>
+              <td class="num"><strong style="color:var(--violet)">−3 500 000</strong> so'm</td>
+              <td>Bekzod Toshev</td>
+              <td><button class="icon-action"><svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></button></td>
+            </tr>
+            <tr data-seller="aziz">
+              <td>12.07.2026</td>
+              <td><span class="badge badge-out">Chiqim</span></td>
+              <td>Benzin / transport<span style="display:block;font-size:12px;color:var(--text-faint)">yo'l xarajati</span></td>
+              <td>Naqd</td>
+              <td class="num"><strong style="color:var(--danger)">−300 000</strong> so'm</td>
+              <td>Aziz Karimov</td>
+              <td><button class="icon-action"><svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></button></td>
+            </tr>
+            <tr data-seller="dilnoza">
+              <td>12.07.2026</td>
+              <td><span class="badge badge-in">Kirim</span></td>
+              <td>Toshkent To'qimachilik<span style="display:block;font-size:12px;color:var(--text-faint)">qarz to'lovi</span></td>
+              <td>Karta</td>
+              <td class="num"><strong style="color:var(--success)">+2 800 000</strong> so'm</td>
+              <td>Dilnoza Yusupova</td>
+              <td><button class="icon-action"><svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></button></td>
+            </tr>
+          </tbody>
+        </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  // theme toggle
+  document.getElementById('theme-toggle').addEventListener('click',function(){
+    var d=document.documentElement.getAttribute('data-theme')==='dark';
+    if(d){document.documentElement.removeAttribute('data-theme');}
+    else{document.documentElement.setAttribute('data-theme','dark');}
+  });
+
+  // role switch — admin sees everyone, seller sees only self (Aziz)
+  var SELF='aziz';
+  var chip={name:{admin:'Admin User',seller:'Aziz Karimov'},role:{admin:'Administrator',seller:'Sotuvchi'},av:{admin:'A',seller:'A'}};
+  var titles={admin:['Kassa','Sotuvchilar kunlik nazorati · ishlab chiqarishga qarz · pul topshirish'],
+              seller:['Mening kassam','Bugungi kassam · ishlab chiqarishga qarzim · pul topshirish']};
+  function setRole(role){
+    document.body.setAttribute('data-role',role);
+    // KPI + text values
+    document.querySelectorAll('[data-admin]').forEach(function(el){
+      var v=el.getAttribute('data-'+role);
+      if(v!==null) el.textContent=v;
+    });
+    // filter table rows: seller sees only own; admin sees all
+    document.querySelectorAll('tr[data-seller]').forEach(function(tr){
+      tr.style.display=(role==='admin'||tr.getAttribute('data-seller')===SELF)?'':'none';
+    });
+    // header + user chip
+    document.getElementById('page-title').textContent=titles[role][0];
+    document.getElementById('page-sub').textContent=titles[role][1];
+    document.getElementById('chip-name').textContent=chip.name[role];
+    document.getElementById('chip-role').textContent=chip.role[role];
+    document.getElementById('side-name').textContent=chip.name[role];
+    document.getElementById('side-role').textContent=(role==='admin'?'Administrator':'Sotuvchi');
+    document.getElementById('chip-avatar').textContent=chip.av[role];
+    document.getElementById('side-avatar').textContent=chip.av[role];
+    // seg active
+    document.querySelectorAll('#role-seg button').forEach(function(b){
+      b.classList.toggle('active',b.getAttribute('data-role')===role);
+    });
+  }
+  document.querySelectorAll('#role-seg button').forEach(function(b){
+    b.addEventListener('click',function(){setRole(b.getAttribute('data-role'));});
+  });
+  setRole('admin');
+</script>
+</body>
+</html>

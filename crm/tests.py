@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from io import BytesIO
 
@@ -16,11 +16,21 @@ from .models import (
     Expense,
     Payment,
     Product,
+    ProductionReceipt,
+    ProductionReceiptItem,
+    ProductionRemittance,
+    ProfitPayout,
+    Return,
     Sale,
     SaleItem,
     StockEntry,
 )
-from .views import XLSX_CONTENT_TYPE, _kassa_summary, _per_employee_kassa
+from .views import (
+    XLSX_CONTENT_TYPE,
+    _kassa_summary,
+    _per_employee_kassa,
+    _realized_profit_by_seller,
+)
 
 
 def read_xlsx(response):
@@ -51,6 +61,7 @@ def make_sale(client, rep, product, weight="10", price="24000", **kwargs):
         weight=Decimal(weight),
         price=Decimal(price),
         cost_price=Decimal(cost_price),
+        fulfilled_at=sale.date,
     )
     if not is_debt:
         Payment.objects.create(
@@ -87,6 +98,18 @@ def one_item(product, weight="5", price="24000", dimension="kg", cost_price=""):
     }
 
 
+def give_ombor(seller, product, kg="100000", **kwargs):
+    """Log an opening production receipt so `seller` holds `kg` of `product`.
+
+    Sales go through the ombor oversell block, so any test that creates a sale via
+    the view needs the seller to have received the goods first."""
+    receipt = ProductionReceipt.objects.create(seller=seller, created_by=seller, **kwargs)
+    ProductionReceiptItem.objects.create(
+        receipt=receipt, product=product, quantity_kg=Decimal(kg)
+    )
+    return receipt
+
+
 class BaseSetup(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -102,6 +125,9 @@ class BaseSetup(TestCase):
         )
         cls.sale1 = make_sale(cls.client1, cls.sales1, cls.product)
         cls.sale2 = make_sale(cls.client2, cls.sales2, cls.product)
+        # Seed each user's ombor so view-based sale tests clear the oversell block.
+        for user in (cls.admin, cls.manager, cls.sales1, cls.sales2):
+            give_ombor(user, cls.product)
 
 
 class SaleMathTests(BaseSetup):
@@ -181,6 +207,8 @@ class MultiItemSaleTests(BaseSetup):
             name="Mayka paket", sku="MYK-1",
             cost_price=Decimal("17000"), price=Decimal("23000"),
         )
+        for user in (cls.sales1, cls.sales2):
+            give_ombor(user, cls.product2)
 
     def test_creates_one_sale_with_multiple_items(self):
         self.client.force_login(self.sales1)
@@ -407,18 +435,6 @@ class StockTests(BaseSetup):
         response = self.client.get(reverse("stock_entry_create", args=[self.product.pk]))
         self.assertEqual(response.status_code, 200)
 
-    def test_sale_beyond_stock_warns_but_saves(self):
-        self.client.force_login(self.sales1)
-        data = sale_post(
-            self.client1.pk,
-            [one_item(self.product, weight="500")],  # far beyond the 80 kg on hand
-        )
-        response = self.client.post(reverse("sale_create"), data, follow=True)
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(SaleItem.objects.filter(weight=Decimal("500")).exists())
-        msgs = [m.message for m in response.context["messages"]]
-        self.assertTrue(any("yetarli emas" in m for m in msgs))
-
     def test_low_stock_flag(self):
         self.product.low_stock_threshold = Decimal("90")
         self.product.save()
@@ -457,6 +473,182 @@ class StockTests(BaseSetup):
         self.assertEqual(
             self.client.get(reverse("stock_adjust", args=[self.product.pk])).status_code, 200
         )
+
+
+class SellerOmborTests(BaseSetup):
+    """Each seller has their own ombor = received from production − sold + restocked."""
+
+    def setUp(self):
+        # A product this class fully controls — BaseSetup only seeds self.product.
+        self.p = Product.objects.create(
+            name="Ombor test", sku="OMB-1",
+            cost_price=Decimal("10000"), price=Decimal("20000"),
+        )
+
+    def _receive(self, seller, kg, **kwargs):
+        receipt = ProductionReceipt.objects.create(seller=seller, created_by=seller, **kwargs)
+        ProductionReceiptItem.objects.create(
+            receipt=receipt, product=self.p, quantity_kg=Decimal(kg)
+        )
+        return receipt
+
+    def test_on_hand_is_received_minus_sold(self):
+        self._receive(self.sales1, "100")
+        make_sale(self.client1, self.sales1, self.p, weight="30", price="20000")
+        p = Product.objects.with_stock(seller=self.sales1).get(pk=self.p.pk)
+        self.assertEqual(p.stock, Decimal("70"))
+
+    def test_restocked_return_adds_back_to_ombor(self):
+        self._receive(self.sales1, "100")
+        sale = make_sale(self.client1, self.sales1, self.p, weight="30", price="20000")
+        Return.objects.create(
+            sale=sale, product=self.p, dimension="kg",
+            weight=Decimal("4"), price=Decimal("20000"), restock=True,
+            created_by=self.sales1,
+        )
+        p = Product.objects.with_stock(seller=self.sales1).get(pk=self.p.pk)
+        self.assertEqual(p.stock, Decimal("74"))  # 100 − 30 + 4
+
+    def test_pre_cutover_receipt_is_excluded(self):
+        self._receive(self.sales1, "100", date=date(2019, 1, 1))
+        p = Product.objects.with_stock(seller=self.sales1).get(pk=self.p.pk)
+        self.assertEqual(p.stock, Decimal("0"))  # pre-cutover receipt ignored, no sales
+
+    def test_ombor_is_isolated_per_seller(self):
+        self._receive(self.sales2, "100")
+        p1 = Product.objects.with_stock(seller=self.sales1).get(pk=self.p.pk)
+        self.assertEqual(p1.stock, Decimal("0"))
+        p2 = Product.objects.with_stock(seller=self.sales2).get(pk=self.p.pk)
+        self.assertEqual(p2.stock, Decimal("100"))
+
+    def test_sale_saves_without_stock(self):
+        # No warehouse gate anymore — a sale always saves straight through.
+        self.client.force_login(self.sales1)
+        data = sale_post(self.client1.pk, [one_item(self.p, weight="3")])
+        response = self.client.post(reverse("sale_create"), data, follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(SaleItem.objects.filter(product=self.p, weight=Decimal("3")).exists())
+
+
+class ProductQuickCreateTests(BaseSetup):
+    """A seller can create a product inline (from the receipt modal)."""
+
+    def test_seller_quick_creates_product(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("product_quick_create"),
+            {"name": "Yangi paket", "price": "5000", "cost_price": "3000"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        self.assertEqual(response.status_code, 200)
+        p = Product.objects.get(pk=response.json()["id"])
+        self.assertEqual(p.name, "Yangi paket")
+        self.assertEqual(p.price, Decimal("5000"))
+        self.assertEqual(p.cost_price, Decimal("3000"))
+        self.assertTrue(p.sku)  # auto-generated
+
+    def test_quick_create_flags_duplicate_name(self):
+        Product.objects.create(name="Bor paket", sku="BP-1", price=Decimal("1000"))
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("product_quick_create"), {"name": "Bor paket"})
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(response.json().get("duplicate"))
+
+    def test_quick_create_requires_name(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("product_quick_create"), {"name": "  "})
+        self.assertEqual(response.status_code, 400)
+
+
+class ReceiptCrudTests(BaseSetup):
+    """Logging goods received from production into a seller's ombor."""
+
+    def _post(self, product, qty="50", **header):
+        data = {
+            "date": timezone.localdate().isoformat(),
+            "note": "",
+            "items-TOTAL_FORMS": "1",
+            "items-INITIAL_FORMS": "0",
+            "items-MIN_NUM_FORMS": "1",
+            "items-MAX_NUM_FORMS": "1000",
+            "items-0-product": product.pk,
+            "items-0-quantity_kg": qty,
+        }
+        data.update(header)
+        return data
+
+    def test_seller_logs_receipt(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("receipt_create"), self._post(self.product, "50"))
+        self.assertEqual(response.status_code, 302)
+        receipt = ProductionReceipt.objects.latest("created_at")
+        self.assertEqual(receipt.seller, self.sales1)
+        self.assertEqual(receipt.created_by, self.sales1)
+        self.assertEqual(receipt.items.get().quantity_kg, Decimal("50.000"))
+
+    def test_seller_cannot_log_for_another_seller(self):
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("receipt_create"), self._post(self.product, "50", seller=self.sales2.pk))
+        self.assertEqual(ProductionReceipt.objects.latest("created_at").seller, self.sales1)
+
+    def test_admin_logs_receipt_for_a_seller(self):
+        self.client.force_login(self.admin)
+        self.client.post(reverse("receipt_create"), self._post(self.product, "50", seller=self.sales2.pk))
+        receipt = ProductionReceipt.objects.latest("created_at")
+        self.assertEqual(receipt.seller, self.sales2)
+        self.assertEqual(receipt.created_by, self.admin)
+
+    def test_receipt_raises_seller_ombor(self):
+        self.client.force_login(self.sales1)
+        before = Product.objects.with_stock(seller=self.sales1).get(pk=self.product.pk).stock
+        self.client.post(reverse("receipt_create"), self._post(self.product, "50"))
+        after = Product.objects.with_stock(seller=self.sales1).get(pk=self.product.pk).stock
+        self.assertEqual(after - before, Decimal("50"))
+
+    def test_ombor_page_renders_for_seller(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("ombor"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Jami sotilgan")
+
+    def test_ombor_page_renders_for_admin_with_seller(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("ombor") + f"?seller={self.sales1.pk}")
+        self.assertEqual(response.status_code, 200)
+
+    def test_seller_cannot_edit_another_sellers_receipt(self):
+        receipt = give_ombor(self.sales2, self.product, "10")
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("receipt_edit", args=[receipt.pk]))
+        self.assertEqual(response.status_code, 404)
+
+
+class KassaCombinedCashTests(BaseSetup):
+    """Kassadagi pul combines every method AND currency — a dollar payment counts
+    at its so'm value (Payment.amount is always stored in so'm)."""
+
+    def _usd_payment(self, seller, som="1270000", usd="100"):
+        sale = make_sale(self.client1, seller, self.product, is_debt=True)
+        return Payment.objects.create(
+            sale=sale, amount=Decimal(som), amount_original=Decimal(usd),
+            exchange_rate=Decimal("12700"), currency=Payment.Currency.USD,
+            method=Payment.Method.CASH, kind=Payment.Kind.SALE,
+            date=timezone.localdate(), created_by=seller,
+        )
+
+    def test_summary_cash_includes_dollars(self):
+        today = timezone.localdate()
+        before = _kassa_summary(today, today)["cash"]
+        self._usd_payment(self.sales1)
+        after = _kassa_summary(today, today)["cash"]
+        self.assertEqual(after - before, Decimal("1270000"))
+
+    def test_per_seller_cash_includes_dollars(self):
+        today = timezone.localdate()
+        before = _per_employee_kassa(today, today, rep=self.sales1)[0]["cash"]
+        self._usd_payment(self.sales1)
+        after = _per_employee_kassa(today, today, rep=self.sales1)[0]["cash"]
+        self.assertEqual(after - before, Decimal("1270000"))
 
 
 class ProductDeleteTests(BaseSetup):
@@ -506,16 +698,6 @@ class ProductCreateStockTests(BaseSetup):
         }
         data.update(extra)
         return self.client.post(reverse("product_create"), data)
-
-    def test_initial_quantity_recorded_as_kirim(self):
-        # Creating a product with a starting quantity books it as the first kirim.
-        self.client.force_login(self.sales1)
-        self._post(initial_quantity="100")
-        product = Product.objects.get(sku="NEW-1")
-        self.assertEqual(product.current_stock, Decimal("100"))
-        entry = product.stock_entries.get()
-        self.assertEqual(entry.quantity_kg, Decimal("100"))
-        self.assertEqual(entry.created_by, self.sales1)
 
     def test_no_initial_quantity_leaves_stock_empty(self):
         self.client.force_login(self.sales1)
@@ -1395,15 +1577,15 @@ class KassaScopingTests(BaseSetup):
         self.assertEqual(creators, {self.sales1.pk})
 
     def test_seller_transactions_scoped_to_self(self):
-        # The unified ledger (kirim + chiqim) shows only the seller's own rows.
+        # The kirim/chiqim ledgers show only the seller's own rows.
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("kassa"))
-        txns = response.context["txn_page"].object_list
-        creators = {t["created_by"].pk for t in txns}
+        income = response.context["income_rows"]
+        outflow = response.context["outflow_rows"]
+        creators = {t["created_by"].pk for t in income + outflow}
         self.assertEqual(creators, {self.sales1.pk})
-        directions = {t["direction"] for t in txns}
-        self.assertIn("in", directions)   # own sale payment
-        self.assertIn("out", directions)  # own expense
+        self.assertTrue(any(t["direction"] == "in" for t in income))    # own sale payment
+        self.assertTrue(any(t["direction"] == "out" for t in outflow))  # own expense
 
     def test_seller_has_no_per_employee_table(self):
         self.client.force_login(self.sales1)
@@ -1421,12 +1603,223 @@ class KassaScopingTests(BaseSetup):
     def test_seller_response_hides_employee_table(self):
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("kassa"))
-        self.assertNotContains(response, "Xodimlar bo'yicha")
+        self.assertNotContains(response, "Sotuvchilar nazorati")
 
     def test_admin_response_shows_employee_table(self):
         self.client.force_login(self.admin)
         response = self.client.get(reverse("kassa"))
-        self.assertContains(response, "Xodimlar bo'yicha")
+        self.assertContains(response, "Sotuvchilar nazorati")
+
+
+class RemittanceTests(BaseSetup):
+    """Ishlab chiqarishga topshirish — a seller handing cash back to production.
+    It repays the seller→production debt (= tannarx of goods they've sold) and
+    leaves their till, without touching client debts."""
+
+    def setUp(self):
+        today = timezone.localdate()
+        # sales1 sells 10 kg on debt: revenue 240k, tannarx (cost) 180k.
+        self.sale = make_sale(
+            self.client1, self.sales1, self.product, weight="10",
+            date=today, is_debt=True,
+        )
+        # Client repays 200k so the seller has cash on hand to remit.
+        Payment.objects.create(
+            sale=self.sale, amount=Decimal("200000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=today, created_by=self.sales1,
+        )
+
+    def _remit(self, user, amount, seller=None):
+        self.client.force_login(user)
+        data = {
+            "date": timezone.localdate().isoformat(),
+            "amount": amount, "method": "cash",
+        }
+        if seller is not None:
+            data["seller"] = seller.pk
+        # The kassa UI posts handovers from an AJAX modal; an invalid one comes back
+        # as a 422 with the modal partial (and its error banner) rather than a redirect.
+        return self.client.post(
+            reverse("remittance_create"), data,
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+
+    def test_seller_remittance_reduces_debt_and_cash(self):
+        today = timezone.localdate()
+        before = _kassa_summary(today, today, rep=self.sales1)
+
+        self._remit(self.sales1, "150000")
+        remit = ProductionRemittance.objects.get()
+        self.assertEqual(remit.seller, self.sales1)
+        self.assertEqual(remit.amount, Decimal("150000"))
+
+        after = _kassa_summary(today, today, rep=self.sales1)
+        # A handover drops BOTH the production debt and the cash on hand by its
+        # amount — and nothing else.
+        self.assertEqual(before["production_debt"] - after["production_debt"], Decimal("150000"))
+        self.assertEqual(before["cash"] - after["cash"], Decimal("150000"))
+        self.assertEqual(after["remitted"], Decimal("150000.00"))
+        # The client's debt is untouched by a production handover.
+        self.assertEqual(self.sale.debt_remaining, Decimal("40000.00"))  # 240k − 200k
+
+    def test_seller_field_is_pinned_to_self(self):
+        # A seller cannot file a handover on another seller's behalf, even by
+        # POSTing a different seller id — it snaps back to themselves.
+        self._remit(self.sales1, "10000", seller=self.sales2)
+        remit = ProductionRemittance.objects.get()
+        self.assertEqual(remit.seller, self.sales1)
+
+    def test_admin_can_file_for_any_seller(self):
+        # sales2 holds 240k cash on hand (their paid sale in BaseSetup), so an admin
+        # can file a handover on their behalf.
+        self._remit(self.admin, "20000", seller=self.sales2)
+        remit = ProductionRemittance.objects.get()
+        self.assertEqual(remit.seller, self.sales2)
+        self.assertEqual(remit.created_by, self.admin)
+
+    def test_remittance_blocked_when_cash_insufficient(self):
+        # sales1 holds 440k (240k sale in BaseSetup + 200k repayment in setUp).
+        # Handing over more than the till holds is rejected and nothing is saved.
+        response = self._remit(self.sales1, "500000")
+        self.assertEqual(response.status_code, 422)
+        self.assertContains(response, "Kassada yetarli pul yo&#x27;q", status_code=422)
+        self.assertFalse(ProductionRemittance.objects.exists())
+
+    def test_remittance_blocked_for_empty_till(self):
+        # A seller who has collected nothing has an empty till — even an admin can't
+        # hand cash over on their behalf.
+        empty = User.objects.create_user("t_sales3", password="x", role=User.Role.SALES)
+        response = self._remit(self.admin, "1000", seller=empty)
+        self.assertContains(response, "Kassada yetarli pul yo&#x27;q", status_code=422)
+        self.assertFalse(ProductionRemittance.objects.exists())
+
+    def test_seller_sees_only_own_remittance_in_ledger(self):
+        ProductionRemittance.objects.create(
+            seller=self.sales2, amount=Decimal("9999"), method=Payment.Method.CASH,
+            created_by=self.sales2, date=timezone.localdate(),
+        )
+        self._remit(self.sales1, "5000")
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"))
+        # Handovers land in the chiqim ledger (direction "remit").
+        remits = [
+            t for t in response.context["outflow_rows"]
+            if t["kind"] == "remittance"
+        ]
+        self.assertTrue(remits)
+        self.assertTrue(all(t["created_by"].pk == self.sales1.pk for t in remits))
+
+    def test_remittance_is_audited(self):
+        self._remit(self.sales1, "12000")
+        log = AuditLog.objects.filter(target_type="Topshiruv").first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.action, AuditLog.Action.CREATE)
+
+
+class ProfitPayoutTests(BaseSetup):
+    """Foyda topshirish — a seller hands realized profit up to the boss. It drains
+    the till without touching the production debt (already settled by remittances)
+    and without reducing measured profit (it only distributes it)."""
+
+    def setUp(self):
+        # A clean seller (manager has no BaseSetup payments): one paid 240k sale with
+        # 180k tannarx → cash 240k, production debt 180k, so 60k free profit.
+        self.sale = make_sale(self.client1, self.manager, self.product, weight="10")
+
+    def _payout(self, user, amount, seller=None):
+        self.client.force_login(user)
+        data = {
+            "date": timezone.localdate().isoformat(),
+            "amount": amount, "method": "cash",
+        }
+        if seller is not None:
+            data["seller"] = seller.pk
+        return self.client.post(
+            reverse("profit_payout_create"), data,
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+
+    def test_payout_reduces_cash_not_debt(self):
+        today = timezone.localdate()
+        before = _kassa_summary(today, today, rep=self.manager)
+        self._payout(self.manager, "60000", seller=self.manager)
+        payout = ProfitPayout.objects.get()
+        self.assertEqual(payout.seller, self.manager)
+        self.assertEqual(payout.amount, Decimal("60000"))
+        after = _kassa_summary(today, today, rep=self.manager)
+        # Cash drops by the payout; the production debt is untouched.
+        self.assertEqual(before["cash"] - after["cash"], Decimal("60000"))
+        self.assertEqual(after["production_debt"], before["production_debt"])
+        self.assertEqual(after["paid_profit"], Decimal("60000.00"))
+
+    def test_payout_blocked_beyond_withdrawable_profit(self):
+        # Only 60k of the 240k till is free profit (180k still owed to production);
+        # trying to hand over more is rejected and nothing is saved.
+        response = self._payout(self.manager, "61000", seller=self.manager)
+        self.assertContains(response, "yetarli foyda yo&#x27;q", status_code=422)
+        self.assertFalse(ProfitPayout.objects.exists())
+
+    def test_remit_then_payout_zeroes_the_till(self):
+        today = timezone.localdate()
+        # Settle the full production debt, then hand up the remaining profit.
+        ProductionRemittance.objects.create(
+            seller=self.manager, amount=Decimal("180000"), method=Payment.Method.CASH,
+            created_by=self.manager, date=today,
+        )
+        self._payout(self.manager, "60000", seller=self.manager)
+        summary = _kassa_summary(today, today, rep=self.manager)
+        self.assertEqual(summary["cash"], Decimal("0.00"))
+        self.assertEqual(summary["production_debt"], Decimal("0.00"))
+
+    def test_payout_is_audited(self):
+        self._payout(self.manager, "10000", seller=self.manager)
+        log = AuditLog.objects.filter(target_type="Foyda").first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.action, AuditLog.Action.CREATE)
+
+    def test_kassa_page_renders_payout_for_admin(self):
+        # The admin kassa page must render the new profit column and the payout row
+        # in the chiqim ledger without a template error.
+        ProfitPayout.objects.create(
+            seller=self.manager, amount=Decimal("60000"), method=Payment.Method.CASH,
+            created_by=self.manager, date=timezone.localdate(),
+        )
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("kassa"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Foyda topshirdi")
+        self.assertContains(response, "Foyda topshirilgan")
+
+
+class RealizedProfitTests(BaseSetup):
+    """Kassa profit is realized cost-first: an unpaid debt sale earns nothing until
+    its tannarx is collected; only collections above cost count as profit."""
+
+    def _pay(self, sale, amount):
+        Payment.objects.create(
+            sale=sale, amount=Decimal(amount), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=timezone.localdate(), created_by=self.manager,
+        )
+
+    def test_cost_first_realization(self):
+        # revenue 2,000,000 · tannarx 1,500,000 · unpaid (manager has no other sales)
+        sale = make_sale(
+            self.client1, self.manager, self.product,
+            weight="100", price="20000", cost_price="15000", is_debt=True,
+        )
+        today = timezone.localdate()
+
+        def realized():
+            got = _realized_profit_by_seller(today, today, rep=self.manager)
+            return got.get(self.manager.pk, Decimal("0"))
+
+        self.assertEqual(realized(), Decimal("0"))         # nothing collected yet
+        self._pay(sale, "1000000")
+        self.assertEqual(realized(), Decimal("0"))         # 1.0M < 1.5M cost → still 0
+        self._pay(sale, "750000")                          # collected 1.75M
+        self.assertEqual(realized(), Decimal("250000"))    # 1.75M − 1.5M
+        self._pay(sale, "250000")                          # collected 2.0M (full)
+        self.assertEqual(realized(), Decimal("500000"))    # capped at the full margin
 
 
 class ClientTransferTests(BaseSetup):
@@ -1677,3 +2070,55 @@ class ClientLastSaleTests(BaseSetup):
         self.assertContains(response, "Oxirgi sotuv")
         self.assertContains(response, "3 kun oldin")
         self.assertContains(response, "Hech qachon")
+
+
+class OmborReportTests(BaseSetup):
+    """Ombor is now a sold-goods report: per-product totals with a per-product
+    drill-down (per-seller for admins)."""
+
+    def setUp(self):
+        # A product only this class sells, so BaseSetup's seeded sales don't skew it.
+        self.p = Product.objects.create(
+            name="Report test", sku="RPT-1",
+            cost_price=Decimal("10000"), price=Decimal("20000"),
+        )
+
+    def _row(self, response):
+        return next(r for r in response.context["rows"] if r["product"] == self.p.pk)
+
+    def test_list_shows_sold_totals_for_seller(self):
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        make_sale(self.client1, self.sales1, self.p, weight="5", price="20000")
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("ombor"))
+        self.assertEqual(response.status_code, 200)
+        row = self._row(response)
+        self.assertEqual(row["total_kg"], Decimal("15"))  # 10 + 5 kg
+        self.assertEqual(row["sales_count"], 2)
+
+    def test_seller_sees_only_own_totals(self):
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        make_sale(self.client2, self.sales2, self.p, weight="7", price="20000")
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("ombor"))
+        self.assertEqual(self._row(response)["total_kg"], Decimal("10"))  # sales2 excluded
+
+    def test_product_detail_admin_shows_per_seller_breakdown(self):
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        make_sale(self.client2, self.sales2, self.p, weight="7", price="20000")
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("ombor_product", args=[self.p.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["total_kg"], Decimal("17"))
+        by_seller = {r["seller"].pk: r["kg"] for r in response.context["by_seller"]}
+        self.assertEqual(by_seller[self.sales1.pk], Decimal("10"))
+        self.assertEqual(by_seller[self.sales2.pk], Decimal("7"))
+
+    def test_product_detail_seller_scoped(self):
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        make_sale(self.client2, self.sales2, self.p, weight="7", price="20000")
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("ombor_product", args=[self.p.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["total_kg"], Decimal("10"))
+        self.assertIsNone(response.context["by_seller"])

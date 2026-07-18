@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% block title %}Ombor · Paket CRM{% endblock %}
-{% block topbar_title %}Ombor{% endblock %}
+{% block title %}Mahsulotlar · Paket CRM{% endblock %}
+{% block topbar_title %}Mahsulotlar{% endblock %}
 {% block fab %}<a class="fab" href="{% url 'product_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi mahsulot</a>{% endblock %}
 {% block content %}
 
@@ -18,7 +18,7 @@
   <tr>
     <th class="sticky-col">Nomi</th><th>SKU</th>
     <th class="num">Tannarx (1 kg)</th><th class="num">Sotish narxi (1 kg)</th>
-    <th class="num">Ombor (kg)</th><th>Holati</th><th>Faol</th><th></th>
+    <th>Faol</th><th></th>
   </tr>
   {% for product in page %}
   <tr>
@@ -26,16 +26,6 @@
     <td>{{ product.sku }}</td>
     <td class="num">{{ product.cost_price|floatformat:"0g" }}</td>
     <td class="num">{{ product.price|floatformat:"0g" }}</td>
-    <td class="num">{{ product.stock|floatformat:"-3g" }}</td>
-    <td>
-      {% if product.stock <= 0 %}
-        <span class="badge badge-danger">Tugagan</span>
-      {% elif product.low_stock_threshold > 0 and product.stock <= product.low_stock_threshold %}
-        <span class="badge badge-warning">Kam qoldi</span>
-      {% else %}
-        <span class="badge badge-ok">Yetarli</span>
-      {% endif %}
-    </td>
     <td>{{ product.is_active|yesno:"Ha,Yo'q" }}</td>
     <td class="row-actions">
       <a class="icon-action act-edit" href="{% url 'product_edit' product.pk %}" data-modal title="Tahrirlash">

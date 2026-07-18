@@ -77,29 +77,71 @@ class Client(models.Model):
 
 
 class ProductQuerySet(models.QuerySet):
-    def with_stock(self):
-        """Annotate each product with stock_in, stock_out, and current stock (kg)."""
-        received = Subquery(
-            StockEntry.objects.filter(product=OuterRef("pk"))
-            .values("product")
-            .annotate(s=Sum("quantity_kg"))
-            .values("s"),
-            output_field=QTY,
-        )
-        sold = Subquery(
-            SaleItem.objects.filter(product=OuterRef("pk"))
-            .values("product")
-            .annotate(s=Sum(ITEM_WEIGHT_KG))
-            .values("s"),
-            output_field=QTY,
-        )
-        returned = Subquery(
-            Return.objects.filter(product=OuterRef("pk"), restock=True)
-            .values("product")
-            .annotate(s=Sum(RETURN_WEIGHT_KG))
-            .values("s"),
-            output_field=QTY,
-        )
+    def with_stock(self, seller=None):
+        """Annotate each product with stock_in, stock_out, and current stock (kg).
+
+        With `seller`, the numbers are that seller's own ombor: goods received from
+        production (`ProductionReceiptItem`) minus what they've sold, plus their
+        restocked returns — and only movements dated on/after `OMBOR_START_DATE`
+        count. Without a seller it's the legacy shared-warehouse view (StockEntry)."""
+        if seller is not None:
+            start = settings.OMBOR_START_DATE
+            received = Subquery(
+                ProductionReceiptItem.objects.filter(
+                    product=OuterRef("pk"),
+                    receipt__seller=seller,
+                    receipt__date__gte=start,
+                )
+                .values("product")
+                .annotate(s=Sum("quantity_kg"))
+                .values("s"),
+                output_field=QTY,
+            )
+            sold = Subquery(
+                SaleItem.objects.filter(
+                    product=OuterRef("pk"),
+                    sale__sales_rep=seller,
+                    sale__date__gte=start,
+                )
+                .values("product")
+                .annotate(s=Sum(ITEM_WEIGHT_KG))
+                .values("s"),
+                output_field=QTY,
+            )
+            returned = Subquery(
+                Return.objects.filter(
+                    product=OuterRef("pk"),
+                    sale__sales_rep=seller,
+                    restock=True,
+                    date__gte=start,
+                )
+                .values("product")
+                .annotate(s=Sum(RETURN_WEIGHT_KG))
+                .values("s"),
+                output_field=QTY,
+            )
+        else:
+            received = Subquery(
+                StockEntry.objects.filter(product=OuterRef("pk"))
+                .values("product")
+                .annotate(s=Sum("quantity_kg"))
+                .values("s"),
+                output_field=QTY,
+            )
+            sold = Subquery(
+                SaleItem.objects.filter(product=OuterRef("pk"))
+                .values("product")
+                .annotate(s=Sum(ITEM_WEIGHT_KG))
+                .values("s"),
+                output_field=QTY,
+            )
+            returned = Subquery(
+                Return.objects.filter(product=OuterRef("pk"), restock=True)
+                .values("product")
+                .annotate(s=Sum(RETURN_WEIGHT_KG))
+                .values("s"),
+                output_field=QTY,
+            )
         return self.annotate(
             stock_in=Coalesce(received, ZERO_QTY),
             stock_out=Coalesce(sold, ZERO_QTY),
@@ -345,10 +387,37 @@ class SaleItem(models.Model):
     cost_price = models.DecimalField(
         "Tannarxi (1 birlik, so'm)", max_digits=14, decimal_places=2
     )
+    # Order fulfilment. `fulfilled_kg` is how much of the line has been backed by
+    # stock (partial fills allowed); `fulfilled_at` is set only once it's FULLY
+    # filled. A line sold short (zakaz) starts at 0 and gets topped up as stock
+    # arrives. Orthogonal to the ombor stock math — a pending line still counts as
+    # sold.
+    fulfilled_kg = models.DecimalField(
+        "Bajarilgan miqdor (kg)", max_digits=12, decimal_places=3, default=0
+    )
+    fulfilled_at = models.DateField("To'liq bajarilgan sana", null=True, blank=True)
+    fulfilled_by_receipt = models.ForeignKey(
+        "ProductionReceipt",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="fulfilled_items",
+        verbose_name="Qabul (biriktirilgan)",
+    )
 
     class Meta:
         verbose_name = "Sotuv qatori"
         verbose_name_plural = "Sotuv qatorlari"
+
+    @property
+    def is_pending(self):
+        """A zakaz line not yet fully backed by stock."""
+        return self.fulfilled_at is None
+
+    @property
+    def pending_kg(self):
+        """The still-unfilled quantity of this line, in kg."""
+        return max(Decimal("0"), self.weight_kg - self.fulfilled_kg)
 
     @property
     def weight_kg(self):
@@ -582,6 +651,198 @@ class Expense(models.Model):
         return f"{self.get_category_display()}: {self.amount} so'm ({self.date})"
 
 
+class ProductionRemittance(models.Model):
+    """Money a seller hands back to production (Ishlab chiqarishga topshirish).
+
+    The firm's flow: a seller takes goods from the shared warehouse and sells them
+    on to clients at a markup; the *cost price* (tannarx) of what they've sold is
+    the seller's debt to production. When the seller hands their collected cash to
+    production, that debt shrinks and the cash leaves the seller's till. So a
+    remittance is both a till outflow AND a repayment of the seller→production debt —
+    it is NOT an ordinary expense (an expense is the business's own cost).
+
+    Always so'm: the production debt is denominated in so'm (tannarx is stored in
+    so'm), so a handover is recorded in so'm too."""
+
+    date = models.DateField("Sana", default=timezone.localdate)
+    seller = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="remittances",
+        verbose_name="Sotuvchi",
+    )
+    amount = models.DecimalField("Summa (so'm)", max_digits=18, decimal_places=2)
+    method = models.CharField(
+        "To'lov usuli", max_length=8, choices=Payment.Method.choices,
+        default=Payment.Method.CASH,
+    )
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="recorded_remittances",
+        verbose_name="Kim kiritdi",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date", "-created_at"]
+        verbose_name = "Ishlab chiqarishga topshiruv"
+        verbose_name_plural = "Ishlab chiqarishga topshiruvlar"
+
+    def __str__(self):
+        return f"Topshiruv · {self.seller}: {self.amount:,.0f} so'm ({self.date})"
+
+
+class ProfitPayout(models.Model):
+    """Profit a seller hands up to the owner/boss (Foyda topshirish).
+
+    Once a seller has remitted the tannarx of what they've sold to production
+    (ProductionRemittance), the cash left in their till is the markup — their
+    realized profit. Handing it to the boss empties the till: like a remittance it
+    is a cash outflow, but unlike one it does NOT touch the production debt (that's
+    already settled) and it is NOT a business expense (profit earned isn't reduced —
+    this only distributes it). So'm only, mirroring ProductionRemittance."""
+
+    date = models.DateField("Sana", default=timezone.localdate)
+    seller = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="profit_payouts",
+        verbose_name="Sotuvchi",
+    )
+    amount = models.DecimalField("Summa (so'm)", max_digits=18, decimal_places=2)
+    method = models.CharField(
+        "To'lov usuli", max_length=8, choices=Payment.Method.choices,
+        default=Payment.Method.CASH,
+    )
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="recorded_profit_payouts",
+        verbose_name="Kim kiritdi",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date", "-created_at"]
+        verbose_name = "Foyda topshiruvi"
+        verbose_name_plural = "Foyda topshiruvlari"
+
+    def __str__(self):
+        return f"Foyda topshiruvi · {self.seller}: {self.amount:,.0f} so'm ({self.date})"
+
+
+def seller_cash_on_hand(seller, exclude_remittance_pk=None, exclude_payout_pk=None):
+    """Cash physically in a seller's till right now — the same figure the kassa page
+    shows as "Kassadagi pul": net client payments they collected, minus expenses they
+    paid out, minus what they've handed to production, minus profit already handed to
+    the boss. A new handover can't exceed this (otherwise the till would go negative).
+    The `exclude_*_pk` args drop one existing row from the tally so editing it checks
+    against the delta, not itself."""
+    income = (
+        Payment.objects.filter(created_by=seller).aggregate(s=Sum(PAYMENT_NET))["s"]
+        or Decimal("0")
+    )
+    expense = (
+        Expense.objects.filter(created_by=seller).aggregate(s=Sum("amount"))["s"]
+        or Decimal("0")
+    )
+    remitted_qs = ProductionRemittance.objects.filter(seller=seller)
+    if exclude_remittance_pk:
+        remitted_qs = remitted_qs.exclude(pk=exclude_remittance_pk)
+    remitted = remitted_qs.aggregate(s=Sum("amount"))["s"] or Decimal("0")
+    payout_qs = ProfitPayout.objects.filter(seller=seller)
+    if exclude_payout_pk:
+        payout_qs = payout_qs.exclude(pk=exclude_payout_pk)
+    paid_profit = payout_qs.aggregate(s=Sum("amount"))["s"] or Decimal("0")
+    return income - expense - remitted - paid_profit
+
+
+def seller_production_debt(seller):
+    """What a seller still owes production: the tannarx (cost) of everything they've
+    sold, minus what they've already remitted."""
+    sold_cost = (
+        SaleItem.objects.filter(sale__sales_rep=seller).aggregate(s=Sum(COST))["s"]
+        or Decimal("0")
+    )
+    remitted = (
+        ProductionRemittance.objects.filter(seller=seller).aggregate(s=Sum("amount"))["s"]
+        or Decimal("0")
+    )
+    return sold_cost - remitted
+
+
+def seller_withdrawable_profit(seller, exclude_payout_pk=None):
+    """The profit sitting in a seller's till that may be handed to the boss: cash on
+    hand minus what's still owed to production. Handing this over drops the till toward
+    zero without disturbing the production debt. A profit payout can't exceed it."""
+    return seller_cash_on_hand(
+        seller, exclude_payout_pk=exclude_payout_pk
+    ) - seller_production_debt(seller)
+
+
+class ProductionReceipt(models.Model):
+    """Goods a seller receives from production into their own ombor (warehouse).
+
+    The mirror of `ProductionRemittance` (the cash a seller hands back): this is
+    the goods handed forward, production → seller. Every seller keeps their own
+    stock; on-hand per product = received − sold + restocked returns (see
+    `ProductQuerySet.with_stock(seller=…)`). Purely an inventory record — it does
+    NOT touch the kassa / production-debt figures."""
+
+    date = models.DateField("Sana", default=timezone.localdate)
+    seller = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="production_receipts",
+        verbose_name="Sotuvchi",
+    )
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="recorded_receipts",
+        verbose_name="Kim kiritdi",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date", "-created_at"]
+        verbose_name = "Ishlab chiqarishdan qabul"
+        verbose_name_plural = "Ishlab chiqarishdan qabullar"
+
+    @property
+    def total_kg(self):
+        return sum((it.quantity_kg for it in self.items.all()), Decimal("0"))
+
+    def __str__(self):
+        return f"Qabul · {self.seller} ({self.date})"
+
+
+class ProductionReceiptItem(models.Model):
+    """One product line on a production receipt, in kg. May be negative for an
+    admin write-off / correction (a line can subtract from the seller's ombor)."""
+
+    receipt = models.ForeignKey(
+        ProductionReceipt, on_delete=models.CASCADE, related_name="items",
+        verbose_name="Qabul",
+    )
+    product = models.ForeignKey(
+        Product, on_delete=models.PROTECT, related_name="receipt_items",
+        verbose_name="Mahsulot",
+    )
+    quantity_kg = models.DecimalField("Miqdori (kg)", max_digits=12, decimal_places=3)
+
+    class Meta:
+        verbose_name = "Qabul qatori"
+        verbose_name_plural = "Qabul qatorlari"
+
+    def __str__(self):
+        return f"{self.product.name}: {self.quantity_kg} kg"
+
+
 class AuditLog(models.Model):
     """An append-only trail of money-relevant actions: who did what, and when.
     Written explicitly from the views so the acting user is always known."""
@@ -653,8 +914,28 @@ class AuditLog(models.Model):
             if a == self.Action.UPDATE:
                 return e("To'lov o'zgartirildi", AMBER, "edit")
             return e("Qarz to'landi", GREEN, "in", "in")
+        if t == "Topshiruv":
+            if a == self.Action.DELETE:
+                return e("Topshiruv o'chirildi", RED, "trash")
+            if a == self.Action.UPDATE:
+                return e("Topshiruv o'zgartirildi", AMBER, "edit")
+            return e("Ishlab chiqarishga topshirildi", "badge-info", "out", "out")
+        if t == "Foyda":
+            if a == self.Action.DELETE:
+                return e("Foyda topshiruvi o'chirildi", RED, "trash")
+            if a == self.Action.UPDATE:
+                return e("Foyda topshiruvi o'zgartirildi", AMBER, "edit")
+            return e("Foyda boshliqqa topshirildi", "badge-info", "out", "out")
         if t == "Qaytarish":
             return e("Mahsulot qaytdi", AMBER, "return")
+        if t == "Qabul":
+            if a == self.Action.DELETE:
+                return e("Qabul o'chirildi", RED, "trash")
+            if a == self.Action.UPDATE:
+                return e("Qabul o'zgartirildi", AMBER, "edit")
+            return e("Ombordan qabul qilindi", GREEN, "in")
+        if t == "Zakaz":
+            return e("Zakaz biriktirildi", "badge-info", "in")
         if a == self.Action.TRANSFER:
             return e("Sotuvchi o'zgardi", GREY, "transfer")
         return e(self.get_action_display(), GREY, "dot")

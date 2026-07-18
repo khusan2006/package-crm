@@ -8,7 +8,22 @@ from django.utils import timezone
 
 from accounts.models import User
 
-from .models import Client, Expense, Payment, Product, Return, Sale, SaleItem, StockEntry
+from .models import (
+    Client,
+    Expense,
+    Payment,
+    Product,
+    ProductionReceipt,
+    ProductionReceiptItem,
+    ProductionRemittance,
+    ProfitPayout,
+    Return,
+    Sale,
+    SaleItem,
+    StockEntry,
+    seller_cash_on_hand,
+    seller_withdrawable_profit,
+)
 
 DEFAULT_DEBT_DAYS = 7
 
@@ -85,37 +100,18 @@ class ClientForm(forms.ModelForm):
 
 
 class ProductForm(forms.ModelForm):
-    # Starting stock, logged as the first warehouse kirim on create (create only).
-    initial_quantity = forms.DecimalField(
-        label="Boshlang'ich miqdor (kg)",
-        max_digits=12,
-        decimal_places=3,
-        required=False,
-        min_value=Decimal("0"),
-        help_text="Hozir omborda mavjud qoldiq — birinchi kirim sifatida yoziladi",
-    )
+    """The product catalog form — a plain reference list (nomi, narx, tannarx). No
+    stock/qoldiq: goods aren't received into a warehouse anymore, they're just sold."""
 
     class Meta:
         model = Product
-        fields = ["name", "sku", "description", "cost_price", "price", "low_stock_threshold", "is_active"]
+        fields = ["name", "sku", "description", "cost_price", "price", "is_active"]
         widgets = {"description": forms.Textarea(attrs={"rows": 3})}
 
     def __init__(self, *args, with_stock=False, **kwargs):
+        # `with_stock` kept for signature compatibility with older callers; ignored.
         super().__init__(*args, **kwargs)
         _mark_money(self.fields["cost_price"], self.fields["price"])
-        # The threshold is the warning line: stock at or below it flags "Kam qoldi".
-        self.fields["low_stock_threshold"].help_text = (
-            "Ombor shu miqdordan kam yoki teng bo'lsa, “Kam qoldi” ogohlantirishi chiqadi"
-        )
-        # The starting-quantity field only makes sense when creating a product;
-        # existing stock is changed through Kirim / Miqdorni tuzatish, not here.
-        if with_stock:
-            self.order_fields([
-                "name", "sku", "description", "cost_price", "price",
-                "low_stock_threshold", "initial_quantity", "is_active",
-            ])
-        else:
-            self.fields.pop("initial_quantity", None)
 
 
 class StockEntryForm(forms.ModelForm):
@@ -350,6 +346,169 @@ class ExpenseForm(forms.ModelForm):
         cleaned["amount"] = som
         cleaned["exchange_rate"] = rate
         return cleaned
+
+
+class ProductionRemittanceForm(forms.ModelForm):
+    """A seller handing collected cash back to production. So'm only — the debt it
+    repays is a so'm figure. A seller records only their own handovers, so for a
+    non-privileged user the `seller` field is fixed to themselves and hidden."""
+
+    class Meta:
+        model = ProductionRemittance
+        fields = ["date", "seller", "amount", "method", "note"]
+        widgets = {
+            "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — izoh"}),
+        }
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user = user
+        self.fields["amount"].label = "Summa (so'm)"
+        _mark_money(self.fields["amount"])
+        sellers = User.objects.filter(is_active=True).order_by(
+            "first_name", "last_name", "username"
+        )
+        self.fields["seller"].queryset = sellers
+        _searchable_select(self.fields["seller"], "Sotuvchini tanlang")
+        # A seller only ever hands over their own cash: lock the picker to them.
+        if user is not None and not user.can_see_all_records:
+            self.fields["seller"].queryset = sellers.filter(pk=user.pk)
+            self.fields["seller"].initial = user
+            self.fields["seller"].disabled = True
+
+    def clean_amount(self):
+        amount = self.cleaned_data.get("amount")
+        if amount is not None and amount <= 0:
+            raise forms.ValidationError("Summa 0 dan katta bo'lishi kerak.")
+        return amount
+
+    def clean(self):
+        cleaned = super().clean()
+        # Can't hand over more cash than the seller's till actually holds — otherwise
+        # the kassa would go negative. A seller's `seller` field is disabled, so its
+        # value comes from the initial (themselves); admins pick it explicitly.
+        seller = cleaned.get("seller")
+        if self.user is not None and not self.user.can_see_all_records:
+            seller = self.user
+        amount = cleaned.get("amount")
+        if seller is not None and amount:
+            available = seller_cash_on_hand(seller, exclude_remittance_pk=self.instance.pk)
+            if amount > available:
+                raise forms.ValidationError(
+                    f"Kassada yetarli pul yo'q. {seller} qo'lida hozir "
+                    f"{available:,.0f} so'm bor — {amount:,.0f} so'm topshirib bo'lmaydi."
+                )
+        return cleaned
+
+
+class ProfitPayoutForm(forms.ModelForm):
+    """A seller handing realized profit up to the boss (Foyda topshirish). So'm only,
+    and structurally a twin of ProductionRemittanceForm — a non-privileged user's
+    `seller` is fixed to themselves and hidden. The amount can't exceed the profit
+    actually sitting in the till (cash on hand beyond the production debt)."""
+
+    class Meta:
+        model = ProfitPayout
+        fields = ["date", "seller", "amount", "method", "note"]
+        widgets = {
+            "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — izoh"}),
+        }
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user = user
+        self.fields["amount"].label = "Summa (so'm)"
+        _mark_money(self.fields["amount"])
+        sellers = User.objects.filter(is_active=True).order_by(
+            "first_name", "last_name", "username"
+        )
+        self.fields["seller"].queryset = sellers
+        _searchable_select(self.fields["seller"], "Sotuvchini tanlang")
+        if user is not None and not user.can_see_all_records:
+            self.fields["seller"].queryset = sellers.filter(pk=user.pk)
+            self.fields["seller"].initial = user
+            self.fields["seller"].disabled = True
+
+    def clean_amount(self):
+        amount = self.cleaned_data.get("amount")
+        if amount is not None and amount <= 0:
+            raise forms.ValidationError("Summa 0 dan katta bo'lishi kerak.")
+        return amount
+
+    def clean(self):
+        cleaned = super().clean()
+        # Can only hand over profit that's actually in the till (cash beyond the
+        # production debt) — so it never eats into what's still owed to production.
+        seller = cleaned.get("seller")
+        if self.user is not None and not self.user.can_see_all_records:
+            seller = self.user
+        amount = cleaned.get("amount")
+        if seller is not None and amount:
+            available = seller_withdrawable_profit(seller, exclude_payout_pk=self.instance.pk)
+            if amount > available:
+                raise forms.ValidationError(
+                    f"Topshirish uchun yetarli foyda yo'q. {seller} kassasida hozir "
+                    f"{available:,.0f} so'm sof foyda bor — {amount:,.0f} so'm topshirib bo'lmaydi."
+                )
+        return cleaned
+
+
+class ProductionReceiptForm(forms.ModelForm):
+    """Header of a production→seller goods handover. A seller logs only their own
+    receipts, so for a non-privileged user the `seller` field is fixed to
+    themselves and disabled (mirrors ProductionRemittanceForm)."""
+
+    class Meta:
+        model = ProductionReceipt
+        fields = ["date", "seller", "note"]
+        widgets = {
+            "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — izoh"}),
+        }
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user = user
+        sellers = User.objects.filter(is_active=True).order_by(
+            "first_name", "last_name", "username"
+        )
+        self.fields["seller"].queryset = sellers
+        _searchable_select(self.fields["seller"], "Sotuvchini tanlang")
+        if user is not None and not user.can_see_all_records:
+            self.fields["seller"].queryset = sellers.filter(pk=user.pk)
+            self.fields["seller"].initial = user
+            self.fields["seller"].disabled = True
+
+
+class ProductionReceiptItemForm(forms.ModelForm):
+    class Meta:
+        model = ProductionReceiptItem
+        fields = ["product", "quantity_kg"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["product"].queryset = Product.objects.filter(is_active=True)
+        _searchable_select(self.fields["product"], "Mahsulotni tanlang")
+
+    def clean_quantity_kg(self):
+        qty = self.cleaned_data.get("quantity_kg")
+        # Negatives are allowed (an admin write-off); only zero is meaningless.
+        if qty is not None and qty == 0:
+            raise forms.ValidationError("Miqdor 0 bo'lishi mumkin emas.")
+        return qty
+
+
+ProductionReceiptItemFormSet = inlineformset_factory(
+    ProductionReceipt,
+    ProductionReceiptItem,
+    form=ProductionReceiptItemForm,
+    extra=1,
+    min_num=1,
+    validate_min=True,
+    can_delete=True,
+)
 
 
 class StockAdjustForm(forms.Form):

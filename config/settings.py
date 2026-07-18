@@ -1,6 +1,7 @@
 """Django settings for the packaging CRM."""
 
 import os
+from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -113,6 +114,14 @@ AUTH_PASSWORD_VALIDATORS = [
 LANGUAGE_CODE = "uz"
 
 TIME_ZONE = "Asia/Tashkent"
+
+# Per-seller ombor tracking starts on this date: receipts, sales and returns
+# dated before it are ignored by ombor stock (seeded instead by opening-count
+# receipts). Set to the real go-live/cutover date at deploy; the early default
+# means "count everything" for dev and tests.
+OMBOR_START_DATE = date(
+    *(int(p) for p in os.environ.get("OMBOR_START_DATE", "2020-01-01").split("-"))
+)
 
 USE_I18N = True
 

@@ -2,117 +2,208 @@
 {% load crm_extras %}
 {% block title %}{% if user.can_see_all_records %}Kassa{% else %}Mening kassam{% endif %} · Paket CRM{% endblock %}
 {% block topbar_title %}{% if user.can_see_all_records %}Kassa{% else %}Mening kassam{% endif %}{% endblock %}
-{% block fab %}<a class="fab" href="{% url 'expense_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Chiqim qo'shish</a>{% endblock %}
+{% block fab %}
+<a class="fab" href="{% url 'remittance_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v14"/><path d="M5 9l7-7 7 7"/><rect x="4" y="16" width="16" height="6" rx="2"/></svg>Ishlab chiqarishga topshirish</a>
+<a class="fab fab--muted" href="{% url 'profit_payout_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>Foyda topshirish</a>
+<a class="fab fab--muted" href="{% url 'expense_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Chiqim</a>
+{% endblock %}
 {% block content %}
 
-{# Ikkita alohida sandiq qoldig'i #}
-<div class="kpi-grid kpi-grid--tills">
-  <div class="kpi kpi--green">
-    <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><circle cx="12" cy="14" r="1.5"/></svg></span>
-      <span class="kpi-label">So'm kirim</span>
+{# Joriy holat — naqd vs qarz #}
+<p class="section-eyebrow">Joriy holat</p>
+<section class="balance-hero" aria-label="Kassa holati">
+  <div class="balance-hero-grid">
+    <div class="balance-cell">
+      <div class="balance-cap"><span class="balance-ic balance-ic--cash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><circle cx="12" cy="14" r="1.5"/></svg></span>Kassadagi pul</div>
+      <div class="balance-num">{{ summary.cash|floatformat:"0g" }}<span class="unit">so'm</span></div>
+      <div class="balance-note">{% if user.can_see_all_records %}sotuvchilar qo'lidagi naqd{% else %}mening qo'limdagi naqd{% endif %}</div>
     </div>
-    <div class="kpi-value">{{ summary.som.income|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta muted">chiqim {{ summary.som.expense|floatformat:"0g" }} so'm · shu davr</div>
-  </div>
-  <div class="kpi kpi--blue">
-    <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>
-      <span class="kpi-label">Dollar kirim</span>
+    <div class="balance-cell">
+      <div class="balance-cap"><span class="balance-ic balance-ic--debt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20h20"/><path d="M4 20V8l8-5 8 5v12"/></svg></span>Ishlab chiq. qarz</div>
+      <div class="balance-num">{{ summary.production_debt|floatformat:"0g" }}<span class="unit">so'm</span></div>
+      <div class="balance-note">ishlab chiqarishga qolgan qarz</div>
     </div>
-    <div class="kpi-value">${{ summary.usd.income|floatformat:"2g" }}</div>
-    <div class="kpi-meta muted">chiqim ${{ summary.usd.expense|floatformat:"2g" }} · shu davr</div>
   </div>
-  <div class="kpi kpi--gold">
-    <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.27 6.96 12 12.01l8.73-5.05"/><path d="M12 22.08V12"/></svg></span>
-      <span class="kpi-label">Jami tannarx</span>
-    </div>
-    <div class="kpi-value">{{ summary.cost|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta muted">yetkazib beruvchiga · shu davr</div>
-  </div>
-</div>
+</section>
 
 {% include "crm/_filter_toolbar.html" %}
 
-<div class="card">
-  <h2>Kassa holati — so'm va dollar</h2>
-  <div class="table-wrap">
-  <table>
-    <tr><th>Ko'rsatkich</th><th class="num">So'm</th><th class="num">Dollar</th></tr>
-    <tr><td>Naqd kirim</td><td class="num amt-in">{{ summary.som.cash|floatformat:"0g" }}</td><td class="num amt-in">${{ summary.usd.cash|floatformat:"2g" }}</td></tr>
-    <tr><td>Karta kirim</td><td class="num amt-in">{{ summary.som.card|floatformat:"0g" }}</td><td class="num amt-in">${{ summary.usd.card|floatformat:"2g" }}</td></tr>
-    <tr><td>Bank o'tkazma (sof)</td><td class="num amt-in">{{ summary.som.bank|floatformat:"0g" }}</td><td class="num amt-in">${{ summary.usd.bank|floatformat:"2g" }}</td></tr>
-    <tr><td><strong>Jami tannarx</strong> <span class="cell-sub">yetkazib beruvchiga</span></td><td class="num"><strong>{{ summary.cost|floatformat:"0g" }}</strong></td><td class="num muted">—</td></tr>
-    <tr><td><strong>Jami kirim</strong></td><td class="num amt-in"><strong>{{ summary.som.income|floatformat:"0g" }}</strong></td><td class="num amt-in"><strong>${{ summary.usd.income|floatformat:"2g" }}</strong></td></tr>
-    <tr><td>Chiqim</td><td class="num amt-out">−{{ summary.som.expense|floatformat:"0g" }}</td><td class="num amt-out">−${{ summary.usd.expense|floatformat:"2g" }}</td></tr>
-    <tr><td>Boshlang'ich qoldiq</td><td class="num muted">{{ summary.som.opening|floatformat:"0g" }}</td><td class="num muted">${{ summary.usd.opening|floatformat:"2g" }}</td></tr>
-    <tr><td><strong>Kassa qoldig'i</strong></td><td class="num"><strong>{{ summary.som.closing|floatformat:"0g" }}</strong></td><td class="num"><strong>${{ summary.usd.closing|floatformat:"2g" }}</strong></td></tr>
-  </table>
+{# Shu davr — kunlik filtr bo'yicha #}
+<p class="section-eyebrow">Shu davr · tanlangan sana bo'yicha</p>
+<div class="kpi-grid kpi-grid--compact kpi-grid--period">
+  <div class="kpi kpi--violet">
+    <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v14"/><path d="M5 9l7-7 7 7"/><rect x="4" y="16" width="16" height="6" rx="2"/></svg></span><span class="kpi-label">Topshirilgan</span></div>
+    <div class="kpi-value">{{ summary.remitted|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta"><a href="{% url 'remittance_create' %}" data-modal>+ Topshirish</a></div>
+  </div>
+  <div class="kpi kpi--green">
+    <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span><span class="kpi-label">Foyda topshirilgan</span></div>
+    <div class="kpi-value">{{ summary.paid_profit|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta"><a href="{% url 'profit_payout_create' %}" data-modal>+ Foyda topshirish</a></div>
+  </div>
+  <div class="kpi kpi--blue">
+    <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span><span class="kpi-label">Sof foyda</span></div>
+    <div class="kpi-value">{{ summary.net_profit|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">foyda − chiqim</div>
+  </div>
+  <div class="kpi kpi--red">
+    <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7 7 7-7"/></svg></span><span class="kpi-label">Chiqim</span></div>
+    <div class="kpi-value">{{ summary.expense_total|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">benzin, ovqat, ishchi</div>
   </div>
 </div>
 
+<div class="grid-2 kassa-ledger">
+  {# ── Kirim: mijozlardan qabul qilingan to'lovlar ── #}
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <h2 style="margin:0;">Kirim</h2>
+      <span class="ledger-total amt-in">+{{ income_total|floatformat:"0g" }} so'm</span>
+    </div>
+    <p class="field-hint" style="margin:2px 0 8px;">Mijozlardan qabul qilingan to'lovlar (Excel ko'rinishi) — eng yangisi yuqorida.</p>
+    <div class="table-wrap">
+    <table class="ledger-table">
+      <tr>
+        <th>Sana</th>
+        <th>Kimdan kirim</th>
+        <th>Kirim turi</th>
+        <th class="num">Foiz / kurs</th>
+        <th class="num">Kirim summa</th>
+        <th class="num">Qarzga ta'sir</th>
+        <th></th>
+      </tr>
+      {% for t in income_rows %}
+      <tr>
+        <td>{{ t.date|date:"d.m.Y" }}</td>
+        <td>{{ t.title }}</td>
+        <td>{% include "crm/_method_badge.html" with code=t.method_code label=t.method %}</td>
+        <td class="num muted">{% if t.currency == 'usd' %}{{ t.exchange_rate|floatformat:"0g" }} kurs{% elif t.commission_percent %}{{ t.commission_percent|floatformat:"-2g" }}%{% else %}—{% endif %}</td>
+        <td class="num">{% if t.currency == 'usd' %}${{ t.amount_original|floatformat:"2g" }}{% else %}{{ t.amount_original|floatformat:"0g" }}{% endif %}</td>
+        <td class="num amt-in"><strong>+{{ t.amount_som|floatformat:"0g" }}</strong></td>
+        <td class="row-actions">
+          <a class="icon-action" href="{% url 'payment_edit' t.pk %}" data-modal title="To'lovni tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
+          <a class="icon-action" href="{% url 'sale_detail' t.sale_pk %}" title="Sotuvni ochish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></a>
+        </td>
+      </tr>
+      {% empty %}<tr><td colspan="7" class="muted">Bu davrda kirim yo'q.</td></tr>{% endfor %}
+    </table>
+    </div>
+  </div>
+
+  {# ── Chiqim: rasxot + ishlab chiqarishga topshiruv ── #}
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <h2 style="margin:0;">Chiqim</h2>
+      <span class="ledger-total amt-out">−{{ outflow_total|floatformat:"0g" }} so'm</span>
+    </div>
+    <p class="field-hint" style="margin:2px 0 8px;">Rasxotlar va ishlab chiqarishga topshiruvlar (Excel ko'rinishi).</p>
+    <div class="table-wrap">
+    <table class="ledger-table">
+      <tr>
+        <th>Sana</th>
+        <th>Tavsif</th>
+        <th>Turi</th>
+        <th class="num">Kurs</th>
+        <th class="num">Chiqim summa</th>
+        <th></th>
+      </tr>
+      {% for t in outflow_rows %}
+      <tr>
+        <td>{{ t.date|date:"d.m.Y" }}</td>
+        <td>{% if t.kind == 'remittance' %}<span class="badge badge-remit">Topshirish</span> {% elif t.kind == 'profit' %}<span class="badge badge-ok">Foyda</span> {% endif %}{{ t.title }}</td>
+        <td>{% include "crm/_method_badge.html" with code=t.method_code label=t.method %}</td>
+        <td class="num muted">{% if t.currency == 'usd' %}{{ t.exchange_rate|floatformat:"0g" }}{% else %}—{% endif %}</td>
+        <td class="num">{% if t.kind == 'remittance' %}<strong style="color:var(--violet)">−{{ t.amount_som|floatformat:"0g" }}</strong>{% elif t.kind == 'profit' %}<strong style="color:var(--success)">−{{ t.amount_som|floatformat:"0g" }}</strong>{% else %}<strong class="amt-out">−{{ t.amount_som|floatformat:"0g" }}</strong>{% endif %}</td>
+        <td class="row-actions">
+          {% if t.kind == 'remittance' %}
+          <a class="icon-action" href="{% url 'remittance_edit' t.pk %}" data-modal title="Topshiruvni tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
+          <a class="icon-action danger" href="{% url 'remittance_delete' t.pk %}" data-modal title="Topshiruvni o'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
+          {% elif t.kind == 'profit' %}
+          <a class="icon-action" href="{% url 'profit_payout_edit' t.pk %}" data-modal title="Foyda topshiruvini tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
+          <a class="icon-action danger" href="{% url 'profit_payout_delete' t.pk %}" data-modal title="Foyda topshiruvini o'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
+          {% else %}
+          <a class="icon-action" href="{% url 'expense_edit' t.pk %}" data-modal title="Tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
+          <a class="icon-action danger" href="{% url 'expense_delete' t.pk %}" data-modal title="Chiqimni o'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
+          {% endif %}
+        </td>
+      </tr>
+      {% empty %}<tr><td colspan="6" class="muted">Bu davrda chiqim yo'q.</td></tr>{% endfor %}
+    </table>
+    </div>
+  </div>
+</div>
+
+{# Sotuvchi ko'rinishi: faqat o'z holati #}
+{% if not user.can_see_all_records %}
+<div class="card">
+  <h2>Ishlab chiqarishga qarzim — jami</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><td>Sotildi (tannarx)</td><td class="num">{{ my_row.sold_cost|default:0|floatformat:"0g" }} so'm</td></tr>
+    <tr><td>Topshirdim</td><td class="num amt-in">−{{ my_row.remitted|default:0|floatformat:"0g" }} so'm</td></tr>
+    <tr><td><strong>Qolgan qarzim</strong></td><td class="num amt-debt"><strong>{{ my_row.production_debt|default:0|floatformat:"0g" }} so'm</strong></td></tr>
+    <tr><td>Kassamdagi naqd</td><td class="num">{{ my_row.cash|default:0|floatformat:"0g" }} so'm</td></tr>
+    <tr><td>Foyda topshirdim</td><td class="num amt-in">−{{ my_row.paid_profit|default:0|floatformat:"0g" }} so'm</td></tr>
+    <tr><td>Sof foyda (foyda − chiqim)</td><td class="num">{{ my_row.net|default:0|floatformat:"0g" }} so'm</td></tr>
+  </table>
+  </div>
+  <p class="field-hint" style="margin-top:10px;">Avval qarzni ishlab chiqarishga topshiring; qarz yopilgach kassada qolgan foydani <a href="{% url 'profit_payout_create' %}" data-modal>boshliqqa topshiring</a> — kassa nolga tushadi.</p>
+</div>
+{% endif %}
+
 {% if user.can_see_all_records %}
 <div class="card">
-  <h2>Xodimlar bo'yicha</h2>
-  <p class="field-hint" style="margin-top:-6px;">Kirim/chiqim — kassa harakati; “Sof” — foydadan rasxot ayirilgan samaradorlik (naqd qoldiq emas).</p>
+  <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px;">
+    <h2 style="margin:0;">Sotuvchilar nazorati</h2>
+    <a class="btn btn-violet btn-sm" href="{% url 'remittance_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M12 2v14"/><path d="M5 9l7-7 7 7"/><rect x="4" y="16" width="16" height="6" rx="2"/></svg>Ishlab chiqarishga topshirish</a>
+  </div>
+  <p class="field-hint" style="margin-top:0;">Jami holat — boshidan tanlangan sana oxirigacha (kunlik filtrga bog'liq emas). Kassadagi pul = kirim − chiqim − topshirilgan · Qarz = sotilgan tannarx − topshirilgan · Sof = foyda − rasxot.</p>
   {% if per_employee %}
   <div class="table-wrap">
   <table>
     <tr>
-      <th>Xodim</th>
-      <th class="num">Kirim (so'm)</th><th class="num">Kirim ($)</th>
-      <th class="num">Chiqim (so'm)</th><th class="num">Chiqim ($)</th>
-      <th class="num">Foyda</th><th class="num">Sof (foyda−rasxot)</th>
+      <th>Sotuvchi</th>
+      <th class="num">Kassadagi pul</th>
+      <th class="num">Ishlab chiq. qarz</th>
+      <th class="num">Sotildi (tannarx)</th>
+      <th class="num">Topshirdi</th>
+      <th class="num">Foyda topshirdi</th>
+      <th class="num">Chiqim</th>
+      <th class="num">Sof foyda</th>
+      <th></th>
     </tr>
     {% for r in per_employee %}
     <tr>
       <td>{{ r.employee }}</td>
-      <td class="num">{{ r.in_som|floatformat:"0g" }}</td>
-      <td class="num">{% if r.in_usd %}${{ r.in_usd|floatformat:"2g" }}{% else %}—{% endif %}</td>
-      <td class="num">{{ r.out_som|floatformat:"0g" }}</td>
-      <td class="num">{% if r.out_usd %}${{ r.out_usd|floatformat:"2g" }}{% else %}—{% endif %}</td>
-      <td class="num">{{ r.profit|floatformat:"0g" }}</td>
+      <td class="num">{{ r.cash|floatformat:"0g" }}</td>
+      <td class="num amt-debt">{{ r.production_debt|floatformat:"0g" }}</td>
+      <td class="num">{{ r.sold_cost|floatformat:"0g" }}</td>
+      <td class="num">{{ r.remitted|floatformat:"0g" }}</td>
+      <td class="num">{{ r.paid_profit|floatformat:"0g" }}</td>
+      <td class="num amt-out">{{ r.expense_total|floatformat:"0g" }}</td>
       <td class="num"><strong>{{ r.net|floatformat:"0g" }}</strong></td>
+      <td class="num" style="display:flex;gap:4px;justify-content:flex-end;">
+        <a class="btn btn-violet btn-sm" href="{% url 'remittance_create' %}?seller={{ r.uid }}" data-modal>Topshirish</a>
+        <a class="btn btn-sm" href="{% url 'profit_payout_create' %}?seller={{ r.uid }}" data-modal>Foyda</a>
+      </td>
     </tr>
     {% endfor %}
+    <tr>
+      <td><strong>Jami</strong></td>
+      <td class="num"><strong>{{ seller_totals.cash|floatformat:"0g" }}</strong></td>
+      <td class="num amt-debt"><strong>{{ seller_totals.production_debt|floatformat:"0g" }}</strong></td>
+      <td class="num"><strong>{{ seller_totals.sold_cost|floatformat:"0g" }}</strong></td>
+      <td class="num"><strong>{{ seller_totals.remitted|floatformat:"0g" }}</strong></td>
+      <td class="num"><strong>{{ seller_totals.paid_profit|floatformat:"0g" }}</strong></td>
+      <td class="num amt-out"><strong>{{ seller_totals.expense_total|floatformat:"0g" }}</strong></td>
+      <td class="num"><strong>{{ seller_totals.net|floatformat:"0g" }}</strong></td>
+      <td></td>
+    </tr>
   </table>
   </div>
   {% else %}<p class="muted">Bu davrda harakat yo'q.</p>{% endif %}
 </div>
 {% endif %}
-
-<div class="card">
-  <h2>Tranzaksiyalar</h2>
-  <p class="field-hint" style="margin-top:-6px;">Har bir kirim (to'lov) va chiqim (rasxot) — eng yangisi yuqorida.</p>
-  {% if txn_page.object_list %}
-  <div class="table-wrap">
-  <table>
-    <tr>
-      <th>Sana</th><th>Turi</th><th>Tavsif</th><th>Usul</th>
-      <th class="num">Summa</th><th>Kim</th><th></th>
-    </tr>
-    {% for t in txn_page %}
-    <tr>
-      <td>{{ t.date|date:"d.m.Y" }}</td>
-      <td>{% if t.direction == 'in' %}<span class="badge badge-ok">Kirim</span>{% else %}<span class="badge badge-danger">Chiqim</span>{% endif %}</td>
-      <td>{{ t.title }}{% if t.subtitle %}<span class="cell-sub">{{ t.subtitle }}</span>{% endif %}</td>
-      <td>{% include "crm/_method_badge.html" with code=t.method_code label=t.method %}</td>
-      <td class="num">
-        {% if t.direction == 'in' %}<strong style="color:var(--success)">+{{ t.amount_som|floatformat:"0g" }}</strong>{% else %}<strong style="color:var(--danger)">−{{ t.amount_som|floatformat:"0g" }}</strong>{% endif %} so'm
-        {% if t.currency == 'usd' %}<span class="cell-sub">${{ t.amount_original|floatformat:"2g" }} × {{ t.exchange_rate|floatformat:"0g" }} kurs</span>{% endif %}
-      </td>
-      <td>{{ t.created_by }}</td>
-      <td class="row-actions">
-        {% if t.kind == 'payment' %}<a class="icon-action" href="{% url 'payment_edit' t.pk %}" data-modal title="To'lovni tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a><a class="icon-action" href="{% url 'sale_detail' t.sale_pk %}" title="Sotuvni ochish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></a>{% else %}<a class="icon-action" href="{% url 'expense_edit' t.pk %}" data-modal title="Tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a><a class="icon-action danger" href="{% url 'expense_delete' t.pk %}" data-modal title="Chiqimni o'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>{% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </table>
-  </div>
-  {% include "crm/_pagination.html" with page=txn_page %}
-  {% else %}<p class="muted">Bu davrda tranzaksiya yo'q.</p>{% endif %}
-</div>
 
 {% include "crm/_filter_drawer.html" %}
 {% endblock %}
