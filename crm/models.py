@@ -514,6 +514,15 @@ class StockEntry(models.Model):
         return f"{self.product.name}: {sign}{self.quantity_kg} kg ({self.date})"
 
 
+class PaymentQuerySet(models.QuerySet):
+    def till_income(self):
+        """Only payments that represent real cash arriving in a till. ADVANCE_USED is
+        excluded: that money already entered the till as an ADVANCE_IN deposit, so
+        counting the consumption again would double it. Per-sale debt math is separate
+        and DOES count ADVANCE_USED (it settles the receipt) — see `_sale_paid_sum`."""
+        return self.exclude(kind=self.model.Kind.ADVANCE_USED)
+
+
 class Payment(models.Model):
     """A money movement (To'lov): either paid at the time of sale, or a debt repayment."""
 
@@ -525,6 +534,11 @@ class Payment(models.Model):
     class Kind(models.TextChoices):
         SALE = "sale", "Sotuvda to'langan"
         DEBT = "debt", "Qarz to'lovi"
+        # A client's prepayment: cash taken in BEFORE (or beyond) any specific sale.
+        # ADVANCE_IN is real money entering the till; ADVANCE_USED spends that held
+        # credit on a sale WITHOUT adding new till income (see PaymentQuerySet).
+        ADVANCE_IN = "advance_in", "Oldindan to'lov (avans)"
+        ADVANCE_USED = "advance_used", "Avansdan yechildi"
 
     class Currency(models.TextChoices):
         UZS = "uzs", "So'm"
@@ -559,9 +573,16 @@ class Payment(models.Model):
         "Bank ushlagan foiz (%)", max_digits=5, decimal_places=2, default=0
     )
     note = models.CharField("Izoh", max_length=255, blank=True)
-    kind = models.CharField("Turi", max_length=4, choices=Kind.choices)
+    kind = models.CharField("Turi", max_length=12, choices=Kind.choices)
+    # A per-sale payment (sale/debt/advance_used) carries `sale`; a client-level
+    # advance deposit (advance_in) carries only `client` and leaves `sale` null.
     sale = models.ForeignKey(
-        Sale, on_delete=models.CASCADE, related_name="payments", verbose_name="Sotuv"
+        Sale, on_delete=models.CASCADE, related_name="payments", verbose_name="Sotuv",
+        null=True, blank=True,
+    )
+    client = models.ForeignKey(
+        Client, on_delete=models.CASCADE, related_name="advance_payments",
+        verbose_name="Mijoz", null=True, blank=True,
     )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -570,6 +591,8 @@ class Payment(models.Model):
         verbose_name="Kim qabul qildi",
     )
     created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = PaymentQuerySet.as_manager()
 
     class Meta:
         ordering = ["-date", "-created_at"]
@@ -742,7 +765,7 @@ def seller_cash_on_hand(seller, exclude_remittance_pk=None, exclude_payout_pk=No
     The `exclude_*_pk` args drop one existing row from the tally so editing it checks
     against the delta, not itself."""
     income = (
-        Payment.objects.filter(created_by=seller).aggregate(s=Sum(PAYMENT_NET))["s"]
+        Payment.objects.filter(created_by=seller).till_income().aggregate(s=Sum(PAYMENT_NET))["s"]
         or Decimal("0")
     )
     expense = (
@@ -758,6 +781,27 @@ def seller_cash_on_hand(seller, exclude_remittance_pk=None, exclude_payout_pk=No
         payout_qs = payout_qs.exclude(pk=exclude_payout_pk)
     paid_profit = payout_qs.aggregate(s=Sum("amount"))["s"] or Decimal("0")
     return income - expense - remitted - paid_profit
+
+
+def client_advance_balance(client, seller=None):
+    """The prepaid credit a client holds: deposits taken in (ADVANCE_IN) minus what
+    sales have since consumed (ADVANCE_USED). Positive = money held that the client
+    hasn't taken goods for yet; zero = nothing prepaid. Nets bank fees out, so only
+    usable money counts. Advance is seller-bound, so pass `seller` to get the balance
+    in that one seller's till; omit it for the client's total across all sellers (the
+    admin overview figure)."""
+    rows = Payment.objects.filter(client=client)
+    if seller is not None:
+        rows = rows.filter(created_by=seller)
+    deposited = (
+        rows.filter(kind=Payment.Kind.ADVANCE_IN).aggregate(s=Sum(PAYMENT_NET))["s"]
+        or Decimal("0")
+    )
+    used = (
+        rows.filter(kind=Payment.Kind.ADVANCE_USED).aggregate(s=Sum(PAYMENT_NET))["s"]
+        or Decimal("0")
+    )
+    return deposited - used
 
 
 def seller_production_debt(seller):

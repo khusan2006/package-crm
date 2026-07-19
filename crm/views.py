@@ -46,6 +46,7 @@ from .models import (
     Client,
     Expense,
     Payment,
+    client_advance_balance,
     Product,
     ProductionReceipt,
     ProductionRemittance,
@@ -621,6 +622,11 @@ def client_list(request):
             | Q(owner__username__icontains=q)
         ).distinct()
     page = Paginator(clients, 25).get_page(request.GET.get("page"))
+    # Advance (prepaid) balance shown per row. A seller sees their own till's balance;
+    # an admin/manager sees the client's total held across every seller's till.
+    scope = None if request.user.can_see_all_records else request.user
+    for c in page:
+        c.advance = client_advance_balance(c, scope)
     return render(request, "crm/client_list.html", {"page": page, "q": q})
 
 
@@ -1276,6 +1282,51 @@ def _distribute_debt_payment(
     return touched
 
 
+def _apply_advance_to_open_sales(client, seller):
+    """Spend a client's prepaid advance (seller-bound) on their open receipts, oldest
+    first. Each slice becomes an ADVANCE_USED payment that settles part of a sale
+    WITHOUT adding new till income — the cash already entered the till as the
+    ADVANCE_IN deposit. Idempotent: a sale already covered contributes nothing, so it
+    is safe to call after every sale AND after every fresh deposit. Only this seller's
+    own sales to the client are touched (their till holds the money). Returns the
+    total so'm applied."""
+    balance = client_advance_balance(client, seller)
+    if balance <= 0:
+        return Decimal("0")
+    sales = (
+        Sale.objects.filter(client=client, sales_rep=seller)
+        .with_balance()
+        .filter(remaining__gt=0)
+        .order_by("date", "created_at")
+    )
+    applied = Decimal("0")
+    with transaction.atomic():
+        for sale in sales:
+            if balance <= 0:
+                break
+            due = sale.remaining or Decimal("0")
+            use = min(balance, due)
+            if use <= 0:
+                continue
+            Payment.objects.create(
+                sale=sale,
+                client=client,
+                amount=use,
+                amount_original=use,
+                currency=Payment.Currency.UZS,
+                method=Payment.Method.CASH,
+                commission=Decimal("0"),
+                commission_percent=Decimal("0"),
+                note="Avansdan yechildi",
+                kind=Payment.Kind.ADVANCE_USED,
+                date=timezone.localdate(),
+                created_by=seller,
+            )
+            balance -= use
+            applied += use
+    return applied
+
+
 def _clean_amount(value):
     """Trim meaningless trailing zeros so a pre-filled amount reads '579300',
     not '579300,00000'. Quantity (3dp) × price (2dp) leaves up to 5 decimal
@@ -1359,6 +1410,181 @@ def client_debt_pay(request, pk):
     return _render_client_pay(request, client, total, form)
 
 
+def _render_client_advance(request, client, balance, form, invalid=False):
+    context = {
+        "form": form,
+        "client": client,
+        "advance_balance": balance,
+        "title": f"Avans qabul qilish: {client.name}",
+    }
+    if is_ajax(request):
+        return render(
+            request, "crm/_client_advance_modal.html", context,
+            status=422 if invalid else 200,
+        )
+    return render(request, "crm/_client_advance_page.html", context)
+
+
+def client_advance_pay(request, pk):
+    """Take an advance (oldindan to'lov) from a client into the seller's till.
+
+    The cash enters the kassa now (ADVANCE_IN) — it is real income the moment it's
+    received. It is then spent oldest-debt-first on the client's open receipts; any
+    surplus stays as their advance balance to cover future sales (it is NOT refunded).
+    Advance is seller-bound: it sits in the till of whoever took it."""
+    client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    balance = client_advance_balance(client, request.user)
+    if request.method == "POST":
+        form = DebtPaymentForm(request.POST)  # no max_amount — an advance is uncapped
+        if form.is_valid():
+            cd = form.cleaned_data
+            Payment.objects.create(
+                client=client,
+                sale=None,
+                amount=cd["amount"],
+                amount_original=cd["amount_original"],
+                currency=cd["currency"],
+                exchange_rate=cd["exchange_rate"],
+                method=cd["method"],
+                commission=cd["commission"],
+                commission_percent=cd["commission_percent"],
+                note=cd["note"],
+                kind=Payment.Kind.ADVANCE_IN,
+                date=timezone.localdate(),
+                created_by=request.user,
+            )
+            applied = _apply_advance_to_open_sales(client, request.user)
+            AuditLog.record(
+                request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
+                f"Mijoz {client.name} avans to'lovi "
+                f"({_method_label(cd['method'])}){_usd_note(cd)} "
+                f"— {cd['amount']:,.0f} so'm",
+            )
+            left = client_advance_balance(client, request.user)
+            msg = f"Avans qabul qilindi: {cd['amount']:,.0f} so'm."
+            if applied > 0:
+                msg += f" {applied:,.0f} so'm ochiq qarzga taqsimlandi."
+            if left > 0:
+                msg += f" Balansda: {left:,.0f} so'm."
+            messages.success(request, msg)
+            return form_reload(request, reverse("client_list"))
+        return _render_client_advance(request, client, balance, form, invalid=True)
+    form = DebtPaymentForm(initial={"method": Payment.Method.CASH})
+    return _render_client_advance(request, client, balance, form)
+
+
+def _advance_in_qs(user):
+    """Advance deposits this user is allowed to touch — their own, or all for an
+    admin/manager."""
+    qs = Payment.objects.filter(kind=Payment.Kind.ADVANCE_IN).select_related("client")
+    if not user.can_see_all_records:
+        qs = qs.filter(created_by=user)
+    return qs
+
+
+def _reconcile_client_advance(client, seller):
+    """Bring a client's advance (for one seller) back into balance after a deposit
+    was changed or removed. If deposits have shrunk below what sales already drew
+    (balance < 0), the newest ADVANCE_USED allocations are peeled back — reverting
+    those sales to debt — until the pool is non-negative. Then any advance still left
+    is re-applied to open receipts, oldest first. Idempotent."""
+    with transaction.atomic():
+        balance = client_advance_balance(client, seller)
+        if balance < 0:
+            used = Payment.objects.filter(
+                client=client, created_by=seller, kind=Payment.Kind.ADVANCE_USED
+            ).order_by("-date", "-created_at")
+            for u in used:
+                if balance >= 0:
+                    break
+                balance += u.net_amount  # freeing this returns its money to the pool
+                u.delete()               # ...and the sale it covered owes again
+        _apply_advance_to_open_sales(client, seller)
+
+
+def advance_edit(request, pk):
+    """Fix a mistaken advance deposit (amount / method / note). If the new amount is
+    smaller than what sales already drew, the excess is clawed back automatically
+    (those sales revert to debt) — see `_reconcile_client_advance`."""
+    payment = get_object_or_404(_advance_in_qs(request.user), pk=pk)
+    client, seller = payment.client, payment.created_by
+    if request.method == "POST":
+        form = DebtPaymentForm(request.POST)
+        if form.is_valid():
+            cd = form.cleaned_data
+            payment.amount = cd["amount"]
+            payment.amount_original = cd["amount_original"]
+            payment.currency = cd["currency"]
+            payment.exchange_rate = cd["exchange_rate"]
+            payment.method = cd["method"]
+            payment.commission = cd["commission"]
+            payment.commission_percent = cd["commission_percent"]
+            payment.note = cd["note"]
+            payment.save()
+            # Re-apply a bigger deposit, or claw back a smaller one, then settle debts.
+            _reconcile_client_advance(client, seller)
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "To'lov", client.pk,
+                f"Mijoz {client.name} avansi o'zgartirildi — {payment.amount:,.0f} so'm",
+            )
+            messages.success(request, "Avans yangilandi.")
+            return form_reload(request, reverse("kassa"))
+        return _render_advance_edit(request, payment, form, invalid=True)
+    form = DebtPaymentForm(initial={
+        "amount": _clean_amount(payment.original_amount),
+        "method": payment.method,
+        "currency": payment.currency,
+        "exchange_rate": payment.exchange_rate or "",
+        "commission_percent": payment.commission_percent or "",
+        "note": payment.note,
+    })
+    return _render_advance_edit(request, payment, form)
+
+
+def _render_advance_edit(request, payment, form, invalid=False):
+    balance = client_advance_balance(payment.client, payment.created_by)
+    context = {
+        "form": form,
+        "client": payment.client,
+        "advance_balance": balance,
+        "title": f"Avansni tahrirlash: {payment.client.name}",
+    }
+    if is_ajax(request):
+        return render(
+            request, "crm/_advance_edit_modal.html", context,
+            status=422 if invalid else 200,
+        )
+    return render(request, "crm/_client_advance_page.html", context)
+
+
+def advance_delete(request, pk):
+    """Remove a mistaken advance deposit. If sales had already drawn on it, those
+    allocations are peeled back and the sales revert to debt (see
+    `_reconcile_client_advance`), so the money trail stays consistent."""
+    payment = get_object_or_404(_advance_in_qs(request.user), pk=pk)
+    client, seller = payment.client, payment.created_by
+    spent = client_advance_balance(client, seller) < payment.net_amount
+    if request.method == "POST":
+        summary = f"{client.name} — avans {payment.amount:,.0f} so'm"
+        payment.delete()
+        _reconcile_client_advance(client, seller)
+        AuditLog.record(request.user, AuditLog.Action.VOID, "To'lov", client.pk, summary)
+        messages.success(request, "Avans o'chirildi.")
+        return form_reload(request, reverse("kassa"))
+    warn = (
+        " Bu avans allaqachon sotuv(lar)ga ishlatilgan — o'chirilsa, o'sha sotuvlar "
+        "qaytadan qarzga aylanadi."
+        if spent else ""
+    )
+    return render_confirm(
+        request,
+        "Avansni o'chirish",
+        f"“{client.name}” — {payment.amount:,.0f} so'm avans o'chiriladi.{warn} Davom etasizmi?",
+        "Ha, o'chirish",
+        confirm_class="btn-danger",
+    )
+
+
 def payment_delete(request, pk):
     """Void a mistaken payment by removing it. The debt it covered is restored
     automatically (remaining is derived). Admins/managers may void any payment;
@@ -1367,6 +1593,9 @@ def payment_delete(request, pk):
     if not request.user.can_see_all_records:
         qs = qs.filter(created_by=request.user)
     payment = get_object_or_404(qs, pk=pk)
+    if payment.kind in (Payment.Kind.ADVANCE_IN, Payment.Kind.ADVANCE_USED):
+        messages.error(request, "Avans to'lovi bu yerdan o'chirilmaydi.")
+        return form_reload(request, reverse("kassa"))
     if request.method == "POST":
         sale_pk = payment.sale_id
         summary = f"{payment.sale.client.name} — {payment.amount:,.0f} so'm ({payment.get_method_display()})"
@@ -1394,6 +1623,9 @@ def payment_edit(request, pk):
     if not request.user.can_see_all_records:
         qs = qs.filter(created_by=request.user)
     payment = get_object_or_404(qs, pk=pk)
+    if payment.kind in (Payment.Kind.ADVANCE_IN, Payment.Kind.ADVANCE_USED):
+        messages.error(request, "Avans to'lovi bu yerdan tahrirlanmaydi.")
+        return form_reload(request, reverse("kassa"))
     # This receipt's ceiling: the sale's remaining already excludes this payment's
     # current net, so add it back to get how much this one may cover.
     max_amount = payment.sale.debt_remaining + payment.net_amount
@@ -1534,7 +1766,9 @@ def _kassa_summary(date_from, date_to, rep=None):
     method, expense and running balance, plus the period's supplier cost. Also the
     production-debt view: cash on hand, tannarx sold, remitted, and remaining debt.
     Scoped to one employee when `rep` is given."""
-    payments = Payment.objects.all()
+    # till_income() drops ADVANCE_USED: an advance's cash already counted as income
+    # when it was deposited (ADVANCE_IN), so its consumption must not count again.
+    payments = Payment.objects.till_income()
     expenses = Expense.objects.all()
     if rep is not None:
         payments = payments.filter(created_by=rep)
@@ -1613,7 +1847,8 @@ def _per_employee_kassa(date_from, date_to, rep=None):
     (debt = sold − remitted, cash = income − expenses − remitted)."""
     window = {"date__lte": date_to}
     sale_window = {"sale__date__lte": date_to}
-    payments = Payment.objects.filter(**window)
+    # Exclude ADVANCE_USED — already counted as income at deposit time (ADVANCE_IN).
+    payments = Payment.objects.till_income().filter(**window)
     expenses = Expense.objects.filter(**window)
     sale_items = SaleItem.objects.filter(**sale_window)
     remittances = ProductionRemittance.objects.filter(**window)
@@ -1731,8 +1966,10 @@ def _kassa_transactions(expenses, dates, filters, rep):
     # A category filter is expense-only; when one is active the incoming payments and
     # production handovers are omitted, so the list reads as a pure expense view.
     if filters["category"] not in dict(Expense.Category.choices):
-        payments = Payment.objects.select_related(
-            "sale", "sale__client", "created_by"
+        # till_income() drops ADVANCE_USED: it's an internal transfer of already-
+        # counted advance money, not a new kirim, so it must not show as income here.
+        payments = Payment.objects.till_income().select_related(
+            "sale", "sale__client", "client", "created_by"
         ).filter(date__gte=dates["date_from"], date__lte=dates["date_to"])
         if rep is not None:
             payments = payments.filter(created_by=rep)
@@ -1741,15 +1978,18 @@ def _kassa_transactions(expenses, dates, filters, rep):
         if filters["currency"] in dict(Payment.Currency.choices):
             payments = payments.filter(currency=filters["currency"])
         for p in payments:
+            # An advance deposit has no sale — its client lives on `client` instead.
+            client = p.sale.client if p.sale else p.client
             rows.append({
                 "date": p.date, "created_at": p.created_at, "direction": "in",
-                "title": p.sale.client.name, "subtitle": p.get_kind_display(),
+                "title": client.name if client else "—", "subtitle": p.get_kind_display(),
                 "method": p.get_method_display(), "method_code": p.method,
                 "currency": p.currency,
                 "amount_som": p.net_amount, "amount_original": p.original_amount,
                 "exchange_rate": p.exchange_rate, "commission_percent": p.commission_percent,
                 "created_by": p.created_by,
                 "sale_pk": p.sale_id, "pk": p.pk, "kind": "payment",
+                "is_advance": p.kind == Payment.Kind.ADVANCE_IN,
             })
         # Production handovers — so'm only, so a dollar-currency filter hides them.
         if filters["currency"] != Payment.Currency.USD:
@@ -2497,12 +2737,37 @@ def _render_sale_form(request, form, formset, title, invalid=False, zakaz_shortf
         "formset": formset,
         "title": title,
         "products_json": _product_price_map(),
+        "client_advance_json": _client_advance_map(request.user),
         "zakaz_shortfall": zakaz_shortfall,
     }
     keep_open = invalid or bool(zakaz_shortfall)
     if is_ajax(request):
         return render(request, "crm/_sale_modal.html", context, status=422 if keep_open else 200)
     return render(request, "crm/sale_form.html", context)
+
+
+def _client_advance_map(user):
+    """{client_pk: balance} for clients this user (as seller) is holding an advance
+    for — so the sale form can flag "this client has X prepaid" the moment they're
+    picked. Scoped to `user` because that's the seller whose advance a new sale would
+    actually consume. Only positive balances are included."""
+    rows = (
+        Payment.objects.filter(
+            created_by=user,
+            kind__in=[Payment.Kind.ADVANCE_IN, Payment.Kind.ADVANCE_USED],
+        )
+        .values("client")
+        .annotate(
+            deposited=Sum(PAYMENT_NET, filter=Q(kind=Payment.Kind.ADVANCE_IN)),
+            used=Sum(PAYMENT_NET, filter=Q(kind=Payment.Kind.ADVANCE_USED)),
+        )
+    )
+    result = {}
+    for r in rows:
+        balance = (r["deposited"] or Decimal("0")) - (r["used"] or Decimal("0"))
+        if r["client"] and balance > 0:
+            result[str(r["client"])] = float(balance)
+    return result
 
 
 def _product_price_map():
@@ -2525,12 +2790,21 @@ def sale_create(request):
             formset.save()
             # No warehouse stock to check against — every line is fulfilled on sale.
             _mark_fulfilment(sale, [])
+            # If the client has prepaid this seller, spend that advance on the new
+            # receipt (oldest first) — the sale opens already part/fully paid.
+            applied = _apply_advance_to_open_sales(sale.client, request.user)
             AuditLog.record(
                 request.user, AuditLog.Action.CREATE, "Sotuv", sale.pk,
                 f"Mijoz {sale.client.name}, {sale.items.count()} ta mahsulot "
                 f"— {sale.total_price:,.0f} so'm",
             )
-            messages.success(request, "Sotuv qo'shildi (qarz sifatida).")
+            if applied > 0:
+                messages.success(
+                    request,
+                    f"Sotuv qo'shildi. Avansdan {applied:,.0f} so'm yechildi.",
+                )
+            else:
+                messages.success(request, "Sotuv qo'shildi (qarz sifatida).")
             return form_success(request, reverse("sale_list"))
         return _render_sale_form(request, form, formset, "Yangi sotuv", invalid=True)
     return _render_sale_form(request, form, formset, "Yangi sotuv")

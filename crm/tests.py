@@ -24,6 +24,8 @@ from .models import (
     Sale,
     SaleItem,
     StockEntry,
+    client_advance_balance,
+    seller_cash_on_hand,
 )
 from .views import (
     XLSX_CONTENT_TYPE,
@@ -2122,3 +2124,185 @@ class OmborReportTests(BaseSetup):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["total_kg"], Decimal("10"))
         self.assertIsNone(response.context["by_seller"])
+
+
+class AdvanceTests(TestCase):
+    """Client advance / prepayment (oldindan to'lov) — seller-bound, auto-applied."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.seller = User.objects.create_user(
+            "t_adv_seller", password="x", role=User.Role.SALES
+        )
+        cls.buyer = Client.objects.create(name="Avans mijoz", owner=cls.seller)
+        cls.product = Product.objects.create(
+            name="Avans mahsulot", sku="ADV-1",
+            cost_price=Decimal("18000"), price=Decimal("24000"),
+        )
+        give_ombor(cls.seller, cls.product, kg="100000")
+
+    def _deposit(self, amount, **extra):
+        self.client.force_login(self.seller)
+        data = {
+            "amount": str(amount),
+            "method": Payment.Method.CASH,
+            "currency": Payment.Currency.UZS,
+        }
+        data.update(extra)
+        return self.client.post(
+            reverse("client_advance_pay", args=[self.buyer.pk]), data
+        )
+
+    def _make_sale_via_view(self, weight="10", price="24000"):
+        self.client.force_login(self.seller)
+        data = sale_post(self.buyer.pk, [one_item(self.product, weight=weight, price=price)])
+        response = self.client.post(reverse("sale_create"), data)
+        self.assertEqual(response.status_code, 302)
+        return Sale.objects.latest("created_at")
+
+    def test_deposit_with_no_debt_becomes_balance(self):
+        response = self._deposit("1000000")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            client_advance_balance(self.buyer, self.seller), Decimal("1000000")
+        )
+        self.assertEqual(
+            Payment.objects.filter(kind=Payment.Kind.ADVANCE_IN).count(), 1
+        )
+
+    def test_new_sale_consumes_advance_leftover_remains(self):
+        self._deposit("1000000")
+        sale = self._make_sale_via_view()          # 10 × 24 000 = 240 000
+        self.assertFalse(sale.is_outstanding)
+        self.assertEqual(sale.debt_remaining, Decimal("0"))
+        self.assertEqual(
+            client_advance_balance(self.buyer, self.seller), Decimal("760000")
+        )
+
+    def test_sale_larger_than_advance_leaves_debt(self):
+        self._deposit("100000")
+        sale = self._make_sale_via_view()          # 240 000, only 100 000 prepaid
+        self.assertEqual(sale.debt_remaining, Decimal("140000"))
+        self.assertEqual(client_advance_balance(self.buyer, self.seller), Decimal("0"))
+
+    def test_deposit_applies_to_existing_debt_first(self):
+        make_sale(self.buyer, self.seller, self.product, is_debt=True)  # 240 000 debt
+        self._deposit("300000")
+        debt_sale = Sale.objects.filter(client=self.buyer).earliest("created_at")
+        self.assertEqual(debt_sale.debt_remaining, Decimal("0"))
+        self.assertEqual(client_advance_balance(self.buyer, self.seller), Decimal("60000"))
+
+    def test_advance_not_double_counted_in_till(self):
+        self._deposit("1000000")
+        self._make_sale_via_view()                 # covered by advance, no new cash
+        # Till holds exactly the deposit — the advance-covered sale adds nothing.
+        self.assertEqual(seller_cash_on_hand(self.seller), Decimal("1000000"))
+
+    def test_advance_is_seller_bound(self):
+        # Another seller's till holds no part of this advance.
+        other = User.objects.create_user("t_adv_other", password="x", role=User.Role.SALES)
+        self._deposit("500000")
+        self.assertEqual(client_advance_balance(self.buyer, other), Decimal("0"))
+        self.assertEqual(seller_cash_on_hand(other), Decimal("0"))
+
+    def test_kassa_page_renders_with_advance_deposit(self):
+        # An advance deposit has no sale; the kassa ledger must not choke on it.
+        self._deposit("500000")
+        self.client.force_login(self.seller)
+        response = self.client.get(reverse("kassa"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Avans mijoz")
+
+    def test_client_list_shows_advance_column(self):
+        self._deposit("750000")
+        self.client.force_login(self.seller)
+        response = self.client.get(reverse("client_list"))
+        self.assertEqual(response.status_code, 200)
+        # The buyer's row carries the grouped advance figure.
+        self.assertContains(response, "750")
+
+    def test_advance_map_flags_client_for_seller(self):
+        from .views import _client_advance_map
+        self._deposit("500000")
+        amap = _client_advance_map(self.seller)
+        self.assertEqual(amap.get(str(self.buyer.pk)), 500000.0)
+        # A sale consumes part of it — the map reflects the reduced balance.
+        self._make_sale_via_view()   # 240 000
+        amap2 = _client_advance_map(self.seller)
+        self.assertEqual(amap2.get(str(self.buyer.pk)), 260000.0)
+
+
+    def test_advance_edit_changes_amount_when_unspent(self):
+        self._deposit("500000")
+        p = Payment.objects.get(kind=Payment.Kind.ADVANCE_IN)
+        self.client.force_login(self.seller)
+        resp = self.client.post(
+            reverse("advance_edit", args=[p.pk]),
+            {"amount": "800000", "method": Payment.Method.CASH, "currency": Payment.Currency.UZS},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(client_advance_balance(self.buyer, self.seller), Decimal("800000"))
+
+    def test_advance_delete_when_unspent(self):
+        self._deposit("500000")
+        p = Payment.objects.get(kind=Payment.Kind.ADVANCE_IN)
+        self.client.force_login(self.seller)
+        resp = self.client.post(reverse("advance_delete", args=[p.pk]))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(client_advance_balance(self.buyer, self.seller), Decimal("0"))
+        self.assertFalse(Payment.objects.filter(pk=p.pk).exists())
+
+    def test_advance_delete_after_spend_reverts_sale_to_debt(self):
+        self._deposit("1000000")
+        sale = self._make_sale_via_view()   # 240 000 drawn from the advance
+        self.assertEqual(sale.debt_remaining, Decimal("0"))
+        p = Payment.objects.get(kind=Payment.Kind.ADVANCE_IN)
+        self.client.force_login(self.seller)
+        resp = self.client.post(reverse("advance_delete", args=[p.pk]))
+        self.assertEqual(resp.status_code, 302)
+        # Deposit gone, its allocation clawed back → the sale owes again.
+        self.assertFalse(Payment.objects.filter(pk=p.pk).exists())
+        self.assertEqual(client_advance_balance(self.buyer, self.seller), Decimal("0"))
+        sale.refresh_from_db()
+        self.assertEqual(sale.debt_remaining, Decimal("240000"))
+
+    def test_advance_edit_down_claws_back_partially(self):
+        self._deposit("1000000")
+        sale = self._make_sale_via_view()   # 240 000 drawn; balance 760 000
+        p = Payment.objects.get(kind=Payment.Kind.ADVANCE_IN)
+        self.client.force_login(self.seller)
+        resp = self.client.post(
+            reverse("advance_edit", args=[p.pk]),
+            {"amount": "100000", "method": Payment.Method.CASH, "currency": Payment.Currency.UZS},
+        )
+        self.assertEqual(resp.status_code, 302)
+        # Only 100 000 remains prepaid → the sale keeps 100 000 covered, owes 140 000.
+        self.assertEqual(client_advance_balance(self.buyer, self.seller), Decimal("0"))
+        sale.refresh_from_db()
+        self.assertEqual(sale.debt_remaining, Decimal("140000"))
+
+
+class SaleFormRenderTests(BaseSetup):
+    def test_sale_form_has_live_total_hooks(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_create"))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("data-line-total", body)
+        self.assertIn("data-grand-total", body)
+        self.assertIn("client-advance-map", body)
+
+
+class InnerPageBackTests(BaseSetup):
+    def test_inner_pages_render_with_back_button(self):
+        self.client.force_login(self.sales1)
+        pages = [
+            reverse("sale_detail", args=[self.sale1.pk]),
+            reverse("product_detail", args=[self.product.pk]),
+            reverse("ombor_product", args=[self.product.pk]),
+            reverse("debt_client", args=[self.client1.pk]),
+        ]
+        for url in pages:
+            r = self.client.get(url)
+            self.assertEqual(r.status_code, 200, url)
+            self.assertIn("topbar-back", r.content.decode(), url)

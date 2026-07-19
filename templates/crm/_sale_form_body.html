@@ -27,6 +27,7 @@
     <span class="qa-error"></span>
   </span>
   {{ form.client.errors }}
+  <span class="flash flash-success" data-advance-hint style="display:none;margin-top:6px;padding:6px 10px;"></span>
 </p>
 
 <div class="items-block">
@@ -38,6 +39,7 @@
   </div>
   <template class="item-empty-tpl">{% include "crm/_sale_item_row.html" with f=formset.empty_form %}</template>
   <button type="button" class="btn btn-sm btn-ghost item-add">+ Mahsulot qo'shish</button>
+  <div class="items-grand" data-grand-total hidden></div>
 </div>
 
 <p>
@@ -47,3 +49,4 @@
 </p>
 
 {{ products_json|json_script:"product-price-map" }}
+{{ client_advance_json|json_script:"client-advance-map" }}

@@ -208,14 +208,24 @@ h2 { font-size: 15px; font-weight: 600; margin: 0 0 14px; letter-spacing: -0.01e
   z-index: 20;
 }
 .topbar-title { font-size: 18px; font-weight: 650; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.topbar-left { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 0 1 auto; }
+.topbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; }
 .topbar-left .crumb { color: var(--text-faint); font-size: 13px; }
 .topbar-right { display: flex; align-items: center; gap: 18px; flex-shrink: 0; }
 
-.user-chip { display: flex; align-items: center; gap: 10px; }
-.user-chip .meta { line-height: 1.2; text-align: right; }
-.user-chip .name { font-size: 13.5px; font-weight: 600; }
-.user-chip .role { font-size: 11.5px; color: var(--text-muted); }
+.user-chip {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 12px 4px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+}
+.user-chip .meta { line-height: 1.25; text-align: right; }
+.user-chip .name { font-size: 14px; font-weight: 650; }
+.user-chip .role { font-size: 12px; color: var(--text-muted); }
+.user-chip .avatar.sm { width: 32px; height: 32px; font-size: 13px; }
+
+/* Consistent back control in the topbar for inner/detail pages */
+.topbar-back { color: var(--text); }
 
 .icon-btn {
   width: 36px; height: 36px;
@@ -234,7 +244,9 @@ h2 { font-size: 15px; font-weight: 600; margin: 0 0 14px; letter-spacing: -0.01e
 html[data-theme="dark"] #theme-toggle .ico-moon { display: none; }
 html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
 
-.content { padding: 22px 24px 48px; max-width: none; width: 100%; margin: 0; }
+/* Bottom padding clears the fixed FAB stack (bottom-right) so a full-width table's
+   last rows / action buttons are never trapped under the floating buttons. */
+.content { padding: 22px 24px 130px; max-width: none; width: 100%; margin: 0; }
 
 /* ============================================================
    Cards & stats
@@ -579,6 +591,8 @@ html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
 .item-fields .if-cost input { text-align: right; }
 .item-fields .item-remove { align-self: end; height: 40px; }
 .item-add { margin-top: 8px; }
+.item-total { margin-top: 6px; text-align: right; font-size: 12px; font-weight: 600; }
+.items-grand { margin-top: 8px; text-align: right; font-size: 14px; font-weight: 800; color: var(--success); }
 @media (max-width: 560px) {
   .item-fields { grid-template-columns: 1fr 1fr; }
   .item-fields .item-remove { grid-column: 1 / -1; justify-self: end; }
@@ -1069,13 +1083,24 @@ ul.errorlist li::before { content: "⚠ "; }
   text-transform: capitalize;
 }
 .today-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 12px;
+  font-size: 13.5px;
   font-weight: 700;
-  padding: 3px 10px;
+  padding: 6px 15px;
   border-radius: var(--r-pill);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
   text-transform: none;
+}
+.today-chip::before {
+  content: "";
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 .toolbar-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
@@ -1554,7 +1579,7 @@ ul.errorlist li::before { content: "⚠ "; }
   .nav-item { justify-content: center; padding: 11px; gap: 0; }
   .nav-item span { display: none; }
   .topbar { padding: 0 16px; }
-  .content { padding: 20px 16px 40px; }
+  .content { padding: 20px 16px 120px; }
   .user-chip .meta { display: none; }
 }
 

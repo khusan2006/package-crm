@@ -1,7 +1,12 @@
 {% load crm_extras %}
 {% csrf_token %}
-<p class="muted">{% if fifo %}Umumiy qarz{% else %}Qoldiq{% endif %}: <strong style="color: var(--text);">{{ remaining|floatformat:"0g" }} so'm</strong></p>
-{% if fifo %}<p class="field-hint" style="margin: -10px 0 6px;">To'lov eng eski chekdan boshlab (FIFO) taqsimlanadi.</p>{% endif %}
+{% if advance %}
+  {% if advance_balance %}<p class="muted">Joriy avans balansi: <strong style="color: var(--text);">{{ advance_balance|floatformat:"0g" }} so'm</strong></p>{% endif %}
+  <p class="field-hint" style="margin: 0 0 6px;">Pul darhol kassaga kirim bo'ladi. Ochiq qarz bo'lsa avval o'shanga (eng eski chek — FIFO) taqsimlanadi, ortig'i avans balansida qoladi.</p>
+{% else %}
+  <p class="muted">{% if fifo %}Umumiy qarz{% else %}Qoldiq{% endif %}: <strong style="color: var(--text);">{{ remaining|floatformat:"0g" }} so'm</strong></p>
+  {% if fifo %}<p class="field-hint" style="margin: -10px 0 6px;">To'lov eng eski chekdan boshlab (FIFO) taqsimlanadi.</p>{% endif %}
+{% endif %}
 {% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
 <p>{{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}</p>
 <p>{{ form.currency.label_tag }}{{ form.currency }}{{ form.currency.errors }}</p>
