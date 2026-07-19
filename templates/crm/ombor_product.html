@@ -35,6 +35,8 @@
 </div>
 {% endif %}
 
+{% include "crm/_filter_toolbar.html" with show_search=True search_placeholder="Mijoz bo'yicha qidirish…" %}
+
 <div class="card">
   <h2>Sotuvlar</h2>
   {% if items %}
@@ -60,6 +62,9 @@
     {% endfor %}
   </table>
   </div>
+  {% elif has_filters %}<p class="muted">Filtrga mos sotuv topilmadi.</p>
   {% else %}<p class="muted">Bu mahsulot hali sotilmagan.</p>{% endif %}
 </div>
+
+{% include "crm/_filter_drawer.html" with show_dates=True %}
 {% endblock %}

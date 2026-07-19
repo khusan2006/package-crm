@@ -2,6 +2,7 @@
   <h2>{{ title }}</h2>
   <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
 </div>
+{% include "crm/_return_split_note.html" %}
 <form method="post" action="{{ request.path }}" class="stacked">
   {% csrf_token %}
   {{ form.as_p }}

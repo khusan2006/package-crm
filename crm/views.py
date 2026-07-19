@@ -38,9 +38,11 @@ from .forms import (
 from .models import (
     COST,
     ITEM_WEIGHT_KG,
+    PAYING_KINDS,
     PAYMENT_NET,
     PROFIT,
     RETURN_AMOUNT,
+    RETURN_COST,
     REVENUE,
     AuditLog,
     Client,
@@ -55,6 +57,7 @@ from .models import (
     Sale,
     SaleItem,
     StockEntry,
+    seller_cash_on_hand,
 )
 from .utils import form_reload, form_response, form_success, is_ajax, render_confirm
 
@@ -1663,12 +1666,17 @@ def audit_list(request):
 
 # --- Kassa (cash register) ----------------------------------------------------
 
-def _currency_till(payments, expenses, date_from, date_to, *, som):
-    """Income (by method), expense and the running balance for ONE currency drawer.
+def _currency_till(payments, expenses, refunds, date_from, date_to, *, som):
+    """Income (by method), expense, refunds and the running balance for ONE currency
+    drawer.
 
     The so'm drawer counts net so'm (amount − bank fee); the dollar drawer counts the
     physical dollars handed over (`amount_original`). The balance is cumulative:
-    opening = everything strictly before date_from, closing = opening + in − out."""
+    opening = everything strictly before date_from, closing = opening + in − out.
+
+    Refunds are a third flow, kept apart from expenses: money handed back on an
+    over-returned sale leaves the drawer just the same, but it is the client's money
+    coming back, not a cost the business bore."""
     field = PAYMENT_NET if som else F("amount_original")
     exp_field = "amount" if som else "amount_original"
 
@@ -1678,17 +1686,25 @@ def _currency_till(payments, expenses, date_from, date_to, *, som):
     def outflow(**flt):
         return expenses.filter(**flt).aggregate(s=Sum(exp_field))["s"] or Decimal("0")
 
+    def refund(**flt):
+        return refunds.filter(**flt).aggregate(s=Sum(exp_field))["s"] or Decimal("0")
+
     window = {"date__gte": date_from, "date__lte": date_to}
     cash = income(method=Payment.Method.CASH, **window)
     card = income(method=Payment.Method.CARD, **window)
     bank = income(method=Payment.Method.TRANSFER, **window)
     total_in = cash + card + bank
     total_out = outflow(**window)
-    opening = income(date__lt=date_from) - outflow(date__lt=date_from)
+    total_refund = refund(**window)
+    opening = (
+        income(date__lt=date_from)
+        - outflow(date__lt=date_from)
+        - refund(date__lt=date_from)
+    )
     return {
         "cash": cash, "card": card, "bank": bank, "income": total_in,
-        "expense": total_out, "opening": opening,
-        "closing": opening + total_in - total_out,
+        "expense": total_out, "refund": total_refund, "opening": opening,
+        "closing": opening + total_in - total_out - total_refund,
     }
 
 
@@ -1699,11 +1715,18 @@ def _kassa_supplier_cost(date_from, date_to, rep=None):
     `date_from=None` drops the lower bound, giving the cumulative (as-of date_to)
     figure a standing balance needs."""
     items = SaleItem.objects.filter(sale__date__lte=date_to)
+    returns = Return.objects.filter(sale__date__lte=date_to, restock=True)
     if date_from is not None:
         items = items.filter(sale__date__gte=date_from)
+        returns = returns.filter(sale__date__gte=date_from)
     if rep is not None:
         items = items.filter(sale__sales_rep=rep)
-    return items.aggregate(s=Sum(COST))["s"] or Decimal("0")
+        returns = returns.filter(sale__sales_rep=rep)
+    sold = items.aggregate(s=Sum(COST))["s"] or Decimal("0")
+    # Restocked goods are back in the warehouse, so their tannarx is no longer owed.
+    # Written-off returns stay in the figure — see `seller_production_debt`.
+    given_back = returns.aggregate(s=Sum(RETURN_COST))["s"] or Decimal("0")
+    return sold - given_back
 
 
 def _kassa_remitted(date_from, date_to, rep=None):
@@ -1738,8 +1761,10 @@ def _realized_profit_by_seller(date_from, date_to, rep=None):
     debt sale earns nothing yet, and a part-paid one earns only what's collected
     beyond its cost:  realized = max(0, min(paid, revenue) − cost).
 
-    Returns {seller_pk: realized_profit}. (Returned goods aren't netted out here —
-    they're a rare edge and only make the figure marginally conservative.)
+    Returns {seller_pk: realized_profit}. Everything is measured AFTER returns:
+    net_revenue/net_cost_total drop the goods that came back, and net_paid drops money
+    already handed back to the client, so an over-returned sale can't keep earning
+    profit on cash it no longer holds.
     `date_from=None` drops the lower bound for the cumulative (as-of date_to) total."""
     sales = Sale.objects.filter(date__lte=date_to)
     if date_from is not None:
@@ -1747,8 +1772,12 @@ def _realized_profit_by_seller(date_from, date_to, rep=None):
     if rep is not None:
         sales = sales.filter(sales_rep=rep)
     by_seller = {}
-    for s in sales.with_balance().values("sales_rep", "total", "cost_total", "paid"):
-        realized = max(Decimal("0"), min(s["paid"], s["total"]) - s["cost_total"])
+    for s in sales.with_balance().values(
+        "sales_rep", "net_revenue", "net_cost_total", "net_paid"
+    ):
+        realized = max(
+            Decimal("0"), min(s["net_paid"], s["net_revenue"]) - s["net_cost_total"]
+        )
         by_seller[s["sales_rep"]] = by_seller.get(s["sales_rep"], Decimal("0")) + realized
     return by_seller
 
@@ -1770,13 +1799,17 @@ def _kassa_summary(date_from, date_to, rep=None):
     # when it was deposited (ADVANCE_IN), so its consumption must not count again.
     payments = Payment.objects.till_income()
     expenses = Expense.objects.all()
+    # Cash handed back to clients on over-returned sales. till_income() already drops
+    # these, so they have to be brought in separately as an outflow.
+    refunds = Payment.objects.filter(kind=Payment.Kind.REFUND_OUT)
     if rep is not None:
         payments = payments.filter(created_by=rep)
         expenses = expenses.filter(created_by=rep)
+        refunds = refunds.filter(created_by=rep)
     uzs, usd = Payment.Currency.UZS, Payment.Currency.USD
     som = _currency_till(
         payments.filter(currency=uzs), expenses.filter(currency=uzs),
-        date_from, date_to, som=True,
+        refunds.filter(currency=uzs), date_from, date_to, som=True,
     )
     cost = _kassa_supplier_cost(date_from, date_to, rep)          # period flow
     remitted = _kassa_remitted(date_from, date_to, rep)           # period flow
@@ -1804,11 +1837,19 @@ def _kassa_summary(date_from, date_to, rep=None):
     expense_cum = (
         expenses.filter(date__lte=date_to).aggregate(s=Sum("amount"))["s"] or Decimal("0")
     )
+    refund_cum = (
+        refunds.filter(date__lte=date_to).aggregate(s=Sum("amount"))["s"] or Decimal("0")
+    )
+    refunded = (
+        refunds.filter(date__gte=date_from, date__lte=date_to)
+        .aggregate(s=Sum("amount"))["s"] or Decimal("0")
+    )
+    cash_on_hand = income_all_cum - refund_cum - expense_cum - remitted_cum - paid_profit_cum
     return {
         "som": som,
         "usd": _currency_till(
             payments.filter(currency=usd), expenses.filter(currency=usd),
-            date_from, date_to, som=False,
+            refunds.filter(currency=usd), date_from, date_to, som=False,
         ),
         "cost": cost,
         # Production-debt block (so'm). Cash on hand = so'm income net of fees, less
@@ -1817,12 +1858,12 @@ def _kassa_summary(date_from, date_to, rep=None):
         "remitted": remitted,
         "paid_profit": paid_profit,
         "production_debt": cost_cum - remitted_cum,
-        "cash": income_all_cum - expense_cum - remitted_cum - paid_profit_cum,
+        "cash": cash_on_hand,
         # Profit still sitting in the till, free to hand up: cash beyond the debt.
-        "withdrawable_profit": (income_all_cum - expense_cum - remitted_cum - paid_profit_cum)
-        - (cost_cum - remitted_cum),
+        "withdrawable_profit": cash_on_hand - (cost_cum - remitted_cum),
         "profit": profit,
         "expense_total": expense_total,
+        "refunded": refunded,
         "net_profit": profit - expense_total,
     }
 
@@ -1851,12 +1892,16 @@ def _per_employee_kassa(date_from, date_to, rep=None):
     payments = Payment.objects.till_income().filter(**window)
     expenses = Expense.objects.filter(**window)
     sale_items = SaleItem.objects.filter(**sale_window)
+    restocked = Return.objects.filter(restock=True, **sale_window)
+    refunds = Payment.objects.filter(kind=Payment.Kind.REFUND_OUT, **window)
     remittances = ProductionRemittance.objects.filter(**window)
     payouts = ProfitPayout.objects.filter(**window)
     if rep is not None:
         payments = payments.filter(created_by=rep)
         expenses = expenses.filter(created_by=rep)
         sale_items = sale_items.filter(sale__sales_rep=rep)
+        restocked = restocked.filter(sale__sales_rep=rep)
+        refunds = refunds.filter(created_by=rep)
         remittances = remittances.filter(seller=rep)
         payouts = payouts.filter(seller=rep)
 
@@ -1871,7 +1916,7 @@ def _per_employee_kassa(date_from, date_to, rep=None):
             "out_som": Decimal("0"), "out_usd": Decimal("0"),
             "expense_total": Decimal("0"), "profit": Decimal("0"),
             "sold_cost": Decimal("0"), "remitted": Decimal("0"),
-            "paid_profit": Decimal("0"),
+            "paid_profit": Decimal("0"), "refunded": Decimal("0"),
         }
 
     rows = {}
@@ -1904,6 +1949,10 @@ def _per_employee_kassa(date_from, date_to, rep=None):
     for r in sale_items.values("sale__sales_rep").annotate(cost=Sum(COST)):
         row(r["sale__sales_rep"])["sold_cost"] += r["cost"] or Decimal("0")  # tannarx = debt
 
+    # Restocked goods went back to the warehouse, so their tannarx stops being owed.
+    for r in restocked.values("sale__sales_rep").annotate(cost=Sum(RETURN_COST)):
+        row(r["sale__sales_rep"])["sold_cost"] -= r["cost"] or Decimal("0")
+
     # Profit is realized cost-first (only collections above a sale's tannarx count),
     # so it can't be a flat SaleItem sum — pull the per-seller figure instead.
     for uid, realized in _realized_profit_by_seller(None, date_to, rep).items():
@@ -1915,11 +1964,17 @@ def _per_employee_kassa(date_from, date_to, rep=None):
     for r in payouts.values("seller").annotate(s=Sum("amount")):
         row(r["seller"])["paid_profit"] += r["s"] or Decimal("0")
 
+    for r in refunds.values("created_by").annotate(s=Sum("amount")):
+        row(r["created_by"])["refunded"] += r["s"] or Decimal("0")
+
     result = []
     for rr in rows.values():
-        # Cash left: income, less expenses, less handed to production, less profit
-        # handed to the boss.
-        rr["cash"] = rr["in_som"] - rr["expense_total"] - rr["remitted"] - rr["paid_profit"]
+        # Cash left: income, less money refunded to clients, less expenses, less handed
+        # to production, less profit handed to the boss.
+        rr["cash"] = (
+            rr["in_som"] - rr["refunded"] - rr["expense_total"]
+            - rr["remitted"] - rr["paid_profit"]
+        )
         rr["production_debt"] = rr["sold_cost"] - rr["remitted"]
         rr["net"] = rr["profit"] - rr["expense_total"]  # samaradorlik: foyda − rasxot
         result.append(rr)
@@ -2029,6 +2084,30 @@ def _kassa_transactions(expenses, dates, filters, rep):
                     "exchange_rate": Decimal("0"), "created_by": pp.created_by,
                     "pk": pp.pk, "kind": "profit",
                 })
+    # Cash refunded to clients on over-returned sales. Not an expense (the business
+    # bore no cost — it is the client's own money going back), but it leaves the till
+    # all the same, so it belongs in the outflow ledger or the drawer won't reconcile.
+    refunds = Payment.objects.filter(
+        kind=Payment.Kind.REFUND_OUT,
+        date__gte=dates["date_from"], date__lte=dates["date_to"],
+    ).select_related("client", "created_by")
+    if rep is not None:
+        refunds = refunds.filter(created_by=rep)
+    if filters["method"] in dict(Payment.Method.choices):
+        refunds = refunds.filter(method=filters["method"])
+    if filters["currency"] in dict(Payment.Currency.choices):
+        refunds = refunds.filter(currency=filters["currency"])
+    for rf in refunds:
+        rows.append({
+            "date": rf.date, "created_at": rf.created_at, "direction": "refund",
+            "title": str(rf.client) if rf.client else "—",
+            "subtitle": rf.note or "Qaytarish uchun naqd berildi",
+            "method": rf.get_method_display(), "method_code": rf.method,
+            "currency": rf.currency,
+            "amount_som": rf.amount, "amount_original": rf.original_amount,
+            "exchange_rate": rf.exchange_rate, "created_by": rf.created_by,
+            "pk": rf.pk, "kind": "refund",
+        })
     for e in expenses:
         rows.append({
             "date": e.date, "created_at": e.created_at, "direction": "out",
@@ -2056,7 +2135,9 @@ def kassa_view(request):
     # (expenses + production handovers) on the right. Totals use amount_som so a
     # USD payment counts at its so'm value. Newest-first order is inherited.
     income_rows = [t for t in transactions if t["direction"] == "in"]
-    outflow_rows = [t for t in transactions if t["direction"] in ("out", "remit", "profit")]
+    outflow_rows = [
+        t for t in transactions if t["direction"] in ("out", "remit", "profit", "refund")
+    ]
     income_total = sum((t["amount_som"] for t in income_rows), Decimal("0"))
     outflow_total = sum((t["amount_som"] for t in outflow_rows), Decimal("0"))
 
@@ -2636,10 +2717,49 @@ def ombor_view(request):
     })
 
 
+def _filter_ombor_items(request, items):
+    """Narrow one product's sale lines by client / seller / date, so a particular chek
+    can be found in a long history.
+
+    Unlike the sales list there is NO default date window: this page IS the product's
+    full history, so dates only bite once the user actually sets them. Returns
+    (queryset, filters, has_filters)."""
+    filters = {key: request.GET.get(key, "") for key in ("client", "rep", "dan", "gacha")}
+    filters["q"] = request.GET.get("q", "").strip()
+    can_scope_rep = request.user.can_see_all_records
+
+    if filters["q"]:
+        items = items.filter(_client_search_q(filters["q"], "sale__client"))
+    if filters["client"].isdigit():
+        items = items.filter(sale__client_id=filters["client"])
+    if filters["rep"].isdigit() and can_scope_rep:
+        items = items.filter(sale__sales_rep_id=filters["rep"])
+
+    date_from = _parse_date(filters["dan"])
+    date_to = _parse_date(filters["gacha"])
+    if date_from and date_to and date_to < date_from:
+        date_from, date_to = date_to, date_from
+        filters["dan"], filters["gacha"] = date_from.isoformat(), date_to.isoformat()
+    if date_from:
+        items = items.filter(sale__date__gte=date_from)
+    if date_to:
+        items = items.filter(sale__date__lte=date_to)
+
+    has_filters = bool(
+        filters["q"]
+        or filters["client"].isdigit()
+        or (filters["rep"].isdigit() and can_scope_rep)
+        or date_from
+        or date_to
+    )
+    return items, filters, has_filters
+
+
 def ombor_product(request, pk):
-    """Drill-down for one product: every sale of it, newest first. A seller sees
-    only their own sales; an admin also gets a per-seller summary (which seller sold
-    how much) above the transaction list."""
+    """Drill-down for one product: every sale of it, newest first, filterable by
+    client / seller / date so one chek can be tracked down. A seller sees only their
+    own sales; an admin also gets a per-seller summary (which seller sold how much)
+    above the transaction list."""
     product = get_object_or_404(Product, pk=pk)
     user = request.user
     qs = SaleItem.objects.filter(product=product).select_related(
@@ -2647,6 +2767,16 @@ def ombor_product(request, pk):
     )
     if not user.can_see_all_records:
         qs = qs.filter(sale__sales_rep=user)
+    # Dropdown options come from this product's own history — offering clients who
+    # never bought it would just be noise.
+    scoped = qs
+    clients = Client.objects.filter(sales__items__in=scoped).distinct().order_by("name")
+    reps = (
+        User.objects.filter(sales__items__in=scoped).distinct().order_by("first_name", "username")
+        if user.can_see_all_records
+        else None
+    )
+    qs, filters, has_filters = _filter_ombor_items(request, qs)
     items = list(qs)
     items.sort(key=lambda it: (it.sale.date, it.sale.created_at), reverse=True)
     total_kg = sum((it.weight_kg for it in items), Decimal("0"))
@@ -2661,12 +2791,27 @@ def ombor_product(request, pk):
             row["count"] += 1
         by_seller = sorted(acc.values(), key=lambda r: r["kg"], reverse=True)
 
+    chip_client = clients.filter(pk=filters["client"]).first() if filters["client"].isdigit() else None
+    chip_rep = reps.filter(pk=filters["rep"]).first() if reps and filters["rep"].isdigit() else None
+    active_filters = _filter_chips(request, [
+        {"param": "client", "label": "Mijoz", "value": chip_client.name if chip_client else ""},
+        {"param": "rep", "label": "Sotuvchi", "value": str(chip_rep) if chip_rep else ""},
+        {"param": "dan", "label": "Sanadan", "value": filters["dan"]},
+        {"param": "gacha", "label": "Sanagacha", "value": filters["gacha"]},
+    ])
     return render(request, "crm/ombor_product.html", {
         "product": product,
         "items": items,
         "total_kg": total_kg,
         "by_seller": by_seller,
         "is_admin_view": user.can_see_all_records,
+        "filters": filters,
+        "has_filters": has_filters,
+        "active_filters": active_filters,
+        "filter_count": len(active_filters),
+        "clients": clients,
+        "reps": reps,
+        "filter_url": reverse("ombor_product", args=[product.pk]),
     })
 
 
@@ -2714,7 +2859,11 @@ def sale_detail(request, pk):
         .prefetch_related("items__product"),
         pk=pk,
     )
-    payments = sale.payments.select_related("created_by").order_by("-date", "-created_at")
+    rows = sale.payments.select_related("created_by").order_by("-date", "-created_at")
+    # Money the client put IN and money handed back to them are two different stories,
+    # and mixing them would make the payments table stop adding up to `paid`.
+    payments = [p for p in rows if p.kind in PAYING_KINDS]
+    settlements = [p for p in rows if p.kind not in PAYING_KINDS]
     returns = sale.returns.select_related("product", "created_by")
     return render(
         request,
@@ -2723,8 +2872,10 @@ def sale_detail(request, pk):
             "sale": sale,
             "items": sale.items.all(),
             "payments": payments,
+            "settlements": settlements,
             "returns": returns,
             "returned": sale.returned_amount,
+            "settled": sale.settled_amount,
             "paid": sale.paid_amount,
             "remaining": sale.debt_remaining,
         },
@@ -2824,21 +2975,62 @@ def _formset_total(formset):
     return total
 
 
+def _return_conflict(formset):
+    """Reject edits that would strand a return.
+
+    `Return.sale_item` cascades, so deleting a line that has returns would silently
+    take the returns with it while the settlement payment stayed behind — the client's
+    credit would survive with nothing backing it. Shrinking a line below what has
+    already come back is the same problem in miniature. Returns the error message, or
+    None when the edit is safe."""
+    for f in formset.forms:
+        cleaned = getattr(f, "cleaned_data", None)
+        item = cleaned.get("id") if cleaned else None
+        if not cleaned or item is None or item.pk is None:
+            continue
+        returned = sum((r.weight for r in item.returns.all()), Decimal("0"))
+        if not returned:
+            continue
+        name = item.product.name
+        if cleaned.get("DELETE"):
+            return (
+                f"«{name}» qatorini o'chirib bo'lmaydi — undan {returned:g} "
+                f"{item.dimension} qaytarilgan. Avval qaytarishni bekor qiling."
+            )
+        weight = cleaned.get("weight")
+        if weight is not None and weight < returned:
+            return (
+                f"«{name}» miqdorini {weight:g} ga tushirib bo'lmaydi — undan allaqachon "
+                f"{returned:g} {item.dimension} qaytarilgan."
+            )
+    return None
+
+
 def sale_edit(request, pk):
     sale = get_object_or_404(Sale.objects.visible_to(request.user), pk=pk)
     form = SaleForm(request.POST or None, instance=sale, user=request.user)
     formset = SaleItemFormSet(request.POST or None, instance=sale, prefix="items")
     if request.method == "POST":
         if form.is_valid() and formset.is_valid():
-            # An edit must not drop the total below what's already been paid, or
-            # the sale would read as over-paid (a negative balance) with no refund.
-            paid = sale.paid_amount
+            conflict = _return_conflict(formset)
+            if conflict:
+                form.add_error(None, conflict)
+                return _render_sale_form(
+                    request, form, formset, "Sotuvni tahrirlash", invalid=True
+                )
+            # An edit must not drop the total below what the client has effectively
+            # paid and still holds goods for, or the sale would read as over-paid (a
+            # negative balance) with no refund. Returned goods, and money already
+            # handed back for them, are both out of that comparison.
+            net_paid = sale.paid_amount - sale.settled_amount
+            returned = sale.returned_amount
             new_total = _formset_total(formset)
-            if new_total < paid:
+            if new_total - returned < net_paid:
                 form.add_error(
                     None,
-                    f"Jami summa ({new_total:,.0f} so'm) allaqachon to'langan "
-                    f"puldan ({paid:,.0f} so'm) kam bo'lishi mumkin emas.",
+                    f"Jami summa ({new_total:,.0f} so'm) juda kam: qaytarilgan tovar "
+                    f"({returned:,.0f} so'm) hisobga olinganda ham mijoz "
+                    f"{net_paid:,.0f} so'm to'lagan.",
                 )
                 return _render_sale_form(request, form, formset, "Sotuvni tahrirlash", invalid=True)
             sale = form.save()
@@ -2936,33 +3128,87 @@ def sale_pay(request, pk):
 
 
 def _render_return_form(request, sale, form, invalid=False):
-    context = {"form": form, "sale": sale, "title": f"Qaytarish: {sale.client.name}"}
+    context = {
+        "form": form,
+        "sale": sale,
+        "title": f"Qaytarish: {sale.client.name}",
+        # Shown above the form so the seller can see what will simply cancel debt and
+        # what will come back to the client as money.
+        "open_debt": max(Decimal("0"), sale.debt_remaining),
+        "cash_on_hand": seller_cash_on_hand(request.user),
+    }
     if is_ajax(request):
         return render(request, "crm/_return_modal.html", context, status=422 if invalid else 200)
     return render(request, "crm/_return_page.html", context)
 
 
+@transaction.atomic
 def sale_return(request, pk):
+    """Take goods back on a sale and settle the money in one step.
+
+    A return cancels the sale's open debt first. Anything beyond that is value the
+    client had already paid for, so it is handed back — either parked as advance
+    credit (which then flows onto their other open receipts) or paid out in cash.
+    Without that settlement the receipt would sit at a permanent negative balance and
+    the money owed to the client would be invisible."""
     sale = get_object_or_404(
         Sale.objects.visible_to(request.user).prefetch_related("items__product", "returns"),
         pk=pk,
     )
     if request.method == "POST":
-        form = ReturnForm(request.POST, sale=sale)
+        form = ReturnForm(request.POST, sale=sale, user=request.user)
         if form.is_valid():
             ret = form.save(commit=False)
-            ret.sale = sale
             ret.created_by = request.user
             ret.save()
+
+            excess = form.excess
+            to_debt = form.credited_to_debt
+            refunded = form.cleaned_data["settlement"] == ReturnForm.SETTLE_REFUND
+            if excess > 0:
+                Payment.objects.create(
+                    sale=sale,
+                    client=sale.client,
+                    date=ret.date,
+                    amount=excess,
+                    method=Payment.Method.CASH,
+                    kind=(
+                        Payment.Kind.REFUND_OUT if refunded
+                        else Payment.Kind.RETURN_CREDIT
+                    ),
+                    note=f"Qaytarish: {ret.product.name}",
+                    created_by=request.user,
+                )
+                if not refunded:
+                    # Spend the fresh credit on whatever else the client still owes.
+                    _apply_advance_to_open_sales(sale.client, request.user)
+
             AuditLog.record(
                 request.user, AuditLog.Action.RETURN, "Qaytarish", sale.pk,
-                f"Mijoz {sale.client.name} qaytardi ({ret.product.name}) — {ret.amount:,.0f} so'm",
+                f"Mijoz {sale.client.name} qaytardi ({ret.product.name}) — "
+                f"{ret.amount:,.0f} so'm; qarzdan {to_debt:,.0f}, "
+                f"ortiqcha {excess:,.0f} "
+                f"({'naqd berildi' if refunded else 'avansga'})",
             )
-            messages.success(request, f"Qaytarish qabul qilindi: {ret.amount:,.0f} so'm.")
+            messages.success(request, _return_message(ret.amount, to_debt, excess, refunded))
             return form_reload(request, reverse("sale_detail", args=[sale.pk]))
         return _render_return_form(request, sale, form, invalid=True)
-    form = ReturnForm(sale=sale, initial={"restock": True})
+    form = ReturnForm(sale=sale, user=request.user, initial={"restock": True})
     return _render_return_form(request, sale, form)
+
+
+def _return_message(total, to_debt, excess, refunded):
+    """Spell out where the returned value went — sellers need to see that the money
+    side was handled, not just that goods came back."""
+    parts = [f"Qaytarish qabul qilindi: {total:,.0f} so'm."]
+    if to_debt > 0:
+        parts.append(f"Qarzdan {to_debt:,.0f} so'm yopildi.")
+    if excess > 0:
+        parts.append(
+            f"Ortiqcha {excess:,.0f} so'm "
+            + ("kassadan naqd qaytarildi." if refunded else "mijoz avansiga o'tdi.")
+        )
+    return " ".join(parts)
 
 
 def sale_delete(request, pk):

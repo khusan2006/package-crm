@@ -26,6 +26,7 @@ from .models import (
     StockEntry,
     client_advance_balance,
     seller_cash_on_hand,
+    seller_production_debt,
 )
 from .views import (
     XLSX_CONTENT_TYPE,
@@ -504,8 +505,7 @@ class SellerOmborTests(BaseSetup):
         self._receive(self.sales1, "100")
         sale = make_sale(self.client1, self.sales1, self.p, weight="30", price="20000")
         Return.objects.create(
-            sale=sale, product=self.p, dimension="kg",
-            weight=Decimal("4"), price=Decimal("20000"), restock=True,
+            sale_item=sale.items.first(), weight=Decimal("4"), restock=True,
             created_by=self.sales1,
         )
         p = Product.objects.with_stock(seller=self.sales1).get(pk=self.p.pk)
@@ -1268,11 +1268,9 @@ class AuditLogTests(BaseSetup):
 
 
 class ReturnTests(BaseSetup):
-    def _return(self, sale, weight, price="24000", restock=True):
-        data = {
-            "product": self.product.pk, "dimension": "kg",
-            "weight": weight, "price": price,
-        }
+    def _return(self, sale, weight, restock=True):
+        # A return names the sale LINE it reverses; price/tannarx/unit come from there.
+        data = {"sale_item": sale.items.first().pk, "weight": weight}
         if restock:
             data["restock"] = "on"
         return self.client.post(reverse("sale_return", args=[sale.pk]), data)
@@ -1313,6 +1311,144 @@ class ReturnTests(BaseSetup):
         self.client.force_login(self.sales1)
         self._return(sale, "2")
         self.assertTrue(AuditLog.objects.filter(action="return", target_id=sale.pk).exists())
+
+
+class ReturnSettlementTests(BaseSetup):
+    """The money side of a return: it cancels open debt first, and any excess — value
+    the client had already paid for — is handed back as advance credit or as cash."""
+
+    def _return(self, sale, weight, settlement=None, restock=True, item=None):
+        data = {"sale_item": (item or sale.items.first()).pk, "weight": weight}
+        if restock:
+            data["restock"] = "on"
+        if settlement:
+            data["settlement"] = settlement
+        return self.client.post(reverse("sale_return", args=[sale.pk]), data)
+
+    def _remaining(self, sale):
+        return Sale.objects.filter(pk=sale.pk).with_balance()[0].remaining
+
+    def test_unpaid_return_only_cancels_debt(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)  # 240000
+        self.client.force_login(self.sales1)
+        till = seller_cash_on_hand(self.sales1)
+        self._return(sale, "4")  # 96 000 — well inside the 240 000 debt
+        self.assertEqual(self._remaining(sale), Decimal("144000"))
+        # No money moved: nothing was owed back, so no settlement row exists.
+        self.assertFalse(
+            sale.payments.filter(
+                kind__in=(Payment.Kind.RETURN_CREDIT, Payment.Kind.REFUND_OUT)
+            ).exists()
+        )
+        self.assertEqual(seller_cash_on_hand(self.sales1), till)
+        self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("0"))
+
+    def test_paid_sale_return_becomes_advance(self):
+        sale = make_sale(self.client1, self.sales1, self.product)  # 240 000, paid
+        self.client.force_login(self.sales1)
+        till = seller_cash_on_hand(self.sales1)
+        self._return(sale, "4")  # 96 000, all of it excess
+        self.assertEqual(self._remaining(sale), Decimal("0"))
+        self.assertEqual(
+            client_advance_balance(self.client1, self.sales1), Decimal("96000")
+        )
+        # The cash never left the drawer — it was only relabelled as the client's.
+        self.assertEqual(seller_cash_on_hand(self.sales1), till)
+
+    def test_paid_sale_return_can_be_refunded_in_cash(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        till = seller_cash_on_hand(self.sales1)
+        self._return(sale, "4", settlement="refund")
+        self.assertEqual(self._remaining(sale), Decimal("0"))
+        self.assertEqual(till - seller_cash_on_hand(self.sales1), Decimal("96000"))
+        self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("0"))
+
+    def test_partial_payment_splits_between_debt_and_excess(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)  # 240 000
+        Payment.objects.create(
+            sale=sale, amount=Decimal("100000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=sale.date, created_by=self.sales1,
+        )  # debt now 140 000
+        self.client.force_login(self.sales1)
+        self._return(sale, "8")  # 192 000: 140 000 clears the debt, 52 000 left over
+        self.assertEqual(self._remaining(sale), Decimal("0"))
+        self.assertEqual(
+            client_advance_balance(self.client1, self.sales1), Decimal("52000")
+        )
+
+    def test_refund_blocked_when_till_is_short(self):
+        sale = make_sale(self.client1, self.sales1, self.product)  # 240 000 collected
+        # Drain the drawer down to 5 000, whatever the fixtures put in it.
+        Expense.objects.create(
+            amount=seller_cash_on_hand(self.sales1) - Decimal("5000"),
+            category=Expense.Category.OTHER,
+            method=Payment.Method.CASH, created_by=self.sales1,
+        )
+        self.client.force_login(self.sales1)
+        self._return(sale, "4", settlement="refund")  # would need 96 000
+        self.assertEqual(sale.returns.count(), 0)  # rejected outright
+        self.assertEqual(self._remaining(sale), Decimal("0"))
+
+    def test_credit_flows_onto_another_open_sale(self):
+        paid = make_sale(self.client1, self.sales1, self.product)  # 240 000, paid
+        owed = make_sale(self.client1, self.sales1, self.product, is_debt=True)  # 240 000
+        self.client.force_login(self.sales1)
+        self._return(paid, "4")  # 96 000 credit
+        # The credit is spent straight away on what the client still owes elsewhere.
+        self.assertEqual(self._remaining(owed), Decimal("144000"))
+        self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("0"))
+
+    def test_written_off_return_keeps_production_debt(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        self.client.force_login(self.sales1)
+        before = seller_production_debt(self.sales1)
+        self._return(sale, "4", restock=False)  # goods gone, tannarx still owed
+        self.assertEqual(seller_production_debt(self.sales1), before)
+
+    def test_restocked_return_lowers_production_debt(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        self.client.force_login(self.sales1)
+        before = seller_production_debt(self.sales1)
+        self._return(sale, "4", restock=True)  # 4 × 18 000 tannarx back
+        self.assertEqual(before - seller_production_debt(self.sales1), Decimal("72000"))
+
+    def test_sale_detail_shows_the_settlement(self):
+        sale = make_sale(self.client1, self.sales1, self.product)  # paid
+        self.client.force_login(self.sales1)
+        self._return(sale, "4")
+        response = self.client.get(reverse("sale_detail", args=[sale.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Avansga o'tdi")
+        # The payments table must still add up to `paid` — settlements live apart.
+        self.assertNotIn(
+            Payment.Kind.RETURN_CREDIT,
+            [p.kind for p in response.context["payments"]],
+        )
+
+    def test_kassa_lists_a_cash_refund_as_outflow(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        self._return(sale, "4", settlement="refund")
+        response = self.client.get(reverse("kassa"))
+        self.assertEqual(response.status_code, 200)
+        kinds = [r["kind"] for r in response.context["outflow_rows"]]
+        self.assertIn("refund", kinds)
+
+    def test_cannot_delete_a_line_that_has_returns(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        self.client.force_login(self.sales1)
+        self._return(sale, "4")
+        item = sale.items.first()
+        data = sale_post(
+            self.client1.pk,
+            [{**one_item(self.product, weight="10"), "id": item.pk, "DELETE": "on"}],
+        )
+        data["items-INITIAL_FORMS"] = "1"
+        self.client.post(reverse("sale_edit", args=[sale.pk]), data)
+        # The line — and the return hanging off it — must survive.
+        self.assertEqual(sale.items.count(), 1)
+        self.assertEqual(sale.returns.count(), 1)
 
 
 class ModalFormTests(BaseSetup):
@@ -2124,6 +2260,64 @@ class OmborReportTests(BaseSetup):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["total_kg"], Decimal("10"))
         self.assertIsNone(response.context["by_seller"])
+
+    def _detail(self, **params):
+        return self.client.get(reverse("ombor_product", args=[self.p.pk]), params)
+
+    def test_detail_defaults_to_the_whole_history(self):
+        old = date(2020, 3, 1)
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000", date=old)
+        make_sale(self.client1, self.sales1, self.p, weight="5", price="20000")
+        self.client.force_login(self.admin)
+        response = self._detail()
+        # No implicit date window — an old chek must still be reachable here.
+        self.assertEqual(response.context["total_kg"], Decimal("15"))
+        self.assertFalse(response.context["has_filters"])
+
+    def test_detail_filter_by_client(self):
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        make_sale(self.client2, self.sales2, self.p, weight="7", price="20000")
+        self.client.force_login(self.admin)
+        response = self._detail(client=self.client2.pk)
+        self.assertEqual(response.context["total_kg"], Decimal("7"))
+        self.assertTrue(response.context["has_filters"])
+        self.assertIn("Mijoz", [c["label"] for c in response.context["active_filters"]])
+
+    def test_detail_search_matches_client_name(self):
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        make_sale(self.client2, self.sales2, self.p, weight="7", price="20000")
+        self.client.force_login(self.admin)
+        self.assertEqual(self._detail(q="Mijoz B").context["total_kg"], Decimal("7"))
+
+    def test_detail_filter_by_seller(self):
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        make_sale(self.client2, self.sales2, self.p, weight="7", price="20000")
+        self.client.force_login(self.admin)
+        self.assertEqual(
+            self._detail(rep=self.sales1.pk).context["total_kg"], Decimal("10")
+        )
+
+    def test_detail_filter_by_date_range(self):
+        old = date(2020, 3, 1)
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000", date=old)
+        make_sale(self.client1, self.sales1, self.p, weight="5", price="20000")
+        self.client.force_login(self.admin)
+        response = self._detail(dan="2020-01-01", gacha="2020-12-31")
+        self.assertEqual(response.context["total_kg"], Decimal("10"))
+
+    def test_detail_reversed_date_range_is_swapped(self):
+        old = date(2020, 3, 1)
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000", date=old)
+        self.client.force_login(self.admin)
+        response = self._detail(dan="2020-12-31", gacha="2020-01-01")
+        self.assertEqual(response.context["total_kg"], Decimal("10"))
+
+    def test_detail_rep_filter_cannot_widen_a_sellers_scope(self):
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        make_sale(self.client2, self.sales2, self.p, weight="7", price="20000")
+        self.client.force_login(self.sales1)
+        # Asking for someone else's rows must not reveal them — scoping wins.
+        self.assertEqual(self._detail(rep=self.sales2.pk).context["total_kg"], Decimal("10"))
 
 
 class AdvanceTests(TestCase):

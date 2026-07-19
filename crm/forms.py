@@ -646,23 +646,71 @@ SaleItemFormSet = inlineformset_factory(
 
 
 class ReturnForm(forms.ModelForm):
-    """Record goods returned on a sale. Products are limited to those actually on
-    the sale, and the returned quantity can't exceed what was sold (net of prior
-    returns)."""
+    """Record goods returned on a sale.
+
+    The seller picks a sale LINE and a quantity — nothing else about the goods. Price,
+    tannarx, product and unit all come from that line (see `Return.save`), so a return
+    can never be worth more per unit than the sale it reverses. The quantity is capped
+    at what that line still has outstanding, net of earlier returns against it."""
+
+    SETTLE_ADVANCE = "advance"
+    SETTLE_REFUND = "refund"
+
+    settlement = forms.ChoiceField(
+        label="Mijoz allaqachon to'lagan qismi",
+        choices=[
+            (SETTLE_ADVANCE, "Avans bo'lib qolsin (keyingi savdolarga ishlatiladi)"),
+            (SETTLE_REFUND, "Naqd qaytarilsin (kassadan chiqadi)"),
+        ],
+        initial=SETTLE_ADVANCE,
+        widget=forms.RadioSelect,
+        # Optional on purpose: if nothing is picked the excess becomes advance credit,
+        # which keeps the money in the till. Silently paying cash out would be the
+        # riskier default.
+        required=False,
+        help_text=(
+            "Qaytarilgan tovar ochiq qarzdan ko'p bo'lsa, ortiqchasi shu yo'l bilan "
+            "mijozga qaytariladi. Qarz yetarli bo'lsa bu tanlov ishlatilmaydi."
+        ),
+    )
 
     class Meta:
         model = Return
-        fields = ["product", "dimension", "weight", "price", "restock", "note"]
+        fields = ["sale_item", "weight", "restock", "note"]
         widgets = {"note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy"})}
 
-    def __init__(self, *args, sale=None, **kwargs):
+    def __init__(self, *args, sale=None, user=None, **kwargs):
         self.sale = sale
+        self.user = user
+        # Filled in by clean(): how the return's value splits between cancelling debt
+        # and money owed back to the client. The view reads these to post the
+        # settlement, so the split is worked out in exactly one place.
+        self.credited_to_debt = Decimal("0")
+        self.excess = Decimal("0")
         super().__init__(*args, **kwargs)
-        if sale is not None:
-            self.fields["product"].queryset = Product.objects.filter(
-                sale_items__sale=sale
-            ).distinct()
-        _searchable_select(self.fields["product"], "Mahsulotni tanlang")
+        field = self.fields["sale_item"]
+        field.queryset = (
+            SaleItem.objects.filter(sale=sale).select_related("product")
+            if sale is not None
+            else SaleItem.objects.none()
+        )
+        field.label_from_instance = self._line_label
+        _searchable_select(field, "Sotuv qatorini tanlang")
+
+    @staticmethod
+    def _line_label(item):
+        """Name the line by product and unit price, so two lines of the same product
+        at different prices stay tellable apart in the dropdown."""
+        return (
+            f"{item.product.name} · {item.weight:g} {item.dimension} "
+            f"× {item.price:,.0f} so'm"
+        )
+
+    @staticmethod
+    def returnable(item):
+        """How much of one sale line is still returnable, in the line's own unit."""
+        already = sum((r.weight for r in item.returns.all()), Decimal("0"))
+        return item.weight - already
 
     def clean_weight(self):
         weight = self.cleaned_data.get("weight")
@@ -670,32 +718,41 @@ class ReturnForm(forms.ModelForm):
             raise forms.ValidationError("Og'irlik 0 dan katta bo'lishi kerak.")
         return weight
 
-    def clean_price(self):
-        price = self.cleaned_data.get("price")
-        if price is not None and price <= 0:
-            raise forms.ValidationError("Narx 0 dan katta bo'lishi kerak.")
-        return price
-
     def clean(self):
         cleaned = super().clean()
-        product = cleaned.get("product")
+        item = cleaned.get("sale_item")
         weight = cleaned.get("weight")
-        dimension = cleaned.get("dimension")
-        if self.sale and product and weight and dimension:
-            weight_kg = (
-                weight / Decimal("1000") if dimension == Sale.Dimension.G else weight
+        if not (item and weight):
+            return cleaned
+
+        if not cleaned.get("settlement"):
+            cleaned["settlement"] = self.SETTLE_ADVANCE
+
+        left = self.returnable(item)
+        if weight > left:
+            raise forms.ValidationError(
+                f"Bu qatordan ko'pi bilan {left:g} {item.dimension} qaytarish mumkin "
+                f"(sotilgan: {item.weight:g}, avval qaytarilgan: {item.weight - left:g})."
             )
-            sold_kg = sum(
-                (i.weight_kg for i in self.sale.items.all() if i.product_id == product.pk),
-                Decimal("0"),
-            )
-            already_kg = sum(
-                (r.weight_kg for r in self.sale.returns.all() if r.product_id == product.pk),
-                Decimal("0"),
-            )
-            if weight_kg + already_kg > sold_kg:
+
+        # Split the return: it cancels open debt first, and only what's left over is
+        # money the client had already paid and is owed back.
+        value = weight * item.price
+        open_debt = max(Decimal("0"), self.sale.debt_remaining) if self.sale else Decimal("0")
+        self.credited_to_debt = min(value, open_debt)
+        self.excess = value - self.credited_to_debt
+
+        if (
+            self.excess > 0
+            and cleaned.get("settlement") == self.SETTLE_REFUND
+            and self.user is not None
+        ):
+            on_hand = seller_cash_on_hand(self.user)
+            if self.excess > on_hand:
                 raise forms.ValidationError(
-                    "Qaytarilayotgan miqdor sotilganidan ko'p bo'lishi mumkin emas."
+                    f"Naqd qaytarish uchun kassada pul yetarli emas: kerak "
+                    f"{self.excess:,.0f} so'm, kassada {on_hand:,.0f} so'm. "
+                    f"Avans variantini tanlang yoki avval kassaga pul kiriting."
                 )
         return cleaned
 

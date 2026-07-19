@@ -152,6 +152,35 @@
     </tr>
   </table>
   </div>
+  {% if settlements %}
+  <p class="field-hint" style="margin:10px 0 4px;">
+    Qaytarilgan tovar avval qarzni yopdi. Mijoz allaqachon to'lagan ortiqcha qism
+    quyidagicha qaytarildi:
+  </p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Sana</th><th>Qanday</th><th class="num">Summa</th><th>Kim</th></tr>
+    {% for s in settlements %}
+    <tr>
+      <td>{{ s.date|date:"d.m.Y" }}</td>
+      <td>
+        {% if s.kind == 'refund_out' %}
+          <span class="badge badge-neutral">Naqd berildi</span>
+        {% else %}
+          <span class="badge badge-paid">Avansga o'tdi</span>
+        {% endif %}
+      </td>
+      <td class="num"><strong>{{ s.amount|floatformat:"0g" }}</strong></td>
+      <td>{{ s.created_by }}</td>
+    </tr>
+    {% endfor %}
+    <tr class="row-total">
+      <td><strong>Jami qaytarilgan pul</strong></td><td></td>
+      <td class="num"><strong>{{ settled|floatformat:"0g" }}</strong></td><td></td>
+    </tr>
+  </table>
+  </div>
+  {% endif %}
 </div>
 {% endif %}
 {% endblock %}

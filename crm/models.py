@@ -34,6 +34,7 @@ ITEM_WEIGHT_KG = Case(
 
 # Same conversions, reused for returned goods
 RETURN_AMOUNT = ExpressionWrapper(F("weight") * F("price"), output_field=MONEY)
+RETURN_COST = ExpressionWrapper(F("weight") * F("cost_price"), output_field=MONEY)
 RETURN_WEIGHT_KG = Case(
     When(dimension="g", then=F("weight") / Value(Decimal("1000"))),
     default=F("weight"),
@@ -223,6 +224,12 @@ def _sale_item_sum(expr):
 PAYMENT_NET = ExpressionWrapper(F("amount") - F("commission"), output_field=MONEY)
 
 
+# Payment kinds that represent the client paying money INTO a sale. The two
+# return-settlement kinds also carry a `sale`, but they move money the other way,
+# so they must never be counted here — see `_sale_settlement_sum`.
+PAYING_KINDS = ("sale", "debt", "advance_used")
+
+
 def _sale_paid_sum():
     """A subquery summing the net payments credited against one sale.
 
@@ -230,7 +237,7 @@ def _sale_paid_sum():
     client bears the fee, so a 100k transfer with a 5k fee clears only 95k."""
     return Coalesce(
         Subquery(
-            Payment.objects.filter(sale=OuterRef("pk"))
+            Payment.objects.filter(sale=OuterRef("pk"), kind__in=PAYING_KINDS)
             .values("sale")
             .annotate(s=Sum(PAYMENT_NET))
             .values("s"),
@@ -240,14 +247,41 @@ def _sale_paid_sum():
     )
 
 
-def _sale_return_sum():
-    """A subquery summing the value of goods returned on one sale."""
+def _sale_settlement_sum():
+    """A subquery summing what has been given back to the client on one sale — the
+    excess of a return over the debt it cancelled, settled either as advance credit
+    (RETURN_CREDIT) or as cash handed over (REFUND_OUT).
+
+    This is what stops an over-returned sale from sitting at a permanent negative
+    balance: the goods leave via `returned`, the money the client had already paid
+    comes back via `settled`, and the receipt lands back on zero."""
     return Coalesce(
         Subquery(
-            Return.objects.filter(sale=OuterRef("pk"))
+            Payment.objects.filter(
+                sale=OuterRef("pk"),
+                kind__in=(Payment.Kind.RETURN_CREDIT, Payment.Kind.REFUND_OUT),
+            )
             .values("sale")
-            .annotate(s=Sum(RETURN_AMOUNT))
+            .annotate(s=Sum("amount"))
             .values("s"),
+            output_field=MONEY,
+        ),
+        Value(Decimal("0"), output_field=MONEY),
+    )
+
+
+def _sale_return_sum(expr, restocked_only=False):
+    """A subquery summing a money-expression over the returns on one sale.
+
+    `restocked_only` limits it to goods that physically came back into the warehouse —
+    the distinction that decides whether a return also relieves the seller of the
+    tannarx they owe production."""
+    qs = Return.objects.filter(sale=OuterRef("pk"))
+    if restocked_only:
+        qs = qs.filter(restock=True)
+    return Coalesce(
+        Subquery(
+            qs.values("sale").annotate(s=Sum(expr)).values("s"),
             output_field=MONEY,
         ),
         Value(Decimal("0"), output_field=MONEY),
@@ -256,20 +290,44 @@ def _sale_return_sum():
 
 class SaleQuerySet(models.QuerySet):
     def with_totals(self):
-        """Annotate each sale (header) with revenue/cost/profit summed over its items."""
+        """Annotate each sale (header) with revenue/cost/profit over its items.
+
+        `total` and `cost_total` stay GROSS — they are what was sold, and reports read
+        them that way. Returns are exposed alongside as `returned` /
+        `returned_cost_total`, with `net_revenue` / `net_cost_total` giving the
+        after-returns figures.
+
+        Only restocked returns give their tannarx back: if the goods did not come back
+        into the warehouse they were still consumed, so the cost stands and
+        `profit_total` absorbs it as a loss.
+
+        Annotation names deliberately differ from the same-meaning properties on Sale
+        (`net_total`, `net_cost`, `returned_cost`) — Django assigns annotations onto the
+        instance, and a name shared with a read-only property blows up on assignment."""
         return self.annotate(
             total=_sale_item_sum(REVENUE),
             cost_total=_sale_item_sum(COST),
-            profit_total=_sale_item_sum(PROFIT),
-        )
+            returned=_sale_return_sum(RETURN_AMOUNT),
+            returned_cost_total=_sale_return_sum(RETURN_COST, restocked_only=True),
+        ).annotate(
+            net_revenue=F("total") - F("returned"),
+            net_cost_total=F("cost_total") - F("returned_cost_total"),
+        ).annotate(profit_total=F("net_revenue") - F("net_cost_total"))
 
     def with_balance(self):
-        """with_totals plus paid / returned / remaining, so debt status can be
-        filtered in SQL. Returned goods reduce what the client owes."""
+        """with_totals plus paid / settled / remaining, so debt status can be filtered
+        in SQL.
+
+        Returned goods shrink what the client owes (`net_revenue`); money already handed
+        back to them for those goods shrinks what they are credited with having paid
+        (`net_paid`). A sale that is fully returned and fully settled lands on exactly
+        zero either way round."""
         return self.with_totals().annotate(
             paid=_sale_paid_sum(),
-            returned=_sale_return_sum(),
-        ).annotate(remaining=F("total") - F("returned") - F("paid"))
+            settled=_sale_settlement_sum(),
+        ).annotate(
+            net_paid=F("paid") - F("settled"),
+        ).annotate(remaining=F("net_revenue") - F("net_paid"))
 
     def outstanding(self):
         """Sales that still owe money (a receivable / qarz)."""
@@ -317,7 +375,9 @@ class Sale(models.Model):
 
     @property
     def profit(self):
-        return self.total_price - self.total_cost
+        """After-returns profit. A non-restocked return drops the revenue but keeps
+        the cost, so writing goods off shows up here as a loss."""
+        return self.net_total - self.net_cost
 
     @property
     def item_summary(self):
@@ -333,12 +393,35 @@ class Sale(models.Model):
 
     @property
     def paid_amount(self):
-        # Net of bank fees: only (amount − commission) counts toward the debt.
-        return self.payments.aggregate(s=Sum(PAYMENT_NET))["s"] or Decimal("0")
+        # Net of bank fees: only (amount − commission) counts toward the debt. Limited
+        # to the kinds that move money IN — a settlement row also carries this sale.
+        return (
+            self.payments.filter(kind__in=PAYING_KINDS).aggregate(s=Sum(PAYMENT_NET))["s"]
+            or Decimal("0")
+        )
+
+    @property
+    def settled_amount(self):
+        """Money handed back to the client on this sale — the over-returned excess,
+        parked as advance credit or paid out in cash."""
+        return (
+            self.payments.filter(
+                kind__in=(Payment.Kind.RETURN_CREDIT, Payment.Kind.REFUND_OUT)
+            ).aggregate(s=Sum("amount"))["s"]
+            or Decimal("0")
+        )
 
     @property
     def returned_amount(self):
         return sum((r.amount for r in self.returns.all()), Decimal("0"))
+
+    @property
+    def returned_cost(self):
+        """Tannarx of returns that went back into the warehouse — the only ones that
+        relieve the seller of what they owe production."""
+        return sum(
+            (r.cost_amount for r in self.returns.all() if r.restock), Decimal("0")
+        )
 
     @property
     def net_total(self):
@@ -346,8 +429,12 @@ class Sale(models.Model):
         return self.total_price - self.returned_amount
 
     @property
+    def net_cost(self):
+        return self.total_cost - self.returned_cost
+
+    @property
     def debt_remaining(self):
-        return self.net_total - self.paid_amount
+        return self.net_total - (self.paid_amount - self.settled_amount)
 
     @property
     def is_paid(self):
@@ -443,10 +530,19 @@ class SaleItem(models.Model):
 
 class Return(models.Model):
     """Goods returned from a sale. Credits the client's debt by the returned
-    value and, when restocked, flows the quantity back into the warehouse."""
+    value and, when restocked, flows the quantity back into the warehouse.
+
+    A return always points at the exact sale line it reverses. Product, dimension,
+    price and cost_price are copied from that line by `save()` and are never typed
+    in by hand — a free-typed price would let a seller shrink a debt by more than
+    the goods were sold for, and a line-level link keeps things unambiguous when the
+    same product appears twice on one receipt at different prices."""
 
     sale = models.ForeignKey(
         Sale, on_delete=models.CASCADE, related_name="returns", verbose_name="Sotuv"
+    )
+    sale_item = models.ForeignKey(
+        SaleItem, on_delete=models.CASCADE, related_name="returns", verbose_name="Sotuv qatori"
     )
     product = models.ForeignKey(
         Product, on_delete=models.PROTECT, related_name="returns", verbose_name="Mahsulot"
@@ -456,6 +552,11 @@ class Return(models.Model):
     )
     weight = models.DecimalField("Og'irligi", max_digits=12, decimal_places=3)
     price = models.DecimalField("Narxi (1 birlik, so'm)", max_digits=14, decimal_places=2)
+    # Tannarx of the returned goods, snapshotted from the sale line. Drives both the
+    # profit adjustment and — only when restocked — the seller's production debt.
+    cost_price = models.DecimalField(
+        "Tannarxi (1 birlik, so'm)", max_digits=14, decimal_places=2, default=0
+    )
     date = models.DateField("Sana", default=timezone.localdate)
     restock = models.BooleanField("Omborga qaytarilsin", default=True)
     note = models.CharField("Izoh", max_length=255, blank=True)
@@ -472,6 +573,17 @@ class Return(models.Model):
         verbose_name = "Qaytarish"
         verbose_name_plural = "Qaytarishlar"
 
+    def save(self, *args, **kwargs):
+        """Mirror the sale line's identity and pricing onto the return, so the two can
+        never drift apart. The seller only ever chooses a line and a quantity."""
+        item = self.sale_item
+        self.sale_id = item.sale_id
+        self.product_id = item.product_id
+        self.dimension = item.dimension
+        self.price = item.price
+        self.cost_price = item.cost_price
+        super().save(*args, **kwargs)
+
     @property
     def weight_kg(self):
         if self.dimension == Sale.Dimension.G:
@@ -480,7 +592,13 @@ class Return(models.Model):
 
     @property
     def amount(self):
+        """Revenue reversed by this return — what the client is credited."""
         return self.weight * self.price
+
+    @property
+    def cost_amount(self):
+        """Tannarx of the returned goods."""
+        return self.weight * self.cost_price
 
     def __str__(self):
         return f"Qaytarish · {self.product.name}: {self.weight} {self.dimension}"
@@ -516,11 +634,23 @@ class StockEntry(models.Model):
 
 class PaymentQuerySet(models.QuerySet):
     def till_income(self):
-        """Only payments that represent real cash arriving in a till. ADVANCE_USED is
-        excluded: that money already entered the till as an ADVANCE_IN deposit, so
-        counting the consumption again would double it. Per-sale debt math is separate
-        and DOES count ADVANCE_USED (it settles the receipt) — see `_sale_paid_sum`."""
-        return self.exclude(kind=self.model.Kind.ADVANCE_USED)
+        """Only payments that represent real cash arriving in a till.
+
+        Three kinds are excluded. ADVANCE_USED: that money already entered the till as
+        an ADVANCE_IN deposit, so counting the consumption again would double it.
+        RETURN_CREDIT: likewise already in the till from the original payment — the
+        return only re-labels it as the client's credit. REFUND_OUT: money leaving,
+        not arriving; it is subtracted separately in `seller_cash_on_hand`.
+
+        Per-sale debt math is separate and DOES count ADVANCE_USED (it settles the
+        receipt) — see `_sale_paid_sum`."""
+        return self.exclude(
+            kind__in=(
+                self.model.Kind.ADVANCE_USED,
+                self.model.Kind.RETURN_CREDIT,
+                self.model.Kind.REFUND_OUT,
+            )
+        )
 
 
 class Payment(models.Model):
@@ -539,6 +669,14 @@ class Payment(models.Model):
         # credit on a sale WITHOUT adding new till income (see PaymentQuerySet).
         ADVANCE_IN = "advance_in", "Oldindan to'lov (avans)"
         ADVANCE_USED = "advance_used", "Avansdan yechildi"
+        # Settlement of a return whose value exceeds the sale's open debt — the client
+        # had already paid for those goods, so the money is owed back to them.
+        # RETURN_CREDIT parks it as advance credit: no cash moves (it is already in the
+        # till from the original payment), so it must stay out of till income while
+        # still counting toward the client's advance balance. REFUND_OUT is the other
+        # route — cash physically handed back, so it leaves the till.
+        RETURN_CREDIT = "return_credit", "Qaytarishdan kredit"
+        REFUND_OUT = "refund_out", "Qaytarish (naqd berildi)"
 
     class Currency(models.TextChoices):
         UZS = "uzs", "So'm"
@@ -573,7 +711,7 @@ class Payment(models.Model):
         "Bank ushlagan foiz (%)", max_digits=5, decimal_places=2, default=0
     )
     note = models.CharField("Izoh", max_length=255, blank=True)
-    kind = models.CharField("Turi", max_length=12, choices=Kind.choices)
+    kind = models.CharField("Turi", max_length=16, choices=Kind.choices)
     # A per-sale payment (sale/debt/advance_used) carries `sale`; a client-level
     # advance deposit (advance_in) carries only `client` and leaves `sale` null.
     sale = models.ForeignKey(
@@ -759,13 +897,21 @@ class ProfitPayout(models.Model):
 
 def seller_cash_on_hand(seller, exclude_remittance_pk=None, exclude_payout_pk=None):
     """Cash physically in a seller's till right now — the same figure the kassa page
-    shows as "Kassadagi pul": net client payments they collected, minus expenses they
-    paid out, minus what they've handed to production, minus profit already handed to
-    the boss. A new handover can't exceed this (otherwise the till would go negative).
-    The `exclude_*_pk` args drop one existing row from the tally so editing it checks
-    against the delta, not itself."""
+    shows as "Kassadagi pul": net client payments they collected, minus cash refunded
+    to clients, minus expenses they paid out, minus what they've handed to production,
+    minus profit already handed to the boss. A new handover can't exceed this
+    (otherwise the till would go negative). The `exclude_*_pk` args drop one existing
+    row from the tally so editing it checks against the delta, not itself."""
     income = (
         Payment.objects.filter(created_by=seller).till_income().aggregate(s=Sum(PAYMENT_NET))["s"]
+        or Decimal("0")
+    )
+    # Cash handed back on an over-returned sale. Refunds are recorded without a bank
+    # fee, so the full amount is what leaves the drawer.
+    refunded = (
+        Payment.objects.filter(
+            created_by=seller, kind=Payment.Kind.REFUND_OUT
+        ).aggregate(s=Sum("amount"))["s"]
         or Decimal("0")
     )
     expense = (
@@ -780,21 +926,23 @@ def seller_cash_on_hand(seller, exclude_remittance_pk=None, exclude_payout_pk=No
     if exclude_payout_pk:
         payout_qs = payout_qs.exclude(pk=exclude_payout_pk)
     paid_profit = payout_qs.aggregate(s=Sum("amount"))["s"] or Decimal("0")
-    return income - expense - remitted - paid_profit
+    return income - refunded - expense - remitted - paid_profit
 
 
 def client_advance_balance(client, seller=None):
-    """The prepaid credit a client holds: deposits taken in (ADVANCE_IN) minus what
-    sales have since consumed (ADVANCE_USED). Positive = money held that the client
-    hasn't taken goods for yet; zero = nothing prepaid. Nets bank fees out, so only
-    usable money counts. Advance is seller-bound, so pass `seller` to get the balance
-    in that one seller's till; omit it for the client's total across all sellers (the
-    admin overview figure)."""
+    """The credit a client holds: money put in (ADVANCE_IN deposits and RETURN_CREDIT
+    from over-returned sales) minus what sales have since consumed (ADVANCE_USED).
+    Positive = money held that the client hasn't taken goods for yet; zero = nothing
+    prepaid. Nets bank fees out, so only usable money counts. Advance is seller-bound,
+    so pass `seller` to get the balance in that one seller's till; omit it for the
+    client's total across all sellers (the admin overview figure)."""
     rows = Payment.objects.filter(client=client)
     if seller is not None:
         rows = rows.filter(created_by=seller)
     deposited = (
-        rows.filter(kind=Payment.Kind.ADVANCE_IN).aggregate(s=Sum(PAYMENT_NET))["s"]
+        rows.filter(
+            kind__in=(Payment.Kind.ADVANCE_IN, Payment.Kind.RETURN_CREDIT)
+        ).aggregate(s=Sum(PAYMENT_NET))["s"]
         or Decimal("0")
     )
     used = (
@@ -806,11 +954,22 @@ def client_advance_balance(client, seller=None):
 
 def seller_production_debt(seller):
     """What a seller still owes production: the tannarx (cost) of everything they've
-    sold, minus what they've already remitted."""
+    sold, minus the tannarx of goods that came back into the warehouse, minus what
+    they've already remitted.
+
+    Only RESTOCKED returns count against the debt. If the goods did not come back
+    (spoiled, written off) the seller consumed them, so they still owe production the
+    cost — otherwise a write-off would silently erase a real liability."""
     sold_cost = (
         SaleItem.objects.filter(sale__sales_rep=seller).aggregate(s=Sum(COST))["s"]
         or Decimal("0")
     )
+    returned_cost = (
+        Return.objects.filter(sale__sales_rep=seller, restock=True)
+        .aggregate(s=Sum(RETURN_COST))["s"]
+        or Decimal("0")
+    )
+    sold_cost -= returned_cost
     remitted = (
         ProductionRemittance.objects.filter(seller=seller).aggregate(s=Sum("amount"))["s"]
         or Decimal("0")
