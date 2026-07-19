@@ -2,7 +2,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from io import BytesIO
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from openpyxl import load_workbook
@@ -110,6 +110,10 @@ def give_ombor(seller, product, kg="100000", **kwargs):
     return receipt
 
 
+# Tests must not depend on the deployment's ombor cutover (OMBOR_START_DATE in
+# .env, set to the Excel-import date) — pin it far in the past so every stock
+# movement the tests create is counted.
+@override_settings(OMBOR_START_DATE=date(2020, 1, 1))
 class BaseSetup(TestCase):
     @classmethod
     def setUpTestData(cls):
