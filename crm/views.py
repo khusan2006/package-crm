@@ -2090,7 +2090,7 @@ def _kassa_transactions(expenses, dates, filters, rep):
     refunds = Payment.objects.filter(
         kind=Payment.Kind.REFUND_OUT,
         date__gte=dates["date_from"], date__lte=dates["date_to"],
-    ).select_related("client", "created_by")
+    ).select_related("client", "created_by").prefetch_related("settled_return")
     if rep is not None:
         refunds = refunds.filter(created_by=rep)
     if filters["method"] in dict(Payment.Method.choices):
@@ -2098,6 +2098,9 @@ def _kassa_transactions(expenses, dates, filters, rep):
     if filters["currency"] in dict(Payment.Currency.choices):
         refunds = refunds.filter(currency=filters["currency"])
     for rf in refunds:
+        # A refund is only ever corrected by undoing its return, so carry the return's
+        # pk onto the row — the kassa "Bekor qilish" action links straight to it.
+        linked = list(rf.settled_return.all())
         rows.append({
             "date": rf.date, "created_at": rf.created_at, "direction": "refund",
             "title": str(rf.client) if rf.client else "—",
@@ -2106,7 +2109,8 @@ def _kassa_transactions(expenses, dates, filters, rep):
             "currency": rf.currency,
             "amount_som": rf.amount, "amount_original": rf.original_amount,
             "exchange_rate": rf.exchange_rate, "created_by": rf.created_by,
-            "pk": rf.pk, "kind": "refund",
+            "pk": rf.pk, "kind": "refund", "sale_pk": rf.sale_id,
+            "return_pk": linked[0].pk if linked else None,
         })
     for e in expenses:
         rows.append({
@@ -3127,13 +3131,13 @@ def sale_pay(request, pk):
     return _render_debt_pay(request, sale, form)
 
 
-def _render_return_form(request, sale, form, invalid=False):
+def _render_return_form(request, sale, form, invalid=False, title=None):
     open_debt = max(Decimal("0"), sale.debt_remaining)
     net_paid = sale.paid_amount - sale.settled_amount
     context = {
         "form": form,
         "sale": sale,
-        "title": f"Qaytarish: {sale.client.name}",
+        "title": title or f"Qaytarish: {sale.client.name}",
         # The seller's first question is "has this client paid yet?", because that is
         # what decides whether goods coming back cost the till anything.
         "open_debt": open_debt,
@@ -3170,28 +3174,7 @@ def sale_return(request, pk):
             ret = form.save(commit=False)
             ret.created_by = request.user
             ret.save()
-
-            excess = form.excess
-            to_debt = form.credited_to_debt
-            refunded = form.cleaned_data["settlement"] == ReturnForm.SETTLE_REFUND
-            if excess > 0:
-                Payment.objects.create(
-                    sale=sale,
-                    client=sale.client,
-                    date=ret.date,
-                    amount=excess,
-                    method=Payment.Method.CASH,
-                    kind=(
-                        Payment.Kind.REFUND_OUT if refunded
-                        else Payment.Kind.RETURN_CREDIT
-                    ),
-                    note=f"Qaytarish: {ret.product.name}",
-                    created_by=request.user,
-                )
-                if not refunded:
-                    # Spend the fresh credit on whatever else the client still owes.
-                    _apply_advance_to_open_sales(sale.client, request.user)
-
+            to_debt, excess, refunded = _settle_return(ret, form, request.user)
             AuditLog.record(
                 request.user, AuditLog.Action.RETURN, "Qaytarish", sale.pk,
                 f"Mijoz {sale.client.name} qaytardi ({ret.product.name}) — "
@@ -3204,6 +3187,154 @@ def sale_return(request, pk):
         return _render_return_form(request, sale, form, invalid=True)
     form = ReturnForm(sale=sale, user=request.user, initial={"restock": True})
     return _render_return_form(request, sale, form)
+
+
+def _settle_return(ret, form, user):
+    """Post the money side of a just-saved return and link it back to the return.
+
+    The return's value cancels open debt first; any excess is money the client had
+    already paid and is owed back — parked as advance credit (default) or handed out
+    as cash. Kept in one place so `sale_return` and `return_edit` settle identically.
+    Returns (to_debt, excess, refunded)."""
+    excess = form.excess
+    to_debt = form.credited_to_debt
+    refunded = form.cleaned_data.get("settlement") == ReturnForm.SETTLE_REFUND
+    if excess > 0:
+        settlement = Payment.objects.create(
+            sale=ret.sale,
+            client=ret.sale.client,
+            date=ret.date,
+            amount=excess,
+            method=Payment.Method.CASH,
+            kind=(
+                Payment.Kind.REFUND_OUT if refunded
+                else Payment.Kind.RETURN_CREDIT
+            ),
+            note=f"Qaytarish: {ret.product.name}",
+            created_by=user,
+        )
+        # Link the payment back to the return so it can be voided/edited as one unit.
+        ret.settlement = settlement
+        ret.save(update_fields=["settlement"])
+        if not refunded:
+            # Spend the fresh credit on whatever else the client still owes.
+            _apply_advance_to_open_sales(ret.sale.client, user)
+    return to_debt, excess, refunded
+
+
+def _reverse_return(ret):
+    """Roll back a return's money side and delete the return itself. The sale's debt,
+    the warehouse figures and every till total re-derive to their pre-return state; a
+    spent advance credit is peeled back so the pool can't go negative. Shared by
+    `return_delete` (final) and `return_edit` (before re-applying the new values)."""
+    settlement = ret.settlement
+    is_credit = settlement is not None and settlement.kind == Payment.Kind.RETURN_CREDIT
+    client = ret.sale.client
+    seller = settlement.created_by if settlement else None
+    if settlement is not None:
+        settlement.delete()
+    ret.delete()
+    if is_credit and seller is not None:
+        _reconcile_client_advance(client, seller)
+
+
+def return_edit(request, pk):
+    """Correct a mistaken return — change the line, quantity, restock flag or how the
+    excess was settled. The old return is rolled back in full and the new values are
+    applied as a fresh return, so debt, till and advance stay perfectly in sync (a
+    return can't be safely edited in place — its settlement is derived from it). A
+    seller may edit only their own returns; admins/managers any."""
+    qs = Return.objects.select_related(
+        "sale", "sale__client", "product", "sale_item", "settlement"
+    )
+    if not request.user.can_see_all_records:
+        qs = qs.filter(created_by=request.user)
+    ret = get_object_or_404(qs, pk=pk)
+    sale = ret.sale
+    acceptor, orig_date = ret.created_by, ret.date
+    title = "Qaytarishni tahrirlash"
+    if request.method == "POST":
+        with transaction.atomic():
+            _reverse_return(ret)
+            # Validate against the restored state, so the quantity cap and the debt
+            # split both see the sale as if this return had never happened.
+            sale.refresh_from_db()
+            form = ReturnForm(request.POST, sale=sale, user=request.user)
+            if form.is_valid():
+                new = form.save(commit=False)
+                new.created_by = acceptor
+                new.date = orig_date
+                new.save()
+                to_debt, excess, refunded = _settle_return(new, form, request.user)
+                AuditLog.record(
+                    request.user, AuditLog.Action.UPDATE, "Qaytarish", sale.pk,
+                    f"Mijoz {sale.client.name} qaytarishi o'zgartirildi "
+                    f"({new.product.name}) — {new.amount:,.0f} so'm",
+                )
+                messages.success(request, "Qaytarish yangilandi.")
+                return form_reload(request, reverse("sale_detail", args=[sale.pk]))
+            # Invalid: undo the tentative reversal, leaving the return untouched.
+            transaction.set_rollback(True)
+        return _render_return_form(request, sale, form, invalid=True, title=title)
+    settlement_initial = (
+        ReturnForm.SETTLE_REFUND
+        if ret.settlement and ret.settlement.kind == Payment.Kind.REFUND_OUT
+        else ReturnForm.SETTLE_ADVANCE
+    )
+    form = ReturnForm(
+        sale=sale, user=request.user,
+        initial={
+            "sale_item": ret.sale_item_id,
+            "weight": ret.weight,
+            "restock": ret.restock,
+            "note": ret.note,
+            "settlement": settlement_initial,
+        },
+    )
+    return _render_return_form(request, sale, form, title=title)
+
+
+def return_delete(request, pk):
+    """Undo a return in full. Voids the settlement it generated (the cash refund or
+    the advance credit) and removes the return itself, so the sale's open debt, the
+    warehouse figures and every till total re-derive to exactly their pre-return state.
+    A seller may undo only their own returns; admins/managers any."""
+    qs = Return.objects.select_related("sale", "sale__client", "product", "settlement")
+    if not request.user.can_see_all_records:
+        qs = qs.filter(created_by=request.user)
+    ret = get_object_or_404(qs, pk=pk)
+    settlement = ret.settlement
+    is_refund = settlement is not None and settlement.kind == Payment.Kind.REFUND_OUT
+    is_credit = settlement is not None and settlement.kind == Payment.Kind.RETURN_CREDIT
+    if request.method == "POST":
+        sale_pk = ret.sale_id
+        client = ret.sale.client
+        summary = (
+            f"Mijoz {client.name} qaytarishi bekor qilindi "
+            f"({ret.product.name}) — {ret.amount:,.0f} so'm"
+        )
+        with transaction.atomic():
+            _reverse_return(ret)
+        AuditLog.record(request.user, AuditLog.Action.VOID, "Qaytarish", sale_pk, summary)
+        messages.success(request, "Qaytarish bekor qilindi — qarz va kassa qayta hisoblandi.")
+        return form_reload(request, reverse("sale_detail", args=[sale_pk]))
+    if is_refund:
+        extra = " Naqd qaytarilgan pul kassaga qaytadi."
+    elif is_credit:
+        extra = (
+            " Mijoz avansiga o'tgan summa bekor qilinadi — agar u boshqa "
+            "sotuvlarga ishlatilgan bo'lsa, o'sha sotuvlar qayta qarzga aylanadi."
+        )
+    else:
+        extra = ""
+    return render_confirm(
+        request,
+        "Qaytarishni bekor qilish",
+        f"“{ret.product.name}” — {ret.amount:,.0f} so'm qaytarish bekor qilinadi "
+        f"va sotuv qarzi qayta tiklanadi.{extra} Davom etasizmi?",
+        "Ha, bekor qilish",
+        confirm_class="btn-danger",
+    )
 
 
 def _return_message(total, to_debt, excess, refunded):
@@ -3221,27 +3352,40 @@ def _return_message(total, to_debt, excess, refunded):
 
 
 def sale_delete(request, pk):
-    sale = get_object_or_404(Sale.objects.visible_to(request.user), pk=pk)
-    # A sale with recorded payments must not be deleted — it would silently wipe
-    # money already booked in the till/ledger. Reverse the payments first.
-    if sale.payments.exists():
-        messages.error(
-            request,
-            "Bu sotuvni o'chirib bo'lmaydi — unga to'lovlar yozilgan. "
-            "Avval to'lovlarni bekor qiling.",
-        )
-        return form_reload(request, reverse("sale_list"))
+    """Delete a sale outright. Any payments and returns booked against it are reversed
+    with it — they cascade — and the client's advance is reconciled so freed credit
+    settles onto other open receipts (or an orphaned credit is peeled back). The till,
+    debt and profit all re-derive. Because this removes money records, the confirm
+    dialog spells out exactly what will go, mirroring how payment/advance voids work."""
+    sale = get_object_or_404(
+        Sale.objects.visible_to(request.user).select_related("client"), pk=pk
+    )
+    client, seller = sale.client, sale.sales_rep
+    paid = sale.paid_amount
+    return_count = sale.returns.count()
     if request.method == "POST":
         summary = f"Mijoz {sale.client.name} sotuvi — {sale.total_price:,.0f} so'm"
         sale_pk = sale.pk
-        sale.delete()
+        with transaction.atomic():
+            sale.delete()  # items, payments and returns cascade with it
+            # Freed or now-orphaned advance allocations settle back into balance.
+            _reconcile_client_advance(client, seller)
         AuditLog.record(request.user, AuditLog.Action.DELETE, "Sotuv", sale_pk, summary)
         messages.success(request, "Sotuv o'chirildi.")
         return form_reload(request, reverse("sale_list"))
+    extra = []
+    if paid > 0:
+        extra.append(f"{paid:,.0f} so'm to'lov")
+    if return_count:
+        extra.append(f"{return_count} ta qaytarish")
+    warn = (
+        f" Unga bog'liq {' va '.join(extra)} ham o'chiriladi, kassa va qarz qayta hisoblanadi."
+        if extra else ""
+    )
     return render_confirm(
         request,
         "Sotuvni o'chirish",
-        "Bu sotuv butunlay o'chiriladi. Davom etasizmi?",
+        f"Bu sotuv butunlay o'chiriladi.{warn} Davom etasizmi?",
         "Ha, o'chirish",
         confirm_class="btn-danger",
     )

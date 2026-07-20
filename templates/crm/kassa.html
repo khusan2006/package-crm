@@ -118,7 +118,7 @@
       {% for t in outflow_rows %}
       <tr>
         <td>{{ t.date|date:"d.m.Y" }}</td>
-        <td>{% if t.kind == 'remittance' %}<span class="badge badge-remit">Topshirish</span> {% elif t.kind == 'profit' %}<span class="badge badge-ok">Foyda</span> {% elif t.kind == 'refund' %}<span class="badge badge-neutral">Qaytarish</span> {% endif %}{{ t.title }}{% if t.kind == 'refund' and t.subtitle %}<span class="cell-sub">{{ t.subtitle }}</span>{% endif %}</td>
+        <td>{% if t.kind == 'remittance' %}<span class="badge badge-remit">Topshirish</span> {% elif t.kind == 'profit' %}<span class="badge badge-ok">Foyda</span> {% elif t.kind == 'refund' %}<span class="badge badge-neutral">Qaytarish</span> {% endif %}{{ t.title }}{% if t.kind == 'expense' and t.subtitle %}<span class="cell-sub">{{ t.subtitle }}</span>{% endif %}</td>
         <td>{% include "crm/_method_badge.html" with code=t.method_code label=t.method %}</td>
         <td class="num muted">{% if t.currency == 'usd' %}{{ t.exchange_rate|floatformat:"0g" }}{% else %}—{% endif %}</td>
         <td class="num">{% if t.kind == 'remittance' %}<strong style="color:var(--violet)">−{{ t.amount_som|floatformat:"0g" }}</strong>{% elif t.kind == 'profit' %}<strong style="color:var(--success)">−{{ t.amount_som|floatformat:"0g" }}</strong>{% else %}<strong class="amt-out">−{{ t.amount_som|floatformat:"0g" }}</strong>{% endif %}</td>
@@ -129,9 +129,12 @@
           {% elif t.kind == 'profit' %}
           <a class="icon-action" href="{% url 'profit_payout_edit' t.pk %}" data-modal title="Foyda topshiruvini tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
           <a class="icon-action danger" href="{% url 'profit_payout_delete' t.pk %}" data-modal title="Foyda topshiruvini o'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
-          {% elif t.kind == 'refund' %}
-          {% comment %}A refund is part of a return — it is corrected by reversing the
-          return, never edited on its own, so there are no row actions here.{% endcomment %}
+          {% elif t.kind == 'refund' %}{% comment %}A refund is derived from its return —
+          edit or undo it from the sale page, never the payment on its own.{% endcomment %}{% if t.return_pk and user.can_see_all_records or t.return_pk and t.created_by == user %}
+          <a class="icon-action" href="{% url 'return_edit' t.return_pk %}" data-modal title="Qaytarishni tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
+          {% endif %}{% if t.sale_pk %}
+          <a class="icon-action" href="{% url 'sale_detail' t.sale_pk %}" title="Sotuvni ochish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></a>
+          {% endif %}
           {% else %}
           <a class="icon-action" href="{% url 'expense_edit' t.pk %}" data-modal title="Tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
           <a class="icon-action danger" href="{% url 'expense_delete' t.pk %}" data-modal title="Chiqimni o'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>

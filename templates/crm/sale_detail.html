@@ -143,7 +143,12 @@
       <td>{% if r.restock %}<span class="badge badge-paid">Qaytarildi</span>{% else %}<span class="badge badge-neutral">Yo'q</span>{% endif %}
         {% if r.note %}<span class="cell-sub">{{ r.note }}</span>{% endif %}
       </td>
-      <td>{{ r.created_by }}</td>
+      <td class="row-actions">{{ r.created_by }}
+        {% if user.can_see_all_records or r.created_by == user %}
+        <a class="icon-action" href="{% url 'return_edit' r.pk %}" data-modal title="Qaytarishni tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
+        <a class="icon-action danger" href="{% url 'return_delete' r.pk %}" data-modal title="Qaytarishni bekor qilish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
+        {% endif %}
+      </td>
     </tr>
     {% endfor %}
     <tr class="row-total">

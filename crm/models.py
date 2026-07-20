@@ -566,6 +566,18 @@ class Return(models.Model):
         related_name="returns",
         verbose_name="Kim qabul qildi",
     )
+    # The settlement this return generated for its excess value — money the client had
+    # already paid and is owed back: a REFUND_OUT cash payout or a RETURN_CREDIT advance.
+    # Null when the return only cancelled open debt (no money moved). Kept as an explicit
+    # link so undoing the return voids exactly the right till entry instead of guessing.
+    settlement = models.ForeignKey(
+        "Payment",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="settled_return",
+        verbose_name="Hisob-kitob to'lovi",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -1130,6 +1142,8 @@ class AuditLog(models.Model):
                 return e("Foyda topshiruvi o'zgartirildi", AMBER, "edit")
             return e("Foyda boshliqqa topshirildi", "badge-info", "out", "out")
         if t == "Qaytarish":
+            if a == self.Action.VOID:
+                return e("Qaytarish bekor qilindi", RED, "trash")
             return e("Mahsulot qaytdi", AMBER, "return")
         if t == "Qabul":
             if a == self.Action.DELETE:
