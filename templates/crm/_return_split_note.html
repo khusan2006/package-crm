@@ -1,15 +1,26 @@
 {% comment %}
-Explains, before the form is filled in, how the returned value will be split: it
-cancels the receipt's open debt first, and only the excess comes back to the client.
+Answers the seller's first question before they fill anything in: has this client
+already paid for these goods? That is what decides whether the return simply shrinks a
+debt (no money moves) or hands money back (advance credit, or cash out of the till).
 Shared by the return modal and its full-page fallback.
 {% endcomment %}
-<p class="muted" style="margin-top:0;">
-  {% if open_debt %}
-    Bu chekda ochiq qarz — <strong>{{ open_debt|floatformat:"0g" }} so'm</strong>.
-    Qaytarilgan tovar avval shu qarzni yopadi, undan ortiqchasi mijozga qaytariladi.
+<div class="field-hint" style="margin:0 0 12px;line-height:1.55;">
+  {% if is_unpaid %}
+    <span class="badge badge-debt">To'lanmagan</span>
+    Mijoz bu chek uchun hali <strong>to'lov qilmagan</strong> — ochiq qarz
+    <strong>{{ open_debt|floatformat:"0g" }} so'm</strong>.
+    Qaytarilgan tovar shu qarzdan kamayadi, <strong>kassadan pul chiqmaydi</strong>.
+  {% elif is_partly_paid %}
+    <span class="badge badge-neutral">Qisman to'langan</span>
+    Mijoz <strong>{{ net_paid|floatformat:"0g" }} so'm</strong> to'lagan, ochiq qarz
+    <strong>{{ open_debt|floatformat:"0g" }} so'm</strong>.
+    Qaytarish avval qarzni yopadi{% if can_overpay %}; qarzdan ortiqchasi mijozga
+    qaytariladi{% else %}, kassadan pul chiqmaydi{% endif %}.
   {% else %}
-    Bu chek to'liq to'langan, ochiq qarz yo'q — qaytarilgan tovarning butun qiymati
-    mijozga qaytariladi.
+    <span class="badge badge-paid">To'langan</span>
+    Mijoz bu chekni <strong>to'liq to'lagan</strong> ({{ net_paid|floatformat:"0g" }} so'm),
+    ochiq qarz yo'q. Qaytarilgan tovarning butun qiymati mijozga qaytariladi —
+    avans yoki naqd.
   {% endif %}
-  Kassadagi pul: {{ cash_on_hand|floatformat:"0g" }} so'm.
-</p>
+  {% if can_overpay %}<br>Kassadagi pul: {{ cash_on_hand|floatformat:"0g" }} so'm.{% endif %}
+</div>

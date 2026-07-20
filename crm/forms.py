@@ -669,8 +669,7 @@ class ReturnForm(forms.ModelForm):
         # riskier default.
         required=False,
         help_text=(
-            "Qaytarilgan tovar ochiq qarzdan ko'p bo'lsa, ortiqchasi shu yo'l bilan "
-            "mijozga qaytariladi. Qarz yetarli bo'lsa bu tanlov ishlatilmaydi."
+            "Bu chek to'langani uchun qaytarilgan tovar puli mijozga qaytariladi."
         ),
     )
 
@@ -678,6 +677,27 @@ class ReturnForm(forms.ModelForm):
         model = Return
         fields = ["sale_item", "weight", "restock", "note"]
         widgets = {"note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy"})}
+
+    @staticmethod
+    def returnable_value(sale):
+        """Worth of everything still returnable on this sale, at the sale's own prices.
+
+        If that total can't exceed the open debt then no return, of any size, can leave
+        money owed to the client — so the settlement choice is meaningless and gets
+        dropped from the form entirely."""
+        return sum(
+            (
+                (item.weight - sum((r.weight for r in item.returns.all()), Decimal("0")))
+                * item.price
+                for item in sale.items.all()
+            ),
+            Decimal("0"),
+        )
+
+    @classmethod
+    def can_overpay(cls, sale):
+        open_debt = max(Decimal("0"), sale.debt_remaining)
+        return cls.returnable_value(sale) > open_debt
 
     def __init__(self, *args, sale=None, user=None, **kwargs):
         self.sale = sale
@@ -688,6 +708,10 @@ class ReturnForm(forms.ModelForm):
         self.credited_to_debt = Decimal("0")
         self.excess = Decimal("0")
         super().__init__(*args, **kwargs)
+        # An unpaid receipt can only ever have its debt reduced — asking the seller how
+        # to hand money back would be a question with no answer.
+        if sale is not None and not self.can_overpay(sale):
+            del self.fields["settlement"]
         field = self.fields["sale_item"]
         field.queryset = (
             SaleItem.objects.filter(sale=sale).select_related("product")

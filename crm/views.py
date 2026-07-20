@@ -3128,13 +3128,22 @@ def sale_pay(request, pk):
 
 
 def _render_return_form(request, sale, form, invalid=False):
+    open_debt = max(Decimal("0"), sale.debt_remaining)
+    net_paid = sale.paid_amount - sale.settled_amount
     context = {
         "form": form,
         "sale": sale,
         "title": f"Qaytarish: {sale.client.name}",
-        # Shown above the form so the seller can see what will simply cancel debt and
-        # what will come back to the client as money.
-        "open_debt": max(Decimal("0"), sale.debt_remaining),
+        # The seller's first question is "has this client paid yet?", because that is
+        # what decides whether goods coming back cost the till anything.
+        "open_debt": open_debt,
+        "net_paid": net_paid,
+        "is_unpaid": open_debt > 0 and net_paid <= 0,
+        "is_partly_paid": open_debt > 0 and net_paid > 0,
+        "is_settled": open_debt <= 0,
+        # False when no return, however large, could exceed the debt — the settlement
+        # choice is then dropped from the form (see ReturnForm.can_overpay).
+        "can_overpay": ReturnForm.can_overpay(sale),
         "cash_on_hand": seller_cash_on_hand(request.user),
     }
     if is_ajax(request):
