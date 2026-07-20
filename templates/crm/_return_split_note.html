@@ -1,0 +1,15 @@
+{% comment %}
+Explains, before the form is filled in, how the returned value will be split: it
+cancels the receipt's open debt first, and only the excess comes back to the client.
+Shared by the return modal and its full-page fallback.
+{% endcomment %}
+<p class="muted" style="margin-top:0;">
+  {% if open_debt %}
+    Bu chekda ochiq qarz — <strong>{{ open_debt|floatformat:"0g" }} so'm</strong>.
+    Qaytarilgan tovar avval shu qarzni yopadi, undan ortiqchasi mijozga qaytariladi.
+  {% else %}
+    Bu chek to'liq to'langan, ochiq qarz yo'q — qaytarilgan tovarning butun qiymati
+    mijozga qaytariladi.
+  {% endif %}
+  Kassadagi pul: {{ cash_on_hand|floatformat:"0g" }} so'm.
+</p>

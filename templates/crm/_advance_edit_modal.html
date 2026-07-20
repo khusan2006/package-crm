@@ -2,12 +2,10 @@
   <h2>{{ title }}</h2>
   <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
 </div>
-{% include "crm/_return_split_note.html" %}
-<form method="post" action="{{ request.path }}" class="stacked">
-  {% csrf_token %}
-  {{ form.as_p }}
+<form method="post" action="{{ request.path }}" class="stacked" data-debt-pay>
+  {% include "crm/_debt_pay_fields.html" with advance=True %}
   <div class="modal-actions">
-    <button type="submit" class="btn">Qaytarishni saqlash</button>
+    <button type="submit" class="btn">Saqlash</button>
     <button type="button" class="btn btn-ghost" data-modal-close>Bekor qilish</button>
   </div>
 </form>

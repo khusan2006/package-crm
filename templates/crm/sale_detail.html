@@ -2,6 +2,7 @@
 {% load crm_extras %}
 {% block title %}Sotuv · {{ sale.client.name }} · Paket CRM{% endblock %}
 {% block topbar_title %}Sotuv — {{ sale.client.name }}{% endblock %}
+{% block topbar_back %}<a href="{% url 'sale_list' %}" class="icon-btn topbar-back" title="Orqaga" aria-label="Orqaga"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></a>{% endblock %}
 {% block fab %}
 <a class="fab fab--muted" href="{% url 'sale_edit' sale.pk %}" data-modal>Tahrirlash</a>
 <a class="fab fab--muted" href="{% url 'sale_return' sale.pk %}" data-modal>Qaytarish</a>
@@ -151,6 +152,35 @@
     </tr>
   </table>
   </div>
+  {% if settlements %}
+  <p class="field-hint" style="margin:10px 0 4px;">
+    Qaytarilgan tovar avval qarzni yopdi. Mijoz allaqachon to'lagan ortiqcha qism
+    quyidagicha qaytarildi:
+  </p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Sana</th><th>Qanday</th><th class="num">Summa</th><th>Kim</th></tr>
+    {% for s in settlements %}
+    <tr>
+      <td>{{ s.date|date:"d.m.Y" }}</td>
+      <td>
+        {% if s.kind == 'refund_out' %}
+          <span class="badge badge-neutral">Naqd berildi</span>
+        {% else %}
+          <span class="badge badge-paid">Avansga o'tdi</span>
+        {% endif %}
+      </td>
+      <td class="num"><strong>{{ s.amount|floatformat:"0g" }}</strong></td>
+      <td>{{ s.created_by }}</td>
+    </tr>
+    {% endfor %}
+    <tr class="row-total">
+      <td><strong>Jami qaytarilgan pul</strong></td><td></td>
+      <td class="num"><strong>{{ settled|floatformat:"0g" }}</strong></td><td></td>
+    </tr>
+  </table>
+  </div>
+  {% endif %}
 </div>
 {% endif %}
 {% endblock %}

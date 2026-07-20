@@ -1,9 +1,8 @@
 {% extends "base.html" %}
 {% block title %}{{ product.name }} — sotuvlar · Paket CRM{% endblock %}
 {% block topbar_title %}{{ product.name }}{% endblock %}
+{% block topbar_back %}<a href="{% url 'ombor' %}" class="icon-btn topbar-back" title="Orqaga" aria-label="Orqaga"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></a>{% endblock %}
 {% block content %}
-
-<p class="section-eyebrow"><a href="{% url 'ombor' %}">← Ombor</a></p>
 
 <div class="kpi-grid kpi-grid--compact kpi-grid--period" style="margin-bottom:16px;">
   <div class="kpi kpi--blue">
@@ -36,6 +35,8 @@
 </div>
 {% endif %}
 
+{% include "crm/_filter_toolbar.html" with show_search=True search_placeholder="Mijoz bo'yicha qidirish…" %}
+
 <div class="card">
   <h2>Sotuvlar</h2>
   {% if items %}
@@ -61,6 +62,9 @@
     {% endfor %}
   </table>
   </div>
+  {% elif has_filters %}<p class="muted">Filtrga mos sotuv topilmadi.</p>
   {% else %}<p class="muted">Bu mahsulot hali sotilmagan.</p>{% endif %}
 </div>
+
+{% include "crm/_filter_drawer.html" with show_dates=True %}
 {% endblock %}

@@ -2,11 +2,11 @@
 {% load crm_extras %}
 {% block title %}{{ client.name }} — qarzlar · Paket CRM{% endblock %}
 {% block topbar_title %}Qarz — {{ client.name }}{% endblock %}
+{% block topbar_back %}<a href="{% url 'debt_list' %}" class="icon-btn topbar-back" title="Orqaga" aria-label="Orqaga"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></a>{% endblock %}
 {% block fab %}
 {% if sales %}<a class="fab" href="{% url 'client_debt_pay' client.pk %}" data-modal>
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg>
   Umumiy to'lov</a>{% endif %}
-<a class="fab fab--muted" href="{% url 'debt_list' %}">← Qarzlar</a>
 {% endblock %}
 {% block content %}
 

@@ -76,13 +76,21 @@
       <tr>
         <td>{{ t.date|date:"d.m.Y" }}</td>
         <td>{{ t.title }}</td>
-        <td>{% include "crm/_method_badge.html" with code=t.method_code label=t.method %}</td>
+        <td>
+          {% include "crm/_method_badge.html" with code=t.method_code label=t.method %}
+          {% if t.is_advance %}<span class="badge badge-info" style="margin-left:4px;">Avans</span>{% endif %}
+        </td>
         <td class="num muted">{% if t.currency == 'usd' %}{{ t.exchange_rate|floatformat:"0g" }} kurs{% elif t.commission_percent %}{{ t.commission_percent|floatformat:"-2g" }}%{% else %}—{% endif %}</td>
         <td class="num">{% if t.currency == 'usd' %}${{ t.amount_original|floatformat:"2g" }}{% else %}{{ t.amount_original|floatformat:"0g" }}{% endif %}</td>
-        <td class="num amt-in"><strong>+{{ t.amount_som|floatformat:"0g" }}</strong></td>
+        <td class="num amt-in">{% if t.is_advance %}<span class="muted">—</span>{% else %}<strong>+{{ t.amount_som|floatformat:"0g" }}</strong>{% endif %}</td>
         <td class="row-actions">
+          {% if t.sale_pk %}
           <a class="icon-action" href="{% url 'payment_edit' t.pk %}" data-modal title="To'lovni tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
           <a class="icon-action" href="{% url 'sale_detail' t.sale_pk %}" title="Sotuvni ochish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></a>
+          {% elif t.is_advance %}
+          <a class="icon-action" href="{% url 'advance_edit' t.pk %}" data-modal title="Avansni tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
+          <a class="icon-action danger" href="{% url 'advance_delete' t.pk %}" data-modal title="Avansni o'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
+          {% endif %}
         </td>
       </tr>
       {% empty %}<tr><td colspan="7" class="muted">Bu davrda kirim yo'q.</td></tr>{% endfor %}
@@ -110,7 +118,7 @@
       {% for t in outflow_rows %}
       <tr>
         <td>{{ t.date|date:"d.m.Y" }}</td>
-        <td>{% if t.kind == 'remittance' %}<span class="badge badge-remit">Topshirish</span> {% elif t.kind == 'profit' %}<span class="badge badge-ok">Foyda</span> {% endif %}{{ t.title }}</td>
+        <td>{% if t.kind == 'remittance' %}<span class="badge badge-remit">Topshirish</span> {% elif t.kind == 'profit' %}<span class="badge badge-ok">Foyda</span> {% elif t.kind == 'refund' %}<span class="badge badge-neutral">Qaytarish</span> {% endif %}{{ t.title }}{% if t.kind == 'refund' and t.subtitle %}<span class="cell-sub">{{ t.subtitle }}</span>{% endif %}</td>
         <td>{% include "crm/_method_badge.html" with code=t.method_code label=t.method %}</td>
         <td class="num muted">{% if t.currency == 'usd' %}{{ t.exchange_rate|floatformat:"0g" }}{% else %}—{% endif %}</td>
         <td class="num">{% if t.kind == 'remittance' %}<strong style="color:var(--violet)">−{{ t.amount_som|floatformat:"0g" }}</strong>{% elif t.kind == 'profit' %}<strong style="color:var(--success)">−{{ t.amount_som|floatformat:"0g" }}</strong>{% else %}<strong class="amt-out">−{{ t.amount_som|floatformat:"0g" }}</strong>{% endif %}</td>
@@ -121,6 +129,9 @@
           {% elif t.kind == 'profit' %}
           <a class="icon-action" href="{% url 'profit_payout_edit' t.pk %}" data-modal title="Foyda topshiruvini tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
           <a class="icon-action danger" href="{% url 'profit_payout_delete' t.pk %}" data-modal title="Foyda topshiruvini o'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
+          {% elif t.kind == 'refund' %}
+          {# A refund is part of a return — it is corrected by reversing the return,
+             never edited on its own, so no row actions here. #}
           {% else %}
           <a class="icon-action" href="{% url 'expense_edit' t.pk %}" data-modal title="Tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
           <a class="icon-action danger" href="{% url 'expense_delete' t.pk %}" data-modal title="Chiqimni o'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>

@@ -76,6 +76,19 @@
       </select>
     </label>
     {% endif %}
+    {% comment %}
+    Explicit date bounds, for pages that show a full history rather than a rolling
+    window. Mutually exclusive with `keep_daterange` above, which instead carries the
+    toolbar picker's window through untouched.
+    {% endcomment %}
+    {% if show_dates %}
+    <label>Sanadan
+      <input type="date" name="dan" value="{{ filters.dan }}">
+    </label>
+    <label>Sanagacha
+      <input type="date" name="gacha" value="{{ filters.gacha }}">
+    </label>
+    {% endif %}
     {% if show_overdue %}
     <label class="check-row"><input type="checkbox" name="overdue" value="1" {% if filters.overdue %}checked{% endif %}> Faqat muddati o'tgan</label>
     {% endif %}
