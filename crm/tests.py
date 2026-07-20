@@ -1413,6 +1413,48 @@ class ReturnSettlementTests(BaseSetup):
         self._return(sale, "4", restock=True)  # 4 × 18 000 tannarx back
         self.assertEqual(before - seller_production_debt(self.sales1), Decimal("72000"))
 
+    def test_unpaid_sale_hides_the_settlement_choice(self):
+        # Nothing can be handed back on a receipt the client has not paid for, so
+        # asking how to hand it back would be a question with no answer.
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_return", args=[sale.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("settlement", response.context["form"].fields)
+        self.assertTrue(response.context["is_unpaid"])
+        self.assertFalse(response.context["can_overpay"])
+        self.assertContains(response, "kassadan pul chiqmaydi")
+
+    def test_paid_sale_offers_the_settlement_choice(self):
+        sale = make_sale(self.client1, self.sales1, self.product)  # fully paid
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_return", args=[sale.pk]))
+        self.assertIn("settlement", response.context["form"].fields)
+        self.assertTrue(response.context["is_settled"])
+        self.assertTrue(response.context["can_overpay"])
+
+    def test_part_paid_sale_offers_the_settlement_choice(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        Payment.objects.create(
+            sale=sale, amount=Decimal("100000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=sale.date, created_by=self.sales1,
+        )
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_return", args=[sale.pk]))
+        self.assertIn("settlement", response.context["form"].fields)
+        self.assertTrue(response.context["is_partly_paid"])
+
+    def test_unpaid_sale_ignores_a_forged_refund_choice(self):
+        # The field is absent from the form, so a hand-crafted POST must not be able
+        # to pull cash out of the till.
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        self.client.force_login(self.sales1)
+        till = seller_cash_on_hand(self.sales1)
+        self._return(sale, "4", settlement="refund")
+        self.assertEqual(sale.returns.count(), 1)
+        self.assertEqual(seller_cash_on_hand(self.sales1), till)
+        self.assertFalse(sale.payments.filter(kind=Payment.Kind.REFUND_OUT).exists())
+
     def test_sale_detail_shows_the_settlement(self):
         sale = make_sale(self.client1, self.sales1, self.product)  # paid
         self.client.force_login(self.sales1)
@@ -1434,6 +1476,10 @@ class ReturnSettlementTests(BaseSetup):
         self.assertEqual(response.status_code, 200)
         kinds = [r["kind"] for r in response.context["outflow_rows"]]
         self.assertIn("refund", kinds)
+        # A {# #} comment only works on ONE line in Django; a multi-line one leaks into
+        # the page as literal text, which is exactly what happened on this row.
+        self.assertNotContains(response, "{#")
+        self.assertNotContains(response, "is corrected by reversing")
 
     def test_cannot_delete_a_line_that_has_returns(self):
         sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
