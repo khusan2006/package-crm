@@ -2775,3 +2775,94 @@ class InnerPageBackTests(BaseSetup):
             r = self.client.get(url)
             self.assertEqual(r.status_code, 200, url)
             self.assertIn("topbar-back", r.content.decode(), url)
+
+
+class AuditFilterTests(BaseSetup):
+    """Hisobotlar (audit) is filterable by who acted, which action and a date
+    window — the trail only grows, so an entry must stay findable."""
+
+    def test_filter_combinations_render(self):
+        base = reverse("audit_list")
+        self.client.force_login(self.admin)
+        urls = [
+            base,
+            f"{base}?q=paket",
+            f"{base}?rep={self.sales1.pk}",
+            f"{base}?action=payment",
+            f"{base}?dan=2026-01-01&gacha=2026-12-31",
+            f"{base}?dan=2026-12-31&gacha=2026-01-01",  # reversed bounds get swapped
+            f"{base}?action=bogus&rep=999",             # junk is ignored, not a crash
+        ]
+        for url in urls:
+            self.assertEqual(self.client.get(url).status_code, 200, url)
+
+    def test_action_filter_narrows_to_one_action(self):
+        AuditLog.record(self.admin, AuditLog.Action.CREATE, "Sotuv", 1, "yaratildi")
+        AuditLog.record(self.admin, AuditLog.Action.PAYMENT, "To'lov", 2, "to'landi")
+        self.client.force_login(self.admin)
+        page = self.client.get(f"{reverse('audit_list')}?action=payment").context["page"]
+        self.assertEqual({log.action for log in page.object_list}, {AuditLog.Action.PAYMENT})
+
+    def test_search_matches_the_summary_text(self):
+        AuditLog.record(self.admin, AuditLog.Action.CREATE, "Sotuv", 1, "Mijoz A uchun")
+        AuditLog.record(self.admin, AuditLog.Action.CREATE, "Sotuv", 2, "Mijoz B uchun")
+        self.client.force_login(self.admin)
+        page = self.client.get(f"{reverse('audit_list')}?q=Mijoz A").context["page"]
+        self.assertEqual([log.summary for log in page.object_list], ["Mijoz A uchun"])
+
+    def test_seller_cannot_widen_scope_with_the_rep_filter(self):
+        AuditLog.record(self.admin, AuditLog.Action.CREATE, "Sotuv", 1, "Admin ishi")
+        AuditLog.record(self.sales1, AuditLog.Action.CREATE, "Sotuv", 2, "Sotuvchi ishi")
+        self.client.force_login(self.sales1)
+        page = self.client.get(
+            f"{reverse('audit_list')}?rep={self.admin.pk}"
+        ).context["page"]
+        self.assertEqual([log.user for log in page.object_list], [self.sales1])
+
+
+class ProductFacetFilterTests(BaseSetup):
+    """The catalogue filters slice a "{size}-{micron}-{colour}" SKU."""
+
+    PAKET_SKUS = ["1,5m-01-oq", "1,5m-015-oq", "2m-01-qora", "6m-08-novot"]
+
+    def setUp(self):
+        for sku in self.PAKET_SKUS:
+            Product.objects.create(name=sku, sku=sku, price=0, cost_price=0)
+        self.client.force_login(self.admin)
+
+    def found(self, query):
+        page = self.client.get(f"{reverse('product_list')}?{query}").context["page"]
+        return {p.sku for p in page.object_list}
+
+    def test_micron_01_does_not_drag_in_015(self):
+        self.assertEqual(self.found("micron=01"), {"1,5m-01-oq", "2m-01-qora"})
+        self.assertEqual(self.found("micron=015"), {"1,5m-015-oq"})
+
+    def test_size_and_colour_select_their_own(self):
+        self.assertEqual(self.found("size=1,5m"), {"1,5m-01-oq", "1,5m-015-oq"})
+        self.assertEqual(self.found("color=oq"), {"1,5m-01-oq", "1,5m-015-oq"})
+
+    def test_facets_combine(self):
+        self.assertEqual(self.found("size=1,5m&micron=01&color=oq"), {"1,5m-01-oq"})
+
+    def test_unknown_facet_value_is_ignored(self):
+        # Better to show the whole catalogue than a silently empty page
+        self.assertTrue(set(self.PAKET_SKUS) <= self.found("micron=bogus"))
+
+
+class OmborExportTests(BaseSetup):
+    """The sold-goods .xlsx — the sheet a production-vs-sold sverka is built from."""
+
+    def test_export_lists_sold_kg_for_every_seller(self):
+        self.client.force_login(self.admin)
+        rows = read_xlsx(self.client.get(reverse("ombor_export")))
+        self.assertEqual(rows[0], ("Mahsulot", "SKU", "Sotuvlar soni", "Sotilgan (kg)"))
+        by_sku = {r[1]: r for r in rows[1:]}
+        # BaseSetup sells 10 kg through each of the two sellers
+        self.assertEqual(by_sku[self.product.sku][3], 20.0)
+
+    def test_export_is_scoped_to_the_seller_who_downloads_it(self):
+        self.client.force_login(self.sales1)
+        rows = read_xlsx(self.client.get(reverse("ombor_export")))
+        by_sku = {r[1]: r for r in rows[1:]}
+        self.assertEqual(by_sku[self.product.sku][3], 10.0)

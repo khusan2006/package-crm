@@ -800,14 +800,57 @@ def client_transfer(request, pk):
 
 # --- Products -----------------------------------------------------------------
 
+# Paket catalogue facets, mirroring seed_paket_products: a SKU reads
+# "{size}-{micron}-{colour}" (e.g. "1,5m-015-oq"), so each facet is a slice of it.
+# "-01-" never matches "-015-", so the micron grades stay distinct.
+PAKET_COLORS = [("oq", "ОҚ"), ("qora", "ҚОРА"), ("novot", "НОВОТ")]
+PAKET_SIZES = [("1,5m", "1,5м"), ("2m", "2м"), ("6m", "6м")]
+PAKET_MICRONS = ["015", "01", "08", "06", "05", "04", "03", "02"]
+
+
 def product_list(request):
     # A plain shared catalog — the reference list sellers pick from when selling.
+    # With 56 paket SKUs a text search alone is coarse, so the drawer also filters
+    # by the three facets encoded in the SKU.
     products = Product.objects.order_by("name")
-    q = request.GET.get("q", "").strip()
-    if q:
-        products = products.filter(Q(name__icontains=q) | Q(sku__icontains=q))
+    filters = {key: request.GET.get(key, "") for key in ("color", "size", "micron")}
+    filters["q"] = request.GET.get("q", "").strip()
+
+    if filters["q"]:
+        products = products.filter(
+            Q(name__icontains=filters["q"]) | Q(sku__icontains=filters["q"])
+        )
+
+    colors, sizes = dict(PAKET_COLORS), dict(PAKET_SIZES)
+    # Only known facet values bite; anything else is ignored rather than 0-matching.
+    if filters["color"] in colors:
+        products = products.filter(sku__endswith=f"-{filters['color']}")
+    if filters["size"] in sizes:
+        products = products.filter(sku__startswith=f"{filters['size']}-")
+    if filters["micron"] in PAKET_MICRONS:
+        products = products.filter(sku__contains=f"-{filters['micron']}-")
+
+    active_filters = _filter_chips(request, [
+        {"param": "color", "label": "Rang", "value": colors.get(filters["color"], "")},
+        {"param": "size", "label": "O'lcham", "value": sizes.get(filters["size"], "")},
+        {"param": "micron", "label": "Mikron",
+         "value": filters["micron"] if filters["micron"] in PAKET_MICRONS else ""},
+    ])
+
     page = Paginator(products, 25).get_page(request.GET.get("page"))
-    return render(request, "crm/product_list.html", {"page": page, "q": q})
+    return render(request, "crm/product_list.html", {
+        "page": page,
+        "q": filters["q"],
+        "filters": filters,
+        "active_filters": active_filters,
+        "filter_count": len(active_filters),
+        "has_filters": bool(active_filters),
+        "filter_url": reverse("product_list"),
+        "search_placeholder": "Nomi yoki SKU bo'yicha qidirish…",
+        "paket_colors": PAKET_COLORS,
+        "paket_sizes": PAKET_SIZES,
+        "paket_microns": PAKET_MICRONS,
+    })
 
 
 def product_detail(request, pk):
@@ -1656,12 +1699,69 @@ def payment_edit(request, pk):
 
 def audit_list(request):
     """The money-action audit trail. Admins/managers see every action; a seller
-    sees only their own."""
+    sees only their own. The trail only grows, so it is filterable by who acted,
+    which action, a date window and free text — otherwise a single entry becomes
+    unfindable past the first few pages."""
     logs = AuditLog.objects.select_related("user")
     if not request.user.can_see_all_records:
         logs = logs.filter(user=request.user)
+
+    filters = {key: request.GET.get(key, "") for key in ("rep", "action", "dan", "gacha")}
+    filters["q"] = request.GET.get("q", "").strip()
+
+    if filters["q"]:
+        logs = logs.filter(
+            Q(summary__icontains=filters["q"]) | Q(target_type__icontains=filters["q"])
+        )
+
+    reps = rep_obj = None
+    if request.user.can_see_all_records:
+        reps = User.objects.filter(is_active=True).order_by(
+            "first_name", "last_name", "username"
+        )
+        if filters["rep"].isdigit():
+            rep_obj = reps.filter(pk=filters["rep"]).first()
+            if rep_obj:
+                logs = logs.filter(user=rep_obj)
+
+    actions = AuditLog.Action.choices
+    action_label = dict(actions).get(filters["action"], "")
+    if action_label:
+        logs = logs.filter(action=filters["action"])
+
+    # A full history, so dates only bite once the user actually sets them.
+    date_from = _parse_date(filters["dan"])
+    date_to = _parse_date(filters["gacha"])
+    if date_from and date_to and date_to < date_from:
+        date_from, date_to = date_to, date_from
+        filters["dan"], filters["gacha"] = date_from.isoformat(), date_to.isoformat()
+    if date_from:
+        logs = logs.filter(created_at__date__gte=date_from)
+    if date_to:
+        logs = logs.filter(created_at__date__lte=date_to)
+
+    active_filters = _filter_chips(request, [
+        {"param": "rep", "label": "Kim", "value": str(rep_obj) if rep_obj else ""},
+        {"param": "action", "label": "Amal", "value": action_label},
+        {"param": "dan", "label": "Sanadan",
+         "value": date_from.strftime("%d.%m.%Y") if date_from else ""},
+        {"param": "gacha", "label": "Sanagacha",
+         "value": date_to.strftime("%d.%m.%Y") if date_to else ""},
+    ])
+
     page = Paginator(logs, 50).get_page(request.GET.get("page"))
-    return render(request, "crm/audit_list.html", {"page": page})
+    return render(request, "crm/audit_list.html", {
+        "page": page,
+        "filters": filters,
+        "reps": reps,
+        "rep_label": "Kim",
+        "actions": actions,
+        "active_filters": active_filters,
+        "filter_count": len(active_filters),
+        "has_filters": bool(active_filters),
+        "filter_url": reverse("audit_list"),
+        "search_placeholder": "Tafsilot bo'yicha qidirish…",
+    })
 
 
 # --- Kassa (cash register) ----------------------------------------------------
@@ -2657,15 +2757,12 @@ def receipt_delete(request, pk):
     )
 
 
-def ombor_view(request):
-    """Ombor = sold-goods report, one row per product with the total kg sold in the
-    selected date window. A seller sees only their own sales; admins/managers see
-    every seller's combined total (and can filter to one seller). Click a product to
-    drill into who bought it. Mirrors the debts page's group-then-detail shape."""
+def _ombor_items(request, date_from, date_to):
+    """Sale lines inside the window, scoped to the viewer and narrowed by the ombor
+    filters (product search + seller). Shared by the page and its Excel export so
+    the download always matches what is on screen.
+    Returns (items, filters, reps, rep_obj)."""
     user = request.user
-    dates = _date_range_context(request)
-    date_from, date_to = dates["date_from"], dates["date_to"]
-
     filters = {"q": request.GET.get("q", "").strip(), "rep": request.GET.get("rep", "")}
     filters["dan"] = date_from.isoformat()
     filters["gacha"] = date_to.isoformat()
@@ -2688,17 +2785,36 @@ def ombor_view(request):
         items = items.filter(
             Q(product__name__icontains=filters["q"]) | Q(product__sku__icontains=filters["q"])
         )
+    return items, filters, reps, rep_obj
 
-    rows = list(
+
+def _ombor_rows(items):
+    """One row per product: kg sold, and how many receipts it appeared on."""
+    return list(
         items.values("product", "product__name", "product__sku")
         .annotate(total_kg=Sum(ITEM_WEIGHT_KG), sales_count=Count("sale", distinct=True))
         .order_by("-total_kg")
     )
+
+
+def ombor_view(request):
+    """Ombor = sold-goods report, one row per product with the total kg sold in the
+    selected date window. A seller sees only their own sales; admins/managers see
+    every seller's combined total (and can filter to one seller). Click a product to
+    drill into who bought it. Mirrors the debts page's group-then-detail shape."""
+    dates = _date_range_context(request)
+    date_from, date_to = dates["date_from"], dates["date_to"]
+
+    items, filters, reps, rep_obj = _ombor_items(request, date_from, date_to)
+    rows = _ombor_rows(items)
     total_kg = sum((r["total_kg"] or Decimal("0") for r in rows), Decimal("0"))
 
     active_filters = _filter_chips(request, [
         {"param": "rep", "label": "Sotuvchi", "value": str(rep_obj) if rep_obj else ""},
     ])
+    # Carry the current window and filters into the download link, so the .xlsx is
+    # exactly the table on screen (the month a sverka is being done for).
+    query = request.GET.urlencode()
 
     return render(request, "crm/ombor.html", {
         "rows": rows,
@@ -2708,17 +2824,38 @@ def ombor_view(request):
         "filters": filters,
         "reps": reps,
         "rep_label": "Sotuvchi",
-        "is_admin_view": user.can_see_all_records,
+        "is_admin_view": request.user.can_see_all_records,
         "active_filters": active_filters,
         "filter_count": len(active_filters),
         "has_filters": bool(active_filters),
         "filter_url": reverse("ombor"),
         "catalog_url": reverse("product_list"),
+        "export_url": reverse("ombor_export") + (f"?{query}" if query else ""),
         "search_placeholder": "Mahsulot nomi yoki SKU…",
         "show_daterange_picker": True,
         "keep_daterange": True,
         **dates,
     })
+
+
+def ombor_export(request):
+    """The sold-goods report as .xlsx — same window, search and seller filter as the
+    page. This is the sheet a monthly production-vs-sold sverka is built from."""
+    dates = _date_range_context(request)
+    items, _, _, _ = _ombor_items(request, dates["date_from"], dates["date_to"])
+    rows = _ombor_rows(items)
+
+    headers = ["Mahsulot", "SKU", "Sotuvlar soni", "Sotilgan (kg)"]
+    data = [
+        [
+            r["product__name"],
+            r["product__sku"],
+            r["sales_count"],
+            float(r["total_kg"] or 0),
+        ]
+        for r in rows
+    ]
+    return _xlsx_response("ombor.xlsx", "Ombor", headers, data, {4: "0.000"})
 
 
 def _filter_ombor_items(request, items):

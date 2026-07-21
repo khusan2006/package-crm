@@ -4,13 +4,7 @@
 {% block fab %}<a class="fab" href="{% url 'product_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi mahsulot</a>{% endblock %}
 {% block content %}
 
-<form method="get" class="searchbar" role="search" data-live-search>
-  <div class="toolbar-search{% if q %} is-active{% endif %}">
-    <svg class="toolbar-search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    <input type="search" name="q" value="{{ q }}" placeholder="Nomi yoki SKU bo'yicha qidirish…" autocomplete="off" aria-label="Mahsulot qidirish">
-    {% if q %}<a href="?" class="toolbar-search-x" title="Qidiruvni tozalash" aria-label="Qidiruvni tozalash">&times;</a>{% endif %}
-  </div>
-</form>
+{% include "crm/_filter_toolbar.html" with show_search=True %}
 
 {% if page.object_list %}
 <div class="table-wrap">
@@ -43,4 +37,6 @@
 {% else %}
 <p class="muted">Mahsulotlar topilmadi{% if q %} (“{{ q }}” bo'yicha){% endif %}.</p>
 {% endif %}
+
+{% include "crm/_filter_drawer.html" %}
 {% endblock %}
