@@ -67,6 +67,26 @@ def _visible_clients(user):
     return qs if user.can_see_all_records else qs.filter(owner=user)
 
 
+def _advance_balance_map(client_pks, seller):
+    """{client_pk: advance balance} for the given clients, in ONE query. Mirrors
+    `client_advance_balance` (deposits minus consumption, net of bank fees) but batched,
+    so a whole list can be sorted/annotated without an N+1. Seller-scoped when `seller`
+    is set; otherwise the client's total across every seller's till."""
+    rows = Payment.objects.filter(client__in=client_pks)
+    if seller is not None:
+        rows = rows.filter(created_by=seller)
+    agg = rows.values("client").annotate(
+        dep=Sum(PAYMENT_NET, filter=Q(
+            kind__in=[Payment.Kind.ADVANCE_IN, Payment.Kind.RETURN_CREDIT]
+        )),
+        used=Sum(PAYMENT_NET, filter=Q(kind=Payment.Kind.ADVANCE_USED)),
+    )
+    return {
+        r["client"]: (r["dep"] or Decimal("0")) - (r["used"] or Decimal("0"))
+        for r in agg
+    }
+
+
 def _sale_totals(sales):
     """Revenue/cost/profit summed over the line items of the given sales."""
     return SaleItem.objects.filter(sale__in=sales.values("pk")).aggregate(
@@ -626,12 +646,16 @@ def client_list(request):
             | Q(owner__last_name__icontains=q)
             | Q(owner__username__icontains=q)
         ).distinct()
-    page = Paginator(clients, 25).get_page(request.GET.get("page"))
-    # Advance (prepaid) balance shown per row. A seller sees their own till's balance;
-    # an admin/manager sees the client's total held across every seller's till.
+    # Advance (prepaid) balance per client, batched in one query. A seller sees their own
+    # till's balance; an admin/manager sees the client's total across every seller's till.
     scope = None if request.user.can_see_all_records else request.user
-    for c in page:
-        c.advance = client_advance_balance(c, scope)
+    adv_map = _advance_balance_map(clients.values_list("pk", flat=True), scope)
+    client_list = list(clients)
+    for c in client_list:
+        c.advance = adv_map.get(c.pk, Decimal("0"))
+    # Clients holding an advance float to the top (biggest first), then everyone by name.
+    client_list.sort(key=lambda c: (0 if c.advance > 0 else 1, -c.advance, c.name.lower()))
+    page = Paginator(client_list, 25).get_page(request.GET.get("page"))
     return render(request, "crm/client_list.html", {"page": page, "q": q})
 
 
@@ -1253,10 +1277,12 @@ def debt_client(request, pk):
         .order_by("debt_deadline")
     )
     total = sum((s.remaining for s in sales), Decimal("0"))
+    scope = None if request.user.can_see_all_records else request.user
+    advance = client_advance_balance(client, scope)
     return render(
         request,
         "crm/debt_client.html",
-        {"client": client, "sales": sales, "total": total},
+        {"client": client, "sales": sales, "total": total, "advance": advance},
     )
 
 

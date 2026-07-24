@@ -706,8 +706,12 @@ class PaymentQuerySet(models.QuerySet):
         not arriving; it is subtracted separately in `seller_cash_on_hand`.
 
         Per-sale debt math is separate and DOES count ADVANCE_USED (it settles the
-        receipt) — see `_sale_paid_sum`."""
-        return self.exclude(
+        receipt) — see `_sale_paid_sum`.
+
+        Opening-balance advances (is_opening) are also excluded: that cash arrived
+        pre-CRM and is not sitting in any till today — it only carries the client's
+        prepaid credit forward, so it must never inflate cash on hand."""
+        return self.exclude(is_opening=True).exclude(
             kind__in=(
                 self.model.Kind.ADVANCE_USED,
                 self.model.Kind.RETURN_CREDIT,
@@ -775,6 +779,10 @@ class Payment(models.Model):
     )
     note = models.CharField("Izoh", max_length=255, blank=True)
     kind = models.CharField("Turi", max_length=16, choices=Kind.choices)
+    # A carried-over pre-CRM advance: it holds the client's prepaid credit but the cash
+    # is NOT in any till today (it was received before go-live), so till_income() drops
+    # it. It still counts toward the client's advance balance like any ADVANCE_IN.
+    is_opening = models.BooleanField("Ochilish avansi", default=False)
     # A per-sale payment (sale/debt/advance_used) carries `sale`; a client-level
     # advance deposit (advance_in) carries only `client` and leaves `sale` null.
     sale = models.ForeignKey(

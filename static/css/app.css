@@ -652,6 +652,8 @@ tbody tr { transition: background 0.1s; }
 tbody tr:hover { background: var(--surface-hover); }
 tr:last-child td { border-bottom: none; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* Light-blue header row, opt-in per table (e.g. Sotuvchilar nazorati). */
+.table--blue-head th { background: var(--accent-soft); color: var(--accent); }
 
 /* Frozen name column — stays put on horizontal scroll */
 th.sticky-col, td.sticky-col {

@@ -34,12 +34,12 @@
   <div class="kpi kpi--violet">
     <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v14"/><path d="M5 9l7-7 7 7"/><rect x="4" y="16" width="16" height="6" rx="2"/></svg></span><span class="kpi-label">Topshirilgan</span></div>
     <div class="kpi-value">{{ summary.remitted|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta"><a href="{% url 'remittance_create' %}" data-modal>+ Topshirish</a></div>
+    <div class="kpi-meta"><a class="btn btn-violet btn-sm" href="{% url 'remittance_create' %}" data-modal>+ Topshirish</a></div>
   </div>
   <div class="kpi kpi--green">
     <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span><span class="kpi-label">Foyda topshirilgan</span></div>
     <div class="kpi-value">{{ summary.paid_profit|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta"><a href="{% url 'profit_payout_create' %}" data-modal>+ Foyda topshirish</a></div>
+    <div class="kpi-meta"><a class="btn btn-sm" href="{% url 'profit_payout_create' %}" data-modal>+ Foyda topshirish</a></div>
   </div>
   <div class="kpi kpi--blue">
     <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span><span class="kpi-label">Sof foyda</span></div>
@@ -174,7 +174,7 @@
   <p class="field-hint" style="margin-top:0;">Jami holat — boshidan tanlangan sana oxirigacha (kunlik filtrga bog'liq emas). Kassadagi pul = kirim − chiqim − topshirilgan · Qarz = sotilgan tannarx − topshirilgan · Sof = foyda − rasxot.</p>
   {% if per_employee %}
   <div class="table-wrap">
-  <table>
+  <table class="table--blue-head">
     <tr>
       <th>Sotuvchi</th>
       <th class="num">Kassadagi pul</th>
