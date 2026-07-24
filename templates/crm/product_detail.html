@@ -49,6 +49,16 @@
 </div>
 
 <div class="card">
+  <h2>Xususiyatlar</h2>
+  <div class="detail-grid">
+    <div class="detail-row"><span class="k">SKU</span><span class="v">{{ product.sku }}</span></div>
+    <div class="detail-row"><span class="k">Tannarx (1 kg)</span><span class="v">{{ product.cost_price|floatformat:"0g" }} so'm</span></div>
+    <div class="detail-row"><span class="k">Razmer</span><span class="v">{% if product.has_size %}1,5м · 2м · 6м{% else %}—{% endif %}</span></div>
+    <div class="detail-row"><span class="k">Mikron</span><span class="v">{% if product.has_micron %}015, 01, 08, 06, 05, 04, 03, 02{% else %}—{% endif %}</span></div>
+  </div>
+</div>
+
+<div class="card">
   <h2>Ombor harakatlari</h2>
   {% if entries %}
   <div class="table-wrap">

@@ -587,25 +587,37 @@ html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
   background: var(--surface-2, var(--surface));
 }
 .item-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+}
+/* Product gets its own full-width row so long names + big prices all fit */
+.item-fields .if-product { flex: 1 1 100%; }
+/* The remaining inputs share one grid that grows to fill the row; whether the
+   product shows Razmer/Mikron (film) or not (qop), the cells stretch to full width
+   and the remove button stays pinned to the right of them. */
+.item-fields .item-subfields {
+  flex: 1 1 auto;
   display: grid;
-  grid-template-columns: 0.8fr 1fr 1.3fr 1.3fr auto;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 10px;
   align-items: end;
 }
-/* Product gets its own full-width row so long names + big prices all fit */
-.item-fields .if-product { grid-column: 1 / -1; }
 .item-fields .if { display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; color: var(--text-muted); font-weight: 600; }
+/* `display:flex` above would otherwise beat the [hidden] attribute — restore it so
+   the Razmer/Mikron dropdowns actually hide for products that don't carry them. */
+.item-fields .if[hidden] { display: none; }
 .item-fields .if input,
 .item-fields .if select { width: 100%; }
 .item-fields .if-price input,
 .item-fields .if-cost input { text-align: right; }
-.item-fields .item-remove { align-self: end; height: 40px; }
+.item-fields .item-remove { flex: 0 0 auto; align-self: flex-end; height: 40px; }
 .item-add { margin-top: 8px; }
 .item-total { margin-top: 6px; text-align: right; font-size: 12px; font-weight: 600; }
 .items-grand { margin-top: 8px; text-align: right; font-size: 14px; font-weight: 800; color: var(--success); }
 @media (max-width: 560px) {
-  .item-fields { grid-template-columns: 1fr 1fr; }
-  .item-fields .item-remove { grid-column: 1 / -1; justify-self: end; }
+  .item-fields .item-subfields { grid-template-columns: 1fr 1fr; }
 }
 
 /* ============================================================

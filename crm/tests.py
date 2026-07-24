@@ -2438,11 +2438,11 @@ class SaleFormClientSearchTests(TestCase):
 
 
 class SaleItemSummaryTests(BaseSetup):
-    """The sales-list product summary shows the first product's name and SKU,
-    plus a "+N" when the sale has more than one product."""
+    """The sales-list product summary shows the first product's name (SKU is no longer
+    surfaced), plus a "+N" when the sale has more than one product."""
 
-    def test_summary_shows_first_product_name_and_sku(self):
-        self.assertEqual(self.sale1.item_summary, "Polietilen paket · PKT-1")
+    def test_summary_shows_first_product_name(self):
+        self.assertEqual(self.sale1.item_summary, "Polietilen paket")
 
     def test_summary_appends_plus_n_for_extra_products(self):
         other = Product.objects.create(name="Qora paket", sku="PKT-2", price=Decimal("10000"))
@@ -2450,7 +2450,7 @@ class SaleItemSummaryTests(BaseSetup):
             sale=self.sale1, product=other, dimension="kg",
             weight=Decimal("2"), price=Decimal("10000"), cost_price=Decimal("8000"),
         )
-        self.assertEqual(self.sale1.item_summary, "Polietilen paket · PKT-1  +1")
+        self.assertEqual(self.sale1.item_summary, "Polietilen paket  +1")
 
 
 class TimeagoUzTests(TestCase):

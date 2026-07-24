@@ -3,10 +3,14 @@
   {% if f.non_field_errors %}<div class="flash flash-error">{{ f.non_field_errors.0 }}</div>{% endif %}
   <div class="item-fields">
     <label class="if if-product">Mahsulot{{ f.product }}{{ f.product.errors }}</label>
-    <label class="if if-dim">Birlik{{ f.dimension }}</label>
-    <label class="if if-weight">Og'irligi{{ f.weight }}{{ f.weight.errors }}</label>
-    <label class="if if-price">Narxi{{ f.price }}{{ f.price.errors }}</label>
-    <label class="if if-cost">Tannarx{{ f.cost_price }}{{ f.cost_price.errors }}</label>
+    <div class="item-subfields">
+      <label class="if if-size" hidden>Razmer{{ f.size }}{{ f.size.errors }}</label>
+      <label class="if if-micron" hidden>Mikron{{ f.micron }}{{ f.micron.errors }}</label>
+      <label class="if if-dim">Birlik{{ f.dimension }}</label>
+      <label class="if if-weight">Og'irligi{{ f.weight }}{{ f.weight.errors }}</label>
+      <label class="if if-price">Narxi{{ f.price }}{{ f.price.errors }}</label>
+      <label class="if if-cost">Tannarx{{ f.cost_price }}{{ f.cost_price.errors }}</label>
+    </div>
     <button type="button" class="icon-action danger item-remove" title="Qatorni o'chirish">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
     </button>

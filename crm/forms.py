@@ -105,7 +105,10 @@ class ProductForm(forms.ModelForm):
 
     class Meta:
         model = Product
-        fields = ["name", "sku", "description", "cost_price", "price", "is_active"]
+        fields = [
+            "name", "sku", "description", "cost_price", "price",
+            "has_size", "has_micron", "is_active",
+        ]
         widgets = {"description": forms.Textarea(attrs={"rows": 3})}
 
     def __init__(self, *args, with_stock=False, **kwargs):
@@ -602,12 +605,22 @@ class SaleForm(forms.ModelForm):
 class SaleItemForm(forms.ModelForm):
     class Meta:
         model = SaleItem
-        fields = ["product", "dimension", "weight", "price", "cost_price"]
+        fields = ["product", "size", "micron", "dimension", "weight", "price", "cost_price"]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["product"].queryset = Product.objects.filter(is_active=True)
         _searchable_select(self.fields["product"], "Mahsulotni tanlang")
+        # Razmer / mikron are optional and only shown for products that carry them
+        # (the JS reads has_size/has_micron and hides the dropdown otherwise).
+        self.fields["size"].required = False
+        self.fields["micron"].required = False
+        self.fields["size"].widget.attrs["data-variant"] = "size"
+        self.fields["micron"].widget.attrs["data-variant"] = "micron"
+        for key in ("size", "micron"):
+            self.fields[key].choices = [("", "—")] + [
+                c for c in self.fields[key].choices if c[0]
+            ]
         self.fields["cost_price"].required = False
         self.fields["cost_price"].widget.attrs["placeholder"] = "Bo'sh qolsa — mahsulot tannarxi"
         _mark_money(self.fields["price"], self.fields["cost_price"])
@@ -631,6 +644,12 @@ class SaleItemForm(forms.ModelForm):
         # Empty cost price falls back to the product's cost, converted to the sale unit
         if product and dimension and not cleaned.get("cost_price"):
             cleaned["cost_price"] = product.cost_price_for(dimension)
+        # A product that doesn't carry razmer/mikron never keeps one, even if a stale
+        # value slipped through from a previously-picked product on the same row.
+        if product and not product.has_size:
+            cleaned["size"] = ""
+        if product and not product.has_micron:
+            cleaned["micron"] = ""
         return cleaned
 
 

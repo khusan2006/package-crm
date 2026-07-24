@@ -505,7 +505,9 @@ def dashboard(request):
     # `flow` narrows the sales set by payment method for the flow figures, but debt
     # keeps using `scoped` — an unpaid receipt has no payment row of any method.
     flow = scoped.filter(payments__method=method).distinct() if method else scoped
-    period = flow.filter(date__gte=date_from, date__lte=date_to)
+    # Opening-balance carry-overs are receivables, not sales — keep them out of the
+    # period revenue/count/recent figures (debt below still uses `scoped`, with them in).
+    period = flow.filter(date__gte=date_from, date__lte=date_to).real()
 
     def _margin(t):
         rev = t["revenue"] or 0
@@ -846,7 +848,7 @@ def product_list(request):
         "filter_count": len(active_filters),
         "has_filters": bool(active_filters),
         "filter_url": reverse("product_list"),
-        "search_placeholder": "Nomi yoki SKU bo'yicha qidirish…",
+        "search_placeholder": "Nomi bo'yicha qidirish…",
         "paket_colors": PAKET_COLORS,
         "paket_sizes": PAKET_SIZES,
         "paket_microns": PAKET_MICRONS,
@@ -1106,6 +1108,7 @@ def _outstanding_balance(sales):
 def sale_list(request):
     base = (
         Sale.objects.visible_to(request.user)
+        .real()  # opening-balance carry-overs live on the Qarzlar page, not here
         .select_related("client", "sales_rep")
         .prefetch_related("items__product")
         .with_balance()
@@ -2831,7 +2834,7 @@ def ombor_view(request):
         "filter_url": reverse("ombor"),
         "catalog_url": reverse("product_list"),
         "export_url": reverse("ombor_export") + (f"?{query}" if query else ""),
-        "search_placeholder": "Mahsulot nomi yoki SKU…",
+        "search_placeholder": "Mahsulot nomi…",
         "show_daterange_picker": True,
         "keep_daterange": True,
         **dates,
@@ -2959,6 +2962,7 @@ def ombor_product(request, pk):
 def sale_export(request):
     base = (
         Sale.objects.visible_to(request.user)
+        .real()  # matches the sales list — opening carry-overs are not sales
         .select_related("client", "sales_rep")
         .with_balance()
     )
@@ -3063,9 +3067,16 @@ def _client_advance_map(user):
 
 
 def _product_price_map():
-    """Per-kg price/cost for each active product, so the form can auto-fill a row."""
+    """Per-kg price/cost for each active product, so the form can auto-fill a row —
+    plus whether the product offers the Razmer / Mikron dropdowns, so the JS can show
+    or hide them when the product is picked."""
     return {
-        str(p.pk): {"price": str(p.price), "cost": str(p.cost_price)}
+        str(p.pk): {
+            "price": str(p.price),
+            "cost": str(p.cost_price),
+            "has_size": p.has_size,
+            "has_micron": p.has_micron,
+        }
         for p in Product.objects.filter(is_active=True)
     }
 

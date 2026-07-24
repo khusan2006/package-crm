@@ -8,7 +8,7 @@
   <div class="kpi kpi--blue">
     <div class="kpi-head"><span class="kpi-label">Mahsulot</span></div>
     <div class="kpi-value" style="font-size:18px;">{{ product.name }}</div>
-    <div class="kpi-meta muted">{{ product.sku }}</div>
+    <div class="kpi-meta muted">{% if product.has_size or product.has_micron %}Razmer · Mikron{% else %}Xaltа{% endif %}</div>
   </div>
   <div class="kpi kpi--green">
     <div class="kpi-head"><span class="kpi-label">Jami sotilgan</span></div>
@@ -46,6 +46,7 @@
       <th>Sana</th>
       <th>Mijoz</th>
       {% if is_admin_view %}<th>Sotuvchi</th>{% endif %}
+      {% if product.has_size or product.has_micron %}<th>Razmer / Mikron</th>{% endif %}
       <th class="num">Miqdori</th>
       <th class="num">Narxi</th>
       <th></th>
@@ -55,6 +56,7 @@
       <td>{{ it.sale.date|date:"d.m.Y" }}</td>
       <td>{{ it.sale.client.name }}</td>
       {% if is_admin_view %}<td>{{ it.sale.sales_rep }}</td>{% endif %}
+      {% if product.has_size or product.has_micron %}<td>{{ it.variant_label|default:"—" }}</td>{% endif %}
       <td class="num"><strong>{{ it.weight|floatformat:"-3g" }}</strong> {{ it.get_dimension_display }}</td>
       <td class="num">{{ it.total_price|floatformat:"0g" }} so'm</td>
       <td class="num"><a class="btn btn-ghost btn-sm" href="{% url 'sale_detail' it.sale.pk %}">Chek</a></td>

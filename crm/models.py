@@ -20,6 +20,14 @@ MONEY = DecimalField(max_digits=18, decimal_places=2)
 QTY = DecimalField(max_digits=18, decimal_places=3)
 ZERO_QTY = Value(Decimal("0"), output_field=QTY)
 
+# Product variants captured on a sale line. Razmer (roll width) and mikron
+# (thickness) are picked at sale time, not baked into the product — the client sells
+# 7 named products, and the film ones come in these widths/thicknesses while the
+# ҚОП (bag) ones have neither. Both are optional on a line; the stored value IS the
+# label the client uses.
+SIZE_CHOICES = [("1,5м", "1,5м"), ("2м", "2м"), ("6м", "6м")]
+MICRON_CHOICES = [(m, m) for m in ("015", "01", "08", "06", "05", "04", "03", "02")]
+
 # Reusable money aggregates for SaleItem querysets
 REVENUE = ExpressionWrapper(F("weight") * F("price"), output_field=MONEY)
 COST = ExpressionWrapper(F("weight") * F("cost_price"), output_field=MONEY)
@@ -161,6 +169,10 @@ class Product(models.Model):
     low_stock_threshold = models.DecimalField(
         "Kam qoldi chegarasi (kg)", max_digits=12, decimal_places=3, default=0
     )
+    # Whether a sale line for this product offers the Razmer / Mikron dropdowns.
+    # The 5 film products have both; the ҚОП (bag) products have neither.
+    has_size = models.BooleanField("Razmer bor", default=False)
+    has_micron = models.BooleanField("Mikron bor", default=False)
     is_active = models.BooleanField("Faol", default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -202,7 +214,7 @@ class Product(models.Model):
         return self.current_stock <= self.low_stock_threshold
 
     def __str__(self):
-        return f"{self.name} ({self.sku})"
+        return self.name
 
 
 def _sale_item_sum(expr):
@@ -327,7 +339,11 @@ class SaleQuerySet(models.QuerySet):
             settled=_sale_settlement_sum(),
         ).annotate(
             net_paid=F("paid") - F("settled"),
-        ).annotate(remaining=F("net_revenue") - F("net_paid"))
+        ).annotate(
+            # opening_amount (0 on a normal sale) is the carried-over pre-CRM debt; it
+            # lifts the receivable without ever touching the revenue/profit annotations.
+            remaining=F("net_revenue") - F("net_paid") + F("opening_amount")
+        )
 
     def outstanding(self):
         """Sales that still owe money (a receivable / qarz)."""
@@ -335,6 +351,12 @@ class SaleQuerySet(models.QuerySet):
 
     def visible_to(self, user):
         return self if user.can_see_all_records else self.filter(sales_rep=user)
+
+    def real(self):
+        """Only genuine sales — drops the opening-balance carry-overs. The sales lists
+        and sales figures use this; the debt/receivable views deliberately do not, so a
+        client's old balance still shows as money owed."""
+        return self.filter(is_opening=False)
 
 
 class Sale(models.Model):
@@ -356,6 +378,16 @@ class Sale(models.Model):
     )
     # Every sale is a receivable with a deadline; "paid" is derived from payments.
     debt_deadline = models.DateField("To'lov muddati", null=True, blank=True)
+    # An opening balance carried over from before go-live: a client's old debt that
+    # was never a CRM sale. Such a "sale" has NO line items — the debt is this amount
+    # alone, and it flows into `debt_remaining`/`remaining` only. Because it has no
+    # items, every revenue/cost/profit/sold-kg report (which sums SaleItems) ignores
+    # it automatically; it shows up purely as a receivable. Paid down by ordinary debt
+    # payments. `is_opening` marks these so the sales lists can hide them.
+    is_opening = models.BooleanField("Ochilish qoldig'i", default=False)
+    opening_amount = models.DecimalField(
+        "Ochilish qarzi (so'm)", max_digits=18, decimal_places=2, default=0
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     objects = SaleQuerySet.as_manager()
@@ -381,13 +413,17 @@ class Sale(models.Model):
 
     @property
     def item_summary(self):
-        """Short label for list rows: first product (name · SKU) plus a "+N" for
-        the rest."""
+        """Short label for list rows: the first product's name (with its razmer/mikron
+        when the line has one) plus a "+N" for any further lines."""
+        if self.is_opening:
+            return "Ochilish qoldig'i (eski qarz)"
         items = list(self.items.all())
         if not items:
             return "—"
-        product = items[0].product
-        first = f"{product.name} · {product.sku}"
+        item = items[0]
+        first = item.product.name
+        if item.variant_label:
+            first = f"{first} · {item.variant_label}"
         extra = len(items) - 1
         return f"{first}  +{extra}" if extra > 0 else first
 
@@ -434,7 +470,11 @@ class Sale(models.Model):
 
     @property
     def debt_remaining(self):
-        return self.net_total - (self.paid_amount - self.settled_amount)
+        # opening_amount is the pre-CRM carried-over debt (0 on a normal sale); it adds
+        # straight onto what the client owes and is whittled down by debt payments.
+        return (
+            self.net_total + self.opening_amount - (self.paid_amount - self.settled_amount)
+        )
 
     @property
     def is_paid(self):
@@ -474,6 +514,11 @@ class SaleItem(models.Model):
     cost_price = models.DecimalField(
         "Tannarxi (1 birlik, so'm)", max_digits=14, decimal_places=2
     )
+    # Product variant chosen for this line — optional, and only offered when the
+    # product supports it (see Product.has_size / has_micron). Descriptive only:
+    # they do not change the price, which comes from the product.
+    size = models.CharField("Razmer", max_length=8, blank=True, choices=SIZE_CHOICES)
+    micron = models.CharField("Mikron", max_length=8, blank=True, choices=MICRON_CHOICES)
     # Order fulfilment. `fulfilled_kg` is how much of the line has been backed by
     # stock (partial fills allowed); `fulfilled_at` is set only once it's FULLY
     # filled. A line sold short (zakaz) starts at 0 and gets topped up as stock
@@ -511,6 +556,12 @@ class SaleItem(models.Model):
         if self.dimension == Sale.Dimension.G:
             return self.weight / Decimal("1000")
         return self.weight
+
+    @property
+    def variant_label(self):
+        """Razmer + mikron as a short label ("1,5м · 015"), or "" if the line has
+        neither — used wherever the sold item is shown."""
+        return " · ".join(p for p in (self.size, self.micron) if p)
 
     @property
     def total_price(self):

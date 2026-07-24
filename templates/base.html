@@ -423,6 +423,7 @@
         total.value = idx + 1;
         if (window.enhanceComboboxes) { window.enhanceComboboxes(added); }
         if (window.enhanceMoneyInputs) { window.enhanceMoneyInputs(added); }
+        if (window.applyRowVariants) { window.applyRowVariants(added, false); }
         return;
       }
       var rm = e.target.closest('.item-remove');
@@ -469,12 +470,35 @@
       setVal(priceEl, conv(info.price));
       setVal(costEl, conv(info.cost));
     }
+    // Show the Razmer / Mikron dropdowns only for products that carry them. On a
+    // product change (clear=true) a switched-away variant is reset so a hidden
+    // dropdown never submits a stale value; on load (clear=false) existing values stay.
+    function applyVariants(row, clear) {
+      if (!row) { return; }
+      var prod = row.querySelector('select[name$="-product"]');
+      var info = prod && prod.value ? priceMap()[prod.value] : null;
+      [['size', info && info.has_size], ['micron', info && info.has_micron]].forEach(function (pair) {
+        var sel = row.querySelector('select[data-variant="' + pair[0] + '"]');
+        if (!sel) { return; }
+        var label = sel.closest('.if');
+        var show = !!pair[1];
+        if (label) { label.hidden = !show; }
+        if (!show && clear) { sel.value = ''; }
+      });
+    }
+    window.applyRowVariants = applyVariants;
     document.addEventListener('change', function (e) {
       var prod = e.target.closest('select[name$="-product"]');
-      if (prod) { fillRow(prod.closest('.item-row')); return; }
+      if (prod) { var r = prod.closest('.item-row'); fillRow(r); applyVariants(r, true); return; }
       var dim = e.target.closest('select[name$="-dimension"]');
       if (dim) { fillRow(dim.closest('.item-row')); }
     });
+    function initVariants() {
+      document.querySelectorAll('.item-row').forEach(function (r) { applyVariants(r, false); });
+    }
+    document.addEventListener('modal:loaded', initVariants);
+    if (document.readyState !== 'loading') { initVariants(); }
+    else { document.addEventListener('DOMContentLoaded', initVariants); }
   })();
 
   // Sale form: when a client is picked, flag any advance (prepayment) they hold —
