@@ -117,10 +117,12 @@ TIME_ZONE = "Asia/Tashkent"
 
 # Per-seller ombor tracking starts on this date: receipts, sales and returns
 # dated before it are ignored by ombor stock (seeded instead by opening-count
-# receipts). Set to the real go-live/cutover date at deploy; the early default
-# means "count everything" for dev and tests.
+# receipts). The default is the go-live cutover — the day after the historical
+# Excel ledger import (see import_excel), whose sales have no receipts behind
+# them and must not count against stock. Override via env if ever needed;
+# tests pin their own value.
 OMBOR_START_DATE = date(
-    *(int(p) for p in os.environ.get("OMBOR_START_DATE", "2020-01-01").split("-"))
+    *(int(p) for p in os.environ.get("OMBOR_START_DATE", "2026-07-20").split("-"))
 )
 
 USE_I18N = True
