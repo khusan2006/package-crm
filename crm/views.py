@@ -67,6 +67,26 @@ def _visible_clients(user):
     return qs if user.can_see_all_records else qs.filter(owner=user)
 
 
+def _advance_balance_map(client_pks, seller):
+    """{client_pk: advance balance} for the given clients, in ONE query. Mirrors
+    `client_advance_balance` (deposits minus consumption, net of bank fees) but batched,
+    so a whole list can be sorted/annotated without an N+1. Seller-scoped when `seller`
+    is set; otherwise the client's total across every seller's till."""
+    rows = Payment.objects.filter(client__in=client_pks)
+    if seller is not None:
+        rows = rows.filter(created_by=seller)
+    agg = rows.values("client").annotate(
+        dep=Sum(PAYMENT_NET, filter=Q(
+            kind__in=[Payment.Kind.ADVANCE_IN, Payment.Kind.RETURN_CREDIT]
+        )),
+        used=Sum(PAYMENT_NET, filter=Q(kind=Payment.Kind.ADVANCE_USED)),
+    )
+    return {
+        r["client"]: (r["dep"] or Decimal("0")) - (r["used"] or Decimal("0"))
+        for r in agg
+    }
+
+
 def _sale_totals(sales):
     """Revenue/cost/profit summed over the line items of the given sales."""
     return SaleItem.objects.filter(sale__in=sales.values("pk")).aggregate(
@@ -505,7 +525,9 @@ def dashboard(request):
     # `flow` narrows the sales set by payment method for the flow figures, but debt
     # keeps using `scoped` — an unpaid receipt has no payment row of any method.
     flow = scoped.filter(payments__method=method).distinct() if method else scoped
-    period = flow.filter(date__gte=date_from, date__lte=date_to)
+    # Opening-balance carry-overs are receivables, not sales — keep them out of the
+    # period revenue/count/recent figures (debt below still uses `scoped`, with them in).
+    period = flow.filter(date__gte=date_from, date__lte=date_to).real()
 
     def _margin(t):
         rev = t["revenue"] or 0
@@ -624,12 +646,16 @@ def client_list(request):
             | Q(owner__last_name__icontains=q)
             | Q(owner__username__icontains=q)
         ).distinct()
-    page = Paginator(clients, 25).get_page(request.GET.get("page"))
-    # Advance (prepaid) balance shown per row. A seller sees their own till's balance;
-    # an admin/manager sees the client's total held across every seller's till.
+    # Advance (prepaid) balance per client, batched in one query. A seller sees their own
+    # till's balance; an admin/manager sees the client's total across every seller's till.
     scope = None if request.user.can_see_all_records else request.user
-    for c in page:
-        c.advance = client_advance_balance(c, scope)
+    adv_map = _advance_balance_map(clients.values_list("pk", flat=True), scope)
+    client_list = list(clients)
+    for c in client_list:
+        c.advance = adv_map.get(c.pk, Decimal("0"))
+    # Clients holding an advance float to the top (biggest first), then everyone by name.
+    client_list.sort(key=lambda c: (0 if c.advance > 0 else 1, -c.advance, c.name.lower()))
+    page = Paginator(client_list, 25).get_page(request.GET.get("page"))
     return render(request, "crm/client_list.html", {"page": page, "q": q})
 
 
@@ -800,14 +826,57 @@ def client_transfer(request, pk):
 
 # --- Products -----------------------------------------------------------------
 
+# Paket catalogue facets, mirroring seed_paket_products: a SKU reads
+# "{size}-{micron}-{colour}" (e.g. "1,5m-015-oq"), so each facet is a slice of it.
+# "-01-" never matches "-015-", so the micron grades stay distinct.
+PAKET_COLORS = [("oq", "ОҚ"), ("qora", "ҚОРА"), ("novot", "НОВОТ")]
+PAKET_SIZES = [("1,5m", "1,5м"), ("2m", "2м"), ("6m", "6м")]
+PAKET_MICRONS = ["015", "01", "08", "06", "05", "04", "03", "02"]
+
+
 def product_list(request):
     # A plain shared catalog — the reference list sellers pick from when selling.
+    # With 56 paket SKUs a text search alone is coarse, so the drawer also filters
+    # by the three facets encoded in the SKU.
     products = Product.objects.order_by("name")
-    q = request.GET.get("q", "").strip()
-    if q:
-        products = products.filter(Q(name__icontains=q) | Q(sku__icontains=q))
+    filters = {key: request.GET.get(key, "") for key in ("color", "size", "micron")}
+    filters["q"] = request.GET.get("q", "").strip()
+
+    if filters["q"]:
+        products = products.filter(
+            Q(name__icontains=filters["q"]) | Q(sku__icontains=filters["q"])
+        )
+
+    colors, sizes = dict(PAKET_COLORS), dict(PAKET_SIZES)
+    # Only known facet values bite; anything else is ignored rather than 0-matching.
+    if filters["color"] in colors:
+        products = products.filter(sku__endswith=f"-{filters['color']}")
+    if filters["size"] in sizes:
+        products = products.filter(sku__startswith=f"{filters['size']}-")
+    if filters["micron"] in PAKET_MICRONS:
+        products = products.filter(sku__contains=f"-{filters['micron']}-")
+
+    active_filters = _filter_chips(request, [
+        {"param": "color", "label": "Rang", "value": colors.get(filters["color"], "")},
+        {"param": "size", "label": "O'lcham", "value": sizes.get(filters["size"], "")},
+        {"param": "micron", "label": "Mikron",
+         "value": filters["micron"] if filters["micron"] in PAKET_MICRONS else ""},
+    ])
+
     page = Paginator(products, 25).get_page(request.GET.get("page"))
-    return render(request, "crm/product_list.html", {"page": page, "q": q})
+    return render(request, "crm/product_list.html", {
+        "page": page,
+        "q": filters["q"],
+        "filters": filters,
+        "active_filters": active_filters,
+        "filter_count": len(active_filters),
+        "has_filters": bool(active_filters),
+        "filter_url": reverse("product_list"),
+        "search_placeholder": "Nomi bo'yicha qidirish…",
+        "paket_colors": PAKET_COLORS,
+        "paket_sizes": PAKET_SIZES,
+        "paket_microns": PAKET_MICRONS,
+    })
 
 
 def product_detail(request, pk):
@@ -1063,6 +1132,7 @@ def _outstanding_balance(sales):
 def sale_list(request):
     base = (
         Sale.objects.visible_to(request.user)
+        .real()  # opening-balance carry-overs live on the Qarzlar page, not here
         .select_related("client", "sales_rep")
         .prefetch_related("items__product")
         .with_balance()
@@ -1207,10 +1277,12 @@ def debt_client(request, pk):
         .order_by("debt_deadline")
     )
     total = sum((s.remaining for s in sales), Decimal("0"))
+    scope = None if request.user.can_see_all_records else request.user
+    advance = client_advance_balance(client, scope)
     return render(
         request,
         "crm/debt_client.html",
-        {"client": client, "sales": sales, "total": total},
+        {"client": client, "sales": sales, "total": total, "advance": advance},
     )
 
 
@@ -1656,12 +1728,69 @@ def payment_edit(request, pk):
 
 def audit_list(request):
     """The money-action audit trail. Admins/managers see every action; a seller
-    sees only their own."""
+    sees only their own. The trail only grows, so it is filterable by who acted,
+    which action, a date window and free text — otherwise a single entry becomes
+    unfindable past the first few pages."""
     logs = AuditLog.objects.select_related("user")
     if not request.user.can_see_all_records:
         logs = logs.filter(user=request.user)
+
+    filters = {key: request.GET.get(key, "") for key in ("rep", "action", "dan", "gacha")}
+    filters["q"] = request.GET.get("q", "").strip()
+
+    if filters["q"]:
+        logs = logs.filter(
+            Q(summary__icontains=filters["q"]) | Q(target_type__icontains=filters["q"])
+        )
+
+    reps = rep_obj = None
+    if request.user.can_see_all_records:
+        reps = User.objects.filter(is_active=True).order_by(
+            "first_name", "last_name", "username"
+        )
+        if filters["rep"].isdigit():
+            rep_obj = reps.filter(pk=filters["rep"]).first()
+            if rep_obj:
+                logs = logs.filter(user=rep_obj)
+
+    actions = AuditLog.Action.choices
+    action_label = dict(actions).get(filters["action"], "")
+    if action_label:
+        logs = logs.filter(action=filters["action"])
+
+    # A full history, so dates only bite once the user actually sets them.
+    date_from = _parse_date(filters["dan"])
+    date_to = _parse_date(filters["gacha"])
+    if date_from and date_to and date_to < date_from:
+        date_from, date_to = date_to, date_from
+        filters["dan"], filters["gacha"] = date_from.isoformat(), date_to.isoformat()
+    if date_from:
+        logs = logs.filter(created_at__date__gte=date_from)
+    if date_to:
+        logs = logs.filter(created_at__date__lte=date_to)
+
+    active_filters = _filter_chips(request, [
+        {"param": "rep", "label": "Kim", "value": str(rep_obj) if rep_obj else ""},
+        {"param": "action", "label": "Amal", "value": action_label},
+        {"param": "dan", "label": "Sanadan",
+         "value": date_from.strftime("%d.%m.%Y") if date_from else ""},
+        {"param": "gacha", "label": "Sanagacha",
+         "value": date_to.strftime("%d.%m.%Y") if date_to else ""},
+    ])
+
     page = Paginator(logs, 50).get_page(request.GET.get("page"))
-    return render(request, "crm/audit_list.html", {"page": page})
+    return render(request, "crm/audit_list.html", {
+        "page": page,
+        "filters": filters,
+        "reps": reps,
+        "rep_label": "Kim",
+        "actions": actions,
+        "active_filters": active_filters,
+        "filter_count": len(active_filters),
+        "has_filters": bool(active_filters),
+        "filter_url": reverse("audit_list"),
+        "search_placeholder": "Tafsilot bo'yicha qidirish…",
+    })
 
 
 # --- Kassa (cash register) ----------------------------------------------------
@@ -1827,6 +1956,12 @@ def _kassa_summary(date_from, date_to, rep=None):
     cost_cum = _kassa_supplier_cost(None, date_to, rep)
     remitted_cum = _kassa_remitted(None, date_to, rep)
     paid_profit_cum = _kassa_paid_profit(None, date_to, rep)
+    # Carried-over pre-CRM production debt: one seller's when scoped, else everyone's.
+    # It lifts the debt without ever touching income/cash — just like a client opening debt.
+    if rep is not None:
+        opening_debt = rep.opening_production_debt or Decimal("0")
+    else:
+        opening_debt = User.objects.aggregate(s=Sum("opening_production_debt"))["s"] or Decimal("0")
     # Cash on hand combines every method AND currency: Payment.amount is always the
     # so'm value (a dollar payment is converted at entry), so PAYMENT_NET nets a
     # dollar payment to its so'm too — no currency filter here.
@@ -1857,10 +1992,10 @@ def _kassa_summary(date_from, date_to, rep=None):
         # already handed to the boss — all cumulative.
         "remitted": remitted,
         "paid_profit": paid_profit,
-        "production_debt": cost_cum - remitted_cum,
+        "production_debt": opening_debt + cost_cum - remitted_cum,
         "cash": cash_on_hand,
         # Profit still sitting in the till, free to hand up: cash beyond the debt.
-        "withdrawable_profit": cash_on_hand - (cost_cum - remitted_cum),
+        "withdrawable_profit": cash_on_hand - (opening_debt + cost_cum - remitted_cum),
         "profit": profit,
         "expense_total": expense_total,
         "refunded": refunded,
@@ -1909,20 +2044,30 @@ def _per_employee_kassa(date_from, date_to, rep=None):
     usd = Payment.Currency.USD
 
     def blank(uid):
+        u = users.get(uid)
         return {
             "uid": uid,
-            "employee": str(users.get(uid)) if users.get(uid) else "—",
+            "employee": str(u) if u else "—",
             "in_som": Decimal("0"), "in_usd": Decimal("0"),
             "out_som": Decimal("0"), "out_usd": Decimal("0"),
             "expense_total": Decimal("0"), "profit": Decimal("0"),
             "sold_cost": Decimal("0"), "remitted": Decimal("0"),
             "paid_profit": Decimal("0"), "refunded": Decimal("0"),
+            # Carried-over pre-CRM production debt, part of this seller's debt from day one.
+            "opening_debt": (u.opening_production_debt if u else Decimal("0")) or Decimal("0"),
         }
 
     rows = {}
 
     def row(uid):
         return rows.setdefault(uid, blank(uid))
+
+    # Seed a row for every seller carrying an opening production debt, so their debt shows
+    # (and feeds the Jami total) even when they've had no other movement in the window.
+    for u in users.values():
+        if u.opening_production_debt:
+            if rep is None or (rep is not None and u.pk == rep.pk):
+                row(u.pk)
 
     for r in (
         payments.values("created_by", "currency")
@@ -1975,7 +2120,7 @@ def _per_employee_kassa(date_from, date_to, rep=None):
             rr["in_som"] - rr["refunded"] - rr["expense_total"]
             - rr["remitted"] - rr["paid_profit"]
         )
-        rr["production_debt"] = rr["sold_cost"] - rr["remitted"]
+        rr["production_debt"] = rr["opening_debt"] + rr["sold_cost"] - rr["remitted"]
         rr["net"] = rr["profit"] - rr["expense_total"]  # samaradorlik: foyda − rasxot
         result.append(rr)
     result.sort(key=lambda r: (r["in_som"] + r["profit"]), reverse=True)
@@ -2090,7 +2235,7 @@ def _kassa_transactions(expenses, dates, filters, rep):
     refunds = Payment.objects.filter(
         kind=Payment.Kind.REFUND_OUT,
         date__gte=dates["date_from"], date__lte=dates["date_to"],
-    ).select_related("client", "created_by")
+    ).select_related("client", "created_by").prefetch_related("settled_return")
     if rep is not None:
         refunds = refunds.filter(created_by=rep)
     if filters["method"] in dict(Payment.Method.choices):
@@ -2098,6 +2243,9 @@ def _kassa_transactions(expenses, dates, filters, rep):
     if filters["currency"] in dict(Payment.Currency.choices):
         refunds = refunds.filter(currency=filters["currency"])
     for rf in refunds:
+        # A refund is only ever corrected by undoing its return, so carry the return's
+        # pk onto the row — the kassa "Bekor qilish" action links straight to it.
+        linked = list(rf.settled_return.all())
         rows.append({
             "date": rf.date, "created_at": rf.created_at, "direction": "refund",
             "title": str(rf.client) if rf.client else "—",
@@ -2106,7 +2254,8 @@ def _kassa_transactions(expenses, dates, filters, rep):
             "currency": rf.currency,
             "amount_som": rf.amount, "amount_original": rf.original_amount,
             "exchange_rate": rf.exchange_rate, "created_by": rf.created_by,
-            "pk": rf.pk, "kind": "refund",
+            "pk": rf.pk, "kind": "refund", "sale_pk": rf.sale_id,
+            "return_pk": linked[0].pk if linked else None,
         })
     for e in expenses:
         rows.append({
@@ -2653,15 +2802,12 @@ def receipt_delete(request, pk):
     )
 
 
-def ombor_view(request):
-    """Ombor = sold-goods report, one row per product with the total kg sold in the
-    selected date window. A seller sees only their own sales; admins/managers see
-    every seller's combined total (and can filter to one seller). Click a product to
-    drill into who bought it. Mirrors the debts page's group-then-detail shape."""
+def _ombor_items(request, date_from, date_to):
+    """Sale lines inside the window, scoped to the viewer and narrowed by the ombor
+    filters (product search + seller). Shared by the page and its Excel export so
+    the download always matches what is on screen.
+    Returns (items, filters, reps, rep_obj)."""
     user = request.user
-    dates = _date_range_context(request)
-    date_from, date_to = dates["date_from"], dates["date_to"]
-
     filters = {"q": request.GET.get("q", "").strip(), "rep": request.GET.get("rep", "")}
     filters["dan"] = date_from.isoformat()
     filters["gacha"] = date_to.isoformat()
@@ -2684,17 +2830,36 @@ def ombor_view(request):
         items = items.filter(
             Q(product__name__icontains=filters["q"]) | Q(product__sku__icontains=filters["q"])
         )
+    return items, filters, reps, rep_obj
 
-    rows = list(
+
+def _ombor_rows(items):
+    """One row per product: kg sold, and how many receipts it appeared on."""
+    return list(
         items.values("product", "product__name", "product__sku")
         .annotate(total_kg=Sum(ITEM_WEIGHT_KG), sales_count=Count("sale", distinct=True))
         .order_by("-total_kg")
     )
+
+
+def ombor_view(request):
+    """Ombor = sold-goods report, one row per product with the total kg sold in the
+    selected date window. A seller sees only their own sales; admins/managers see
+    every seller's combined total (and can filter to one seller). Click a product to
+    drill into who bought it. Mirrors the debts page's group-then-detail shape."""
+    dates = _date_range_context(request)
+    date_from, date_to = dates["date_from"], dates["date_to"]
+
+    items, filters, reps, rep_obj = _ombor_items(request, date_from, date_to)
+    rows = _ombor_rows(items)
     total_kg = sum((r["total_kg"] or Decimal("0") for r in rows), Decimal("0"))
 
     active_filters = _filter_chips(request, [
         {"param": "rep", "label": "Sotuvchi", "value": str(rep_obj) if rep_obj else ""},
     ])
+    # Carry the current window and filters into the download link, so the .xlsx is
+    # exactly the table on screen (the month a sverka is being done for).
+    query = request.GET.urlencode()
 
     return render(request, "crm/ombor.html", {
         "rows": rows,
@@ -2704,17 +2869,38 @@ def ombor_view(request):
         "filters": filters,
         "reps": reps,
         "rep_label": "Sotuvchi",
-        "is_admin_view": user.can_see_all_records,
+        "is_admin_view": request.user.can_see_all_records,
         "active_filters": active_filters,
         "filter_count": len(active_filters),
         "has_filters": bool(active_filters),
         "filter_url": reverse("ombor"),
         "catalog_url": reverse("product_list"),
-        "search_placeholder": "Mahsulot nomi yoki SKU…",
+        "export_url": reverse("ombor_export") + (f"?{query}" if query else ""),
+        "search_placeholder": "Mahsulot nomi…",
         "show_daterange_picker": True,
         "keep_daterange": True,
         **dates,
     })
+
+
+def ombor_export(request):
+    """The sold-goods report as .xlsx — same window, search and seller filter as the
+    page. This is the sheet a monthly production-vs-sold sverka is built from."""
+    dates = _date_range_context(request)
+    items, _, _, _ = _ombor_items(request, dates["date_from"], dates["date_to"])
+    rows = _ombor_rows(items)
+
+    headers = ["Mahsulot", "SKU", "Sotuvlar soni", "Sotilgan (kg)"]
+    data = [
+        [
+            r["product__name"],
+            r["product__sku"],
+            r["sales_count"],
+            float(r["total_kg"] or 0),
+        ]
+        for r in rows
+    ]
+    return _xlsx_response("ombor.xlsx", "Ombor", headers, data, {4: "0.000"})
 
 
 def _filter_ombor_items(request, items):
@@ -2818,6 +3004,7 @@ def ombor_product(request, pk):
 def sale_export(request):
     base = (
         Sale.objects.visible_to(request.user)
+        .real()  # matches the sales list — opening carry-overs are not sales
         .select_related("client", "sales_rep")
         .with_balance()
     )
@@ -2922,9 +3109,16 @@ def _client_advance_map(user):
 
 
 def _product_price_map():
-    """Per-kg price/cost for each active product, so the form can auto-fill a row."""
+    """Per-kg price/cost for each active product, so the form can auto-fill a row —
+    plus whether the product offers the Razmer / Mikron dropdowns, so the JS can show
+    or hide them when the product is picked."""
     return {
-        str(p.pk): {"price": str(p.price), "cost": str(p.cost_price)}
+        str(p.pk): {
+            "price": str(p.price),
+            "cost": str(p.cost_price),
+            "has_size": p.has_size,
+            "has_micron": p.has_micron,
+        }
         for p in Product.objects.filter(is_active=True)
     }
 
@@ -3127,13 +3321,13 @@ def sale_pay(request, pk):
     return _render_debt_pay(request, sale, form)
 
 
-def _render_return_form(request, sale, form, invalid=False):
+def _render_return_form(request, sale, form, invalid=False, title=None):
     open_debt = max(Decimal("0"), sale.debt_remaining)
     net_paid = sale.paid_amount - sale.settled_amount
     context = {
         "form": form,
         "sale": sale,
-        "title": f"Qaytarish: {sale.client.name}",
+        "title": title or f"Qaytarish: {sale.client.name}",
         # The seller's first question is "has this client paid yet?", because that is
         # what decides whether goods coming back cost the till anything.
         "open_debt": open_debt,
@@ -3170,28 +3364,7 @@ def sale_return(request, pk):
             ret = form.save(commit=False)
             ret.created_by = request.user
             ret.save()
-
-            excess = form.excess
-            to_debt = form.credited_to_debt
-            refunded = form.cleaned_data["settlement"] == ReturnForm.SETTLE_REFUND
-            if excess > 0:
-                Payment.objects.create(
-                    sale=sale,
-                    client=sale.client,
-                    date=ret.date,
-                    amount=excess,
-                    method=Payment.Method.CASH,
-                    kind=(
-                        Payment.Kind.REFUND_OUT if refunded
-                        else Payment.Kind.RETURN_CREDIT
-                    ),
-                    note=f"Qaytarish: {ret.product.name}",
-                    created_by=request.user,
-                )
-                if not refunded:
-                    # Spend the fresh credit on whatever else the client still owes.
-                    _apply_advance_to_open_sales(sale.client, request.user)
-
+            to_debt, excess, refunded = _settle_return(ret, form, request.user)
             AuditLog.record(
                 request.user, AuditLog.Action.RETURN, "Qaytarish", sale.pk,
                 f"Mijoz {sale.client.name} qaytardi ({ret.product.name}) — "
@@ -3204,6 +3377,154 @@ def sale_return(request, pk):
         return _render_return_form(request, sale, form, invalid=True)
     form = ReturnForm(sale=sale, user=request.user, initial={"restock": True})
     return _render_return_form(request, sale, form)
+
+
+def _settle_return(ret, form, user):
+    """Post the money side of a just-saved return and link it back to the return.
+
+    The return's value cancels open debt first; any excess is money the client had
+    already paid and is owed back — parked as advance credit (default) or handed out
+    as cash. Kept in one place so `sale_return` and `return_edit` settle identically.
+    Returns (to_debt, excess, refunded)."""
+    excess = form.excess
+    to_debt = form.credited_to_debt
+    refunded = form.cleaned_data.get("settlement") == ReturnForm.SETTLE_REFUND
+    if excess > 0:
+        settlement = Payment.objects.create(
+            sale=ret.sale,
+            client=ret.sale.client,
+            date=ret.date,
+            amount=excess,
+            method=Payment.Method.CASH,
+            kind=(
+                Payment.Kind.REFUND_OUT if refunded
+                else Payment.Kind.RETURN_CREDIT
+            ),
+            note=f"Qaytarish: {ret.product.name}",
+            created_by=user,
+        )
+        # Link the payment back to the return so it can be voided/edited as one unit.
+        ret.settlement = settlement
+        ret.save(update_fields=["settlement"])
+        if not refunded:
+            # Spend the fresh credit on whatever else the client still owes.
+            _apply_advance_to_open_sales(ret.sale.client, user)
+    return to_debt, excess, refunded
+
+
+def _reverse_return(ret):
+    """Roll back a return's money side and delete the return itself. The sale's debt,
+    the warehouse figures and every till total re-derive to their pre-return state; a
+    spent advance credit is peeled back so the pool can't go negative. Shared by
+    `return_delete` (final) and `return_edit` (before re-applying the new values)."""
+    settlement = ret.settlement
+    is_credit = settlement is not None and settlement.kind == Payment.Kind.RETURN_CREDIT
+    client = ret.sale.client
+    seller = settlement.created_by if settlement else None
+    if settlement is not None:
+        settlement.delete()
+    ret.delete()
+    if is_credit and seller is not None:
+        _reconcile_client_advance(client, seller)
+
+
+def return_edit(request, pk):
+    """Correct a mistaken return — change the line, quantity, restock flag or how the
+    excess was settled. The old return is rolled back in full and the new values are
+    applied as a fresh return, so debt, till and advance stay perfectly in sync (a
+    return can't be safely edited in place — its settlement is derived from it). A
+    seller may edit only their own returns; admins/managers any."""
+    qs = Return.objects.select_related(
+        "sale", "sale__client", "product", "sale_item", "settlement"
+    )
+    if not request.user.can_see_all_records:
+        qs = qs.filter(created_by=request.user)
+    ret = get_object_or_404(qs, pk=pk)
+    sale = ret.sale
+    acceptor, orig_date = ret.created_by, ret.date
+    title = "Qaytarishni tahrirlash"
+    if request.method == "POST":
+        with transaction.atomic():
+            _reverse_return(ret)
+            # Validate against the restored state, so the quantity cap and the debt
+            # split both see the sale as if this return had never happened.
+            sale.refresh_from_db()
+            form = ReturnForm(request.POST, sale=sale, user=request.user)
+            if form.is_valid():
+                new = form.save(commit=False)
+                new.created_by = acceptor
+                new.date = orig_date
+                new.save()
+                to_debt, excess, refunded = _settle_return(new, form, request.user)
+                AuditLog.record(
+                    request.user, AuditLog.Action.UPDATE, "Qaytarish", sale.pk,
+                    f"Mijoz {sale.client.name} qaytarishi o'zgartirildi "
+                    f"({new.product.name}) — {new.amount:,.0f} so'm",
+                )
+                messages.success(request, "Qaytarish yangilandi.")
+                return form_reload(request, reverse("sale_detail", args=[sale.pk]))
+            # Invalid: undo the tentative reversal, leaving the return untouched.
+            transaction.set_rollback(True)
+        return _render_return_form(request, sale, form, invalid=True, title=title)
+    settlement_initial = (
+        ReturnForm.SETTLE_REFUND
+        if ret.settlement and ret.settlement.kind == Payment.Kind.REFUND_OUT
+        else ReturnForm.SETTLE_ADVANCE
+    )
+    form = ReturnForm(
+        sale=sale, user=request.user,
+        initial={
+            "sale_item": ret.sale_item_id,
+            "weight": ret.weight,
+            "restock": ret.restock,
+            "note": ret.note,
+            "settlement": settlement_initial,
+        },
+    )
+    return _render_return_form(request, sale, form, title=title)
+
+
+def return_delete(request, pk):
+    """Undo a return in full. Voids the settlement it generated (the cash refund or
+    the advance credit) and removes the return itself, so the sale's open debt, the
+    warehouse figures and every till total re-derive to exactly their pre-return state.
+    A seller may undo only their own returns; admins/managers any."""
+    qs = Return.objects.select_related("sale", "sale__client", "product", "settlement")
+    if not request.user.can_see_all_records:
+        qs = qs.filter(created_by=request.user)
+    ret = get_object_or_404(qs, pk=pk)
+    settlement = ret.settlement
+    is_refund = settlement is not None and settlement.kind == Payment.Kind.REFUND_OUT
+    is_credit = settlement is not None and settlement.kind == Payment.Kind.RETURN_CREDIT
+    if request.method == "POST":
+        sale_pk = ret.sale_id
+        client = ret.sale.client
+        summary = (
+            f"Mijoz {client.name} qaytarishi bekor qilindi "
+            f"({ret.product.name}) — {ret.amount:,.0f} so'm"
+        )
+        with transaction.atomic():
+            _reverse_return(ret)
+        AuditLog.record(request.user, AuditLog.Action.VOID, "Qaytarish", sale_pk, summary)
+        messages.success(request, "Qaytarish bekor qilindi — qarz va kassa qayta hisoblandi.")
+        return form_reload(request, reverse("sale_detail", args=[sale_pk]))
+    if is_refund:
+        extra = " Naqd qaytarilgan pul kassaga qaytadi."
+    elif is_credit:
+        extra = (
+            " Mijoz avansiga o'tgan summa bekor qilinadi — agar u boshqa "
+            "sotuvlarga ishlatilgan bo'lsa, o'sha sotuvlar qayta qarzga aylanadi."
+        )
+    else:
+        extra = ""
+    return render_confirm(
+        request,
+        "Qaytarishni bekor qilish",
+        f"“{ret.product.name}” — {ret.amount:,.0f} so'm qaytarish bekor qilinadi "
+        f"va sotuv qarzi qayta tiklanadi.{extra} Davom etasizmi?",
+        "Ha, bekor qilish",
+        confirm_class="btn-danger",
+    )
 
 
 def _return_message(total, to_debt, excess, refunded):
@@ -3221,27 +3542,40 @@ def _return_message(total, to_debt, excess, refunded):
 
 
 def sale_delete(request, pk):
-    sale = get_object_or_404(Sale.objects.visible_to(request.user), pk=pk)
-    # A sale with recorded payments must not be deleted — it would silently wipe
-    # money already booked in the till/ledger. Reverse the payments first.
-    if sale.payments.exists():
-        messages.error(
-            request,
-            "Bu sotuvni o'chirib bo'lmaydi — unga to'lovlar yozilgan. "
-            "Avval to'lovlarni bekor qiling.",
-        )
-        return form_reload(request, reverse("sale_list"))
+    """Delete a sale outright. Any payments and returns booked against it are reversed
+    with it — they cascade — and the client's advance is reconciled so freed credit
+    settles onto other open receipts (or an orphaned credit is peeled back). The till,
+    debt and profit all re-derive. Because this removes money records, the confirm
+    dialog spells out exactly what will go, mirroring how payment/advance voids work."""
+    sale = get_object_or_404(
+        Sale.objects.visible_to(request.user).select_related("client"), pk=pk
+    )
+    client, seller = sale.client, sale.sales_rep
+    paid = sale.paid_amount
+    return_count = sale.returns.count()
     if request.method == "POST":
         summary = f"Mijoz {sale.client.name} sotuvi — {sale.total_price:,.0f} so'm"
         sale_pk = sale.pk
-        sale.delete()
+        with transaction.atomic():
+            sale.delete()  # items, payments and returns cascade with it
+            # Freed or now-orphaned advance allocations settle back into balance.
+            _reconcile_client_advance(client, seller)
         AuditLog.record(request.user, AuditLog.Action.DELETE, "Sotuv", sale_pk, summary)
         messages.success(request, "Sotuv o'chirildi.")
         return form_reload(request, reverse("sale_list"))
+    extra = []
+    if paid > 0:
+        extra.append(f"{paid:,.0f} so'm to'lov")
+    if return_count:
+        extra.append(f"{return_count} ta qaytarish")
+    warn = (
+        f" Unga bog'liq {' va '.join(extra)} ham o'chiriladi, kassa va qarz qayta hisoblanadi."
+        if extra else ""
+    )
     return render_confirm(
         request,
         "Sotuvni o'chirish",
-        "Bu sotuv butunlay o'chiriladi. Davom etasizmi?",
+        f"Bu sotuv butunlay o'chiriladi.{warn} Davom etasizmi?",
         "Ha, o'chirish",
         confirm_class="btn-danger",
     )

@@ -518,12 +518,22 @@ html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
   background: transparent;
   border-bottom: 1.5px solid var(--border);
 }
-.ledger-table td { padding: 10px 8px; vertical-align: middle; }
+/* Coloured header row: light green for Kirim, light red for Chiqim */
+.ledger-in th  { background: rgba(34, 197, 94, 0.10); color: var(--success); border-bottom-color: rgba(34, 197, 94, 0.35); }
+.ledger-out th { background: rgba(239, 68, 68, 0.10); color: var(--danger);  border-bottom-color: rgba(239, 68, 68, 0.35); }
+/* Top-align, not middle: a Chiqim row with a subtitle ("Qaytarish: yashil") is two
+   lines tall, and middle-aligning would float the date, amount and icons to the row's
+   vertical centre — out of line with the name on the first line. Top keeps every cell
+   on the same first line. Single-line Kirim rows are unaffected. */
+.ledger-table td { padding: 10px 8px; vertical-align: top; }
 .ledger-table th:first-child, .ledger-table td:first-child { padding-left: 16px; }
 .ledger-table th:last-child, .ledger-table td:last-child { padding-right: 16px; }
+/* Fixed action column so Kirim (7 cols) and Chiqim (6 cols) line their icons up
+   at the same offset — a two-icon [edit][view] cluster, right-aligned, never wraps. */
+.ledger-table th:last-child, .ledger-table td:last-child { width: 84px; }
 .ledger-table td:first-child { color: var(--text-muted); }
 .ledger-table .num { font-variant-numeric: tabular-nums; }
-.ledger-table .row-actions { display: flex; gap: 2px; justify-content: flex-end; }
+.ledger-table .row-actions { display: flex; gap: 2px; justify-content: flex-end; white-space: nowrap; }
 /* Ghost action icons: quiet by default, sharpen on row hover */
 .ledger-table .icon-action {
   width: 28px; height: 28px;
@@ -577,25 +587,37 @@ html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
   background: var(--surface-2, var(--surface));
 }
 .item-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+}
+/* Product gets its own full-width row so long names + big prices all fit */
+.item-fields .if-product { flex: 1 1 100%; }
+/* The remaining inputs share one grid that grows to fill the row; whether the
+   product shows Razmer/Mikron (film) or not (qop), the cells stretch to full width
+   and the remove button stays pinned to the right of them. */
+.item-fields .item-subfields {
+  flex: 1 1 auto;
   display: grid;
-  grid-template-columns: 0.8fr 1fr 1.3fr 1.3fr auto;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 10px;
   align-items: end;
 }
-/* Product gets its own full-width row so long names + big prices all fit */
-.item-fields .if-product { grid-column: 1 / -1; }
 .item-fields .if { display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; color: var(--text-muted); font-weight: 600; }
+/* `display:flex` above would otherwise beat the [hidden] attribute — restore it so
+   the Razmer/Mikron dropdowns actually hide for products that don't carry them. */
+.item-fields .if[hidden] { display: none; }
 .item-fields .if input,
 .item-fields .if select { width: 100%; }
 .item-fields .if-price input,
 .item-fields .if-cost input { text-align: right; }
-.item-fields .item-remove { align-self: end; height: 40px; }
+.item-fields .item-remove { flex: 0 0 auto; align-self: flex-end; height: 40px; }
 .item-add { margin-top: 8px; }
 .item-total { margin-top: 6px; text-align: right; font-size: 12px; font-weight: 600; }
 .items-grand { margin-top: 8px; text-align: right; font-size: 14px; font-weight: 800; color: var(--success); }
 @media (max-width: 560px) {
-  .item-fields { grid-template-columns: 1fr 1fr; }
-  .item-fields .item-remove { grid-column: 1 / -1; justify-self: end; }
+  .item-fields .item-subfields { grid-template-columns: 1fr 1fr; }
 }
 
 /* ============================================================
@@ -630,6 +652,8 @@ tbody tr { transition: background 0.1s; }
 tbody tr:hover { background: var(--surface-hover); }
 tr:last-child td { border-bottom: none; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* Light-blue header row, opt-in per table (e.g. Sotuvchilar nazorati). */
+.table--blue-head th { background: var(--accent-soft); color: var(--accent); }
 
 /* Frozen name column — stays put on horizontal scroll */
 th.sticky-col, td.sticky-col {

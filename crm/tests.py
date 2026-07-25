@@ -1028,11 +1028,34 @@ class SaleIntegrityTests(BaseSetup):
             "items-0-cost_price": "18000",
         }
 
-    def test_cannot_delete_sale_with_payments(self):
+    def test_deleting_a_paid_sale_reverses_its_payments(self):
+        # Deleting a sale now cascades its payments away too, so the till no longer
+        # counts money for a receipt that no longer exists.
         sale = self._paid_sale()
+        payment_ids = list(sale.payments.values_list("pk", flat=True))
+        self.assertTrue(payment_ids)  # it really was paid
         self.client.force_login(self.sales1)
         self.client.post(reverse("sale_delete", args=[sale.pk]))
-        self.assertTrue(Sale.objects.filter(pk=sale.pk).exists())
+        self.assertFalse(Sale.objects.filter(pk=sale.pk).exists())
+        self.assertFalse(Payment.objects.filter(pk__in=payment_ids).exists())
+
+    def test_deleting_a_sale_reverses_its_returns(self):
+        # A sale that had a return (and its cash refund) deletes cleanly — the return
+        # and the refund payment go with it.
+        sale = self._paid_sale()
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_return", args=[sale.pk]),
+            {"sale_item": sale.items.first().pk, "weight": "4",
+             "restock": "on", "settlement": "refund"},
+        )
+        self.assertEqual(Return.objects.filter(sale=sale).count(), 1)
+        self.client.post(reverse("sale_delete", args=[sale.pk]))
+        self.assertFalse(Sale.objects.filter(pk=sale.pk).exists())
+        self.assertEqual(Return.objects.filter(sale=sale).count(), 0)
+        self.assertFalse(
+            Payment.objects.filter(sale=sale, kind=Payment.Kind.REFUND_OUT).exists()
+        )
 
     def test_can_delete_sale_without_payments(self):
         sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
@@ -1103,7 +1126,7 @@ class PaymentVoidTests(BaseSetup):
         self.assertTrue(Payment.objects.filter(pk=payment.pk).exists())
 
     def test_void_frees_sale_for_deletion(self):
-        # The delete guard blocks a paid sale; voiding its payment unblocks it
+        # Voiding a payment first, then deleting the sale, still leaves nothing behind.
         sale = make_sale(self.client1, self.sales1, self.product)
         payment = sale.payments.get()
         self.client.force_login(self.manager)
@@ -1499,6 +1522,212 @@ class ReturnSettlementTests(BaseSetup):
         # The line — and the return hanging off it — must survive.
         self.assertEqual(sale.items.count(), 1)
         self.assertEqual(sale.returns.count(), 1)
+
+
+class ReturnVoidTests(BaseSetup):
+    """Undoing a return: it must roll the sale's debt, the till and the client's
+    advance back to exactly where they stood before the return was taken."""
+
+    def _return(self, sale, weight, settlement=None, restock=True):
+        data = {"sale_item": sale.items.first().pk, "weight": weight}
+        if restock:
+            data["restock"] = "on"
+        if settlement:
+            data["settlement"] = settlement
+        self.client.post(reverse("sale_return", args=[sale.pk]), data)
+        return sale.returns.first()
+
+    def _remaining(self, sale):
+        return Sale.objects.filter(pk=sale.pk).with_balance()[0].remaining
+
+    def test_return_links_its_settlement_payment(self):
+        sale = make_sale(self.client1, self.sales1, self.product)  # paid
+        self.client.force_login(self.sales1)
+        ret = self._return(sale, "4", settlement="refund")
+        self.assertIsNotNone(ret.settlement)
+        self.assertEqual(ret.settlement.kind, Payment.Kind.REFUND_OUT)
+
+    def test_void_cash_refund_returns_money_and_restores_debt(self):
+        sale = make_sale(self.client1, self.sales1, self.product)  # 240 000, paid
+        self.client.force_login(self.sales1)
+        till = seller_cash_on_hand(self.sales1)
+        ret = self._return(sale, "4", settlement="refund")  # −96 000 out of the till
+        self.assertEqual(till - seller_cash_on_hand(self.sales1), Decimal("96000"))
+        self.client.post(reverse("return_delete", args=[ret.pk]))
+        # The return, its refund payment and the till all snap back to before.
+        self.assertEqual(sale.returns.count(), 0)
+        self.assertFalse(sale.payments.filter(kind=Payment.Kind.REFUND_OUT).exists())
+        self.assertEqual(seller_cash_on_hand(self.sales1), till)
+        self.assertEqual(self._remaining(sale), Decimal("0"))
+
+    def test_void_advance_credit_return_clears_the_credit(self):
+        sale = make_sale(self.client1, self.sales1, self.product)  # paid
+        self.client.force_login(self.sales1)
+        ret = self._return(sale, "4")  # 96 000 parked as advance
+        self.assertEqual(
+            client_advance_balance(self.client1, self.sales1), Decimal("96000")
+        )
+        self.client.post(reverse("return_delete", args=[ret.pk]))
+        self.assertEqual(sale.returns.count(), 0)
+        self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("0"))
+        self.assertEqual(self._remaining(sale), Decimal("0"))
+
+    def test_void_return_reverts_debt_that_the_return_had_cancelled(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)  # 240 000
+        self.client.force_login(self.sales1)
+        ret = self._return(sale, "4")  # 96 000 off the debt → 144 000 left
+        self.assertEqual(self._remaining(sale), Decimal("144000"))
+        self.client.post(reverse("return_delete", args=[ret.pk]))
+        self.assertEqual(self._remaining(sale), Decimal("240000"))
+
+    def test_void_credit_peels_it_back_off_another_sale(self):
+        paid = make_sale(self.client1, self.sales1, self.product)  # 240 000, paid
+        owed = make_sale(self.client1, self.sales1, self.product, is_debt=True)  # 240 000
+        self.client.force_login(self.sales1)
+        ret = self._return(paid, "4")  # 96 000 credit, spent onto `owed`
+        self.assertEqual(self._remaining(owed), Decimal("144000"))
+        self.client.post(reverse("return_delete", args=[ret.pk]))
+        # The credit is gone, so the sale it had part-paid owes the full amount again.
+        self.assertEqual(self._remaining(owed), Decimal("240000"))
+        self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("0"))
+
+    def test_void_restores_ombor_and_production_debt(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        self.client.force_login(self.sales1)
+        before = seller_production_debt(self.sales1)
+        ret = self._return(sale, "4", restock=True)  # tannarx flowed back
+        self.assertNotEqual(seller_production_debt(self.sales1), before)
+        self.client.post(reverse("return_delete", args=[ret.pk]))
+        self.assertEqual(seller_production_debt(self.sales1), before)
+
+    def test_kassa_refund_row_opens_its_sale(self):
+        # The kassa refund row carries [edit][view]: edit the return in place, or open
+        # the sale to undo it there. The row must know both its return and its sale.
+        sale = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        ret = self._return(sale, "4", settlement="refund")
+        response = self.client.get(reverse("kassa"))
+        refund_row = next(
+            r for r in response.context["outflow_rows"] if r["kind"] == "refund"
+        )
+        self.assertEqual(refund_row["return_pk"], ret.pk)
+        self.assertEqual(refund_row["sale_pk"], sale.pk)
+        self.assertContains(response, reverse("sale_detail", args=[sale.pk]))
+
+    def test_void_is_audited(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        ret = self._return(sale, "4", settlement="refund")
+        self.client.post(reverse("return_delete", args=[ret.pk]))
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action=AuditLog.Action.VOID, target_type="Qaytarish", target_id=sale.pk
+            ).exists()
+        )
+
+    def test_seller_cannot_void_another_sellers_return(self):
+        # The sale belongs to sales1; the return was accepted by the manager. A plain
+        # seller must not be able to reach in and void someone else's return.
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        self.client.force_login(self.manager)
+        ret = self._return(sale, "4")  # inside the debt — only cancels debt, no cash
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("return_delete", args=[ret.pk]))
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(sale.returns.count(), 1)
+
+
+class ReturnEditTests(BaseSetup):
+    """Correcting a return: it is rolled back and re-applied, so debt, till and advance
+    all follow the new values without ever drifting out of sync with the settlement."""
+
+    def _return(self, sale, weight, settlement=None, restock=True):
+        data = {"sale_item": sale.items.first().pk, "weight": weight}
+        if restock:
+            data["restock"] = "on"
+        if settlement:
+            data["settlement"] = settlement
+        self.client.post(reverse("sale_return", args=[sale.pk]), data)
+        return sale.returns.first()
+
+    def _edit(self, ret, weight, settlement=None, restock=True):
+        data = {"sale_item": ret.sale_item_id, "weight": weight}
+        if restock:
+            data["restock"] = "on"
+        if settlement:
+            data["settlement"] = settlement
+        return self.client.post(reverse("return_edit", args=[ret.pk]), data)
+
+    def _remaining(self, sale):
+        return Sale.objects.filter(pk=sale.pk).with_balance()[0].remaining
+
+    def test_edit_larger_weight_recomputes_the_credit(self):
+        sale = make_sale(self.client1, self.sales1, self.product)  # 240 000, paid
+        self.client.force_login(self.sales1)
+        ret = self._return(sale, "4")  # 96 000 → advance
+        self._edit(ret, "6")  # now 144 000 should be owed back
+        self.assertEqual(sale.returns.count(), 1)
+        self.assertEqual(sale.returns.first().weight, Decimal("6"))
+        self.assertEqual(
+            client_advance_balance(self.client1, self.sales1), Decimal("144000")
+        )
+
+    def test_edit_from_advance_to_cash_refund_moves_money(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        till = seller_cash_on_hand(self.sales1)
+        ret = self._return(sale, "4")  # advance: cash stays in the drawer
+        self.assertEqual(seller_cash_on_hand(self.sales1), till)
+        self._edit(ret, "4", settlement="refund")  # now hand it back in cash
+        self.assertEqual(till - seller_cash_on_hand(self.sales1), Decimal("96000"))
+        self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("0"))
+        self.assertEqual(sale.payments.filter(kind=Payment.Kind.REFUND_OUT).count(), 1)
+
+    def test_edit_is_audited_as_update(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        ret = self._return(sale, "4")
+        self._edit(ret, "6")
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action=AuditLog.Action.UPDATE, target_type="Qaytarish", target_id=sale.pk
+            ).exists()
+        )
+
+    def test_invalid_edit_leaves_the_original_return_untouched(self):
+        sale = make_sale(self.client1, self.sales1, self.product)  # 10 kg sold
+        self.client.force_login(self.sales1)
+        ret = self._return(sale, "4")  # 96 000 → advance
+        # The modal posts over AJAX; an invalid submit comes back as a 422 partial.
+        response = self.client.post(
+            reverse("return_edit", args=[ret.pk]),
+            {"sale_item": ret.sale_item_id, "weight": "20", "restock": "on"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )  # more than was ever sold → invalid
+        self.assertEqual(response.status_code, 422)
+        # The tentative rollback must restore the original return exactly.
+        self.assertEqual(sale.returns.count(), 1)
+        self.assertEqual(sale.returns.first().weight, Decimal("4"))
+        self.assertEqual(
+            client_advance_balance(self.client1, self.sales1), Decimal("96000")
+        )
+
+    def test_kassa_refund_row_offers_edit(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        ret = self._return(sale, "4", settlement="refund")
+        response = self.client.get(reverse("kassa"))
+        self.assertContains(response, reverse("return_edit", args=[ret.pk]))
+
+    def test_kassa_income_payment_row_opens_its_sale(self):
+        # A client payment on the kirim side carries [edit][view]: the view opens the
+        # sale, where the payment can be edited or voided.
+        sale = make_sale(self.client1, self.sales1, self.product)  # paid → a Payment
+        payment = sale.payments.first()
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"))
+        self.assertContains(response, reverse("payment_edit", args=[payment.pk]))
+        self.assertContains(response, reverse("sale_detail", args=[sale.pk]))
 
 
 class ModalFormTests(BaseSetup):
@@ -2213,11 +2442,11 @@ class SaleFormClientSearchTests(TestCase):
 
 
 class SaleItemSummaryTests(BaseSetup):
-    """The sales-list product summary shows the first product's name and SKU,
-    plus a "+N" when the sale has more than one product."""
+    """The sales-list product summary shows the first product's name (SKU is no longer
+    surfaced), plus a "+N" when the sale has more than one product."""
 
-    def test_summary_shows_first_product_name_and_sku(self):
-        self.assertEqual(self.sale1.item_summary, "Polietilen paket · PKT-1")
+    def test_summary_shows_first_product_name(self):
+        self.assertEqual(self.sale1.item_summary, "Polietilen paket")
 
     def test_summary_appends_plus_n_for_extra_products(self):
         other = Product.objects.create(name="Qora paket", sku="PKT-2", price=Decimal("10000"))
@@ -2225,7 +2454,7 @@ class SaleItemSummaryTests(BaseSetup):
             sale=self.sale1, product=other, dimension="kg",
             weight=Decimal("2"), price=Decimal("10000"), cost_price=Decimal("8000"),
         )
-        self.assertEqual(self.sale1.item_summary, "Polietilen paket · PKT-1  +1")
+        self.assertEqual(self.sale1.item_summary, "Polietilen paket  +1")
 
 
 class TimeagoUzTests(TestCase):
@@ -2550,3 +2779,94 @@ class InnerPageBackTests(BaseSetup):
             r = self.client.get(url)
             self.assertEqual(r.status_code, 200, url)
             self.assertIn("topbar-back", r.content.decode(), url)
+
+
+class AuditFilterTests(BaseSetup):
+    """Hisobotlar (audit) is filterable by who acted, which action and a date
+    window — the trail only grows, so an entry must stay findable."""
+
+    def test_filter_combinations_render(self):
+        base = reverse("audit_list")
+        self.client.force_login(self.admin)
+        urls = [
+            base,
+            f"{base}?q=paket",
+            f"{base}?rep={self.sales1.pk}",
+            f"{base}?action=payment",
+            f"{base}?dan=2026-01-01&gacha=2026-12-31",
+            f"{base}?dan=2026-12-31&gacha=2026-01-01",  # reversed bounds get swapped
+            f"{base}?action=bogus&rep=999",             # junk is ignored, not a crash
+        ]
+        for url in urls:
+            self.assertEqual(self.client.get(url).status_code, 200, url)
+
+    def test_action_filter_narrows_to_one_action(self):
+        AuditLog.record(self.admin, AuditLog.Action.CREATE, "Sotuv", 1, "yaratildi")
+        AuditLog.record(self.admin, AuditLog.Action.PAYMENT, "To'lov", 2, "to'landi")
+        self.client.force_login(self.admin)
+        page = self.client.get(f"{reverse('audit_list')}?action=payment").context["page"]
+        self.assertEqual({log.action for log in page.object_list}, {AuditLog.Action.PAYMENT})
+
+    def test_search_matches_the_summary_text(self):
+        AuditLog.record(self.admin, AuditLog.Action.CREATE, "Sotuv", 1, "Mijoz A uchun")
+        AuditLog.record(self.admin, AuditLog.Action.CREATE, "Sotuv", 2, "Mijoz B uchun")
+        self.client.force_login(self.admin)
+        page = self.client.get(f"{reverse('audit_list')}?q=Mijoz A").context["page"]
+        self.assertEqual([log.summary for log in page.object_list], ["Mijoz A uchun"])
+
+    def test_seller_cannot_widen_scope_with_the_rep_filter(self):
+        AuditLog.record(self.admin, AuditLog.Action.CREATE, "Sotuv", 1, "Admin ishi")
+        AuditLog.record(self.sales1, AuditLog.Action.CREATE, "Sotuv", 2, "Sotuvchi ishi")
+        self.client.force_login(self.sales1)
+        page = self.client.get(
+            f"{reverse('audit_list')}?rep={self.admin.pk}"
+        ).context["page"]
+        self.assertEqual([log.user for log in page.object_list], [self.sales1])
+
+
+class ProductFacetFilterTests(BaseSetup):
+    """The catalogue filters slice a "{size}-{micron}-{colour}" SKU."""
+
+    PAKET_SKUS = ["1,5m-01-oq", "1,5m-015-oq", "2m-01-qora", "6m-08-novot"]
+
+    def setUp(self):
+        for sku in self.PAKET_SKUS:
+            Product.objects.create(name=sku, sku=sku, price=0, cost_price=0)
+        self.client.force_login(self.admin)
+
+    def found(self, query):
+        page = self.client.get(f"{reverse('product_list')}?{query}").context["page"]
+        return {p.sku for p in page.object_list}
+
+    def test_micron_01_does_not_drag_in_015(self):
+        self.assertEqual(self.found("micron=01"), {"1,5m-01-oq", "2m-01-qora"})
+        self.assertEqual(self.found("micron=015"), {"1,5m-015-oq"})
+
+    def test_size_and_colour_select_their_own(self):
+        self.assertEqual(self.found("size=1,5m"), {"1,5m-01-oq", "1,5m-015-oq"})
+        self.assertEqual(self.found("color=oq"), {"1,5m-01-oq", "1,5m-015-oq"})
+
+    def test_facets_combine(self):
+        self.assertEqual(self.found("size=1,5m&micron=01&color=oq"), {"1,5m-01-oq"})
+
+    def test_unknown_facet_value_is_ignored(self):
+        # Better to show the whole catalogue than a silently empty page
+        self.assertTrue(set(self.PAKET_SKUS) <= self.found("micron=bogus"))
+
+
+class OmborExportTests(BaseSetup):
+    """The sold-goods .xlsx — the sheet a production-vs-sold sverka is built from."""
+
+    def test_export_lists_sold_kg_for_every_seller(self):
+        self.client.force_login(self.admin)
+        rows = read_xlsx(self.client.get(reverse("ombor_export")))
+        self.assertEqual(rows[0], ("Mahsulot", "SKU", "Sotuvlar soni", "Sotilgan (kg)"))
+        by_sku = {r[1]: r for r in rows[1:]}
+        # BaseSetup sells 10 kg through each of the two sellers
+        self.assertEqual(by_sku[self.product.sku][3], 20.0)
+
+    def test_export_is_scoped_to_the_seller_who_downloads_it(self):
+        self.client.force_login(self.sales1)
+        rows = read_xlsx(self.client.get(reverse("ombor_export")))
+        by_sku = {r[1]: r for r in rows[1:]}
+        self.assertEqual(by_sku[self.product.sku][3], 10.0)

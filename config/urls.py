@@ -37,6 +37,7 @@ urlpatterns = [
     path("products/<int:pk>/tuzatish/", crm_views.stock_adjust, name="stock_adjust"),
     # ombor (sold-goods report)
     path("ombor/", crm_views.ombor_view, name="ombor"),
+    path("ombor/export/", crm_views.ombor_export, name="ombor_export"),
     path("ombor/mahsulot/<int:pk>/", crm_views.ombor_product, name="ombor_product"),
     path("ombor/qabul/", crm_views.receipt_create, name="receipt_create"),
     path("ombor/qabul/<int:pk>/biriktirish/", crm_views.receipt_bind, name="receipt_bind"),
@@ -67,6 +68,8 @@ urlpatterns = [
     path("sales/<int:pk>/edit/", crm_views.sale_edit, name="sale_edit"),
     path("sales/<int:pk>/pay/", crm_views.sale_pay, name="sale_pay"),
     path("sales/<int:pk>/return/", crm_views.sale_return, name="sale_return"),
+    path("returns/<int:pk>/edit/", crm_views.return_edit, name="return_edit"),
+    path("returns/<int:pk>/delete/", crm_views.return_delete, name="return_delete"),
     path("sales/<int:pk>/mark-paid/", crm_views.sale_mark_paid, name="sale_mark_paid"),
     path("sales/<int:pk>/delete/", crm_views.sale_delete, name="sale_delete"),
 ]

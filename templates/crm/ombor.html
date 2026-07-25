@@ -32,7 +32,6 @@
 <table>
   <tr>
     <th class="sticky-col">Mahsulot</th>
-    <th>SKU</th>
     <th class="num">Sotuvlar soni</th>
     <th class="num">Jami sotilgan</th>
     <th></th>
@@ -40,7 +39,6 @@
   {% for r in rows %}
   <tr>
     <td class="sticky-col"><a href="{% url 'ombor_product' r.product %}">{{ r.product__name }}</a></td>
-    <td class="muted">{{ r.product__sku }}</td>
     <td class="num">{{ r.sales_count }}</td>
     <td class="num"><strong>{{ r.total_kg|floatformat:"-3g" }}</strong> kg</td>
     <td><a class="btn btn-sm btn-ghost" href="{% url 'ombor_product' r.product %}">Ko'rish</a></td>

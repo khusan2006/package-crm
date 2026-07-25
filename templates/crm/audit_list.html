@@ -4,6 +4,8 @@
 {% block topbar_title %}Hisobotlar{% endblock %}
 {% block content %}
 
+{% include "crm/_filter_toolbar.html" with show_search=True %}
+
 {% if page.object_list %}
 <div class="table-wrap">
 <table>
@@ -37,6 +39,8 @@
 </div>
 {% endif %}
 {% else %}
-<p class="muted">Hozircha hisobot yozuvlari yo'q.</p>
+<p class="muted">{% if has_filters or filters.q %}Filtr bo'yicha yozuv topilmadi.{% else %}Hozircha hisobot yozuvlari yo'q.{% endif %}</p>
 {% endif %}
+
+{% include "crm/_filter_drawer.html" with show_dates=True %}
 {% endblock %}

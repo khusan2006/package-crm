@@ -34,6 +34,37 @@
       </select>
     </label>
     {% endif %}
+    {% if actions %}
+    <label>Amal
+      <select name="action">
+        <option value="">Barchasi</option>
+        {% for code, label in actions %}<option value="{{ code }}" {% if filters.action == code %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    {% endif %}
+    {% comment %}
+    Paket catalogue facets — the three parts of a "{size}-{micron}-{colour}" SKU.
+    {% endcomment %}
+    {% if paket_colors %}
+    <label>Rang
+      <select name="color">
+        <option value="">Barchasi</option>
+        {% for code, label in paket_colors %}<option value="{{ code }}" {% if filters.color == code %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>O'lcham
+      <select name="size">
+        <option value="">Barchasi</option>
+        {% for code, label in paket_sizes %}<option value="{{ code }}" {% if filters.size == code %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Mikron
+      <select name="micron">
+        <option value="">Barchasi</option>
+        {% for m in paket_microns %}<option value="{{ m }}" {% if filters.micron == m %}selected{% endif %}>{{ m }}</option>{% endfor %}
+      </select>
+    </label>
+    {% endif %}
     {% if show_status %}
     <label>To'lov
       <select name="status">
