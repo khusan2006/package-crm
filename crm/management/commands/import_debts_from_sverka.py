@@ -51,6 +51,10 @@ class Command(BaseCommand):
         parser.add_argument("--file", default=DEFAULT_FILE, help="ХОЗМАГЛАР .xlsx yo'li")
         parser.add_argument("--seller", default="admin",
                             help="Ega/sotuvchi username (default: admin)")
+        parser.add_argument("--seller-email", default=None,
+                            help="Ega/sotuvchini EMAIL bo'yicha topadi (username o'rniga).")
+        parser.add_argument("--production-debt", default=None,
+                            help="Shu sotuvchining ishlab chiqarishga ochilish qarzi (so'm).")
         parser.add_argument("--deadline-days", type=int, default=DEFAULT_DEADLINE_DAYS,
                             help="To'lov muddati = ОЛДИ + shu kun (default: 14)")
         parser.add_argument("--dry-run", action="store_true",
@@ -59,10 +63,20 @@ class Command(BaseCommand):
     def handle(self, *args, **opt):
         import openpyxl
 
-        try:
-            seller = User.objects.get(username=opt["seller"])
-        except User.DoesNotExist:
-            raise CommandError(f"Sotuvchi topilmadi: {opt['seller']}")
+        # Prefer an explicit email (the seller may exist on prod under an unknown
+        # username); fall back to the username otherwise.
+        if opt["seller_email"]:
+            qs = User.objects.filter(email__iexact=opt["seller_email"])
+            if not qs.exists():
+                raise CommandError(f"Bu email bilan sotuvchi topilmadi: {opt['seller_email']}")
+            if qs.count() > 1:
+                raise CommandError(f"Bu email bir nechta hisobda: {opt['seller_email']}")
+            seller = qs.first()
+        else:
+            try:
+                seller = User.objects.get(username=opt["seller"])
+            except User.DoesNotExist:
+                raise CommandError(f"Sotuvchi topilmadi: {opt['seller']}")
 
         today = timezone.localdate()
         deadline_days = opt["deadline_days"]
@@ -143,13 +157,27 @@ class Command(BaseCommand):
                             is_opening=True,
                         )
 
+            # Opening production debt (what the seller owes production at go-live) — a
+            # per-seller figure that flows into the kassa's "Ishlab chiqarishga qarz".
+            prod_debt = None
+            if opt["production_debt"] is not None:
+                prod_debt = Decimal(str(opt["production_debt"]).replace(" ", ""))
+                if not dry:
+                    seller.opening_production_debt = prod_debt
+                    seller.save(update_fields=["opening_production_debt"])
+
             if dry:
                 transaction.set_rollback(True)
 
         head = "DRY-RUN (hech narsa yozilmadi)" if dry else "IMPORT bajarildi"
         self.stdout.write(self.style.SUCCESS(f"\n=== {head} ==="))
-        self.stdout.write(f"Manba: {SHEET} | Sotuvchi: {seller.username} | Muddat = ОЛДИ + {deadline_days} kun")
+        self.stdout.write(
+            f"Manba: {SHEET} | Sotuvchi: {seller.username} ({seller.email or 'email yoq'}) "
+            f"| Muddat = ОЛДИ + {deadline_days} kun"
+        )
         self.stdout.write(f"Qarz (opening) yozuvlari: {created_debt} ta = {debt_total:,.0f} so'm")
         self.stdout.write(f"  sana ОЛДИ'dan: {dated_from_oldi} ta | fallback ({FALLBACK_DATE}): {dated_from_fallback} ta")
         self.stdout.write(f"Avans yozuvlari:          {created_adv} ta = {adv_total:,.0f} so'm")
         self.stdout.write(f"Allaqachon bor (o'tkazib): {skipped_existing} ta")
+        if prod_debt is not None:
+            self.stdout.write(f"Ishlab chiqarishga qarz o'rnatildi: {prod_debt:,.0f} so'm")
