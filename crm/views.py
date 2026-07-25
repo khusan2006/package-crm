@@ -1956,6 +1956,12 @@ def _kassa_summary(date_from, date_to, rep=None):
     cost_cum = _kassa_supplier_cost(None, date_to, rep)
     remitted_cum = _kassa_remitted(None, date_to, rep)
     paid_profit_cum = _kassa_paid_profit(None, date_to, rep)
+    # Carried-over pre-CRM production debt: one seller's when scoped, else everyone's.
+    # It lifts the debt without ever touching income/cash — just like a client opening debt.
+    if rep is not None:
+        opening_debt = rep.opening_production_debt or Decimal("0")
+    else:
+        opening_debt = User.objects.aggregate(s=Sum("opening_production_debt"))["s"] or Decimal("0")
     # Cash on hand combines every method AND currency: Payment.amount is always the
     # so'm value (a dollar payment is converted at entry), so PAYMENT_NET nets a
     # dollar payment to its so'm too — no currency filter here.
@@ -1986,10 +1992,10 @@ def _kassa_summary(date_from, date_to, rep=None):
         # already handed to the boss — all cumulative.
         "remitted": remitted,
         "paid_profit": paid_profit,
-        "production_debt": cost_cum - remitted_cum,
+        "production_debt": opening_debt + cost_cum - remitted_cum,
         "cash": cash_on_hand,
         # Profit still sitting in the till, free to hand up: cash beyond the debt.
-        "withdrawable_profit": cash_on_hand - (cost_cum - remitted_cum),
+        "withdrawable_profit": cash_on_hand - (opening_debt + cost_cum - remitted_cum),
         "profit": profit,
         "expense_total": expense_total,
         "refunded": refunded,
@@ -2038,20 +2044,30 @@ def _per_employee_kassa(date_from, date_to, rep=None):
     usd = Payment.Currency.USD
 
     def blank(uid):
+        u = users.get(uid)
         return {
             "uid": uid,
-            "employee": str(users.get(uid)) if users.get(uid) else "—",
+            "employee": str(u) if u else "—",
             "in_som": Decimal("0"), "in_usd": Decimal("0"),
             "out_som": Decimal("0"), "out_usd": Decimal("0"),
             "expense_total": Decimal("0"), "profit": Decimal("0"),
             "sold_cost": Decimal("0"), "remitted": Decimal("0"),
             "paid_profit": Decimal("0"), "refunded": Decimal("0"),
+            # Carried-over pre-CRM production debt, part of this seller's debt from day one.
+            "opening_debt": (u.opening_production_debt if u else Decimal("0")) or Decimal("0"),
         }
 
     rows = {}
 
     def row(uid):
         return rows.setdefault(uid, blank(uid))
+
+    # Seed a row for every seller carrying an opening production debt, so their debt shows
+    # (and feeds the Jami total) even when they've had no other movement in the window.
+    for u in users.values():
+        if u.opening_production_debt:
+            if rep is None or (rep is not None and u.pk == rep.pk):
+                row(u.pk)
 
     for r in (
         payments.values("created_by", "currency")
@@ -2104,7 +2120,7 @@ def _per_employee_kassa(date_from, date_to, rep=None):
             rr["in_som"] - rr["refunded"] - rr["expense_total"]
             - rr["remitted"] - rr["paid_profit"]
         )
-        rr["production_debt"] = rr["sold_cost"] - rr["remitted"]
+        rr["production_debt"] = rr["opening_debt"] + rr["sold_cost"] - rr["remitted"]
         rr["net"] = rr["profit"] - rr["expense_total"]  # samaradorlik: foyda − rasxot
         result.append(rr)
     result.sort(key=lambda r: (r["in_som"] + r["profit"]), reverse=True)

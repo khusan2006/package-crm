@@ -1030,7 +1030,11 @@ def seller_production_debt(seller):
 
     Only RESTOCKED returns count against the debt. If the goods did not come back
     (spoiled, written off) the seller consumed them, so they still owe production the
-    cost — otherwise a write-off would silently erase a real liability."""
+    cost — otherwise a write-off would silently erase a real liability.
+
+    `opening_production_debt` is the carried-over pre-CRM liability (0 for a normal
+    seller); it lifts the debt from day one and is paid down by the same remittances."""
+    opening = seller.opening_production_debt or Decimal("0")
     sold_cost = (
         SaleItem.objects.filter(sale__sales_rep=seller).aggregate(s=Sum(COST))["s"]
         or Decimal("0")
@@ -1045,7 +1049,7 @@ def seller_production_debt(seller):
         ProductionRemittance.objects.filter(seller=seller).aggregate(s=Sum("amount"))["s"]
         or Decimal("0")
     )
-    return sold_cost - remitted
+    return opening + sold_cost - remitted
 
 
 def seller_withdrawable_profit(seller, exclude_payout_pk=None):
