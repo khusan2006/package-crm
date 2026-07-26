@@ -45,3 +45,6 @@ class Command(BaseCommand):
             production_debt=PRODUCTION_DEBT,
             file=str(SVERKA_FILE),
         )
+        # Idempotent: fills a +14 kun deadline on any sale still missing one — fixes data
+        # from an earlier import that left ordinary sales without a deadline, no-op after.
+        call_command("backfill_deadlines")

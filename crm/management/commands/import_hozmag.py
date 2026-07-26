@@ -405,7 +405,10 @@ class Command(BaseCommand):
         item_index = defaultdict(list)  # (client_pk, product) -> [SaleItem] for returns
         for (raw_client, d), rows in sorted(grouped.items(), key=lambda kv: kv[0][1]):
             client = client_for[raw_client]
-            sale = Sale.objects.create(date=d, client=client, sales_rep=seller)
+            sale = Sale.objects.create(
+                date=d, client=client, sales_rep=seller,
+                debt_deadline=d + datetime.timedelta(days=DEADLINE_DAYS),
+            )
             total = Decimal("0")
             for row in rows:
                 item = SaleItem.objects.create(
