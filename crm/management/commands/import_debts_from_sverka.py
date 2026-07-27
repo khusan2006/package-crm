@@ -57,6 +57,9 @@ class Command(BaseCommand):
                             help="Shu sotuvchining ishlab chiqarishga ochilish qarzi (so'm).")
         parser.add_argument("--deadline-days", type=int, default=DEFAULT_DEADLINE_DAYS,
                             help="To'lov muddati = ОЛДИ + shu kun (default: 14)")
+        parser.add_argument("--fallback-date", default=None,
+                            help="ОЛДИ sanasi yo'q qarzdorlar uchun sana (YYYY-MM-DD). "
+                                 f"Berilmasa: {FALLBACK_DATE}")
         parser.add_argument("--dry-run", action="store_true",
                             help="Hech narsa yozmaydi, faqat xulosani ko'rsatadi.")
 
@@ -80,6 +83,15 @@ class Command(BaseCommand):
 
         today = timezone.localdate()
         deadline_days = opt["deadline_days"]
+
+        fallback_date = FALLBACK_DATE
+        if opt["fallback_date"]:
+            try:
+                fallback_date = datetime.date.fromisoformat(opt["fallback_date"])
+            except ValueError:
+                raise CommandError(
+                    f"--fallback-date noto'g'ri: {opt['fallback_date']} (YYYY-MM-DD kutilgan)"
+                )
 
         wb = openpyxl.load_workbook(opt["file"], read_only=True, data_only=True)
         if SHEET not in wb.sheetnames:
@@ -133,7 +145,7 @@ class Command(BaseCommand):
                         dated_from_oldi += 1
                     else:
                         dated_from_fallback += 1
-                    debt_date = oldi_date or FALLBACK_DATE
+                    debt_date = oldi_date or fallback_date
                     deadline = debt_date + datetime.timedelta(days=deadline_days)
                     if not dry:
                         Sale.objects.create(
@@ -176,7 +188,7 @@ class Command(BaseCommand):
             f"| Muddat = ОЛДИ + {deadline_days} kun"
         )
         self.stdout.write(f"Qarz (opening) yozuvlari: {created_debt} ta = {debt_total:,.0f} so'm")
-        self.stdout.write(f"  sana ОЛДИ'dan: {dated_from_oldi} ta | fallback ({FALLBACK_DATE}): {dated_from_fallback} ta")
+        self.stdout.write(f"  sana ОЛДИ'dan: {dated_from_oldi} ta | fallback ({fallback_date}): {dated_from_fallback} ta")
         self.stdout.write(f"Avans yozuvlari:          {created_adv} ta = {adv_total:,.0f} so'm")
         self.stdout.write(f"Allaqachon bor (o'tkazib): {skipped_existing} ta")
         if prod_debt is not None:

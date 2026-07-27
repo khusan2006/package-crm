@@ -5,6 +5,26 @@
 {% block fab %}<a class="fab" href="{% url 'client_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi mijoz</a>{% endblock %}
 {% block content %}
 
+<div class="kpi-grid">
+  <div class="kpi kpi--green">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg></span>
+      <span class="kpi-label">Mijozlar avansi</span>
+    </div>
+    <div class="kpi-value">{{ total_advance|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{{ advance_clients }} ta mijozda avans bor</div>
+  </div>
+
+  <div class="kpi kpi--blue">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+      <span class="kpi-label">Jami mijozlar</span>
+    </div>
+    <div class="kpi-value">{{ total_clients }}</div>
+    <div class="kpi-meta muted">{% if user.can_see_all_records %}barcha mijozlar{% else %}mening mijozlarim{% endif %}</div>
+  </div>
+</div>
+
 <form method="get" class="searchbar" role="search" data-live-search>
   <div class="toolbar-search{% if q %} is-active{% endif %}">
     <svg class="toolbar-search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -36,7 +56,7 @@
       {% else %}<span class="muted">—</span>{% endif %}
     </td>
     <td>{{ client.owner }}</td>
-    <td class="num">{% if client.advance > 0 %}<strong style="color: var(--success);">{{ client.advance|floatformat:"0g" }}</strong>{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td class="num">{% if client.advance > 0 %}<a href="{% url 'debt_client' client.pk %}" title="Avansni ko'rish / tahrirlash"><strong style="color: var(--success);">{{ client.advance|floatformat:"0g" }}</strong></a>{% else %}<span class="muted">—</span>{% endif %}</td>
     <td class="num">{{ client.sale_count }}</td>
     <td>
       {% if client.last_sale %}<span title="{{ client.last_sale|date:'d.m.Y' }}">{{ client.last_sale|timeago_uz }}</span>

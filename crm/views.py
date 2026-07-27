@@ -655,8 +655,17 @@ def client_list(request):
         c.advance = adv_map.get(c.pk, Decimal("0"))
     # Clients holding an advance float to the top (biggest first), then everyone by name.
     client_list.sort(key=lambda c: (0 if c.advance > 0 else 1, -c.advance, c.name.lower()))
+    # Headline KPIs over the whole (search-filtered) set, not just the current page.
+    total_advance = sum((c.advance for c in client_list), Decimal("0"))
+    advance_clients = sum(1 for c in client_list if c.advance > 0)
     page = Paginator(client_list, 25).get_page(request.GET.get("page"))
-    return render(request, "crm/client_list.html", {"page": page, "q": q})
+    return render(request, "crm/client_list.html", {
+        "page": page,
+        "q": q,
+        "total_clients": len(client_list),
+        "total_advance": total_advance,
+        "advance_clients": advance_clients,
+    })
 
 
 def client_create(request):
@@ -1118,15 +1127,20 @@ def _date_range_context(request):
 
 
 def _outstanding_balance(sales):
-    """Total still owed across the given sales: item revenue − returns − net payments.
+    """Total still owed across the given sales: item revenue − returns − net payments,
+    plus any carried-over opening balance.
 
     Payments are netted of bank fees (amount − commission) and returned goods are
-    subtracted, matching how each sale's remaining balance is computed."""
+    subtracted, matching how each sale's remaining balance is computed. `opening_amount`
+    (0 on a normal sale) is the pre-CRM debt that has no line items — it must be added
+    here or an imported opening debt would total to zero. Mirrors the `remaining`
+    annotation in `SaleQuerySet.with_balance`."""
     pks = sales.values("pk")
     revenue = SaleItem.objects.filter(sale__in=pks).aggregate(v=Sum(REVENUE))["v"] or 0
     returned = Return.objects.filter(sale__in=pks).aggregate(v=Sum(RETURN_AMOUNT))["v"] or 0
     paid = Payment.objects.filter(sale__in=pks).aggregate(v=Sum(PAYMENT_NET))["v"] or 0
-    return revenue - returned - paid
+    opening = Sale.objects.filter(pk__in=pks).aggregate(v=Sum("opening_amount"))["v"] or 0
+    return revenue - returned - paid + opening
 
 
 def sale_list(request):
@@ -1279,10 +1293,23 @@ def debt_client(request, pk):
     total = sum((s.remaining for s in sales), Decimal("0"))
     scope = None if request.user.can_see_all_records else request.user
     advance = client_advance_balance(client, scope)
+    # The individual advance deposits, each editable/voidable right here — so a mistaken
+    # advance can be fixed from the client's own page, not only from the kassa ledger.
+    advance_deposits = (
+        _advance_in_qs(request.user)
+        .filter(client=client)
+        .order_by("-date", "-created_at")
+    )
     return render(
         request,
         "crm/debt_client.html",
-        {"client": client, "sales": sales, "total": total, "advance": advance},
+        {
+            "client": client,
+            "sales": sales,
+            "total": total,
+            "advance": advance,
+            "advance_deposits": advance_deposits,
+        },
     )
 
 
