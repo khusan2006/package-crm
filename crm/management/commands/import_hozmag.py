@@ -59,6 +59,8 @@ PRODUCT_ALIASES = {
 METHOD_BY_NOTE = {"КЛИК": Payment.Method.CARD, "ПЕР": Payment.Method.TRANSFER}
 DEADLINE_DAYS = 14
 MIN_YEAR = 2020  # rows dated before this (stray 1900 cells) are dropped.
+# Where a client has no usable ОЛДИ (last-took-goods) date, date their opening debt here.
+FALLBACK_OLDI = datetime.date(2026, 6, 1)
 DEFAULT_FILE = str(Path(settings.BASE_DIR) / "data" / "sverka.xlsx")
 # Historical products in the file that are NOT in the clean catalogue get this SKU
 # prefix. Deliberately NOT "IMP-": `clear_imported` truncates every crm table while an
@@ -90,6 +92,25 @@ def _qty(v):
 def _prodname(v):
     name = " ".join(str(v).split()).upper()
     return PRODUCT_ALIASES.get(name, name)
+
+
+def oldi_map(ws, today):
+    """{clean client name (upper) -> ОЛДИ date} from the АКТ СВЕРКА sheet — the date a
+    client last took goods (col 5). Only plausible dates are kept (this century, not in
+    the future — the sheet has stray 1900 cells and a couple of typos). Names carry a
+    trailing phone, stripped the same way as everywhere so the key matches the Client."""
+    out = {}
+    for r in ws.iter_rows(min_row=2, values_only=True):
+        name = _norm(r[0]) if r and r[0] is not None else ""
+        if not name:
+            continue
+        oldi = r[5] if len(r) > 5 else None
+        if isinstance(oldi, datetime.datetime):
+            d = oldi.date()
+            if d.year >= MIN_YEAR and d <= today:
+                clean, _ = split_name_phone(name)
+                out[clean.upper()] = d
+    return out
 
 
 class Command(BaseCommand):
@@ -262,13 +283,14 @@ class Command(BaseCommand):
         pays, sk_pays = self.parse_payments(wb["ТЎЛОВ"])
         openings, sk_open = self.parse_opening(wb["БОШЛАҒИЧ САЛЬДО"])
         sverka = self.parse_sverka(wb["АКТ СВЕРКА"])
+        oldi = oldi_map(wb["АКТ СВЕРКА"], datetime.date.today())
         if not sales:
             raise CommandError("СОТУВ varag'idan bironta yaroqli sotuv topilmadi.")
 
         from crm.models import seller_production_debt
         with transaction.atomic():
             self.wipe()
-            report = self.import_all(sales, returns, pays, openings, seller)
+            report = self.import_all(sales, returns, pays, openings, oldi, seller)
             recon = self.reconcile(sverka, seller)
             # Balance the production debt to the owner-supplied figure by recording the
             # cash already handed to production (the file has no remittance rows). Net
@@ -325,7 +347,7 @@ class Command(BaseCommand):
         User.objects.exclude(opening_production_debt=0).update(opening_production_debt=0)
         self.stdout.write("Eski crm ma'lumotlari tozalandi; ishlab chiqarish ochilish qarzlari nollandi (userlar qoldi).")
 
-    def import_all(self, sales, returns, pays, openings, seller):
+    def import_all(self, sales, returns, pays, openings, oldi, seller):
         # -- products: seed the clean catalogue (7 priced products with razmer/mikron)
         #    for ongoing sales, map the file's names onto it, and create the leftover
         #    historical grades (ОҚ 1/2 СОРТ, ШПУЛ-, ҚОП …) as HIST-* products. Each
@@ -367,9 +389,6 @@ class Command(BaseCommand):
                 clients[key].save(update_fields=["phone"])
             client_for[raw] = clients[key]
 
-        first_date = min(r["date"] for r in sales)
-        opening_date = first_date - datetime.timedelta(days=1)
-
         # slots per client pk: [{sale, remaining, products}] — payment-allocation queue
         slots = defaultdict(list)
 
@@ -379,11 +398,14 @@ class Command(BaseCommand):
         for o in openings:
             client = client_for[o["client"]]
             saldo = o["saldo"]
+            # Date the opening balance from ОЛДИ (when the client last took goods) so the
+            # debt ages correctly; fall back to a fixed date when the sheet has none.
+            debt_date = oldi.get(client.name.upper(), FALLBACK_OLDI)
             if saldo < 0:                      # client owes us
                 amount = _money(-saldo)
                 sale = Sale.objects.create(
-                    client=client, sales_rep=seller, date=opening_date,
-                    debt_deadline=opening_date + datetime.timedelta(days=DEADLINE_DAYS),
+                    client=client, sales_rep=seller, date=debt_date,
+                    debt_deadline=debt_date + datetime.timedelta(days=DEADLINE_DAYS),
                     is_opening=True, opening_amount=amount,
                 )
                 slots[client.pk].insert(0, {"sale": sale, "remaining": amount, "products": set()})
@@ -391,7 +413,7 @@ class Command(BaseCommand):
                 open_debt_total += amount
             else:                              # we hold their money -> advance credit
                 Payment.objects.create(
-                    client=client, created_by=seller, date=opening_date,
+                    client=client, created_by=seller, date=debt_date,
                     amount=_money(saldo), kind=Payment.Kind.ADVANCE_IN,
                     note="Ochilish avansi (import)", is_opening=True,
                 )

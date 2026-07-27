@@ -48,3 +48,6 @@ class Command(BaseCommand):
         # Idempotent: fills a +14 kun deadline on any sale still missing one — fixes data
         # from an earlier import that left ordinary sales without a deadline, no-op after.
         call_command("backfill_deadlines")
+        # Idempotent: re-dates opening debts to each client's ОЛДИ + 14 kun (an earlier
+        # import used one fixed date). File-driven, no-op once they're already on ОЛДИ.
+        call_command("redate_opening_debts")
