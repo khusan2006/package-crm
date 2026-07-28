@@ -48,5 +48,12 @@
   <span class="deadline-preview" data-deadline-preview hidden></span>
 </p>
 
+<datalist id="size-suggestions">
+  {% for s in size_suggestions %}<option value="{{ s }}"></option>{% endfor %}
+</datalist>
+<datalist id="micron-suggestions">
+  {% for m in micron_suggestions %}<option value="{{ m }}"></option>{% endfor %}
+</datalist>
+
 {{ products_json|json_script:"product-price-map" }}
 {{ client_advance_json|json_script:"client-advance-map" }}
