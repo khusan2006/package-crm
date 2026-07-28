@@ -611,16 +611,21 @@ class SaleItemForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.fields["product"].queryset = Product.objects.filter(is_active=True)
         _searchable_select(self.fields["product"], "Mahsulotni tanlang")
-        # Razmer / mikron are optional and only shown for products that carry them
-        # (the JS reads has_size/has_micron and hides the dropdown otherwise).
+        # Razmer / mikron are optional free-text fields, only shown for products
+        # that carry them (the JS reads has_size/has_micron and hides them
+        # otherwise). They render as text inputs backed by a <datalist> so the
+        # seller gets SIZE_CHOICES / MICRON_CHOICES as suggestions but can also
+        # type any custom value.
         self.fields["size"].required = False
         self.fields["micron"].required = False
-        self.fields["size"].widget.attrs["data-variant"] = "size"
-        self.fields["micron"].widget.attrs["data-variant"] = "micron"
-        for key in ("size", "micron"):
-            self.fields[key].choices = [("", "—")] + [
-                c for c in self.fields[key].choices if c[0]
-            ]
+        self.fields["size"].widget.attrs.update(
+            {"data-variant": "size", "list": "size-suggestions",
+             "autocomplete": "off", "placeholder": "Razmer"}
+        )
+        self.fields["micron"].widget.attrs.update(
+            {"data-variant": "micron", "list": "micron-suggestions",
+             "autocomplete": "off", "placeholder": "Mikron"}
+        )
         self.fields["cost_price"].required = False
         self.fields["cost_price"].widget.attrs["placeholder"] = "Bo'sh qolsa — mahsulot tannarxi"
         _mark_money(self.fields["price"], self.fields["cost_price"])

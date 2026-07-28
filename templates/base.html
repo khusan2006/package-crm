@@ -478,7 +478,7 @@
       var prod = row.querySelector('select[name$="-product"]');
       var info = prod && prod.value ? priceMap()[prod.value] : null;
       [['size', info && info.has_size], ['micron', info && info.has_micron]].forEach(function (pair) {
-        var sel = row.querySelector('select[data-variant="' + pair[0] + '"]');
+        var sel = row.querySelector('[data-variant="' + pair[0] + '"]');
         if (!sel) { return; }
         var label = sel.closest('.if');
         var show = !!pair[1];

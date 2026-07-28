@@ -38,12 +38,14 @@ from .forms import (
 from .models import (
     COST,
     ITEM_WEIGHT_KG,
+    MICRON_CHOICES,
     PAYING_KINDS,
     PAYMENT_NET,
     PROFIT,
     RETURN_AMOUNT,
     RETURN_COST,
     REVENUE,
+    SIZE_CHOICES,
     AuditLog,
     Client,
     Expense,
@@ -3077,6 +3079,8 @@ def _render_sale_form(request, form, formset, title, invalid=False, zakaz_shortf
         "products_json": _product_price_map(),
         "client_advance_json": _client_advance_map(request.user),
         "zakaz_shortfall": zakaz_shortfall,
+        "size_suggestions": [c[0] for c in SIZE_CHOICES],
+        "micron_suggestions": [c[0] for c in MICRON_CHOICES],
     }
     keep_open = invalid or bool(zakaz_shortfall)
     if is_ajax(request):

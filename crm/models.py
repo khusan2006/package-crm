@@ -24,7 +24,8 @@ ZERO_QTY = Value(Decimal("0"), output_field=QTY)
 # (thickness) are picked at sale time, not baked into the product — the client sells
 # 7 named products, and the film ones come in these widths/thicknesses while the
 # ҚОП (bag) ones have neither. Both are optional on a line; the stored value IS the
-# label the client uses.
+# label the client uses. These are datalist *suggestions* only — the sale line's
+# size/micron are free text, so a seller can type a value outside this list.
 SIZE_CHOICES = [("1,5м", "1,5м"), ("2м", "2м"), ("6м", "6м")]
 MICRON_CHOICES = [(m, m) for m in ("015", "01", "08", "06", "05", "04", "03", "02")]
 
@@ -516,9 +517,11 @@ class SaleItem(models.Model):
     )
     # Product variant chosen for this line — optional, and only offered when the
     # product supports it (see Product.has_size / has_micron). Descriptive only:
-    # they do not change the price, which comes from the product.
-    size = models.CharField("Razmer", max_length=8, blank=True, choices=SIZE_CHOICES)
-    micron = models.CharField("Mikron", max_length=8, blank=True, choices=MICRON_CHOICES)
+    # they do not change the price, which comes from the product. Free text: the
+    # form offers SIZE_CHOICES / MICRON_CHOICES as datalist suggestions, but the
+    # seller may type any value.
+    size = models.CharField("Razmer", max_length=20, blank=True)
+    micron = models.CharField("Mikron", max_length=20, blank=True)
     # Order fulfilment. `fulfilled_kg` is how much of the line has been backed by
     # stock (partial fills allowed); `fulfilled_at` is set only once it's FULLY
     # filled. A line sold short (zakaz) starts at 0 and gets topped up as stock
