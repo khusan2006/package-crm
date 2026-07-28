@@ -290,6 +290,11 @@ class Command(BaseCommand):
         from crm.models import seller_production_debt
         with transaction.atomic():
             self.wipe()
+            # wipe() zeroes opening_production_debt in the DB with a bulk .update(), which
+            # does NOT touch this already-loaded `seller` instance. Refresh it, or the
+            # stale opening figure would inflate `gross` (and the balancing remittance) —
+            # then, once the field is truly 0, the derived production debt collapses.
+            seller.refresh_from_db()
             report = self.import_all(sales, returns, pays, openings, oldi, seller)
             recon = self.reconcile(sverka, seller)
             # Balance the production debt to the owner-supplied figure by recording the
