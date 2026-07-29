@@ -171,8 +171,7 @@ class DebtPaymentForm(forms.Form):
         widget=forms.TextInput(attrs={"placeholder": "Ixtiyoriy — qo'shimcha ma'lumot"}),
     )
 
-    def __init__(self, *args, max_amount=None, **kwargs):
-        self.max_amount = max_amount
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         _mark_money(self.fields["amount"], self.fields["exchange_rate"])
 
@@ -203,14 +202,11 @@ class DebtPaymentForm(forms.Form):
             self.add_error(
                 "commission_percent", "Komissiya to'lov summasidan ko'p bo'lishi mumkin emas."
             )
-        # Only the net (amount − commission) pays down the debt, so the net —
-        # not the gross — is what may not exceed the outstanding balance. This
-        # lets a transfer be grossed up to cover the bank fee and still settle.
-        net = amount - commission
-        if self.max_amount is not None and net > self.max_amount:
-            self.add_error(
-                "amount", f"Qoldiqdan ({self.max_amount:.0f} so'm) ko'p bo'lishi mumkin emas."
-            )
+        # Overpayment is allowed on purpose: a client may hand over more than they
+        # owe, and the surplus becomes their advance (kredit) — the views split it
+        # off after the open receipts are settled. Only the net (amount −
+        # commission) counts as money received, so that is what they split.
+        cleaned["net"] = amount - commission
         cleaned["amount"] = amount  # canonical so'm value the views persist
         cleaned["amount_original"] = entered  # the physical figure (dollars for USD)
         # A backdated payment keeps the day the client actually handed the money

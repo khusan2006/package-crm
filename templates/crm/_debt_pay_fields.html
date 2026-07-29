@@ -32,7 +32,8 @@
 {% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
 <p>{{ form.date.label_tag }}{{ form.date }}{{ form.date.errors }}
   {% if form.date.help_text %}<span class="field-hint">{{ form.date.help_text }}</span>{% endif %}</p>
-<p>{{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}</p>
+<p>{{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}
+  {% if not advance %}<span class="field-hint">Qarzdan ko'p to'lasa ham bo'ladi — ortiqchasi avans (kredit) bo'lib qoladi.</span>{% endif %}</p>
 <p>{{ form.currency.label_tag }}{{ form.currency }}{{ form.currency.errors }}</p>
 <div class="usd-only"{% if form.currency.value != 'usd' %} hidden{% endif %}>
   <p>{{ form.exchange_rate.label_tag }}{{ form.exchange_rate }}{{ form.exchange_rate.errors }}
