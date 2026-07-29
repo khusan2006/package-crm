@@ -1,12 +1,13 @@
 import math
+import re
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.contrib import messages
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Count, F, Max, ProtectedError, Q, Sum
-from django.db.models.functions import TruncMonth
+from django.db.models import Count, F, Max, ProtectedError, Q, Sum, Value
+from django.db.models.functions import Replace, TruncMonth
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -636,18 +637,15 @@ def client_list(request):
     )
     q = request.GET.get("q", "").strip()
     if q:
-        # Broad match: name, company, phone, location, notes, or responsible
-        # employee — so "sergeli" finds every client in that district.
-        clients = clients.filter(
-            Q(name__icontains=q)
-            | Q(company__icontains=q)
-            | Q(phone__icontains=q)
-            | Q(address__icontains=q)
-            | Q(notes__icontains=q)
+        # Broad match: name, company, phone (formatting ignored), location, notes,
+        # or responsible employee — so "sergeli" finds every client in that district
+        # and "901234567" finds the one whose number is stored as "+998 90 123 45 67".
+        clients = _client_search(clients, q, extra=(
+            Q(notes__icontains=q)
             | Q(owner__first_name__icontains=q)
             | Q(owner__last_name__icontains=q)
             | Q(owner__username__icontains=q)
-        ).distinct()
+        )).distinct()
     # Advance (prepaid) balance per client, batched in one query. A seller sees their own
     # till's balance; an admin/manager sees the client's total across every seller's till.
     scope = None if request.user.can_see_all_records else request.user
@@ -1002,16 +1000,44 @@ def stock_adjust(request, pk):
 
 # --- Sales --------------------------------------------------------------------
 
-def _client_search_q(term, base):
-    """Q matching a client by name/company/phone/location (case-insensitive) for
-    the toolbar's search box. `base` is the lookup path to the Client — e.g.
-    "client" for Sale, "sale__client" for Payment."""
-    return (
-        Q(**{f"{base}__name__icontains": term})
-        | Q(**{f"{base}__company__icontains": term})
-        | Q(**{f"{base}__phone__icontains": term})
-        | Q(**{f"{base}__address__icontains": term})
+# Formatting a phone number picks up along the way — the digits are what people
+# actually search by, so both sides are stripped down to them before comparing.
+PHONE_NOISE = (" ", "+", "-", "(", ")", ".")
+
+
+def _phone_digits_expr(field):
+    """SQL expression reducing a stored phone to bare digits, so
+    '+998 90 123 45 67' compares as '998901234567'."""
+    expr = F(field)
+    for char in PHONE_NOISE:
+        expr = Replace(expr, Value(char), Value(""))
+    return expr
+
+
+def _client_search(qs, term, base="", extra=None):
+    """Filter `qs` by its client's name / company / phone / location, case-insensitive
+    — the toolbar's search box. `base` is the lookup path to the Client ("client" on
+    a Sale, "sale__client" on a Payment); leave it empty when `qs` IS the clients.
+    `extra` is an already-built Q of further lookups to OR in.
+
+    A term with digits in it also matches the phone with its formatting removed, so
+    "901234567", "90 123 45 67" and "+998901234567" all find the same client. Short
+    digit runs are skipped: a "5" in a name shouldn't drag in every phone."""
+    at = f"{base}__" if base else ""
+    match = (
+        Q(**{f"{at}name__icontains": term})
+        | Q(**{f"{at}company__icontains": term})
+        | Q(**{f"{at}phone__icontains": term})
+        | Q(**{f"{at}address__icontains": term})
     )
+    if extra is not None:
+        match |= extra
+    digits = re.sub(r"\D", "", term)
+    if len(digits) >= 3:
+        # `base` is a plain FK here, so annotating can't multiply rows.
+        qs = qs.annotate(_phone_digits=_phone_digits_expr(f"{at}phone"))
+        match |= Q(_phone_digits__contains=digits)
+    return qs.filter(match)
 
 
 def _filter_sales(request, sales):
@@ -1042,7 +1068,7 @@ def _filter_sales(request, sales):
     filters["dan"] = date_from.isoformat()
     filters["gacha"] = date_to.isoformat()
     if filters["q"]:
-        sales = sales.filter(_client_search_q(filters["q"], "client"))
+        sales = _client_search(sales, filters["q"], "client")
     if filters["client"].isdigit():
         sales = sales.filter(client_id=filters["client"])
     if filters["product"].isdigit():
@@ -1196,7 +1222,7 @@ def debt_list(request):
     filters = {key: request.GET.get(key, "") for key in ("client", "rep", "overdue")}
     filters["q"] = request.GET.get("q", "").strip()
     if filters["q"]:
-        open_sales = open_sales.filter(_client_search_q(filters["q"], "client"))
+        open_sales = _client_search(open_sales, filters["q"], "client")
     if filters["client"].isdigit():
         open_sales = open_sales.filter(client_id=filters["client"])
     if filters["rep"].isdigit() and request.user.can_see_all_records:
@@ -2968,7 +2994,7 @@ def _filter_ombor_items(request, items):
     can_scope_rep = request.user.can_see_all_records
 
     if filters["q"]:
-        items = items.filter(_client_search_q(filters["q"], "sale__client"))
+        items = _client_search(items, filters["q"], "sale__client")
     if filters["client"].isdigit():
         items = items.filter(sale__client_id=filters["client"])
     if filters["rep"].isdigit() and can_scope_rep:
