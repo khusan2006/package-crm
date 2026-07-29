@@ -128,6 +128,12 @@ TRANSFER_COMMISSION_PCT = Decimal("1")  # default bank fee suggested for transfe
 
 
 class DebtPaymentForm(forms.Form):
+    date = forms.DateField(
+        label="To'lov sanasi",
+        required=False,
+        widget=forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+        help_text="Eski to'lovni kiritsangiz — o'sha kunni tanlang",
+    )
     amount = forms.DecimalField(
         label="Miqdor", max_digits=18, decimal_places=2, min_value=Decimal("0.01"),
         help_text="Tanlangan valyutada — dollar tanlansa, dollardagi summa",
@@ -207,6 +213,10 @@ class DebtPaymentForm(forms.Form):
             )
         cleaned["amount"] = amount  # canonical so'm value the views persist
         cleaned["amount_original"] = entered  # the physical figure (dollars for USD)
+        # A backdated payment keeps the day the client actually handed the money
+        # over (old sales are entered with their real dates, and so are their
+        # payments); left empty it is simply today's.
+        cleaned["date"] = cleaned.get("date") or timezone.localdate()
         cleaned["currency"] = currency
         cleaned["exchange_rate"] = rate
         cleaned["commission_percent"] = percent

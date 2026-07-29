@@ -5,9 +5,33 @@
   <p class="field-hint" style="margin: 0 0 6px;">Pul darhol kassaga kirim bo'ladi. Ochiq qarz bo'lsa avval o'shanga (eng eski chek — FIFO) taqsimlanadi, ortig'i avans balansida qoladi.</p>
 {% else %}
   <p class="muted">{% if fifo %}Umumiy qarz{% else %}Qoldiq{% endif %}: <strong style="color: var(--text);">{{ remaining|floatformat:"0g" }} so'm</strong></p>
-  {% if fifo %}<p class="field-hint" style="margin: -10px 0 6px;">To'lov eng eski chekdan boshlab (FIFO) taqsimlanadi.</p>{% endif %}
+  {% if fifo %}
+    <p class="field-hint" style="margin: -10px 0 6px;">To'lov eng eski chekdan boshlab (FIFO) taqsimlanadi.</p>
+    {% if debts %}
+    <div class="pay-debts">
+      <div class="pay-debts-head">Qarz qachon olingan</div>
+      {% for d in debts %}
+      <div class="pay-debt">
+        <span class="pay-debt-date">{{ d.date|date:"d.m.Y" }}</span>
+        <span class="pay-debt-item">{{ d.item_summary|truncatechars:26 }}</span>
+        <strong>{{ d.remaining|floatformat:"0g" }}</strong>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  {% elif sale %}
+    <div class="pay-debts">
+      <div class="pay-debt">
+        <span class="pay-debt-date">{{ sale.date|date:"d.m.Y" }} da olingan</span>
+        <span class="pay-debt-item">{{ sale.item_summary|truncatechars:26 }}</span>
+        <strong>{% if sale.debt_deadline %}{{ sale.debt_deadline|date:"d.m.Y" }} gacha{% endif %}</strong>
+      </div>
+    </div>
+  {% endif %}
 {% endif %}
 {% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
+<p>{{ form.date.label_tag }}{{ form.date }}{{ form.date.errors }}
+  {% if form.date.help_text %}<span class="field-hint">{{ form.date.help_text }}</span>{% endif %}</p>
 <p>{{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}</p>
 <p>{{ form.currency.label_tag }}{{ form.currency }}{{ form.currency.errors }}</p>
 <div class="usd-only"{% if form.currency.value != 'usd' %} hidden{% endif %}>
