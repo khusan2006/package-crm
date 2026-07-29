@@ -4,6 +4,7 @@ from django.conf import settings
 from django.db import models
 from django.db.models import (
     Case,
+    Count,
     DecimalField,
     ExpressionWrapper,
     F,
@@ -34,9 +35,16 @@ REVENUE = ExpressionWrapper(F("weight") * F("price"), output_field=MONEY)
 COST = ExpressionWrapper(F("weight") * F("cost_price"), output_field=MONEY)
 PROFIT = ExpressionWrapper(F("weight") * (F("price") - F("cost_price")), output_field=MONEY)
 
-# A sale item's weight expressed in kilograms (gram sales are divided by 1000)
+# A gram figure in kilograms. Written as ×0.001 rather than ÷1000 on purpose:
+# SQLite gives a stored 500.000 and a bare 1000 both INTEGER affinity, so the
+# division truncates — 500 g came out as 0 kg instead of 0.5. A decimal factor
+# can never be integer-affine, so the multiplication is right on every backend.
+# (PostgreSQL, which production runs, divided correctly either way.)
+GRAM_TO_KG = Value(Decimal("0.001"))
+
+# A sale item's weight expressed in kilograms (gram sales are scaled down)
 ITEM_WEIGHT_KG = Case(
-    When(dimension="g", then=F("weight") / Value(Decimal("1000"))),
+    When(dimension="g", then=F("weight") * GRAM_TO_KG),
     default=F("weight"),
     output_field=QTY,
 )
@@ -45,7 +53,7 @@ ITEM_WEIGHT_KG = Case(
 RETURN_AMOUNT = ExpressionWrapper(F("weight") * F("price"), output_field=MONEY)
 RETURN_COST = ExpressionWrapper(F("weight") * F("cost_price"), output_field=MONEY)
 RETURN_WEIGHT_KG = Case(
-    When(dimension="g", then=F("weight") / Value(Decimal("1000"))),
+    When(dimension="g", then=F("weight") * GRAM_TO_KG),
     default=F("weight"),
     output_field=QTY,
 )
@@ -834,13 +842,17 @@ class Expense(models.Model):
     bank commission (which the client bears), an expense is the business's own cost,
     tagged with the wallet it left (naqd/karta/bank) so each method's balance is right."""
 
-    class Category(models.TextChoices):
-        FUEL = "fuel", "Benzin / transport"
-        SALARY = "salary", "Oylik / xodim"
-        RENT = "rent", "Ijara"
-        MEAL = "meal", "Ovqat (obed)"
-        PURCHASE = "purchase", "Mahsulot xaridi"
-        OTHER = "other", "Boshqa"
+    # The categories the business started with. They are datalist *suggestions*
+    # only — `category` is free text, so a new kind of outflow can simply be typed
+    # and it joins the suggestions for next time (see `Expense.used_categories`).
+    CATEGORY_SUGGESTIONS = [
+        "Benzin / transport",
+        "Oylik / xodim",
+        "Ijara",
+        "Ovqat (obed)",
+        "Mahsulot xaridi",
+        "Boshqa",
+    ]
 
     date = models.DateField("Sana", default=timezone.localdate)
     # `amount` is always the so'm value — the base every kassa and profit figure
@@ -856,9 +868,9 @@ class Expense(models.Model):
     amount_original = models.DecimalField(
         "Asl summa (valyutada)", max_digits=18, decimal_places=2, default=0
     )
-    category = models.CharField(
-        "Turkum", max_length=10, choices=Category.choices, default=Category.OTHER
-    )
+    # Free text: whatever the bookkeeper actually calls this outflow. The form
+    # offers what's been used before as suggestions, but never restricts.
+    category = models.CharField("Turkum", max_length=40)
     method = models.CharField(
         "To'lov usuli", max_length=8, choices=Payment.Method.choices,
         default=Payment.Method.CASH,
@@ -882,8 +894,22 @@ class Expense(models.Model):
         """The dollars for a USD expense, otherwise the so'm figure."""
         return self.amount_original or self.amount
 
+    @classmethod
+    def used_categories(cls):
+        """Every category anyone has actually written, most-used first, with the
+        starter list appended so a fresh database still offers something. This is
+        what the form's datalist and the filter dropdown are built from."""
+        counts = (
+            cls.objects.exclude(category="")
+            .values("category")
+            .annotate(n=Count("pk"))
+            .order_by("-n", "category")
+        )
+        seen = [row["category"] for row in counts]
+        return seen + [c for c in cls.CATEGORY_SUGGESTIONS if c not in seen]
+
     def __str__(self):
-        return f"{self.get_category_display()}: {self.amount} so'm ({self.date})"
+        return f"{self.category}: {self.amount} so'm ({self.date})"
 
 
 class ProductionRemittance(models.Model):

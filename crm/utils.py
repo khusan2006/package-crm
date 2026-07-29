@@ -8,9 +8,10 @@ def is_ajax(request):
     return request.headers.get("X-Requested-With") == "XMLHttpRequest"
 
 
-def form_response(request, form, title, invalid=False, modal_template="_modal.html"):
-    """Render the modal partial for AJAX requests, otherwise the full page."""
-    context = {"form": form, "title": title}
+def form_response(request, form, title, invalid=False, modal_template="_modal.html", **extra):
+    """Render the modal partial for AJAX requests, otherwise the full page.
+    `extra` is merged into the template context (e.g. datalist suggestions)."""
+    context = {"form": form, "title": title, **extra}
     if is_ajax(request):
         status = 422 if invalid else 200
         return render(request, modal_template, context, status=status)

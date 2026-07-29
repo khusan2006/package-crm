@@ -96,14 +96,12 @@
     {% endif %}
     {% if show_category %}
     <label>Turkum
+      {% comment %}Turkum is free text, so the options are whatever has been used.{% endcomment %}
       <select name="category">
         <option value="">Barchasi</option>
-        <option value="fuel" {% if filters.category == 'fuel' %}selected{% endif %}>Benzin / transport</option>
-        <option value="salary" {% if filters.category == 'salary' %}selected{% endif %}>Oylik / xodim</option>
-        <option value="rent" {% if filters.category == 'rent' %}selected{% endif %}>Ijara</option>
-        <option value="meal" {% if filters.category == 'meal' %}selected{% endif %}>Ovqat (obed)</option>
-        <option value="purchase" {% if filters.category == 'purchase' %}selected{% endif %}>Mahsulot xaridi</option>
-        <option value="other" {% if filters.category == 'other' %}selected{% endif %}>Boshqa</option>
+        {% for c in category_options %}
+        <option value="{{ c }}" {% if filters.category == c %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
       </select>
     </label>
     {% endif %}

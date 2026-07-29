@@ -2229,7 +2229,7 @@ def _kassa_expenses(request):
         expenses = expenses.filter(created_by=rep)
     if filters["method"] in dict(Payment.Method.choices):
         expenses = expenses.filter(method=filters["method"])
-    if filters["category"] in dict(Expense.Category.choices):
+    if filters["category"]:
         expenses = expenses.filter(category=filters["category"])
     if filters["currency"] in dict(Payment.Currency.choices):
         expenses = expenses.filter(currency=filters["currency"])
@@ -2244,7 +2244,7 @@ def _kassa_transactions(expenses, dates, filters, rep):
     rows = []
     # A category filter is expense-only; when one is active the incoming payments and
     # production handovers are omitted, so the list reads as a pure expense view.
-    if filters["category"] not in dict(Expense.Category.choices):
+    if not filters["category"]:
         # till_income() drops ADVANCE_USED: it's an internal transfer of already-
         # counted advance money, not a new kirim, so it must not show as income here.
         payments = Payment.objects.till_income().select_related(
@@ -2339,7 +2339,7 @@ def _kassa_transactions(expenses, dates, filters, rep):
     for e in expenses:
         rows.append({
             "date": e.date, "created_at": e.created_at, "direction": "out",
-            "title": e.get_category_display(), "subtitle": e.note,
+            "title": e.category, "subtitle": e.note,
             "method": e.get_method_display(), "method_code": e.method,
             "currency": e.currency,
             "amount_som": e.amount, "amount_original": e.original_amount,
@@ -2370,13 +2370,12 @@ def kassa_view(request):
     outflow_total = sum((t["amount_som"] for t in outflow_rows), Decimal("0"))
 
     method_labels = dict(Payment.Method.choices)
-    category_labels = dict(Expense.Category.choices)
     currency_labels = dict(Payment.Currency.choices)
     # Only the company view exposes a rep chip; a seller's own scope isn't a filter.
     rep_chip = str(rep) if (reps is not None and rep) else ""
     active_filters = _filter_chips(request, [
         {"param": "rep", "label": "Xodim", "value": rep_chip},
-        {"param": "category", "label": "Turkum", "value": category_labels.get(filters["category"], "")},
+        {"param": "category", "label": "Turkum", "value": filters["category"]},
         {"param": "method", "label": "Usul", "value": method_labels.get(filters["method"], "")},
         {"param": "currency", "label": "Valyuta", "value": currency_labels.get(filters["currency"], "")},
     ])
@@ -2416,6 +2415,7 @@ def kassa_view(request):
         "keep_daterange": True,
         "show_method": True,
         "show_category": True,
+        "category_options": Expense.used_categories(),
         "show_currency": True,
         "export_url": reverse("expense_export") + (f"?{export_qs}" if export_qs else ""),
         **dates,
@@ -2465,7 +2465,7 @@ def expense_export(request):
         is_usd = e.currency == Payment.Currency.USD
         rows.append([
             e.date.strftime("%d.%m.%Y"),
-            e.get_category_display(),
+            e.category,
             e.get_method_display(),
             e.get_currency_display(),
             float(e.amount),
@@ -2476,6 +2476,16 @@ def expense_export(request):
         ])
     number_formats = {5: "#,##0.00", 6: "#,##0.00", 7: "#,##0.00"}
     return _xlsx_response("chiqimlar.xlsx", "Chiqimlar", headers, rows, number_formats)
+
+
+def _expense_response(request, form, title, invalid=False):
+    """The expense modal, with the categories already in use as datalist
+    suggestions — Turkum is free text, the list is only a shortcut."""
+    return form_response(
+        request, form, title, invalid=invalid,
+        modal_template="crm/_expense_modal.html",
+        category_suggestions=Expense.used_categories(),
+    )
 
 
 def expense_create(request):
@@ -2494,14 +2504,14 @@ def expense_create(request):
             )
             AuditLog.record(
                 request.user, AuditLog.Action.CREATE, "Chiqim", expense.pk,
-                f"{expense.get_category_display()} chiqimi "
+                f"{expense.category} chiqimi "
                 f"({expense.get_method_display()}){usd} "
                 f"— {expense.amount:,.0f} so'm",
             )
             messages.success(request, f"Chiqim qo'shildi: {expense.amount:,.0f} so'm.")
             return form_success(request, reverse("kassa"))
-        return form_response(request, form, title, invalid=True, modal_template="crm/_expense_modal.html")
-    return form_response(request, form, title, modal_template="crm/_expense_modal.html")
+        return _expense_response(request, form, title, invalid=True)
+    return _expense_response(request, form, title)
 
 
 def expense_edit(request, pk):
@@ -2517,12 +2527,12 @@ def expense_edit(request, pk):
             form.save()
             AuditLog.record(
                 request.user, AuditLog.Action.UPDATE, "Chiqim", expense.pk,
-                f"{expense.get_category_display()} chiqimi — {expense.amount:,.0f} so'm",
+                f"{expense.category} chiqimi — {expense.amount:,.0f} so'm",
             )
             messages.success(request, "Chiqim yangilandi.")
             return form_success(request, reverse("kassa"))
-        return form_response(request, form, title, invalid=True, modal_template="crm/_expense_modal.html")
-    return form_response(request, form, title, modal_template="crm/_expense_modal.html")
+        return _expense_response(request, form, title, invalid=True)
+    return _expense_response(request, form, title)
 
 
 def expense_delete(request, pk):
@@ -2533,7 +2543,7 @@ def expense_delete(request, pk):
         qs = qs.filter(created_by=request.user)
     expense = get_object_or_404(qs, pk=pk)
     if request.method == "POST":
-        summary = f"{expense.get_category_display()} — {expense.amount:,.0f} so'm"
+        summary = f"{expense.category} — {expense.amount:,.0f} so'm"
         expense.delete()
         AuditLog.record(request.user, AuditLog.Action.DELETE, "Chiqim", pk, summary)
         messages.success(request, "Chiqim o'chirildi.")
@@ -2541,7 +2551,7 @@ def expense_delete(request, pk):
     return render_confirm(
         request,
         "Chiqimni o'chirish",
-        f"{expense.get_category_display()} — {expense.amount:,.0f} so'm chiqim "
+        f"{expense.category} — {expense.amount:,.0f} so'm chiqim "
         f"o'chiriladi. Davom etasizmi?",
         "Ha, o'chirish",
         confirm_class="btn-danger",
