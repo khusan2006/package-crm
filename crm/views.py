@@ -1325,16 +1325,44 @@ def _client_outstanding_fifo(request, client):
     )
 
 
+def _gross_up(net, is_transfer, percent, currency, exchange_rate):
+    """One slice of a lump payment, as (so'm gross, figure in its own currency).
+
+    Grossing the slice back up keeps the recorded fee at `percent`, so the
+    commission is the exact difference and the net credited stays precise. The
+    dollar figure (what the dollar till counts) is the gross at the payment's
+    rate; a so'm payment's original is simply the so'm."""
+    if is_transfer and percent < Decimal("100"):
+        gross = (net / (Decimal("1") - percent / Decimal("100"))).quantize(
+            Decimal("0.01"), ROUND_HALF_UP
+        )
+    else:
+        gross = net
+    if currency == Payment.Currency.USD and exchange_rate:
+        original = (gross / exchange_rate).quantize(Decimal("0.01"), ROUND_HALF_UP)
+    else:
+        original = gross
+    return gross, original
+
+
 def _distribute_debt_payment(
     sales, amount, method, percent, note, user, currency=None, exchange_rate=Decimal("0"),
-    on_date=None,
+    on_date=None, client=None,
 ):
     """Spread a lump payment across FIFO-ordered debts, oldest first.
 
     `amount` is the gross the client handed over; on a bank transfer the bank
     withholds `percent`, so only the net (amount − commission) reduces the debt.
     Each receipt is credited its net share up to its outstanding balance; the
-    last one reached may receive a partial payment. Returns the receipts touched.
+    last one reached may receive a partial payment.
+
+    A client may hand over MORE than they owe. Whatever is left once every receipt
+    is settled becomes their advance (kredit) — an ADVANCE_IN deposit against
+    `client`, which is real cash in the till that covers their next purchase.
+    Without a `client` there is nobody to hold the credit, so the surplus is
+    refused rather than silently dropped.
+
+    Returns (receipts touched, surplus turned into advance).
     """
     is_transfer = method == Payment.Method.TRANSFER
     percent = percent if is_transfer else Decimal("0")
@@ -1353,22 +1381,9 @@ def _distribute_debt_payment(
             chunk_net = min(net_left, due)
             if chunk_net <= 0:
                 continue
-            # Gross this slice back up so the recorded fee stays at `percent`;
-            # commission is the exact difference, so the net credited is precise.
-            if is_transfer and percent < Decimal("100"):
-                chunk_gross = (
-                    chunk_net / (Decimal("1") - percent / Decimal("100"))
-                ).quantize(Decimal("0.01"), ROUND_HALF_UP)
-            else:
-                chunk_gross = chunk_net
-            # Each so'm chunk's dollar figure (for the dollar till) is its share of
-            # the gross at the payment's rate; a so'm payment's original == the so'm.
-            if currency == Payment.Currency.USD and exchange_rate:
-                chunk_original = (chunk_gross / exchange_rate).quantize(
-                    Decimal("0.01"), ROUND_HALF_UP
-                )
-            else:
-                chunk_original = chunk_gross
+            chunk_gross, chunk_original = _gross_up(
+                chunk_net, is_transfer, percent, currency, exchange_rate
+            )
             Payment.objects.create(
                 sale=sale,
                 amount=chunk_gross,
@@ -1385,7 +1400,26 @@ def _distribute_debt_payment(
             )
             net_left -= chunk_net
             touched += 1
-    return touched
+        surplus = Decimal("0")
+        if net_left > 0 and client is not None:
+            surplus = net_left
+            gross, original = _gross_up(net_left, is_transfer, percent, currency, exchange_rate)
+            Payment.objects.create(
+                sale=None,
+                client=client,
+                amount=gross,
+                amount_original=original,
+                currency=currency,
+                exchange_rate=exchange_rate,
+                method=method,
+                commission=gross - net_left,
+                commission_percent=percent,
+                note=note,
+                kind=Payment.Kind.ADVANCE_IN,
+                date=on_date,
+                created_by=user,
+            )
+    return touched, surplus
 
 
 def _apply_advance_to_open_sales(client, seller, on_date=None):
@@ -1491,9 +1525,9 @@ def client_debt_pay(request, pk):
     if total <= 0:
         return form_reload(request, reverse("debt_client", args=[client.pk]))
     if request.method == "POST":
-        form = DebtPaymentForm(request.POST, max_amount=total)
+        form = DebtPaymentForm(request.POST)
         if form.is_valid():
-            touched = _distribute_debt_payment(
+            touched, surplus = _distribute_debt_payment(
                 sales,
                 form.cleaned_data["amount"],
                 form.cleaned_data["method"],
@@ -1503,6 +1537,7 @@ def client_debt_pay(request, pk):
                 currency=form.cleaned_data["currency"],
                 exchange_rate=form.cleaned_data["exchange_rate"],
                 on_date=form.cleaned_data["date"],
+                client=client,
             )
             AuditLog.record(
                 request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
@@ -1510,10 +1545,10 @@ def client_debt_pay(request, pk):
                 f"({_method_label(form.cleaned_data['method'])}){_usd_note(form.cleaned_data)} "
                 f"— {form.cleaned_data['amount']:,.0f} so'm",
             )
-            messages.success(
-                request,
-                f"{form.cleaned_data['amount']:,.0f} so'm {touched} ta chekka taqsimlandi.",
-            )
+            msg = f"{form.cleaned_data['amount']:,.0f} so'm {touched} ta chekka taqsimlandi."
+            if surplus > 0:
+                msg += f" Ortiqcha {surplus:,.0f} so'm avans balansiga qo'shildi."
+            messages.success(request, msg)
             return form_reload(request, reverse("debt_client", args=[client.pk]))
         return _render_client_pay(request, client, total, form, invalid=True, debts=sales)
     form = DebtPaymentForm(
@@ -1522,7 +1557,6 @@ def client_debt_pay(request, pk):
             "method": Payment.Method.CASH,
             "date": timezone.localdate(),
         },
-        max_amount=total,
     )
     return _render_client_pay(request, client, total, form, debts=sales)
 
@@ -1552,7 +1586,7 @@ def client_advance_pay(request, pk):
     client = get_object_or_404(_visible_clients(request.user), pk=pk)
     balance = client_advance_balance(client, request.user)
     if request.method == "POST":
-        form = DebtPaymentForm(request.POST)  # no max_amount — an advance is uncapped
+        form = DebtPaymentForm(request.POST)
         if form.is_valid():
             cd = form.cleaned_data
             Payment.objects.create(
@@ -3328,39 +3362,48 @@ def _render_debt_pay(request, sale, form, invalid=False):
 
 
 def sale_pay(request, pk):
-    sale = get_object_or_404(Sale.objects.visible_to(request.user), pk=pk)
+    """Pay one receipt. Paying MORE than it owes is allowed: the receipt is settled
+    and the surplus becomes the client's advance, which then covers their other open
+    receipts oldest-first — anything still left stays on their balance."""
+    # .with_balance() annotates `remaining`, which _distribute_debt_payment reads.
+    sale = get_object_or_404(Sale.objects.visible_to(request.user).with_balance(), pk=pk)
     if sale.is_paid:
         return form_reload(request, reverse("debt_list"))
     remaining = sale.debt_remaining
     if request.method == "POST":
-        form = DebtPaymentForm(request.POST, max_amount=remaining)
+        form = DebtPaymentForm(request.POST)
         if form.is_valid():
-            Payment.objects.create(
-                sale=sale,
-                amount=form.cleaned_data["amount"],
-                amount_original=form.cleaned_data["amount_original"],
-                currency=form.cleaned_data["currency"],
-                exchange_rate=form.cleaned_data["exchange_rate"],
-                method=form.cleaned_data["method"],
-                commission=form.cleaned_data["commission"],
-                commission_percent=form.cleaned_data["commission_percent"],
-                note=form.cleaned_data["note"],
-                kind=Payment.Kind.DEBT,
-                date=form.cleaned_data["date"],
-                created_by=request.user,
+            cd = form.cleaned_data
+            _, surplus = _distribute_debt_payment(
+                [sale], cd["amount"], cd["method"], cd["commission_percent"], cd["note"],
+                request.user,
+                currency=cd["currency"],
+                exchange_rate=cd["exchange_rate"],
+                on_date=cd["date"],
+                client=sale.client,
             )
+            applied = Decimal("0")
+            if surplus > 0:
+                # The overpayment is the client's credit now — spend it on whatever
+                # else they still owe before letting it sit on their balance.
+                applied = _apply_advance_to_open_sales(
+                    sale.client, request.user, on_date=cd["date"]
+                )
             AuditLog.record(
                 request.user, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
                 f"Mijoz {sale.client.name} to'lovi "
-                f"({_method_label(form.cleaned_data['method'])}){_usd_note(form.cleaned_data)} "
-                f"— {form.cleaned_data['amount']:,.0f} so'm",
+                f"({_method_label(cd['method'])}){_usd_note(cd)} "
+                f"— {cd['amount']:,.0f} so'm",
             )
             if sale.debt_remaining <= 0:
-                messages.success(request, "Qarz to'liq to'landi.")
+                msg = "Qarz to'liq to'landi."
             else:
-                messages.success(
-                    request, f"To'lov qabul qilindi. Qoldiq: {sale.debt_remaining:,.0f} so'm."
-                )
+                msg = f"To'lov qabul qilindi. Qoldiq: {sale.debt_remaining:,.0f} so'm."
+            if surplus > 0:
+                msg += f" Ortiqcha {surplus:,.0f} so'm avansga o'tdi."
+                if applied > 0:
+                    msg += f" Shundan {applied:,.0f} so'm boshqa ochiq cheklarga taqsimlandi."
+            messages.success(request, msg)
             return form_reload(request, reverse("debt_list"))
         return _render_debt_pay(request, sale, form, invalid=True)
     form = DebtPaymentForm(
