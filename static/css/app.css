@@ -681,6 +681,65 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 .table-heading .muted { font-weight: 400; font-size: 13px; }
 .table-section { margin-bottom: 26px; }
 
+/* ---- Narrow screens: a table becomes a stack of cards ----------------------
+   A 9-column table can't fit a phone — sideways scrolling buried the phone
+   number and the balance behind a very wide name column. So each row turns into
+   its own card and each cell into a "LABEL  value" line. The labels come from
+   the header row, copied onto the cells as data-label by the script in
+   base.html, which is why no template markup had to change.
+
+   The switch is NOT a fixed breakpoint: base.html measures how wide each table
+   really needs to be and adds .is-cards to its wrapper the moment that no
+   longer fits the space available. So a 3-column table stays a table on a
+   tablet while a 9-column one flips to cards — and both react to any width, not
+   just the few a media query would name. */
+.table-wrap.is-cards {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  overflow-x: visible;
+}
+.is-cards table, .is-cards tbody, .is-cards tr, .is-cards td { display: block; }
+.is-cards thead, .is-cards tr.is-head { display: none; }
+.is-cards tr {
+  background: var(--table-bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+.is-cards tbody tr:hover { background: var(--table-bg); }  /* no hover on touch */
+.is-cards td {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 9px 14px;
+  white-space: normal;          /* long names wrap instead of stretching */
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+}
+.is-cards tr td:last-child { border-bottom: none; }
+.is-cards td::before {
+  content: attr(data-label);
+  flex: 0 0 auto;
+  max-width: 42%;
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+/* Cells with no column name of their own — the row's action buttons, and the
+   colspan "nothing here" rows — take the full width instead of a blank label. */
+.is-cards td[data-label=""]::before { content: none; }
+.is-cards td[data-label=""] { justify-content: flex-end; }
+.is-cards td[colspan] { justify-content: center; text-align: center; }
+/* The frozen first column has nothing to freeze against any more. */
+.is-cards th.sticky-col, .is-cards td.sticky-col { position: static; }
+.is-cards .cell-user, .is-cards .cell-loc { justify-content: flex-end; }
+
 /* Key-value detail grid (sale detail page) */
 .detail-grid {
   display: grid;
@@ -1352,6 +1411,22 @@ ul.errorlist li::before { content: "⚠ "; }
 }
 .toolbar-search-x:hover { background: var(--surface-2); color: var(--text); }
 .toolbar-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
+
+/* Narrow screens: the toolbar stops competing for one line.
+   Search takes a row of its own, the date control stretches to fill what's left
+   of the next one, and the buttons wrap under it rather than squeezing the
+   search box down to a stub. The "25-Iyul, Shanba" label is dropped — the same
+   date is already printed inside the date control right beside it. */
+@media (max-width: 640px) {
+  .table-toolbar { flex-direction: column; align-items: stretch; gap: 8px; }
+  .toolbar-left, .toolbar-right { width: 100%; }
+  .toolbar-left .toolbar-label { display: none; }
+  .toolbar-search { flex: 1 1 auto; min-width: 0; }
+  .toolbar-right { justify-content: flex-start; row-gap: 8px; }
+  .daterange { flex: 1 1 190px; }
+  .daterange-trigger { flex: 1 1 auto; min-width: 0; }
+  .table-toolbar .btn-ghost { flex: 0 0 auto; }
+}
 
 .filter-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .chip {
