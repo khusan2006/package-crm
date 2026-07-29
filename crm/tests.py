@@ -982,28 +982,32 @@ class PaymentTests(BaseSetup):
         self.assertEqual(older.payments.filter(kind="debt").count(), 1)
         self.assertEqual(newer.payments.filter(kind="debt").count(), 1)
 
-    def test_client_debt_pay_capped_at_total(self):
+    def test_client_debt_pay_surplus_becomes_advance(self):
+        """Overpaying a FIFO run settles every receipt; the rest is the client's
+        advance, not an error and not money quietly dropped."""
         sale = self._debt_sale()  # 240000
         self.client.force_login(self.sales1)
-        response = self.client.post(
+        self.client.post(
             reverse("client_debt_pay", args=[self.client1.pk]),
-            {"amount": "999999999", "method": "cash"},
+            {"amount": "300000", "method": "cash"},
         )
-        self.assertEqual(response.status_code, 200)  # re-rendered with error
         sale.refresh_from_db()
-        self.assertTrue(sale.is_outstanding)
-        self.assertEqual(sale.payments.count(), 0)
+        self.assertFalse(sale.is_outstanding)
+        self.assertEqual(
+            client_advance_balance(self.client1, self.sales1), Decimal("60000")
+        )
 
-    def test_payment_cannot_exceed_remaining(self):
+    def test_payment_over_remaining_becomes_advance(self):
         sale = self._debt_sale()
         self.client.force_login(self.sales1)
-        response = self.client.post(
-            reverse("sale_pay", args=[sale.pk]), {"amount": "999999", "method": "cash"}
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]), {"amount": "300000", "method": "cash"}
         )
-        self.assertEqual(response.status_code, 200)  # re-rendered with error
         sale.refresh_from_db()
-        self.assertTrue(sale.is_outstanding)
-        self.assertEqual(sale.payments.count(), 0)
+        self.assertFalse(sale.is_outstanding)
+        self.assertEqual(
+            client_advance_balance(self.client1, self.sales1), Decimal("60000")
+        )
 
 class SaleIntegrityTests(BaseSetup):
     def _paid_sale(self):
@@ -1409,7 +1413,7 @@ class ReturnSettlementTests(BaseSetup):
         # Drain the drawer down to 5 000, whatever the fixtures put in it.
         Expense.objects.create(
             amount=seller_cash_on_hand(self.sales1) - Decimal("5000"),
-            category=Expense.Category.OTHER,
+            category="Boshqa",
             method=Payment.Method.CASH, created_by=self.sales1,
         )
         self.client.force_login(self.sales1)
@@ -1817,7 +1821,7 @@ class KassaCurrencyTests(BaseSetup):
             {
                 "date": timezone.localdate().isoformat(),
                 "amount": "20", "currency": "usd", "exchange_rate": "12700",
-                "category": "purchase", "method": "cash", "note": "dollar rasxot",
+                "category": "Mahsulot xaridi", "method": "cash", "note": "dollar rasxot",
             },
         )
         expense = Expense.objects.get(note="dollar rasxot")
@@ -1839,7 +1843,7 @@ class KassaCurrencyTests(BaseSetup):
             {
                 "date": timezone.localdate().isoformat(),
                 "amount": "4", "currency": "usd", "exchange_rate": "12700",
-                "category": "purchase", "method": "cash",
+                "category": "Mahsulot xaridi", "method": "cash",
             },
         )
         today = timezone.localdate()
@@ -1856,7 +1860,7 @@ class KassaCurrencyTests(BaseSetup):
             {
                 "date": timezone.localdate().isoformat(),
                 "amount": "20", "currency": "usd", "exchange_rate": "12700",
-                "category": "purchase", "method": "cash", "note": "edit-me",
+                "category": "Mahsulot xaridi", "method": "cash", "note": "edit-me",
             },
         )
         expense = Expense.objects.get(note="edit-me")
@@ -1869,7 +1873,7 @@ class KassaCurrencyTests(BaseSetup):
             {
                 "date": timezone.localdate().isoformat(),
                 "amount": "30", "currency": "usd", "exchange_rate": "12700",
-                "category": "purchase", "method": "cash", "note": "edit-me",
+                "category": "Mahsulot xaridi", "method": "cash", "note": "edit-me",
             },
         )
         expense.refresh_from_db()
@@ -1884,7 +1888,7 @@ class KassaCurrencyTests(BaseSetup):
             reverse("expense_create"),
             {
                 "date": timezone.localdate().isoformat(), "amount": "50000",
-                "currency": "uzs", "category": "fuel", "method": "cash", "note": "own",
+                "currency": "uzs", "category": "Benzin / transport", "method": "cash", "note": "own",
             },
         )
         own = Expense.objects.get(note="own")
@@ -1897,7 +1901,7 @@ class KassaCurrencyTests(BaseSetup):
             reverse("expense_create"),
             {
                 "date": timezone.localdate().isoformat(), "amount": "70000",
-                "currency": "uzs", "category": "fuel", "method": "cash", "note": "admins",
+                "currency": "uzs", "category": "Benzin / transport", "method": "cash", "note": "admins",
             },
         )
         others = Expense.objects.get(note="admins")
@@ -1913,7 +1917,7 @@ class KassaCurrencyTests(BaseSetup):
             {
                 "date": timezone.localdate().isoformat(),
                 "amount": "20", "currency": "usd", "exchange_rate": "12700",
-                "category": "purchase", "method": "cash", "note": "xlsx-row",
+                "category": "Mahsulot xaridi", "method": "cash", "note": "xlsx-row",
             },
         )
         response = self.client.get(reverse("expense_export"))
@@ -1933,7 +1937,7 @@ class KassaCurrencyTests(BaseSetup):
             {
                 "date": timezone.localdate().isoformat(),
                 "amount": "20000", "currency": "uzs",
-                "category": "fuel", "method": "cash", "note": "sales2 rasxot",
+                "category": "Benzin / transport", "method": "cash", "note": "sales2 rasxot",
             },
         )
         today = timezone.localdate()
@@ -1973,11 +1977,11 @@ class KassaScopingTests(BaseSetup):
     def setUp(self):
         today = timezone.localdate()
         Expense.objects.create(
-            amount=Decimal("50000"), category=Expense.Category.OTHER,
+            amount=Decimal("50000"), category="Boshqa",
             method=Payment.Method.CASH, created_by=self.sales2, date=today,
         )
         Expense.objects.create(
-            amount=Decimal("30000"), category=Expense.Category.OTHER,
+            amount=Decimal("30000"), category="Boshqa",
             method=Payment.Method.CASH, created_by=self.sales1, date=today,
         )
 

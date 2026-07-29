@@ -315,6 +315,13 @@ class ExpenseForm(forms.ModelForm):
         widgets = {
             "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
             "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — nima uchun"}),
+            # Free text with a <datalist> of what's been used before: pick an
+            # existing category or just type a new one.
+            "category": forms.TextInput(attrs={
+                "list": "expense-category-suggestions",
+                "autocomplete": "off",
+                "placeholder": "Masalan: Benzin / transport",
+            }),
         }
 
     def __init__(self, *args, **kwargs):

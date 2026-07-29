@@ -19,14 +19,17 @@ from crm.models import Client, Expense, Payment, Product, Sale, SaleItem
 
 USD_RATE = Decimal("12700")
 
-EXPENSE_CATS = ["fuel", "meal", "salary", "rent", "purchase", "other"]
+EXPENSE_CATS = [
+    "Benzin / transport", "Ovqat (obed)", "Oylik / xodim",
+    "Ijara", "Mahsulot xaridi", "Boshqa",
+]
 EXPENSE_NOTES = {
-    "fuel": "Yetkazib berish — benzin",
-    "meal": "Jamoa tushligi",
-    "salary": "Oylik",
-    "rent": "Sklad ijarasi",
-    "purchase": "Paket xomashyosi",
-    "other": "Kanstovarlar",
+    "Benzin / transport": "Yetkazib berish — benzin",
+    "Ovqat (obed)": "Jamoa tushligi",
+    "Oylik / xodim": "Oylik",
+    "Ijara": "Sklad ijarasi",
+    "Mahsulot xaridi": "Paket xomashyosi",
+    "Boshqa": "Kanstovarlar",
 }
 
 

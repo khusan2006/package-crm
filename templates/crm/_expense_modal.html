@@ -18,7 +18,11 @@
       {% if form.exchange_rate.help_text %}<span class="field-hint">{{ form.exchange_rate.help_text }}</span>{% endif %}</p>
     <div class="pay-breakdown" data-usd hidden></div>
   </div>
-  <p>{{ form.category.label_tag }}{{ form.category }}{{ form.category.errors }}</p>
+  <p>{{ form.category.label_tag }}{{ form.category }}{{ form.category.errors }}
+    <span class="field-hint">Ro'yxatdan tanlang yoki o'zingiz yozing.</span></p>
+  <datalist id="expense-category-suggestions">
+    {% for c in category_suggestions %}<option value="{{ c }}"></option>{% endfor %}
+  </datalist>
   <p>{{ form.method.label_tag }}{{ form.method }}{{ form.method.errors }}</p>
   <p>{{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}</p>
   <div class="modal-actions">

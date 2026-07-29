@@ -15,16 +15,16 @@ USD_RATE = Decimal("12700")
 
 # (days ago, category, method, currency, amount|usd, note, user key)
 DEMO_EXPENSES = [
-    (2, "fuel", "cash", "uzs", "450000", "Yetkazib berish — benzin", "sales1"),
-    (2, "meal", "cash", "uzs", "120000", "Tushlik", "sales2"),
-    (5, "salary", "card", "uzs", "3500000", "Oylik avans", "admin"),
-    (8, "rent", "transfer", "uzs", "4000000", "Sklad ijarasi", "manager"),
-    (10, "purchase", "cash", "usd", "150", "Xomashyo (dollarda)", "admin"),
-    (12, "fuel", "cash", "uzs", "380000", "Benzin", "sales1"),
-    (15, "other", "cash", "uzs", "250000", "Kanstovarlar", "manager"),
-    (18, "meal", "cash", "uzs", "160000", "Jamoa tushligi", "sales2"),
-    (22, "purchase", "transfer", "uzs", "2200000", "Paket xomashyosi", "admin"),
-    (26, "salary", "card", "uzs", "3500000", "Oylik", "admin"),
+    (2, "Benzin / transport", "cash", "uzs", "450000", "Yetkazib berish — benzin", "sales1"),
+    (2, "Ovqat (obed)", "cash", "uzs", "120000", "Tushlik", "sales2"),
+    (5, "Oylik / xodim", "card", "uzs", "3500000", "Oylik avans", "admin"),
+    (8, "Ijara", "transfer", "uzs", "4000000", "Sklad ijarasi", "manager"),
+    (10, "Mahsulot xaridi", "cash", "usd", "150", "Xomashyo (dollarda)", "admin"),
+    (12, "Benzin / transport", "cash", "uzs", "380000", "Benzin", "sales1"),
+    (15, "Boshqa", "cash", "uzs", "250000", "Kanstovarlar", "manager"),
+    (18, "Ovqat (obed)", "cash", "uzs", "160000", "Jamoa tushligi", "sales2"),
+    (22, "Mahsulot xaridi", "transfer", "uzs", "2200000", "Paket xomashyosi", "admin"),
+    (26, "Oylik / xodim", "card", "uzs", "3500000", "Oylik", "admin"),
 ]
 
 DEMO_USERS = [
