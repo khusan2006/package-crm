@@ -948,7 +948,7 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 .modal form.stacked textarea,
 .modal form.stacked .pw-field { max-width: none; }
 .modal-confirm { padding: 14px 22px 22px; }
-.modal-actions { display: flex; gap: 10px; margin-top: 8px; }
+.modal-actions { display: flex; gap: 10px; margin-top: 8px; justify-content: flex-end; }
 
 /* Quick-add customer inside the sale form */
 .field-with-add { display: flex; gap: 8px; align-items: center; }
@@ -1042,6 +1042,41 @@ ul.errorlist li::before { content: "⚠ "; }
   border-radius: var(--r-sm);
   font-size: 13px;
 }
+/* "Qarz qachon olingan" reminder above the payment fields — the open receipts
+   in FIFO order, so the seller can pick the right payment date. */
+.pay-debts {
+  margin: 0 0 16px;
+  padding: 9px 12px;
+  /* soft red — this is a debt reminder, it should read as one at a glance */
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  max-height: 148px;
+  overflow-y: auto;
+}
+.pay-debts-head {
+  color: var(--danger);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-bottom: 5px;
+}
+.pay-debt {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 4px 0;
+}
+.pay-debt + .pay-debt { border-top: 1px solid color-mix(in srgb, var(--danger) 22%, transparent); }
+.pay-debt-date { color: var(--danger); font-weight: 700; white-space: nowrap; }
+.pay-debt-item {
+  color: color-mix(in srgb, var(--danger) 75%, var(--text-muted));
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pay-debt strong { color: var(--danger); text-align: right; font-weight: 700; white-space: nowrap; }
+
 .pay-breakdown span { color: var(--text-muted); }
 .pay-breakdown strong { color: var(--text); text-align: right; font-weight: 600; }
 .pay-breakdown strong:last-of-type { color: var(--success); }

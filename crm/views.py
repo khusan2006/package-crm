@@ -1326,7 +1326,8 @@ def _client_outstanding_fifo(request, client):
 
 
 def _distribute_debt_payment(
-    sales, amount, method, percent, note, user, currency=None, exchange_rate=Decimal("0")
+    sales, amount, method, percent, note, user, currency=None, exchange_rate=Decimal("0"),
+    on_date=None,
 ):
     """Spread a lump payment across FIFO-ordered debts, oldest first.
 
@@ -1338,6 +1339,7 @@ def _distribute_debt_payment(
     is_transfer = method == Payment.Method.TRANSFER
     percent = percent if is_transfer else Decimal("0")
     currency = currency or Payment.Currency.UZS
+    on_date = on_date or timezone.localdate()  # backdated when an old debt is settled
     commission_total = (amount * percent / Decimal("100")).quantize(
         Decimal("0.01"), ROUND_HALF_UP
     )
@@ -1378,7 +1380,7 @@ def _distribute_debt_payment(
                 commission_percent=percent,
                 note=note,
                 kind=Payment.Kind.DEBT,
-                date=timezone.localdate(),
+                date=on_date,
                 created_by=user,
             )
             net_left -= chunk_net
@@ -1386,7 +1388,7 @@ def _distribute_debt_payment(
     return touched
 
 
-def _apply_advance_to_open_sales(client, seller):
+def _apply_advance_to_open_sales(client, seller, on_date=None):
     """Spend a client's prepaid advance (seller-bound) on their open receipts, oldest
     first. Each slice becomes an ADVANCE_USED payment that settles part of a sale
     WITHOUT adding new till income — the cash already entered the till as the
@@ -1397,6 +1399,7 @@ def _apply_advance_to_open_sales(client, seller):
     balance = client_advance_balance(client, seller)
     if balance <= 0:
         return Decimal("0")
+    on_date = on_date or timezone.localdate()
     sales = (
         Sale.objects.filter(client=client, sales_rep=seller)
         .with_balance()
@@ -1423,7 +1426,9 @@ def _apply_advance_to_open_sales(client, seller):
                 commission_percent=Decimal("0"),
                 note="Avansdan yechildi",
                 kind=Payment.Kind.ADVANCE_USED,
-                date=timezone.localdate(),
+                # never before the receipt it settles — a backdated advance still
+                # can't have paid a sale that hadn't happened yet
+                date=max(on_date, sale.date),
                 created_by=seller,
             )
             balance -= use
@@ -1459,11 +1464,14 @@ def _kg(value):
     return ("{:,.3f}".format(value)).rstrip("0").rstrip(".")
 
 
-def _render_client_pay(request, client, total, form, invalid=False):
+def _render_client_pay(request, client, total, form, invalid=False, debts=None):
     context = {
         "form": form,
         "client": client,
         "remaining": total,
+        # The open receipts in FIFO order, so the seller sees WHEN each debt was
+        # taken before choosing the payment date.
+        "debts": debts or [],
         "title": f"Umumiy to'lov: {client.name}",
     }
     if is_ajax(request):
@@ -1494,6 +1502,7 @@ def client_debt_pay(request, pk):
                 request.user,
                 currency=form.cleaned_data["currency"],
                 exchange_rate=form.cleaned_data["exchange_rate"],
+                on_date=form.cleaned_data["date"],
             )
             AuditLog.record(
                 request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
@@ -1506,12 +1515,16 @@ def client_debt_pay(request, pk):
                 f"{form.cleaned_data['amount']:,.0f} so'm {touched} ta chekka taqsimlandi.",
             )
             return form_reload(request, reverse("debt_client", args=[client.pk]))
-        return _render_client_pay(request, client, total, form, invalid=True)
+        return _render_client_pay(request, client, total, form, invalid=True, debts=sales)
     form = DebtPaymentForm(
-        initial={"amount": _clean_amount(total), "method": Payment.Method.CASH},
+        initial={
+            "amount": _clean_amount(total),
+            "method": Payment.Method.CASH,
+            "date": timezone.localdate(),
+        },
         max_amount=total,
     )
-    return _render_client_pay(request, client, total, form)
+    return _render_client_pay(request, client, total, form, debts=sales)
 
 
 def _render_client_advance(request, client, balance, form, invalid=False):
@@ -1554,10 +1567,10 @@ def client_advance_pay(request, pk):
                 commission_percent=cd["commission_percent"],
                 note=cd["note"],
                 kind=Payment.Kind.ADVANCE_IN,
-                date=timezone.localdate(),
+                date=cd["date"],
                 created_by=request.user,
             )
-            applied = _apply_advance_to_open_sales(client, request.user)
+            applied = _apply_advance_to_open_sales(client, request.user, on_date=cd["date"])
             AuditLog.record(
                 request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
                 f"Mijoz {client.name} avans to'lovi "
@@ -1573,7 +1586,9 @@ def client_advance_pay(request, pk):
             messages.success(request, msg)
             return form_reload(request, reverse("client_list"))
         return _render_client_advance(request, client, balance, form, invalid=True)
-    form = DebtPaymentForm(initial={"method": Payment.Method.CASH})
+    form = DebtPaymentForm(initial={
+        "method": Payment.Method.CASH, "date": timezone.localdate(),
+    })
     return _render_client_advance(request, client, balance, form)
 
 
@@ -1624,6 +1639,7 @@ def advance_edit(request, pk):
             payment.commission = cd["commission"]
             payment.commission_percent = cd["commission_percent"]
             payment.note = cd["note"]
+            payment.date = cd["date"]
             payment.save()
             # Re-apply a bigger deposit, or claw back a smaller one, then settle debts.
             _reconcile_client_advance(client, seller)
@@ -1635,6 +1651,7 @@ def advance_edit(request, pk):
             return form_reload(request, reverse("kassa"))
         return _render_advance_edit(request, payment, form, invalid=True)
     form = DebtPaymentForm(initial={
+        "date": payment.date,
         "amount": _clean_amount(payment.original_amount),
         "method": payment.method,
         "currency": payment.currency,
@@ -3329,7 +3346,7 @@ def sale_pay(request, pk):
                 commission_percent=form.cleaned_data["commission_percent"],
                 note=form.cleaned_data["note"],
                 kind=Payment.Kind.DEBT,
-                date=timezone.localdate(),
+                date=form.cleaned_data["date"],
                 created_by=request.user,
             )
             AuditLog.record(
@@ -3347,7 +3364,11 @@ def sale_pay(request, pk):
             return form_reload(request, reverse("debt_list"))
         return _render_debt_pay(request, sale, form, invalid=True)
     form = DebtPaymentForm(
-        initial={"amount": _clean_amount(remaining), "method": Payment.Method.CASH}
+        initial={
+            "amount": _clean_amount(remaining),
+            "method": Payment.Method.CASH,
+            "date": timezone.localdate(),
+        }
     )
     return _render_debt_pay(request, sale, form)
 
