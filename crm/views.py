@@ -629,7 +629,9 @@ def dashboard(request):
 
 # --- Clients ------------------------------------------------------------------
 
-def client_list(request):
+def _client_rows(request):
+    """The Mijozlar rows for the current search: every visible client with their
+    advance and open debt attached. Shared by the page and its Excel export."""
     clients = (
         _visible_clients(request.user)
         .annotate(sale_count=Count("sales"), last_sale=Max("sales__date"))
@@ -650,22 +652,66 @@ def client_list(request):
     # till's balance; an admin/manager sees the client's total across every seller's till.
     scope = None if request.user.can_see_all_records else request.user
     adv_map = _advance_balance_map(clients.values_list("pk", flat=True), scope)
-    client_list = list(clients)
-    for c in client_list:
+    debt_map = _client_debt_map(request.user)
+    rows = list(clients)
+    for c in rows:
         c.advance = adv_map.get(c.pk, Decimal("0"))
+        c.debt = debt_map.get(c.pk, Decimal("0"))
     # Clients holding an advance float to the top (biggest first), then everyone by name.
-    client_list.sort(key=lambda c: (0 if c.advance > 0 else 1, -c.advance, c.name.lower()))
+    rows.sort(key=lambda c: (0 if c.advance > 0 else 1, -c.advance, c.name.lower()))
+    return rows, q
+
+
+def _client_debt_map(user):
+    """{client_pk: open debt} across the sales the user may see, in one query."""
+    agg = (
+        Sale.objects.visible_to(user).outstanding()
+        .values("client").annotate(owed=Sum("remaining"))
+    )
+    return {r["client"]: r["owed"] or Decimal("0") for r in agg}
+
+
+def client_list(request):
+    rows, q = _client_rows(request)
     # Headline KPIs over the whole (search-filtered) set, not just the current page.
-    total_advance = sum((c.advance for c in client_list), Decimal("0"))
-    advance_clients = sum(1 for c in client_list if c.advance > 0)
-    page = Paginator(client_list, 25).get_page(request.GET.get("page"))
+    total_advance = sum((c.advance for c in rows), Decimal("0"))
+    advance_clients = sum(1 for c in rows if c.advance > 0)
+    page = Paginator(rows, 25).get_page(request.GET.get("page"))
+    export_qs = request.GET.urlencode()
     return render(request, "crm/client_list.html", {
         "page": page,
         "q": q,
-        "total_clients": len(client_list),
+        "total_clients": len(rows),
         "total_advance": total_advance,
         "advance_clients": advance_clients,
+        "export_url": reverse("client_export") + (f"?{export_qs}" if export_qs else ""),
     })
+
+
+def client_export(request):
+    """Excel (.xlsx) of the client list as searched — one row per client."""
+    rows, _ = _client_rows(request)
+    headers = [
+        "Ismi", "Kompaniya", "Telefon", "Manzil", "Mas'ul xodim",
+        "Avans (so'm)", "Qarz (so'm)", "Sotuvlar soni", "Oxirgi sotuv", "Izoh",
+    ]
+    data = [
+        [
+            c.name,
+            c.company,
+            c.phone,
+            c.address,
+            str(c.owner) if c.owner else "",
+            float(c.advance),
+            float(c.debt),
+            c.sale_count,
+            c.last_sale.strftime("%d.%m.%Y") if c.last_sale else "",
+            c.notes,
+        ]
+        for c in rows
+    ]
+    number_formats = {6: "#,##0.00", 7: "#,##0.00"}
+    return _xlsx_response("mijozlar.xlsx", "Mijozlar", headers, data, number_formats)
 
 
 def client_create(request):
@@ -831,6 +877,186 @@ def client_transfer(request, pk):
         return _render_client_transfer(request, client, form, invalid=True)
     form = ClientTransferForm(client=client)
     return _render_client_transfer(request, client, form)
+
+
+# Money events on a client's account, in the order they happen. `delta` is how the
+# event moved the client's debt: a sale lifts it, a payment or a return brings it
+# down, and money handed back on an over-returned sale lifts it again. Advance
+# deposits carry no delta — the cash is held as credit and only touches a debt
+# later, as an ADVANCE_USED payment.
+_PAY_EVENTS = {
+    Payment.Kind.SALE: ("Sotuvda to'landi", "badge-ok", "in"),
+    Payment.Kind.DEBT: ("Qarz to'lovi", "badge-ok", "in"),
+    Payment.Kind.ADVANCE_USED: ("Avansdan yechildi", "badge-info", "in"),
+    Payment.Kind.ADVANCE_IN: ("Avans olindi", "badge-ok", "in"),
+    Payment.Kind.RETURN_CREDIT: ("Qaytarishdan kredit", "badge-shipped", "return"),
+    Payment.Kind.REFUND_OUT: ("Naqd qaytarildi", "badge-danger", "out"),
+}
+
+
+def _payment_event(payment):
+    """One payment as a history row. Paying kinds count net of the bank fee —
+    that is what actually reduced the debt, so the running balance stays honest."""
+    label, cls, icon = _PAY_EVENTS[payment.kind]
+    paying = payment.kind in PAYING_KINDS
+    amount = payment.net_amount if paying else payment.amount
+    if paying:
+        delta = -amount
+    elif payment.kind == Payment.Kind.ADVANCE_IN:
+        delta = Decimal("0")
+    else:  # return_credit / refund_out — money owed back to the client
+        delta = amount
+    notes = []
+    if payment.commission:
+        notes.append(f"bank komissiyasi {payment.commission:,.0f}")
+    if payment.currency == Payment.Currency.USD:
+        notes.append(
+            f"${payment.original_amount:,.2f} × {payment.exchange_rate:,.0f}"
+        )
+    if payment.note:
+        notes.append(payment.note)
+    return {
+        "date": payment.date,
+        "sort": (payment.date, payment.created_at),
+        "label": label,
+        "cls": cls,
+        "icon": icon,
+        "desc": payment.get_kind_display(),
+        "amount": amount,
+        "delta": delta,
+        "method": payment.method,
+        "method_label": payment.get_method_display(),
+        "user": payment.created_by,
+        "note": " · ".join(notes),
+        "url": reverse("sale_detail", args=[payment.sale_id]) if payment.sale_id else "",
+    }
+
+
+def _client_events(request, client):
+    """A client's whole money history, oldest first, with a running debt balance.
+
+    Sales, payments and returns are merged into one timeline; `balance` on each row
+    is what the client owed right after that event, so the last row's balance is
+    today's debt — the same figure the qarzlar page shows. Seller-scoped: a seller
+    sees only the sales they made and the advances they took in themselves."""
+    sales = (
+        Sale.objects.visible_to(request.user)
+        .filter(client=client)
+        .select_related("sales_rep")
+        .prefetch_related(
+            "items__product", "returns__product", "payments__created_by"
+        )
+    )
+    events = []
+    for sale in sales:
+        events.append({
+            "date": sale.date,
+            "sort": (sale.date, sale.created_at),
+            "label": "Ochilish qoldig'i" if sale.is_opening else "Sotuv",
+            "cls": "badge-neutral" if sale.is_opening else "badge-info",
+            "icon": "sale",
+            "desc": sale.item_summary,
+            # An opening carry-over has no line items: its debt is opening_amount alone.
+            "amount": sale.total_price + sale.opening_amount,
+            "delta": sale.total_price + sale.opening_amount,
+            "method": "",
+            "method_label": "",
+            "user": sale.sales_rep,
+            "note": "",
+            "url": reverse("sale_detail", args=[sale.pk]),
+        })
+        for payment in sale.payments.all():
+            events.append(_payment_event(payment))
+        for ret in sale.returns.all():
+            events.append({
+                "date": ret.date,
+                "sort": (ret.date, ret.created_at),
+                "label": "Qaytarish",
+                "cls": "badge-shipped",
+                "icon": "return",
+                "desc": f"{ret.product.name} · {_kg(ret.weight_kg)} kg",
+                "amount": ret.amount,
+                "delta": -ret.amount,
+                "method": "",
+                "method_label": "",
+                "user": ret.created_by,
+                "note": ret.note,
+                "url": reverse("sale_detail", args=[ret.sale_id]),
+            })
+    # Advance deposits live on the client, not on any sale, so they are fetched
+    # separately — scoped to the seller's own till like every other advance figure.
+    advances = Payment.objects.filter(
+        client=client, sale__isnull=True
+    ).select_related("created_by")
+    if not request.user.can_see_all_records:
+        advances = advances.filter(created_by=request.user)
+    events.extend(_payment_event(p) for p in advances)
+
+    events.sort(key=lambda e: e["sort"])
+    balance = Decimal("0")
+    for event in events:
+        balance += event["delta"]
+        event["balance"] = balance
+    return events
+
+
+def _client_history_totals(request, client, events):
+    def total(*labels):
+        return sum(
+            (e["amount"] for e in events if e["label"] in labels), Decimal("0")
+        )
+
+    scope = None if request.user.can_see_all_records else request.user
+    return {
+        "sold": total("Sotuv", "Ochilish qoldig'i"),
+        "paid": total("Sotuvda to'landi", "Qarz to'lovi", "Avansdan yechildi"),
+        "returned": total("Qaytarish"),
+        "debt": events[-1]["balance"] if events else Decimal("0"),
+        "advance": client_advance_balance(client, scope),
+        "sales_count": sum(1 for e in events if e["label"] == "Sotuv"),
+    }
+
+
+def client_history(request, pk):
+    """One client's full account history: every sale, payment and return on a
+    single timeline, with what they owed after each step."""
+    client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    events = _client_events(request, client)
+    return render(request, "crm/client_history.html", {
+        "client": client,
+        "events": events,
+        "totals": _client_history_totals(request, client, events),
+    })
+
+
+def client_history_export(request, pk):
+    """Excel (.xlsx) of one client's history — the same rows as the page."""
+    client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    events = _client_events(request, client)
+    headers = [
+        "Sana", "Amal", "Tafsilot", "Summa",
+        "Qarz o'zgarishi", "Qarz qoldig'i", "Usul", "Kim", "Izoh",
+    ]
+    rows = [
+        [
+            e["date"].strftime("%d.%m.%Y"),
+            e["label"],
+            e["desc"],
+            float(e["amount"]),
+            float(e["delta"]),
+            float(e["balance"]),
+            e["method_label"],
+            str(e["user"]),
+            e["note"],
+        ]
+        for e in events
+    ]
+    number_formats = {4: "#,##0.00", 5: "#,##0.00", 6: "#,##0.00"}
+    # The client's name can be Cyrillic; keep the filename ASCII so the download
+    # header needs no encoding games.
+    return _xlsx_response(
+        f"mijoz-{client.pk}-tarix.xlsx", "Tarix", headers, rows, number_formats
+    )
 
 
 # --- Products -----------------------------------------------------------------
@@ -1226,8 +1452,9 @@ def sale_list(request):
     )
 
 
-def debt_list(request):
-    """One row per debtor client: total owed, open receipts, earliest deadline."""
+def _debtor_rows(request):
+    """One row per debtor client for the current filters: total owed, open receipts,
+    earliest deadline. Shared by the Qarzlar page and its Excel export."""
     today = timezone.localdate()
     open_sales = (
         Sale.objects.visible_to(request.user).outstanding().select_related("client")
@@ -1271,6 +1498,13 @@ def debt_list(request):
 
     # Most urgent first: overdue (earliest deadlines) at the top
     debtors = sorted(groups.values(), key=lambda g: g["earliest"] or today)
+    return debtors, filters, total_debt, overdue_total
+
+
+def debt_list(request):
+    """One row per debtor client: total owed, open receipts, earliest deadline."""
+    today = timezone.localdate()
+    debtors, filters, total_debt, overdue_total = _debtor_rows(request)
     overdue_debtors = sum(1 for g in debtors if g["overdue_count"])
 
     clients = _visible_clients(request.user).order_by("name")
@@ -1303,14 +1537,40 @@ def debt_list(request):
             "filter_count": len(active_filters),
             "has_filters": bool(active_filters),
             "filter_url": reverse("debt_list"),
+            "export_url": reverse("debt_export") + (
+                f"?{request.GET.urlencode()}" if request.GET.urlencode() else ""
+            ),
         },
     )
 
 
-def debt_client(request, pk):
-    """A single debtor's open receipts, with per-receipt balance and deadline."""
-    client = get_object_or_404(_visible_clients(request.user), pk=pk)
-    sales = (
+def debt_export(request):
+    """Excel (.xlsx) of the debtor list for the current filters — one row per client."""
+    debtors, _, _, _ = _debtor_rows(request)
+    today = timezone.localdate()
+    headers = [
+        "Mijoz", "Telefon", "Mas'ul xodim", "Ochiq cheklar",
+        "Muddati o'tgan cheklar", "Eng yaqin muddat", "Holat", "Qarz qoldig'i",
+    ]
+    rows = []
+    for g in debtors:
+        earliest = g["earliest"]
+        rows.append([
+            g["client"].name,
+            g["client"].phone,
+            str(g["client"].owner) if g["client"].owner else "",
+            g["count"],
+            g["overdue_count"],
+            earliest.strftime("%d.%m.%Y") if earliest else "",
+            "Muddati o'tgan" if earliest and earliest < today else "Muddatida",
+            float(g["remaining"]),
+        ])
+    return _xlsx_response("qarzlar.xlsx", "Qarzlar", headers, rows, {8: "#,##0.00"})
+
+
+def _open_receipts(request, client):
+    """One debtor's open receipts, soonest deadline first."""
+    return (
         Sale.objects.visible_to(request.user)
         .filter(client=client)
         .outstanding()
@@ -1318,6 +1578,12 @@ def debt_client(request, pk):
         .prefetch_related("items__product")
         .order_by("debt_deadline")
     )
+
+
+def debt_client(request, pk):
+    """A single debtor's open receipts, with per-receipt balance and deadline."""
+    client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    sales = _open_receipts(request, client)
     total = sum((s.remaining for s in sales), Decimal("0"))
     scope = None if request.user.can_see_all_records else request.user
     advance = client_advance_balance(client, scope)
@@ -1338,6 +1604,34 @@ def debt_client(request, pk):
             "advance": advance,
             "advance_deposits": advance_deposits,
         },
+    )
+
+
+def debt_client_export(request, pk):
+    """Excel (.xlsx) of one debtor's open receipts — the rows of their qarz page."""
+    client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    today = timezone.localdate()
+    headers = [
+        "Sana", "Mahsulotlar", "Sotuvchi", "Umumiy", "To'langan",
+        "Qoldiq", "Muddat", "Holat",
+    ]
+    rows = []
+    for sale in _open_receipts(request, client):
+        deadline = sale.debt_deadline
+        overdue = deadline and deadline < today
+        rows.append([
+            sale.date.strftime("%d.%m.%Y"),
+            sale.item_summary,
+            str(sale.sales_rep),
+            float(sale.total),
+            float(sale.paid),
+            float(sale.remaining),
+            deadline.strftime("%d.%m.%Y") if deadline else "",
+            f"{(today - deadline).days} kun o'tgan" if overdue else "Muddatida",
+        ])
+    number_formats = {4: "#,##0.00", 5: "#,##0.00", 6: "#,##0.00"}
+    return _xlsx_response(
+        f"qarz-mijoz-{client.pk}.xlsx", "Ochiq cheklar", headers, rows, number_formats
     )
 
 
@@ -2444,7 +2738,10 @@ def kassa_view(request):
         "show_category": True,
         "category_options": Expense.used_categories(),
         "show_currency": True,
-        "export_url": reverse("expense_export") + (f"?{export_qs}" if export_qs else ""),
+        # One Excel button in the toolbar; it opens a chooser (hammasi / kirim /
+        # chiqim) because the kassa page holds two ledgers, not one list.
+        "export_url": reverse("kassa_export") + (f"?{export_qs}" if export_qs else ""),
+        "export_modal": True,
         **dates,
     })
 
@@ -2452,13 +2749,10 @@ def kassa_view(request):
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-def _xlsx_response(filename, sheet_title, headers, rows, number_formats=None):
-    """Build an .xlsx download: bold frozen header, one row per record, columns
-    sized to their widest value. `number_formats` maps a 1-based column index to
-    an Excel format string, applied to that column's data cells."""
-    wb = Workbook()
-    ws = wb.active
-    ws.title = sheet_title
+def _fill_sheet(ws, headers, rows, number_formats=None):
+    """Write one worksheet: bold frozen header, one row per record, columns sized
+    to their widest value. `number_formats` maps a 1-based column index to an Excel
+    format string, applied to that column's data cells."""
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True)
@@ -2474,35 +2768,198 @@ def _xlsx_response(filename, sheet_title, headers, rows, number_formats=None):
         if fmt:
             for cell in ws[letter][1:]:  # data cells only, skip the header
                 cell.number_format = fmt
+
+
+def _xlsx_download(workbook, filename):
     response = HttpResponse(content_type=XLSX_CONTENT_TYPE)
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
-    wb.save(response)
+    workbook.save(response)
     return response
 
 
-def expense_export(request):
-    """Excel (.xlsx) of the kassa expenses for the current window and drawer filters."""
-    expenses = _kassa_expenses(request)[0]
-    headers = [
-        "Sana", "Turkum", "Usul", "Valyuta", "Summa (so'm)",
-        "Asl summa", "Kurs", "Izoh", "Kim kiritdi",
+def _xlsx_response(filename, sheet_title, headers, rows, number_formats=None):
+    """Build a one-sheet .xlsx download."""
+    wb = Workbook()
+    wb.active.title = sheet_title
+    _fill_sheet(wb.active, headers, rows, number_formats)
+    return _xlsx_download(wb, filename)
+
+
+def _xlsx_book_response(filename, sheets):
+    """Build a multi-sheet .xlsx download. `sheets` is a list of
+    (title, headers, rows, number_formats) — one tab each."""
+    wb = Workbook()
+    for i, (title, headers, rows, formats) in enumerate(sheets):
+        ws = wb.active if i == 0 else wb.create_sheet()
+        ws.title = title
+        _fill_sheet(ws, headers, rows, formats)
+    return _xlsx_download(wb, filename)
+
+
+# How an outflow row reads in the Chiqim export — the same four kinds the Chiqim
+# panel shows side by side.
+_OUTFLOW_LABELS = {
+    "expense": "Rasxot",
+    "remittance": "Ishlab chiqarishga topshiruv",
+    "profit": "Foyda topshiruvi",
+    "refund": "Qaytarish (naqd berildi)",
+}
+
+
+def _kassa_ledger(request):
+    """The kassa ledger for the current window and drawer filters, split exactly as
+    the page splits it: (kirim rows, chiqim rows)."""
+    expenses, dates, filters, rep, _ = _kassa_expenses(request)
+    rows = _kassa_transactions(expenses, dates, filters, rep)
+    income = [r for r in rows if r["direction"] == "in"]
+    outflow = [
+        r for r in rows if r["direction"] in ("out", "remit", "profit", "refund")
     ]
-    rows = []
-    for e in expenses:
-        is_usd = e.currency == Payment.Currency.USD
-        rows.append([
-            e.date.strftime("%d.%m.%Y"),
-            e.category,
-            e.get_method_display(),
-            e.get_currency_display(),
-            float(e.amount),
-            float(e.original_amount),
-            float(e.exchange_rate) if is_usd else "",
-            e.note,
-            str(e.created_by),
-        ])
-    number_formats = {5: "#,##0.00", 6: "#,##0.00", 7: "#,##0.00"}
-    return _xlsx_response("chiqimlar.xlsx", "Chiqimlar", headers, rows, number_formats)
+    return income, outflow
+
+
+def _currency_label(row):
+    return dict(Payment.Currency.choices).get(row["currency"], "")
+
+
+def _rate_cell(row):
+    """The exchange rate, but only where there is one — a so'm row leaves it blank."""
+    return float(row["exchange_rate"]) if row["currency"] == Payment.Currency.USD else ""
+
+
+def _income_sheet(income):
+    """The Kirim tab: money taken in over the window."""
+    headers = [
+        "Sana", "Kimdan", "Kirim turi", "Usul", "Valyuta",
+        "Kirim summa (so'm)", "Asl summa", "Kurs", "Qarzga ta'sir", "Kim qabul qildi",
+    ]
+    rows = [
+        [
+            r["date"].strftime("%d.%m.%Y"),
+            r["title"],
+            r["subtitle"],
+            r["method"],
+            _currency_label(r),
+            float(r["amount_som"]),
+            float(r["amount_original"]),
+            _rate_cell(r),
+            # An advance deposit is credit held for the client, not a debt payment,
+            # so it moves no debt — the page shows a dash in this column.
+            0 if r.get("is_advance") else float(r["amount_som"]),
+            str(r["created_by"]),
+        ]
+        for r in income
+    ]
+    number_formats = {6: "#,##0.00", 7: "#,##0.00", 8: "#,##0.00", 9: "#,##0.00"}
+    return ("Kirimlar", headers, rows, number_formats)
+
+
+def _outflow_sheet(outflow):
+    """The Chiqim tab: rasxot, ishlab chiqarishga topshiruv, foyda topshiruvi and
+    cash refunded to clients — everything that left the till."""
+    headers = [
+        "Sana", "Turi", "Tavsif", "Izoh", "Usul", "Valyuta",
+        "Chiqim summa (so'm)", "Asl summa", "Kurs", "Kim kiritdi",
+    ]
+    rows = [
+        [
+            r["date"].strftime("%d.%m.%Y"),
+            _OUTFLOW_LABELS.get(r["kind"], r["kind"]),
+            r["title"],
+            r["subtitle"],
+            r["method"],
+            _currency_label(r),
+            float(r["amount_som"]),
+            float(r["amount_original"]),
+            _rate_cell(r),
+            str(r["created_by"]),
+        ]
+        for r in outflow
+    ]
+    number_formats = {7: "#,##0.00", 8: "#,##0.00", 9: "#,##0.00"}
+    return ("Chiqimlar", headers, rows, number_formats)
+
+
+def _kassa_export_presets(today):
+    """Quick windows offered in the Excel dialog. "Hammasi" starts at the oldest
+    money movement on record, so it really does mean everything."""
+    firsts = [
+        Payment.objects.order_by("date").values_list("date", flat=True).first(),
+        Expense.objects.order_by("date").values_list("date", flat=True).first(),
+    ]
+    earliest = min([d for d in firsts if d] or [today])
+    yesterday = today - timedelta(days=1)
+    return [
+        ("Bugun", today, today),
+        ("Kecha", yesterday, yesterday),
+        ("7 kun", today - timedelta(days=6), today),
+        ("Shu oy", today.replace(day=1), today),
+        ("Hammasi", earliest, today),
+    ]
+
+
+def kassa_export(request):
+    """The Excel chooser: the kassa holds two ledgers, so the button asks which one
+    (or both) before downloading. The period is picked here too — the dialog carries
+    its own window, so a report can be pulled without disturbing the page's view."""
+    dates = _date_range_context(request)
+    # Everything except the window rides along untouched (xodim, turkum, usul,
+    # valyuta); the window itself is whatever the dialog currently shows.
+    rest = request.GET.copy()
+    for key in ("dan", "gacha", "page"):
+        rest.pop(key, None)
+
+    def url(name, date_from=None, date_to=None):
+        params = rest.copy()
+        params["dan"] = (date_from or dates["date_from"]).isoformat()
+        params["gacha"] = (date_to or date_from or dates["date_to"]).isoformat()
+        return f"{reverse(name)}?{params.urlencode()}"
+
+    presets = []
+    for label, start, end in _kassa_export_presets(timezone.localdate()):
+        # Two presets can describe the same window (a business one day old has
+        # "Bugun" == "Hammasi"); only the first is highlighted, so exactly one
+        # chip ever reads as the current choice.
+        matches = start == dates["date_from"] and end == dates["date_to"]
+        already = any(p["active"] for p in presets)
+        presets.append({
+            "label": label,
+            "url": url("kassa_export", start, end),
+            "active": matches and not already,
+        })
+    rest_qs = rest.urlencode()
+    return render(request, "crm/_kassa_export_modal.html", {
+        "title": "Excelga yuklash",
+        "all_url": url("kassa_export_all"),
+        "income_url": url("kassa_income_export"),
+        "outflow_url": url("kassa_outflow_export"),
+        # Base for the date inputs: the dialog re-opens on this URL with the dates
+        # the user typed (see the [data-export-range] handler in base.html).
+        "range_url": reverse("kassa_export") + (f"?{rest_qs}" if rest_qs else ""),
+        "presets": presets,
+        "other_filters": bool(rest_qs),
+        **dates,
+    })
+
+
+def kassa_export_all(request):
+    """Both ledgers in one workbook — Kirimlar and Chiqimlar as separate tabs."""
+    income, outflow = _kassa_ledger(request)
+    return _xlsx_book_response(
+        "kassa.xlsx", [_income_sheet(income), _outflow_sheet(outflow)]
+    )
+
+
+def kassa_income_export(request):
+    income, _ = _kassa_ledger(request)
+    title, headers, rows, formats = _income_sheet(income)
+    return _xlsx_response("kirimlar.xlsx", title, headers, rows, formats)
+
+
+def kassa_outflow_export(request):
+    _, outflow = _kassa_ledger(request)
+    title, headers, rows, formats = _outflow_sheet(outflow)
+    return _xlsx_response("chiqimlar.xlsx", title, headers, rows, formats)
 
 
 def _expense_response(request, form, title, invalid=False):
@@ -3057,6 +3514,21 @@ def _filter_ombor_items(request, items):
     return items, filters, has_filters
 
 
+def _ombor_product_items(request, product):
+    """One product's sale lines for the current filters, newest first. Shared by the
+    drill-down page and its Excel export, so the download matches the screen."""
+    qs = SaleItem.objects.filter(product=product).select_related(
+        "sale", "sale__client", "sale__sales_rep"
+    )
+    if not request.user.can_see_all_records:
+        qs = qs.filter(sale__sales_rep=request.user)
+    scoped = qs
+    qs, filters, has_filters = _filter_ombor_items(request, qs)
+    items = list(qs)
+    items.sort(key=lambda it: (it.sale.date, it.sale.created_at), reverse=True)
+    return items, scoped, filters, has_filters
+
+
 def ombor_product(request, pk):
     """Drill-down for one product: every sale of it, newest first, filterable by
     client / seller / date so one chek can be tracked down. A seller sees only their
@@ -3064,23 +3536,17 @@ def ombor_product(request, pk):
     above the transaction list."""
     product = get_object_or_404(Product, pk=pk)
     user = request.user
-    qs = SaleItem.objects.filter(product=product).select_related(
-        "sale", "sale__client", "sale__sales_rep"
-    )
-    if not user.can_see_all_records:
-        qs = qs.filter(sale__sales_rep=user)
+    items, scoped, filters, has_filters = _ombor_product_items(request, product)
     # Dropdown options come from this product's own history — offering clients who
     # never bought it would just be noise.
-    scoped = qs
     clients = Client.objects.filter(sales__items__in=scoped).distinct().order_by("name")
     reps = (
         User.objects.filter(sales__items__in=scoped).distinct().order_by("first_name", "username")
         if user.can_see_all_records
         else None
     )
-    qs, filters, has_filters = _filter_ombor_items(request, qs)
-    items = list(qs)
-    items.sort(key=lambda it: (it.sale.date, it.sale.created_at), reverse=True)
+    # The KPI and the per-seller summary count every filtered line, not just the
+    # page on screen — paging must not change what "jami sotilgan" means.
     total_kg = sum((it.weight_kg for it in items), Decimal("0"))
 
     by_seller = None
@@ -3101,9 +3567,11 @@ def ombor_product(request, pk):
         {"param": "dan", "label": "Sanadan", "value": filters["dan"]},
         {"param": "gacha", "label": "Sanagacha", "value": filters["gacha"]},
     ])
+    export_qs = request.GET.urlencode()
     return render(request, "crm/ombor_product.html", {
         "product": product,
-        "items": items,
+        "page": Paginator(items, 25).get_page(request.GET.get("page")),
+        "total_count": len(items),
         "total_kg": total_kg,
         "by_seller": by_seller,
         "is_admin_view": user.can_see_all_records,
@@ -3114,7 +3582,40 @@ def ombor_product(request, pk):
         "clients": clients,
         "reps": reps,
         "filter_url": reverse("ombor_product", args=[product.pk]),
+        "export_url": reverse("ombor_product_export", args=[product.pk]) + (
+            f"?{export_qs}" if export_qs else ""
+        ),
     })
+
+
+def ombor_product_export(request, pk):
+    """Excel (.xlsx) of one product's sales — every filtered line, not just the page."""
+    product = get_object_or_404(Product, pk=pk)
+    items, _, _, _ = _ombor_product_items(request, product)
+    headers = [
+        "Sana", "Mijoz", "Sotuvchi", "Razmer / Mikron", "O'lchov",
+        "Miqdori", "Miqdori (kg)", "Narxi (1 birlik)", "Umumiy narx",
+    ]
+    rows = [
+        [
+            it.sale.date.strftime("%d.%m.%Y"),
+            it.sale.client.name,
+            str(it.sale.sales_rep),
+            it.variant_label,
+            it.get_dimension_display(),
+            float(it.weight),
+            float(it.weight_kg),
+            float(it.price),
+            float(it.total_price),
+        ]
+        for it in items
+    ]
+    number_formats = {
+        6: "0.000", 7: "0.000", 8: "#,##0.00", 9: "#,##0.00",
+    }
+    return _xlsx_response(
+        f"mahsulot-{product.pk}-sotuvlar.xlsx", "Sotuvlar", headers, rows, number_formats
+    )
 
 
 def sale_export(request):

@@ -24,6 +24,16 @@
     {% endif %}
   </div>
   <div class="toolbar-right">
+    {% comment %}
+      Excel sits first, ahead of the date picker: it downloads what the page shows,
+      so it reads as part of the view rather than as another filter.
+    {% endcomment %}
+    {% if export_url %}
+    <a class="btn btn-sm btn-excel" href="{{ export_url }}"{% if export_modal %} data-modal{% endif %} title="Excel yuklab olish">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Excel
+    </a>
+    {% endif %}
     {% if show_daterange_picker and keep_daterange or show_daterange_picker and not has_filters %}
     {% if not is_today %}<a class="btn btn-sm btn-ghost" href="{% qs_replace dan=today_iso gacha=today_iso %}">Bugun</a>{% endif %}
     <div class="daterange" data-from="{{ filters.dan }}" data-to="{{ filters.gacha }}" data-today="{{ today_iso }}">
@@ -50,12 +60,6 @@
     <a class="btn btn-sm btn-ghost" href="{{ catalog_url }}" title="Mahsulotlar ro'yxati">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
       Mahsulotlar ro'yxati
-    </a>
-    {% endif %}
-    {% if export_url %}
-    <a class="btn btn-sm btn-ghost" href="{{ export_url }}" title="Excel yuklab olish">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-      Excel
     </a>
     {% endif %}
   </div>

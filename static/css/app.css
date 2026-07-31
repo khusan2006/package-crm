@@ -852,6 +852,14 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 .btn-violet { background: var(--violet); color: #fff; border-color: transparent; }
 .btn-violet:hover { background: color-mix(in srgb, var(--violet) 82%, #000); color: #fff; }
 
+/* Excel downloads wear the spreadsheet green everywhere they appear (list
+   toolbars, card heads, the kassa chooser). Deliberately a SOLID fill, not the
+   tinted treatment .btn-danger uses: the same filled button reads identically on
+   the light and the dark theme, where a soft tint would all but vanish. */
+.btn-excel { background: var(--success); color: #fff; border-color: transparent; }
+.btn-excel:hover { background: color-mix(in srgb, var(--success) 85%, #000); color: #fff; }
+.btn-excel:focus-visible { outline: 2px solid var(--success); outline-offset: 2px; }
+
 .btn-sm { padding: 5px 11px; font-size: 13px; }
 
 .inline-form { display: inline; margin: 0; }
@@ -942,6 +950,19 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
   color: var(--text);
 }
 
+/* The Excel download as a floating action (client history) — same green as the
+   .btn-excel buttons, so one action reads the same wherever it sits. */
+.fab--excel {
+  background: var(--success);
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(18, 138, 84, 0.45);
+}
+.fab--excel:hover {
+  background: color-mix(in srgb, var(--success) 85%, #000);
+  color: #fff;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.4), 0 3px 10px rgba(18, 138, 84, 0.55);
+}
+
 @media (max-width: 560px) {
   .fab-stack { right: 18px; bottom: 18px; gap: 10px; }
   .fab { padding: 12px 16px; }
@@ -1008,6 +1029,111 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 .modal form.stacked .pw-field { max-width: none; }
 .modal-confirm { padding: 14px 22px 22px; }
 .modal-actions { display: flex; gap: 10px; margin-top: 8px; justify-content: flex-end; }
+
+/* ---- Excel chooser (kassa) --------------------------------------------------
+   The till keeps two ledgers, so its Excel button opens a short menu rather than
+   guessing which one you meant. Each option is a card: a colour-coded icon (blue
+   = both, green = kirim, red = chiqim), what you get, and a download glyph. */
+.export-period {
+  display: grid;
+  gap: 10px;
+  margin: 10px 22px 0;
+  padding: 11px 12px;
+  border-radius: var(--r);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.export-period-head { display: flex; align-items: center; gap: 8px; }
+.export-period-head svg { width: 15px; height: 15px; flex: 0 0 auto; }
+.export-period-head strong { color: var(--text); }
+.export-period-head em { font-style: normal; color: var(--text-faint); margin-left: auto; }
+
+/* Quick windows: one tap re-opens the dialog for that period, so the common
+   reports need no date typing at all. */
+.export-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.export-preset {
+  padding: 4px 11px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.export-preset:hover { border-color: var(--border-strong); color: var(--text); }
+.export-preset.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* …and a free range for everything else; changing either date reloads the dialog. */
+.export-dates { display: flex; gap: 8px; flex-wrap: wrap; }
+.export-dates label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 150px;
+  font-size: 12px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+}
+.export-dates input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  font-size: 13px;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.export-choices { display: grid; gap: 9px; padding: 14px 22px 4px; }
+.export-choice {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+.export-choice:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+  transform: translateY(-1px);
+}
+.export-choice:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
+.export-choice-ico {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+.export-choice-ico svg { width: 19px; height: 19px; }
+.export-choice-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.export-choice-text strong { font-size: 14.5px; font-weight: 600; }
+.export-choice-text small { font-size: 12.5px; color: var(--text-muted); }
+.export-choice-go { margin-left: auto; color: var(--text-faint); display: flex; }
+.export-choice-go svg { width: 17px; height: 17px; }
+.export-choice:hover .export-choice-go { color: var(--text); }
+.export-choice--all .export-choice-ico { background: var(--accent-soft); color: var(--accent); }
+.export-choice--all:hover { border-color: var(--accent); }
+.export-choice--in .export-choice-ico { background: var(--success-soft); color: var(--success); }
+.export-choice--in:hover { border-color: var(--success); }
+.export-choice--out .export-choice-ico { background: var(--danger-soft); color: var(--danger); }
+.export-choice--out:hover { border-color: var(--danger); }
+.export-foot { display: flex; justify-content: flex-end; padding: 10px 22px 18px; }
 
 /* Quick-add customer inside the sale form */
 .field-with-add { display: flex; gap: 8px; align-items: center; }

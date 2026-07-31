@@ -1,0 +1,72 @@
+{% comment %}
+  The kassa holds two ledgers, so its one Excel button asks what to download
+  instead of guessing. Each choice is a plain link: the modal's click handler only
+  intercepts [data-modal] / [data-modal-close], so these download normally and the
+  dialog stays open until the user closes it.
+{% endcomment %}
+<div class="modal-head">
+  <h2>{{ title }}</h2>
+  <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
+</div>
+
+<div class="export-period" data-export-range data-url="{{ range_url }}">
+  <div class="export-period-head">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+    <strong>{% if is_today %}Bugun{% elif is_single_day %}{{ date_from|date:"j-F, Y" }}{% else %}{{ date_from|date:"j-F" }} – {{ date_to|date:"j-F, Y" }}{% endif %}</strong>
+    {% if other_filters %}<em>joriy filtrlar bilan</em>{% endif %}
+  </div>
+  <div class="export-presets">
+    {% for p in presets %}
+    <a class="export-preset{% if p.active %} is-active{% endif %}" href="{{ p.url }}" data-modal>{{ p.label }}</a>
+    {% endfor %}
+  </div>
+  <div class="export-dates">
+    <label>Dan<input type="date" name="dan" value="{{ date_from|date:'Y-m-d' }}"></label>
+    <label>Gacha<input type="date" name="gacha" value="{{ date_to|date:'Y-m-d' }}"></label>
+  </div>
+</div>
+
+<div class="export-choices">
+  <a class="export-choice export-choice--all" href="{{ all_url }}">
+    <span class="export-choice-ico">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
+    </span>
+    <span class="export-choice-text">
+      <strong>Hammasi</strong>
+      <small>Kirim va chiqim — bitta faylda, ikkita varaq</small>
+    </span>
+    <span class="export-choice-go">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    </span>
+  </a>
+
+  <a class="export-choice export-choice--in" href="{{ income_url }}">
+    <span class="export-choice-ico">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><polyline points="7 9 12 14 17 9"/><line x1="5" y1="21" x2="19" y2="21"/></svg>
+    </span>
+    <span class="export-choice-text">
+      <strong>Faqat kirim</strong>
+      <small>Mijozlardan qabul qilingan to'lovlar</small>
+    </span>
+    <span class="export-choice-go">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    </span>
+  </a>
+
+  <a class="export-choice export-choice--out" href="{{ outflow_url }}">
+    <span class="export-choice-ico">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V10"/><polyline points="7 15 12 10 17 15"/><line x1="5" y1="3" x2="19" y2="3"/></svg>
+    </span>
+    <span class="export-choice-text">
+      <strong>Faqat chiqim</strong>
+      <small>Rasxot, topshiruv, foyda va qaytarishlar</small>
+    </span>
+    <span class="export-choice-go">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    </span>
+  </a>
+</div>
+
+<div class="export-foot">
+  <button type="button" class="btn btn-ghost btn-sm" data-modal-close>Yopish</button>
+</div>

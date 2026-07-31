@@ -275,6 +275,23 @@
       }
     });
 
+    // The Excel dialog carries its own date window: typing a date there reloads
+    // the dialog for that period, so the download links (and the period label)
+    // always match what is about to be downloaded. The page behind it is left
+    // alone — a report can be pulled without changing what you were looking at.
+    document.addEventListener('change', function (e) {
+      var box = e.target.closest('[data-export-range]');
+      if (!box) { return; }
+      var from = box.querySelector('input[name="dan"]').value;
+      var to = box.querySelector('input[name="gacha"]').value;
+      if (!from && !to) { return; }
+      var url = box.getAttribute('data-url');
+      var params = new URLSearchParams(url.split('?')[1] || '');
+      params.set('dan', from || to);
+      params.set('gacha', to || from);
+      openModal(url.split('?')[0] + '?' + params.toString());
+    });
+
     // Light-dismiss: close only when the press BOTH started and ended on the
     // backdrop. A drag that begins on an inner input and releases over the
     // backdrop still synthesizes a click targeted at <dialog>, so gating on the

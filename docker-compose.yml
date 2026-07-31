@@ -1,6 +1,8 @@
 services:
   db:
-    image: postgres:16-alpine
+    # Same major version as Railway runs in production (postgres-ssl:18), so a
+    # prod dump restores locally without a version mismatch.
+    image: postgres:18-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-crm}
@@ -9,7 +11,9 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Postgres 18 images keep the cluster in a version-named subdirectory, so the
+      # volume goes one level up (/var/lib/postgresql), not on .../data as before.
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-crm}"]
       interval: 5s

@@ -13,7 +13,7 @@
   <div class="kpi kpi--green">
     <div class="kpi-head"><span class="kpi-label">Jami sotilgan</span></div>
     <div class="kpi-value">{{ total_kg|floatformat:"-3g" }}<span class="unit">kg</span></div>
-    <div class="kpi-meta muted">{{ items|length }} ta sotuv</div>
+    <div class="kpi-meta muted">{{ total_count }} ta sotuv</div>
   </div>
 </div>
 
@@ -35,11 +35,11 @@
 </div>
 {% endif %}
 
-{% include "crm/_filter_toolbar.html" with show_search=True search_placeholder="Mijoz bo'yicha qidirish…" %}
+{% include "crm/_filter_toolbar.html" with show_search=True search_placeholder="Mijoz bo'yicha qidirish…" export_url=export_url %}
 
 <div class="card">
-  <h2>Sotuvlar</h2>
-  {% if items %}
+  <h2>Sotuvlar <span class="muted" style="font-weight:400;font-size:13px;">· {{ total_count }} ta</span></h2>
+  {% if page.object_list %}
   <div class="table-wrap">
   <table>
     <tr>
@@ -51,7 +51,7 @@
       <th class="num">Narxi</th>
       <th></th>
     </tr>
-    {% for it in items %}
+    {% for it in page %}
     <tr>
       <td>{{ it.sale.date|date:"d.m.Y" }}</td>
       <td>{{ it.sale.client.name }}</td>
@@ -64,6 +64,7 @@
     {% endfor %}
   </table>
   </div>
+  {% include "crm/_pagination.html" %}
   {% elif has_filters %}<p class="muted">Filtrga mos sotuv topilmadi.</p>
   {% else %}<p class="muted">Bu mahsulot hali sotilmagan.</p>{% endif %}
 </div>
