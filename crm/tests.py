@@ -1259,6 +1259,241 @@ class ClientRepresentativeTests(BaseSetup):
         self.assertEqual(Client.objects.get(name="O'z Mijozim").owner, self.sales1)
 
 
+class ListExportTests(BaseSetup):
+    """Excel downloads on the Mijozlar and Qarzlar lists — same rows as the page,
+    same seller scoping, and the current search/filter carried along."""
+
+    def setUp(self):
+        self.debt_sale = make_sale(
+            self.client1, self.sales1, self.product, is_debt=True,
+            debt_deadline=timezone.localdate() + timedelta(days=10),
+        )
+
+    def test_client_export_lists_clients_with_debt(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("client_export"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], XLSX_CONTENT_TYPE)
+        rows = read_xlsx(response)
+        self.assertIn("Qarz (so'm)", rows[0])
+        by_name = {r[0]: r for r in rows[1:]}
+        self.assertEqual(by_name[self.client1.name][6], 240000.0)  # open debt
+
+    def test_client_export_follows_the_search_box(self):
+        Client.objects.create(name="Qidiruvsiz Mijoz", owner=self.sales1)
+        self.client.force_login(self.admin)
+        rows = read_xlsx(self.client.get(reverse("client_export"), {"q": "Mijoz A"}))
+        names = [r[0] for r in rows[1:]]
+        self.assertEqual(names, [self.client1.name])
+
+    def test_client_export_scoped_to_seller(self):
+        self.client.force_login(self.sales1)
+        names = [r[0] for r in read_xlsx(self.client.get(reverse("client_export")))[1:]]
+        self.assertIn(self.client1.name, names)
+        self.assertNotIn(self.client2.name, names)
+
+    def test_debt_export_matches_the_page(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("debt_export"))
+        self.assertEqual(response.status_code, 200)
+        rows = read_xlsx(response)
+        self.assertIn("Qarz qoldig'i", rows[0])
+        self.assertEqual(len(rows), 2)  # header + the one debtor
+        self.assertEqual(rows[1][0], self.client1.name)
+        self.assertEqual(rows[1][3], 1)  # ochiq cheklar
+        self.assertEqual(rows[1][7], 240000.0)
+
+    def test_debt_export_honours_the_overdue_filter(self):
+        self.client.force_login(self.admin)
+        rows = read_xlsx(self.client.get(reverse("debt_export"), {"overdue": "1"}))
+        self.assertEqual(len(rows), 1)  # deadline is in the future — nothing overdue
+
+    def test_debt_client_export_lists_open_receipts(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(
+            reverse("debt_client_export", args=[self.client1.pk])
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = read_xlsx(response)
+        self.assertIn("Qoldiq", rows[0])
+        self.assertEqual(len(rows), 2)  # header + the single open receipt
+        self.assertEqual(rows[1][5], 240000.0)
+        self.assertEqual(rows[1][7], "Muddatida")
+
+    def test_debt_client_export_scoped_to_seller(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(
+            reverse("debt_client_export", args=[self.client2.pk])
+        )
+        self.assertEqual(response.status_code, 404)  # sales2's client
+
+
+class KassaExportChoiceTests(BaseSetup):
+    """The kassa's single Excel button asks which ledger to download."""
+
+    def test_chooser_offers_all_three_downloads(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("kassa_export"))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn(reverse("kassa_export_all"), body)
+        self.assertIn(reverse("kassa_income_export"), body)
+        self.assertIn(reverse("kassa_outflow_export"), body)
+
+    def test_chooser_keeps_the_current_filters(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(
+            reverse("kassa_export"), {"dan": "2026-01-01", "gacha": "2026-01-31"}
+        )
+        self.assertIn("dan=2026-01-01", response.content.decode())
+
+    def test_chooser_offers_period_presets(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("kassa_export"))
+        labels = [p["label"] for p in response.context["presets"]]
+        self.assertEqual(labels, ["Bugun", "Kecha", "7 kun", "Shu oy", "Hammasi"])
+        # The window the dialog opened on is the one marked active.
+        active = [p["label"] for p in response.context["presets"] if p["active"]]
+        self.assertEqual(active, ["Bugun"])
+
+    def test_hammasi_preset_reaches_the_oldest_record(self):
+        old = timezone.localdate() - timedelta(days=400)
+        Expense.objects.create(
+            date=old, amount=Decimal("5000"), category="Ijara",
+            method=Payment.Method.CASH, created_by=self.admin,
+        )
+        self.client.force_login(self.admin)
+        presets = {
+            p["label"]: p["url"]
+            for p in self.client.get(reverse("kassa_export")).context["presets"]
+        }
+        self.assertIn(f"dan={old.isoformat()}", presets["Hammasi"])
+
+    def test_dialog_window_does_not_disturb_the_other_filters(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(
+            reverse("kassa_export"), {"method": "cash", "dan": "2026-03-05"}
+        )
+        # The period is re-chosen inside the dialog; usul/xodim ride along.
+        for preset in response.context["presets"]:
+            self.assertIn("method=cash", preset["url"])
+        self.assertIn("method=cash", response.context["range_url"])
+        self.assertNotIn("dan=", response.context["range_url"])
+
+    def test_presets_download_the_period_they_name(self):
+        # A payment dated yesterday is outside "Bugun" but inside "Kecha".
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        yesterday = timezone.localdate() - timedelta(days=1)
+        Payment.objects.create(
+            sale=sale, amount=Decimal("50000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=yesterday, created_by=self.sales1,
+        )
+        self.client.force_login(self.admin)
+        today_rows = read_xlsx(self.client.get(reverse("kassa_income_export")))
+        self.assertNotIn(50000.0, {v for row in today_rows for v in row})
+        kecha = self.client.get(
+            reverse("kassa_income_export"),
+            {"dan": yesterday.isoformat(), "gacha": yesterday.isoformat()},
+        )
+        self.assertIn(50000.0, {v for row in read_xlsx(kecha) for v in row})
+
+    def test_export_all_has_a_tab_per_ledger(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("kassa_export_all"))
+        self.assertEqual(response.status_code, 200)
+        book = load_workbook(BytesIO(response.content))
+        self.assertEqual(book.sheetnames, ["Kirimlar", "Chiqimlar"])
+        # The kirim tab holds today's sale payment; both tabs carry their headers.
+        self.assertEqual(book["Kirimlar"]["A1"].value, "Sana")
+        self.assertEqual(book["Chiqimlar"]["B1"].value, "Turi")
+        names = {row[1] for row in book["Kirimlar"].iter_rows(min_row=2, values_only=True)}
+        self.assertIn(self.client1.name, names)
+
+
+class ClientHistoryTests(BaseSetup):
+    """The per-client account history: one timeline of sales, payments and returns
+    with a running debt balance, plus its Excel export."""
+
+    def setUp(self):
+        # A fresh debtor client so the BaseSetup sales don't blur the balances.
+        self.client_h = Client.objects.create(name="Tarix Mijoz", owner=self.sales1)
+        self.sale = make_sale(
+            self.client_h, self.sales1, self.product, weight="10", price="24000",
+            is_debt=True,
+        )  # 240 000 qarz
+
+    def _events(self, user=None):
+        self.client.force_login(user or self.sales1)
+        response = self.client.get(reverse("client_history", args=[self.client_h.pk]))
+        self.assertEqual(response.status_code, 200)
+        return response
+
+    def test_sale_and_payment_produce_running_balance(self):
+        Payment.objects.create(
+            sale=self.sale, amount=Decimal("100000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=self.sale.date, created_by=self.sales1,
+        )
+        events = self._events().context["events"]
+        self.assertEqual([e["label"] for e in events], ["Sotuv", "Qarz to'lovi"])
+        self.assertEqual(events[0]["balance"], Decimal("240000"))
+        self.assertEqual(events[-1]["balance"], Decimal("140000"))
+
+    def test_final_balance_matches_sale_debt(self):
+        # The timeline must land on exactly what the debt views report.
+        Payment.objects.create(
+            sale=self.sale, amount=Decimal("40000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=self.sale.date, created_by=self.sales1,
+        )
+        Return.objects.create(
+            sale=self.sale, sale_item=self.sale.items.get(), weight=Decimal("1"),
+            date=self.sale.date, created_by=self.sales1,
+        )  # 1 kg × 24 000 qaytdi
+        totals = self._events().context["totals"]
+        self.assertEqual(totals["debt"], Sale.objects.get(pk=self.sale.pk).debt_remaining)
+        self.assertEqual(totals["returned"], Decimal("24000"))
+
+    def test_transfer_commission_credits_only_the_net(self):
+        Payment.objects.create(
+            sale=self.sale, amount=Decimal("100000"), commission=Decimal("5000"),
+            method=Payment.Method.TRANSFER, kind=Payment.Kind.DEBT,
+            date=self.sale.date, created_by=self.sales1,
+        )
+        events = self._events().context["events"]
+        self.assertEqual(events[-1]["amount"], Decimal("95000"))
+        self.assertEqual(events[-1]["balance"], Decimal("145000"))
+
+    def test_advance_deposit_shows_but_leaves_debt_alone(self):
+        Payment.objects.create(
+            client=self.client_h, amount=Decimal("50000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.ADVANCE_IN, date=self.sale.date, created_by=self.sales1,
+        )
+        context = self._events().context
+        advance = [e for e in context["events"] if e["label"] == "Avans olindi"]
+        self.assertEqual(len(advance), 1)
+        self.assertEqual(advance[0]["delta"], Decimal("0"))
+        self.assertEqual(context["totals"]["debt"], Decimal("240000"))
+        self.assertEqual(context["totals"]["advance"], Decimal("50000"))
+
+    def test_seller_cannot_open_another_sellers_client(self):
+        self.client.force_login(self.sales2)
+        response = self.client.get(reverse("client_history", args=[self.client_h.pk]))
+        self.assertEqual(response.status_code, 404)
+
+    def test_export_returns_xlsx_rows(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(
+            reverse("client_history_export", args=[self.client_h.pk])
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], XLSX_CONTENT_TYPE)
+        self.assertIn("attachment", response["Content-Disposition"])
+        rows = read_xlsx(response)
+        self.assertIn("Qarz qoldig'i", rows[0])
+        self.assertEqual(len(rows), 2)  # header + the one sale
+        self.assertEqual(rows[1][1], "Sotuv")
+        self.assertEqual(rows[1][5], 240000)  # running balance column
+
+
 class AuditLogTests(BaseSetup):
     def test_sale_create_is_logged(self):
         self.client.force_login(self.sales1)
@@ -1910,7 +2145,7 @@ class KassaCurrencyTests(BaseSetup):
             self.client.get(reverse("expense_edit", args=[others.pk])).status_code, 404
         )
 
-    def test_expense_xlsx_export(self):
+    def test_outflow_xlsx_export(self):
         self.client.force_login(self.admin)
         self.client.post(
             reverse("expense_create"),
@@ -1920,13 +2155,34 @@ class KassaCurrencyTests(BaseSetup):
                 "category": "Mahsulot xaridi", "method": "cash", "note": "xlsx-row",
             },
         )
-        response = self.client.get(reverse("expense_export"))
+        response = self.client.get(reverse("kassa_outflow_export"))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], XLSX_CONTENT_TYPE)
         cells = {v for row in read_xlsx(response) for v in row}
         self.assertIn("xlsx-row", cells)
         self.assertIn(254000.0, cells)  # so'm value (numeric cell)
         self.assertIn("Dollar", cells)  # currency label
+        self.assertIn("Rasxot", cells)  # outflow kind
+
+    def test_income_xlsx_export_lists_client_payments(self):
+        # sale1 was paid in full on creation — that payment is a kirim row.
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("kassa_income_export"))
+        self.assertEqual(response.status_code, 200)
+        rows = read_xlsx(response)
+        self.assertIn("Kirim summa (so'm)", rows[0])
+        cells = {v for row in rows for v in row}
+        self.assertIn(self.client1.name, cells)
+        self.assertIn(240000.0, cells)
+
+    def test_income_export_is_scoped_to_the_seller(self):
+        self.client.force_login(self.sales1)
+        cells = {
+            v for row in read_xlsx(self.client.get(reverse("kassa_income_export")))
+            for v in row
+        }
+        self.assertIn(self.client1.name, cells)
+        self.assertNotIn(self.client2.name, cells)  # sales2's till
 
     def test_per_employee_net_subtracts_expense_from_profit(self):
         # sales2's only sale earns 60000 profit; a 20000 expense they record
@@ -2601,6 +2857,41 @@ class OmborReportTests(BaseSetup):
         self.client.force_login(self.sales1)
         # Asking for someone else's rows must not reveal them — scoping wins.
         self.assertEqual(self._detail(rep=self.sales2.pk).context["total_kg"], Decimal("10"))
+
+    def test_detail_pages_the_rows_but_not_the_totals(self):
+        for _ in range(30):
+            make_sale(self.client1, self.sales1, self.p, weight="1", price="20000")
+        self.client.force_login(self.admin)
+        first = self._detail()
+        self.assertEqual(len(first.context["page"].object_list), 25)
+        self.assertEqual(first.context["total_count"], 30)
+        # The KPI and the per-seller summary still count every row, not just page 1.
+        self.assertEqual(first.context["total_kg"], Decimal("30"))
+        second = self._detail(page=2)
+        self.assertEqual(len(second.context["page"].object_list), 5)
+        self.assertEqual(second.context["total_kg"], Decimal("30"))
+
+    def test_detail_export_covers_every_filtered_row(self):
+        for _ in range(30):
+            make_sale(self.client1, self.sales1, self.p, weight="1", price="20000")
+        make_sale(self.client2, self.sales2, self.p, weight="9", price="20000")
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("ombor_product_export", args=[self.p.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], XLSX_CONTENT_TYPE)
+        rows = read_xlsx(response)
+        self.assertIn("Umumiy narx", rows[0])
+        self.assertEqual(len(rows), 32)  # header + 31 lines, paging left behind
+
+    def test_detail_export_follows_the_filter_and_the_seller_scope(self):
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        make_sale(self.client2, self.sales2, self.p, weight="7", price="20000")
+        self.client.force_login(self.sales1)
+        rows = read_xlsx(
+            self.client.get(reverse("ombor_product_export", args=[self.p.pk]))
+        )
+        names = {r[1] for r in rows[1:]}
+        self.assertEqual(names, {self.client1.name})  # sales2's chek stays hidden
 
 
 class AdvanceTests(TestCase):

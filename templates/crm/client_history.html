@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}{{ client.name }} — tarix · Paket CRM{% endblock %}
+{% block topbar_title %}Tarix — {{ client.name }}{% endblock %}
+{% block topbar_back %}<a href="{% url 'client_list' %}" class="icon-btn topbar-back" title="Orqaga" aria-label="Orqaga"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></a>{% endblock %}
+{% block fab %}
+<a class="fab fab--excel" href="{% url 'client_history_export' client.pk %}">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+  Excel
+</a>
+{% endblock %}
+{% block content %}
+
+<div class="kpi-grid">
+  <div class="kpi kpi--blue">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg></span>
+      <span class="kpi-label">Jami savdo</span>
+    </div>
+    <div class="kpi-value">{{ totals.sold|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{{ totals.sales_count }} ta sotuv{% if client.phone %} · {{ client.phone }}{% endif %}</div>
+  </div>
+
+  <div class="kpi kpi--green">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><polyline points="7 9 12 14 17 9"/><line x1="5" y1="21" x2="19" y2="21"/></svg></span>
+      <span class="kpi-label">To'langan</span>
+    </div>
+    <div class="kpi-value">{{ totals.paid|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">bank komissiyasidan tashqari</div>
+  </div>
+
+  <div class="kpi kpi--red">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
+      <span class="kpi-label">Joriy qarz</span>
+    </div>
+    <div class="kpi-value">{{ totals.debt|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{% if totals.debt > 0 %}<a href="{% url 'debt_client' client.pk %}">ochiq cheklar →</a>{% else %}qarz yo'q{% endif %}</div>
+  </div>
+
+  {% if totals.advance %}
+  <div class="kpi kpi--green">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1v22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>
+      <span class="kpi-label">Avans (kredit)</span>
+    </div>
+    <div class="kpi-value">{{ totals.advance|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">biz mijozga qarzmiz</div>
+  </div>
+  {% endif %}
+
+  {% if totals.returned %}
+  <div class="kpi kpi--gold">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></span>
+      <span class="kpi-label">Qaytarilgan</span>
+    </div>
+    <div class="kpi-value">{{ totals.returned|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">tovar qaytarib berilgan</div>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Harakatlar tarixi</h2>
+  {% if events %}
+  <div class="table-wrap">
+  <table>
+    <tr>
+      <th>Sana</th><th>Amal</th><th>Tafsilot</th>
+      <th class="num">Summa</th><th class="num">Qarz o'zgarishi</th><th class="num">Qarz qoldig'i</th>
+      <th>Kim</th>
+    </tr>
+    {% for e in events %}
+    <tr>
+      <td>{{ e.date|date:"d.m.Y" }}</td>
+      <td><span class="badge badge-evt {{ e.cls }}">{% include "crm/_event_icon.html" with icon=e.icon %}{{ e.label }}</span></td>
+      <td>
+        {% if e.url %}<a href="{{ e.url }}">{{ e.desc }}</a>{% else %}{{ e.desc }}{% endif %}
+        {% if e.method_label %} · <span class="muted">{{ e.method_label }}</span>{% endif %}
+        {% if e.note %}<br><span class="muted">{{ e.note }}</span>{% endif %}
+      </td>
+      <td class="num">{{ e.amount|floatformat:"0g" }}</td>
+      <td class="num">
+        {% if e.delta > 0 %}<span class="amt-sale">+{{ e.delta|floatformat:"0g" }}</span>
+        {% elif e.delta < 0 %}<span class="amt-in">{{ e.delta|floatformat:"0g" }}</span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td class="num"><strong>{{ e.balance|floatformat:"0g" }}</strong></td>
+      <td>{{ e.user }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  <p class="muted" style="margin-top:12px;">
+    “Qarz qoldig'i” — shu amaldan keyin mijoz qancha qarzdor bo'lgani. Avans olingani
+    qarzni o'zgartirmaydi: u keyin sotuvga “avansdan yechildi” bo'lib tushadi.
+  </p>
+  {% else %}
+  <p class="muted">Bu mijozda hali hech qanday harakat yo'q.</p>
+  {% endif %}
+</div>
+{% endblock %}
