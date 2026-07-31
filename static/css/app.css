@@ -681,18 +681,18 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 .table-heading .muted { font-weight: 400; font-size: 13px; }
 .table-section { margin-bottom: 26px; }
 
-/* ---- Narrow screens: a table becomes a stack of cards ----------------------
+/* ---- Phones: a table becomes a stack of cards ------------------------------
    A 9-column table can't fit a phone — sideways scrolling buried the phone
    number and the balance behind a very wide name column. So each row turns into
    its own card and each cell into a "LABEL  value" line. The labels come from
    the header row, copied onto the cells as data-label by the script in
    base.html, which is why no template markup had to change.
 
-   The switch is NOT a fixed breakpoint: base.html measures how wide each table
-   really needs to be and adds .is-cards to its wrapper the moment that no
-   longer fits the space available. So a 3-column table stays a table on a
-   tablet while a 9-column one flips to cards — and both react to any width, not
-   just the few a media query would name. */
+   Phones only. Above 640px .is-cards is never applied and a table that outgrows
+   its container scrolls sideways as before — desktop keeps its columns. Below
+   it there is no further breakpoint: base.html measures how wide each table
+   really needs to be, so a 3-column table stays a table at 375px while a
+   9-column one is already cards. */
 .table-wrap.is-cards {
   border: none;
   border-radius: 0;

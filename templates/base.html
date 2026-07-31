@@ -987,11 +987,12 @@
   //  1. Label every cell with its column heading (data-label), so a card can
   //     print "TELEFON  +998 …". Done once, centrally — no template repeats its
   //     own headers.
-  //  2. Decide WHEN to flip. Not at a fixed breakpoint: each table is measured
-  //     for the width it actually needs, and flips the moment that stops
-  //     fitting. A 3-column table therefore stays a table on a tablet while a
-  //     9-column one becomes cards, and both follow any resize — dragging the
-  //     window, rotating the phone, collapsing the sidebar.
+  //  2. Decide WHEN to flip. Cards are a phone layout and nothing else: above
+  //     640px a wide table keeps its columns and scrolls sideways inside
+  //     .table-wrap, the way it always has on desktop. Inside the phone range
+  //     there is no second breakpoint — each table is measured for the width it
+  //     actually needs and flips the moment that stops fitting, so a 3-column
+  //     table stays a table at 375px while a 9-column one is already cards.
   (function () {
     function headRow(table) {
       if (table.tHead && table.tHead.rows.length) { return table.tHead.rows[0]; }
@@ -1016,7 +1017,7 @@
     }
     // The table's natural width, always measured as a real table — in card mode
     // it would report the container's width and the check could never undo
-    // itself. Cached: the columns don't change until the page reloads.
+    // itself. Cached until something that can change it happens (see remeasure).
     function needed(wrap) {
       if (wrap.dataset.needWidth) { return Number(wrap.dataset.needWidth); }
       var table = wrap.querySelector('table');
@@ -1028,9 +1029,12 @@
       wrap.dataset.needWidth = width;
       return width;
     }
+    // Phones only — the same line the toolbar stacks at in app.css. Desktop and
+    // tablet never get .is-cards, however wide the table wants to be.
+    var phone = window.matchMedia('(max-width: 640px)');
     function fit(wrap) {
       // 2px of slack so a table that fits exactly isn't flipped by rounding.
-      wrap.classList.toggle('is-cards', needed(wrap) > wrap.clientWidth + 2);
+      wrap.classList.toggle('is-cards', phone.matches && needed(wrap) > wrap.clientWidth + 2);
     }
     function fitAll(root) {
       (root || document).querySelectorAll('.table-wrap').forEach(fit);
@@ -1052,14 +1056,19 @@
     window.enhanceTableLabels = enhance;
     if (document.readyState !== 'loading') { enhance(); }
     else { document.addEventListener('DOMContentLoaded', function () { enhance(); }); }
-    // Web fonts land after first paint and can widen a table past what was
-    // measured at DOMContentLoaded, so drop the cache once and measure again.
-    window.addEventListener('load', function () {
+    function remeasure() {
       document.querySelectorAll('.table-wrap').forEach(function (wrap) {
         delete wrap.dataset.needWidth;
       });
       fitAll();
-    });
+    }
+    // Web fonts land after first paint and can widen a table past what was
+    // measured at DOMContentLoaded, so drop the cache once and measure again.
+    window.addEventListener('load', remeasure);
+    // A table is as wide as its container allows, so a width cached on a desktop
+    // layout says nothing about what the same table needs on a phone. Measure
+    // again whenever the phone breakpoint is crossed.
+    if (phone.addEventListener) { phone.addEventListener('change', remeasure); }
     window.addEventListener('resize', function () { fitAll(); });
     document.addEventListener('modal:loaded', function (e) { enhance(e.detail || document); });
   })();
