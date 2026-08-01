@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% comment %}JavaScript'siz (yoki to'g'ridan-to'g'ri manzil bilan) ochilgandagi ko'rinish —
+modalning aynan o'zi, faqat sahifa sifatida.{% endcomment %}
+{% block title %}{{ title }} · Paket CRM{% endblock %}
+{% block topbar_title %}{{ title }}{% endblock %}
+{% block content %}
+<div class="card" style="max-width:560px;">
+  {# Kartaning o'z paddingi bor, shuning uchun bu yerda .entry-body kerak emas. #}
+  <dl class="entry-detail">
+    {% for label, value in rows %}
+    <div class="entry-row">
+      <dt>{{ label }}</dt>
+      <dd>{{ value }}</dd>
+    </div>
+    {% endfor %}
+  </dl>
+  {% if note %}<p class="field-hint" style="margin-top:12px;">{{ note }}</p>{% endif %}
+  <div class="modal-actions">
+    {% if edit_url %}<a class="btn" href="{{ edit_url }}">{{ edit_label|default:"Tahrirlash" }}</a>{% endif %}
+    {% if open_url %}<a class="btn btn-ghost" href="{{ open_url }}">{{ open_label }}</a>{% endif %}
+    {% if delete_url %}<a class="btn btn-danger" href="{{ delete_url }}">{{ delete_label|default:"O'chirish" }}</a>{% endif %}
+    <a class="btn btn-ghost" href="{% url 'kassa' %}">Kassaga qaytish</a>
+  </div>
+</div>
+{% endblock %}

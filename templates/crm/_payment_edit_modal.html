@@ -22,6 +22,8 @@
   <div class="transfer-only"{% if form.method.value != 'transfer' %} hidden{% endif %}>
     <p>{{ form.commission_percent.label_tag }}{{ form.commission_percent }}{{ form.commission_percent.errors }}
       {% if form.commission_percent.help_text %}<span class="field-hint">{{ form.commission_percent.help_text }}</span>{% endif %}</p>
+    <p class="payer-choice">{{ form.commission_payer.label_tag }}{{ form.commission_payer }}{{ form.commission_payer.errors }}
+      {% if form.commission_payer.help_text %}<span class="field-hint">{{ form.commission_payer.help_text }}</span>{% endif %}</p>
     <div class="pay-breakdown" data-net hidden></div>
   </div>
   <p>{{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}</p>

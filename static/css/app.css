@@ -489,10 +489,26 @@ html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
 
 /* Two-column card row (production till + handover panel) */
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+/* A grid item's min-width defaults to `auto`, i.e. "never shrink below my content".
+   A table wider than its track therefore stretches the track and pushes the second
+   card off the page instead of scrolling. Allowing the item to shrink hands the
+   overflow back to .table-wrap, which is what actually knows how to scroll it. */
+.grid-2 > * { min-width: 0; }
 @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
 
 /* Kassa kirim/chiqim ledgers — two scrollable transaction lists side by side */
 .kassa-ledger .ledger-total { font-size: 15px; font-weight: 750; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* The two ledgers must START at the same y, or their row lines run offset against
+   each other however evenly each table is spaced internally. Both the heading strip
+   and the one-line intro get a fixed height, so a longer sentence (or a total wide
+   enough to wrap) can no longer push one table down relative to the other. */
+.kassa-ledger .card-head { min-height: 34px; }
+.kassa-ledger .ledger-hint {
+  min-height: 32px;
+  margin: 2px 0 8px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
 .txn-list { max-height: 460px; overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
 .txn-item { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .txn-item:last-child { border-bottom: none; }
@@ -521,19 +537,99 @@ html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
 /* Coloured header row: light green for Kirim, light red for Chiqim */
 .ledger-in th  { background: rgba(34, 197, 94, 0.10); color: var(--success); border-bottom-color: rgba(34, 197, 94, 0.35); }
 .ledger-out th { background: rgba(239, 68, 68, 0.10); color: var(--danger);  border-bottom-color: rgba(239, 68, 68, 0.35); }
-/* Top-align, not middle: a Chiqim row with a subtitle ("Qaytarish: yashil") is two
-   lines tall, and middle-aligning would float the date, amount and icons to the row's
-   vertical centre — out of line with the name on the first line. Top keeps every cell
-   on the same first line. Single-line Kirim rows are unaffected. */
-.ledger-table td { padding: 10px 8px; vertical-align: top; }
+/* Every ledger row is exactly one line tall — an expense note now sits inline after
+   the description instead of wrapping onto a second line — so the two tables keep the
+   same row rhythm side by side and nothing has to be top-aligned to stay level.
+   A long client name no longer wraps either: the table scrolls sideways by drag, so
+   width is cheap and an even row rhythm is worth more than saving a scroll. */
+.ledger-table td { padding: 10px 8px; vertical-align: middle; height: 42px; white-space: nowrap; }
+/* An expense note ("МОЙКА") rides along on the same line, quiet and clipped rather
+   than allowed to push the row taller. */
+.ledger-table .cell-note {
+  color: var(--text-faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
 .ledger-table th:first-child, .ledger-table td:first-child { padding-left: 16px; }
 .ledger-table th:last-child, .ledger-table td:last-child { padding-right: 16px; }
+/* Header cells get the same fixed height as the body rows, so the Kirim and Chiqim
+   tables put their first data row on exactly the same line as each other. */
+.ledger-table th { height: 38px; box-sizing: border-box; }
+
+/* ---- Frozen identity columns -------------------------------------------------
+   Dragging a ledger sideways used to carry the date and the name off-screen with
+   everything else, leaving a row of figures belonging to nobody. The first two
+   columns now stay put and the rest slides underneath them.
+   Sticky cells must be OPAQUE or the scrolling content shows through, which is why
+   each background is spelled out below instead of inheriting the header's tint. */
+.ledger-table th:nth-child(1), .ledger-table td:nth-child(1),
+.ledger-table th:nth-child(2), .ledger-table td:nth-child(2) {
+  position: sticky;
+  z-index: 2;
+  background: var(--table-bg);
+}
+/* 100px with the padding trimmed leaves ~15px of slack around "29.07.2026". The
+   second column's offset is hard-coded to this width, so the date must never be able
+   to stretch the cell — otherwise the two frozen cells drift apart and a sliver of
+   scrolling content shows between them. */
+.ledger-table th:nth-child(1), .ledger-table td:nth-child(1) {
+  left: 0;
+  width: 100px;
+  min-width: 100px;
+  max-width: 100px;
+  padding-left: 12px;
+}
+/* The name column starts where the date column ends and is capped, so one very long
+   client can't eat the whole ledger — the overflow gets an ellipsis. */
+.ledger-table th:nth-child(2), .ledger-table td:nth-child(2) {
+  left: 100px;
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: inset -1px 0 0 var(--border), 6px 0 10px -6px rgba(0, 0, 0, 0.28);
+}
+.ledger-table th:nth-child(1), .ledger-table th:nth-child(2) { z-index: 3; }
+/* Opaque versions of the tinted header rows (10% of the accent over the table bg). */
+.ledger-in th:nth-child(1), .ledger-in th:nth-child(2) {
+  background: color-mix(in srgb, var(--success) 10%, var(--table-bg));
+}
+.ledger-out th:nth-child(1), .ledger-out th:nth-child(2) {
+  background: color-mix(in srgb, var(--danger) 10%, var(--table-bg));
+}
+/* The frozen cells follow the row they belong to when it lights up. */
+.ledger-table tbody tr:hover td:nth-child(1),
+.ledger-table tbody tr:hover td:nth-child(2) { background: var(--surface-hover); }
+/* On a phone the table becomes a stack of cards — nothing left to freeze against. */
+.is-cards .ledger-table th:nth-child(1), .is-cards .ledger-table td:nth-child(1),
+.is-cards .ledger-table th:nth-child(2), .is-cards .ledger-table td:nth-child(2) {
+  position: static;
+  max-width: none;
+  min-width: 0;
+  width: auto;
+  box-shadow: none;
+}
 /* Fixed action column so Kirim (7 cols) and Chiqim (6 cols) line their icons up
-   at the same offset — a two-icon [edit][view] cluster, right-aligned, never wraps. */
+   at the same offset — two 28px slots plus their gap, right-aligned, never wraps. */
 .ledger-table th:last-child, .ledger-table td:last-child { width: 84px; }
 .ledger-table td:first-child { color: var(--text-muted); }
-.ledger-table .num { font-variant-numeric: tabular-nums; }
-.ledger-table .row-actions { display: flex; gap: 2px; justify-content: flex-end; white-space: nowrap; }
+/* Figures never break across lines; the text columns wrap instead, so a narrow
+   ledger loses width where it can afford to. */
+.ledger-table .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Two reserved icon slots — tahrirlash | ko'rish — not a flex cluster. A row without
+   an edit action (a refund whose return isn't the user's) would otherwise slide its
+   eye into the first slot and leave a ragged edge down the column; pinning each icon
+   to its own column keeps the gap where the missing action was.
+   Deleting is deliberately absent here: it lives inside the ko'rish panel, one step
+   away from a mis-click in a dense table. */
+.ledger-table .row-actions {
+  display: grid;
+  grid-template-columns: repeat(2, 28px);
+  gap: 2px;
+  justify-content: end;
+  white-space: nowrap;
+}
+.ledger-table .row-actions .act-edit { grid-column: 1; }
+.ledger-table .row-actions .act-view { grid-column: 2; }
 /* Ghost action icons: quiet by default, sharpen on row hover */
 .ledger-table .icon-action {
   width: 28px; height: 28px;
@@ -545,6 +641,50 @@ html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
 .ledger-table .icon-action:hover { background: var(--surface-2); opacity: 1; }
 .ledger-table .icon-action.danger:hover { color: var(--danger); }
 .ledger-table .badge { padding: 2px 8px; font-size: 11px; }
+
+/* Who carries the bank fee — two radios stacked, each on its own line so the wording
+   ("Sotuvchidan ushlansin" / "Mijozdan ushlansin") stays readable. */
+.payer-choice ul { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 6px; }
+.payer-choice li { margin: 0; }
+.payer-choice label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.payer-choice input[type="radio"] { width: auto; margin: 0; }
+
+/* One kassa row opened up: label on the left, figure on the right, one per line.
+   The panel carries no <form>, which is what normally pads a modal, so the padding
+   lives here — without it the right-aligned figures run flush into the border and
+   read as cut off. */
+.entry-body { padding: 14px 22px 22px; }
+.entry-detail { margin: 4px 0 0; }
+.entry-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+.entry-row:last-child { border-bottom: none; }
+/* Flex children refuse to shrink below their content by default; a long client name
+   would then widen the row past the dialog instead of wrapping inside it. */
+.entry-detail dt { min-width: 0; font-size: 13px; color: var(--text-muted); }
+.entry-detail dd {
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  text-align: right;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+/* Four actions can outgrow one line on a narrow dialog — let them wrap rather than
+   push the last button out of reach. */
+.entry-body .modal-actions { flex-wrap: wrap; }
 
 /* A single production-till figure line */
 .prod-stat { display: flex; justify-content: space-between; align-items: baseline; padding: 12px 0; border-bottom: 1px solid var(--border); }
@@ -630,6 +770,10 @@ html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
   overflow-x: auto;
   background: var(--table-bg);
 }
+/* Grab-to-scroll (see base.html). The class is added by JS only while the table is
+   actually wider than its box, so the hand never promises a scroll that isn't there. */
+.table-wrap.is-draggable { cursor: grab; }
+.table-wrap.is-dragging { cursor: grabbing; user-select: none; }
 table { width: 100%; border-collapse: collapse; }
 .table-wrap table { border: none; }
 
@@ -849,8 +993,22 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 .btn-danger { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 .btn-danger:hover { background: var(--danger); color: #fff; }
 
-.btn-violet { background: var(--violet); color: #fff; border-color: transparent; }
-.btn-violet:hover { background: color-mix(in srgb, var(--violet) 82%, #000); color: #fff; }
+/* Topshirish wears the same tinted violet as the "Bank o'tkazmasi" pill — soft fill,
+   violet text, and the badge's little dot. Handing cash to production is the same
+   money-movement vocabulary the method pills speak, so it reads as one family with
+   .btn-danger (Qaytarish) and .btn-success (Foyda) beside it. */
+.btn-violet { background: var(--violet-soft); color: var(--violet); border-color: transparent; }
+.btn-violet:hover { background: var(--violet); color: #fff; }
+/* The dot only where the badge has one: a button that already carries an icon would
+   read as two markers. Browsers without :has() simply get no dot, which still looks
+   right — the tint is what carries the meaning. */
+.btn-violet:not(:has(svg))::before {
+  content: "";
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.9;
+}
 
 /* Excel downloads wear the spreadsheet green everywhere they appear (list
    toolbars, card heads, the kassa chooser). Deliberately a SOLID fill, not the
@@ -859,6 +1017,12 @@ tbody tr:hover td.sticky-col { background: var(--surface-hover); }
 .btn-excel { background: var(--success); color: #fff; border-color: transparent; }
 .btn-excel:hover { background: color-mix(in srgb, var(--success) 85%, #000); color: #fff; }
 .btn-excel:focus-visible { outline: 2px solid var(--success); outline-offset: 2px; }
+
+/* Foyda topshirish wears green, but the TINTED treatment — .btn-excel already owns
+   the solid green fill, and the two sit side by side on the kassa page. Tint vs fill
+   keeps "download a file" and "hand over profit" from reading as the same action. */
+.btn-success { background: var(--success-soft); color: var(--success); border-color: transparent; }
+.btn-success:hover { background: var(--success); color: #fff; }
 
 .btn-sm { padding: 5px 11px; font-size: 13px; }
 
@@ -1467,6 +1631,10 @@ ul.errorlist li::before { content: "⚠ "; }
   border: 1px solid var(--border); border-radius: var(--r-sm);
 }
 .cal-in:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+/* A date the parser couldn't read. Marked rather than silently ignored, so "Tanlash"
+   doing nothing has a visible reason. Cleared on the next keystroke. */
+.cal-in.is-invalid { border-color: var(--danger); background: var(--danger-soft); }
+.cal-in.is-invalid:focus { border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
 .cal-foot { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
 .cal-preset {
   font-size: 12px; font-weight: 600; color: var(--text-muted);

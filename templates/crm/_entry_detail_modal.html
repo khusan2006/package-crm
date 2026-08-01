@@ -1,0 +1,33 @@
+{% comment %}
+  Kassa qatorining "ichi": amal nimaligi, nimani harakatlantirgani va uni
+  o'zgartiradigan tugmalar. O'chirish faqat shu yerda — jadvalda emas, shunda
+  zich ro'yxatda tasodifan bosilib ketmaydi.
+{% endcomment %}
+<div class="modal-head">
+  <h2>{{ title }}</h2>
+  <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
+</div>
+
+{% comment %}
+  Yon bo'shliq shu yerdan beriladi — modalning o'zida padding yo'q, uni odatda
+  ichidagi forma beradi. Bu panelda forma yo'q, shuning uchun o'rami kerak.
+{% endcomment %}
+<div class="entry-body">
+  <dl class="entry-detail">
+    {% for label, value in rows %}
+    <div class="entry-row">
+      <dt>{{ label }}</dt>
+      <dd>{{ value }}</dd>
+    </div>
+    {% endfor %}
+  </dl>
+
+  {% if note %}<p class="field-hint" style="margin-top:12px;">{{ note }}</p>{% endif %}
+
+  <div class="modal-actions">
+    {% if edit_url %}<a class="btn" href="{{ edit_url }}" data-modal>{{ edit_label|default:"Tahrirlash" }}</a>{% endif %}
+    {% if open_url %}<a class="btn btn-ghost" href="{{ open_url }}">{{ open_label }}</a>{% endif %}
+    {% if delete_url %}<a class="btn btn-danger" href="{{ delete_url }}" data-modal>{{ delete_label|default:"O'chirish" }}</a>{% endif %}
+    <button type="button" class="btn btn-ghost" data-modal-close>Yopish</button>
+  </div>
+</div>

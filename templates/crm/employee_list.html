@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Xodimlar · Paket CRM{% endblock %}
+{% block topbar_title %}Xodimlar{% endblock %}
+{% block fab %}<a class="fab" href="{% url 'employee_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi xodim</a>{% endblock %}
+{% block content %}
+
+{% comment %}
+  Oylik — oylik raqam, shuning uchun sahifa kun filtriga emas, bitta oyga bog'langan.
+  Berilgan = shu oyda kassadan o'sha xodimga chiqim qilingan hamma pul (oyligi ham,
+  avans olgani ham). Qolgan = oylik − berilgan.
+{% endcomment %}
+<div class="card">
+  <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+    <h2 style="margin:0;">Oylik hisobi · {{ month_label }}</h2>
+    <form method="get" style="display:flex;align-items:center;gap:8px;margin:0;">
+      <label for="oy" class="field-hint" style="margin:0;">Oy:</label>
+      <input type="month" id="oy" name="oy" value="{{ month_value }}" onchange="this.form.submit()">
+      <noscript><button type="submit" class="btn btn-sm">Ko'rsat</button></noscript>
+    </form>
+  </div>
+
+  {% if rows %}
+  <div class="table-wrap">
+  <table class="table--blue-head">
+    <tr>
+      <th>Xodim</th>
+      <th class="num">Oyligi</th>
+      <th class="num">Shu oy berilgan</th>
+      <th class="num">Qolgan</th>
+      <th></th>
+    </tr>
+    {% for r in rows %}
+    <tr>
+      <td>
+        <span class="cell-user">
+          {% include "crm/_avatar.html" with name=r.employee.name %}
+          <span>{{ r.employee.name }}
+            {% if not r.employee.is_active %}<span class="badge badge-cancelled" style="margin-left:6px;">Faol emas</span>{% endif %}
+            {% if r.employee.note %}<span class="cell-sub">{{ r.employee.note }}</span>{% endif %}
+          </span>
+        </span>
+      </td>
+      <td class="num">{{ r.employee.salary|floatformat:"0g" }}</td>
+      <td class="num amt-out">{{ r.paid|floatformat:"0g" }}</td>
+      {# Manfiy qoldiq = oyligidan ortiq olgan (kelasi oy hisobiga avans) #}
+      <td class="num">{% if r.remaining < 0 %}<strong class="amt-debt">{{ r.remaining|floatformat:"0g" }}</strong>{% elif r.remaining == 0 %}<span class="badge badge-paid">To'liq berildi</span>{% else %}<strong>{{ r.remaining|floatformat:"0g" }}</strong>{% endif %}</td>
+      <td class="num" style="display:flex;gap:4px;justify-content:flex-end;">
+        {% if r.employee.is_active %}
+        <a class="btn btn-sm" href="{% url 'expense_create' %}?employee={{ r.employee.pk }}&next=xodimlar" data-modal>Pul berish</a>
+        {% endif %}
+        <a class="icon-action" href="{% url 'employee_edit' r.employee.pk %}" data-modal title="Tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
+        <a class="icon-action danger" href="{% url 'employee_delete' r.employee.pk %}" data-modal title="O'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
+      </td>
+    </tr>
+    {% endfor %}
+    <tr>
+      <td><strong>Jami</strong> <span class="cell-sub">faol xodimlar</span></td>
+      <td class="num"><strong>{{ totals.salary|floatformat:"0g" }}</strong></td>
+      <td class="num amt-out"><strong>{{ totals.paid|floatformat:"0g" }}</strong></td>
+      <td class="num"><strong>{{ totals.remaining|floatformat:"0g" }}</strong></td>
+      <td></td>
+    </tr>
+  </table>
+  </div>
+  <p class="field-hint" style="margin-top:10px;">“Pul berish” kassadan chiqim yozadi va shu oyning oyligidan ayiradi — oylik bo'lsa ham, avans bo'lsa ham. Chiqimni Kassa sahifasidan tahrirlash yoki o'chirish mumkin, qoldiq o'zi qayta hisoblanadi.</p>
+  {% else %}
+  <p class="muted">Hali xodim qo'shilmagan. O'ng pastdagi “Yangi xodim” tugmasi bilan qo'shing.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Shu oyda berilgan pullar · {{ month_label }}</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Sana</th><th>Xodim</th><th>Turkum</th><th>Usul</th><th class="num">Summa</th><th>Izoh</th><th>Kim berdi</th></tr>
+    {% for e in payouts %}
+    <tr>
+      <td>{{ e.date|date:"d.m.Y" }}</td>
+      <td>{{ e.employee.name }}</td>
+      <td>{{ e.category }}</td>
+      <td>{% include "crm/_method_badge.html" with code=e.method label=e.get_method_display %}</td>
+      <td class="num amt-out">−{{ e.amount|floatformat:"0g" }}</td>
+      <td>{{ e.note|default:"—" }}</td>
+      <td>{{ e.created_by }}</td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="7" class="muted">Bu oyda xodimlarga pul berilmagan.</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+{% endblock %}

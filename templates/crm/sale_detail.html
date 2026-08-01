@@ -106,7 +106,7 @@
     <tr>
       <td>{{ p.date|date:"d.m.Y" }}</td>
       <td class="num"><strong>{{ p.amount|floatformat:"0g" }}</strong>
-        {% if p.commission %}<span class="cell-sub">komissiya −{{ p.commission|floatformat:"0g" }} ({{ p.commission_percent|floatformat:"-2" }}%) · qo'lga {{ p.net_amount|floatformat:"0g" }}</span>{% endif %}
+        {% if p.commission %}<span class="cell-sub">qarzdan to'liq yechildi · bank komissiyasi −{{ p.commission|floatformat:"0g" }} ({{ p.commission_percent|floatformat:"-2" }}%) sotuvchidan · kassaga {{ p.net_amount|floatformat:"0g" }}</span>{% endif %}
       </td>
       <td>{% include "crm/_method_badge.html" with code=p.method label=p.get_method_display %}
         {% if p.note %}<span class="cell-sub">{{ p.note }}</span>{% endif %}

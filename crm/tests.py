@@ -1,7 +1,8 @@
 from datetime import date, timedelta
 from decimal import Decimal
-from io import BytesIO
+from io import BytesIO, StringIO
 
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -13,6 +14,7 @@ from .forms import SaleForm
 from .models import (
     AuditLog,
     Client,
+    Employee,
     Expense,
     Payment,
     Product,
@@ -915,8 +917,121 @@ class PaymentTests(BaseSetup):
         self.assertEqual(payment.commission, Decimal("3000.00"))  # 200000 × 1.5%
         self.assertEqual(payment.net_amount, Decimal("197000.00"))  # what hits the till
         self.assertEqual(payment.note, "Bank o'tkazma")
-        # Only the net (amount − commission) reduces the debt; the client bears the fee
-        self.assertEqual(sale.debt_remaining, Decimal("43000"))  # 240000 − 197000
+        # The client is credited the full transfer; the seller carries the bank fee
+        self.assertEqual(sale.debt_remaining, Decimal("40000"))  # 240000 − 200000
+
+    def test_fee_on_client_credits_only_the_net(self):
+        # The old arrangement, now a per-payment choice: the client is credited what
+        # survived the bank, so the fee stays on their balance.
+        sale = self._debt_sale()  # 240000
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]),
+            {"amount": "200000", "method": "transfer", "commission_percent": "1.5",
+             "commission_payer": "client"},
+        )
+        sale.refresh_from_db()
+        payment = sale.payments.get()
+        self.assertEqual(payment.commission_payer, "client")
+        self.assertEqual(payment.commission, Decimal("3000.00"))
+        self.assertEqual(payment.credited_amount, Decimal("197000.00"))
+        self.assertEqual(payment.net_amount, Decimal("197000.00"))  # till unchanged
+        self.assertEqual(sale.debt_remaining, Decimal("43000"))     # 240000 − 197000
+
+    def test_the_two_modes_differ_only_on_the_debt_side(self):
+        seller_sale = self._debt_sale()
+        client_sale = self._debt_sale()
+        self.client.force_login(self.sales1)
+        for sale, payer in ((seller_sale, "seller"), (client_sale, "client")):
+            self.client.post(
+                reverse("sale_pay", args=[sale.pk]),
+                {"amount": "100000", "method": "transfer", "commission_percent": "4",
+                 "commission_payer": payer},
+            )
+        a, b = seller_sale.payments.get(), client_sale.payments.get()
+        # Same money left the client and the same money reached the till...
+        self.assertEqual(a.amount, b.amount)
+        self.assertEqual(a.net_amount, b.net_amount)
+        self.assertEqual(a.commission, b.commission)
+        # ...only the debt cleared differs, by exactly the fee.
+        self.assertEqual(a.credited_amount - b.credited_amount, a.commission)
+
+    def test_payer_choice_is_ignored_without_a_fee(self):
+        sale = self._debt_sale()
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]),
+            {"amount": "100000", "method": "cash", "commission_payer": "client"},
+        )
+        payment = sale.payments.get()
+        self.assertEqual(payment.commission_payer, "seller")  # collapses to default
+        self.assertEqual(payment.credited_amount, Decimal("100000"))
+
+    def test_both_modes_realize_the_same_profit_until_the_fee_is_collected(self):
+        """Profit is recognised as money is collected, so right after a 240 000
+        transfer at 4% both modes stand at 50 400 — the till holds 230 400 either way.
+        They part company later: with the fee on the client, 9 600 is still owed and
+        collecting it lifts the profit to 60 000; with it on the seller there is
+        nothing left to collect and 50 400 is final."""
+        today = timezone.localdate()
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True, date=today)
+        self.client.force_login(self.sales1)
+
+        def pay(payer, amount="240000", method="transfer", pct="4"):
+            self.client.post(
+                reverse("sale_pay", args=[sale.pk]),
+                {"amount": amount, "method": method, "commission_percent": pct,
+                 "commission_payer": payer},
+            )
+
+        # sales1 already has a paid sale from setUpTestData, so measure the delta this
+        # unpaid one adds rather than the seller's whole figure.
+        base = _realized_profit_by_seller(today, today, self.sales1)[self.sales1.pk]
+
+        def earned():
+            now = _realized_profit_by_seller(today, today, self.sales1)[self.sales1.pk]
+            return now - base
+
+        pay("seller")
+        self.assertEqual(earned(), Decimal("50400"))    # 60 000 earned − 9 600 fee
+        sale.refresh_from_db()
+        self.assertEqual(sale.debt_remaining, Decimal("0"))
+
+        Payment.objects.filter(sale=sale).delete()
+        pay("client")
+        self.assertEqual(earned(), Decimal("50400"))    # same cash, same profit
+        sale.refresh_from_db()
+        self.assertEqual(sale.debt_remaining, Decimal("9600"))  # the fee is still owed
+
+        pay("seller", amount="9600", method="cash", pct="0")    # client settles it
+        self.assertEqual(earned(), Decimal("60000"))    # only now do they part ways
+
+    def test_lump_payment_with_client_borne_fee_settles_exactly(self):
+        # FIFO across two receipts: the net is what gets spread, and each recorded
+        # payment is grossed back up so its fee stays at the agreed percent.
+        today = timezone.localdate()
+        older = make_sale(
+            self.client1, self.sales1, self.product, is_debt=True,
+            date=today - timedelta(days=3), weight="1", price="96000",
+        )  # 96 000
+        newer = make_sale(
+            self.client1, self.sales1, self.product, is_debt=True, date=today,
+            weight="1", price="96000",
+        )
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("client_debt_pay", args=[self.client1.pk]),
+            {"amount": "100000", "method": "transfer", "commission_percent": "4",
+             "commission_payer": "client"},
+        )
+        older.refresh_from_db()
+        newer.refresh_from_db()
+        # 100 000 sent, 4 000 to the bank, 96 000 credited — the older receipt closes.
+        self.assertEqual(older.debt_remaining, Decimal("0"))
+        self.assertEqual(newer.debt_remaining, Decimal("96000"))
+        payment = older.payments.get()
+        self.assertEqual(payment.amount, Decimal("100000.00"))
+        self.assertEqual(payment.commission, Decimal("4000.00"))
 
     def test_commission_ignored_for_non_transfer(self):
         sale = self._debt_sale()
@@ -929,24 +1044,25 @@ class PaymentTests(BaseSetup):
         self.assertEqual(payment.commission, Decimal("0"))
         self.assertEqual(payment.commission_percent, Decimal("0"))
 
-    def test_transfer_grossed_up_settles_debt(self):
-        # A transfer can be grossed up over the balance so the net clears it:
-        # 240000 / 0.96 = 250000, a 4% fee of 10000 leaves 240000 net.
+    def test_transfer_of_exact_balance_settles_debt(self):
+        # Transferring exactly what is owed clears it: the 4% fee (9600) is withheld
+        # from the seller's till, not from the client's credit.
         sale = self._debt_sale()  # 240000
         self.client.force_login(self.sales1)
         self.client.post(
             reverse("sale_pay", args=[sale.pk]),
-            {"amount": "250000", "method": "transfer", "commission_percent": "4"},
+            {"amount": "240000", "method": "transfer", "commission_percent": "4"},
         )
         sale.refresh_from_db()
         self.assertTrue(sale.is_paid)
         payment = sale.payments.get()
-        self.assertEqual(payment.commission, Decimal("10000.00"))
-        self.assertEqual(payment.net_amount, Decimal("240000.00"))
+        self.assertEqual(payment.amount, Decimal("240000.00"))
+        self.assertEqual(payment.commission, Decimal("9600.00"))
+        self.assertEqual(payment.net_amount, Decimal("230400.00"))  # till gets less
         self.assertEqual(sale.debt_remaining, Decimal("0"))
 
-    def test_client_debt_pay_transfer_credits_net(self):
-        # 200000 transfer at 5% → 10000 fee, 190000 net credited to the debt.
+    def test_client_debt_pay_transfer_credits_gross(self):
+        # 200000 transfer at 5% → 10000 fee off the seller, full 200000 off the debt.
         sale = self._debt_sale()  # 240000
         self.client.force_login(self.sales1)
         self.client.post(
@@ -958,7 +1074,7 @@ class PaymentTests(BaseSetup):
         self.assertEqual(payment.amount, Decimal("200000.00"))
         self.assertEqual(payment.commission, Decimal("10000.00"))
         self.assertEqual(payment.net_amount, Decimal("190000.00"))
-        self.assertEqual(sale.debt_remaining, Decimal("50000"))  # 240000 − 190000
+        self.assertEqual(sale.debt_remaining, Decimal("40000"))  # 240000 − 200000
 
     def test_client_debt_pay_distributes_fifo(self):
         today = timezone.localdate()
@@ -1452,15 +1568,17 @@ class ClientHistoryTests(BaseSetup):
         self.assertEqual(totals["debt"], Sale.objects.get(pk=self.sale.pk).debt_remaining)
         self.assertEqual(totals["returned"], Decimal("24000"))
 
-    def test_transfer_commission_credits_only_the_net(self):
+    def test_transfer_commission_credits_the_gross(self):
+        # The bank's 5000 comes off the seller, so the client's history shows the full
+        # 100000 they transferred and their balance falls by that much.
         Payment.objects.create(
             sale=self.sale, amount=Decimal("100000"), commission=Decimal("5000"),
             method=Payment.Method.TRANSFER, kind=Payment.Kind.DEBT,
             date=self.sale.date, created_by=self.sales1,
         )
         events = self._events().context["events"]
-        self.assertEqual(events[-1]["amount"], Decimal("95000"))
-        self.assertEqual(events[-1]["balance"], Decimal("145000"))
+        self.assertEqual(events[-1]["amount"], Decimal("100000"))
+        self.assertEqual(events[-1]["balance"], Decimal("140000"))
 
     def test_advance_deposit_shows_but_leaves_debt_alone(self):
         Payment.objects.create(
@@ -1841,7 +1959,8 @@ class ReturnVoidTests(BaseSetup):
 
     def test_kassa_refund_row_opens_its_sale(self):
         # The kassa refund row carries [edit][view]: edit the return in place, or open
-        # the sale to undo it there. The row must know both its return and its sale.
+        # the row's detail panel, which links on to the sale. The row must know both
+        # its return and its sale for either route to exist.
         sale = make_sale(self.client1, self.sales1, self.product)
         self.client.force_login(self.sales1)
         ret = self._return(sale, "4", settlement="refund")
@@ -1851,7 +1970,11 @@ class ReturnVoidTests(BaseSetup):
         )
         self.assertEqual(refund_row["return_pk"], ret.pk)
         self.assertEqual(refund_row["sale_pk"], sale.pk)
-        self.assertContains(response, reverse("sale_detail", args=[sale.pk]))
+        detail_url = reverse("kassa_entry_detail", args=["refund", refund_row["pk"]])
+        self.assertContains(response, detail_url)
+        panel = self.client.get(detail_url, headers={"x-requested-with": "XMLHttpRequest"})
+        self.assertContains(panel, reverse("sale_detail", args=[sale.pk]))
+        self.assertContains(panel, reverse("return_edit", args=[ret.pk]))
 
     def test_void_is_audited(self):
         sale = make_sale(self.client1, self.sales1, self.product)
@@ -1960,13 +2083,17 @@ class ReturnEditTests(BaseSetup):
 
     def test_kassa_income_payment_row_opens_its_sale(self):
         # A client payment on the kirim side carries [edit][view]: the view opens the
-        # sale, where the payment can be edited or voided.
+        # row's detail panel, and from there the sale — or the delete button.
         sale = make_sale(self.client1, self.sales1, self.product)  # paid → a Payment
         payment = sale.payments.first()
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("kassa"))
         self.assertContains(response, reverse("payment_edit", args=[payment.pk]))
-        self.assertContains(response, reverse("sale_detail", args=[sale.pk]))
+        detail_url = reverse("kassa_entry_detail", args=["payment", payment.pk])
+        self.assertContains(response, detail_url)
+        panel = self.client.get(detail_url, headers={"x-requested-with": "XMLHttpRequest"})
+        self.assertContains(panel, reverse("sale_detail", args=[sale.pk]))
+        self.assertContains(panel, reverse("payment_delete", args=[payment.pk]))
 
 
 class ModalFormTests(BaseSetup):
@@ -2288,6 +2415,105 @@ class KassaScopingTests(BaseSetup):
         self.assertContains(response, "Sotuvchilar nazorati")
 
 
+class TransferCommissionKassaTests(BaseSetup):
+    """The bank's cut is charged to the seller, so the kassa has to show it going out
+    instead of quietly shrinking the income it came in with."""
+
+    def setUp(self):
+        # 240 000 debt, settled by a 100 000 transfer at 2% → 2 000 fee.
+        self.sale = make_sale(
+            self.client1, self.sales1, self.product,
+            is_debt=True, debt_deadline=timezone.localdate() + timedelta(days=5),
+        )
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_pay", args=[self.sale.pk]),
+            {"amount": "100000", "method": "transfer", "commission_percent": "2"},
+        )
+
+    def test_income_row_shows_the_gross_and_fee_leaves_separately(self):
+        response = self.client.get(reverse("kassa"))
+        income = [
+            r for r in response.context["income_rows"] if r["sale_pk"] == self.sale.pk
+        ]
+        fees = [r for r in response.context["outflow_rows"] if r["kind"] == "commission"]
+        self.assertEqual(len(income), 1)
+        self.assertEqual(income[0]["amount_som"], Decimal("100000.00"))  # gross, not 98k
+        self.assertEqual(len(fees), 1)
+        self.assertEqual(fees[0]["amount_som"], Decimal("2000.00"))
+        self.assertEqual(fees[0]["sale_pk"], self.sale.pk)
+        # In minus out is what actually stayed in the till: sale1's 240 000 cash from
+        # setUpTestData plus this 100 000 transfer, less the 2 000 fee.
+        self.assertEqual(
+            response.context["income_total"] - response.context["outflow_total"],
+            Decimal("338000.00"),
+        )
+
+    def test_cash_payment_adds_no_fee_row(self):
+        self.client.post(
+            reverse("sale_pay", args=[self.sale.pk]),
+            {"amount": "50000", "method": "cash", "commission_percent": "3"},
+        )
+        response = self.client.get(reverse("kassa"))
+        fees = [r for r in response.context["outflow_rows"] if r["kind"] == "commission"]
+        self.assertEqual(len(fees), 1)  # still only the transfer's fee
+
+    def test_row_offers_edit_and_view_but_never_delete(self):
+        # Deleting is one step in, behind the eye — a dense ledger shouldn't carry a
+        # one-click erase for money.
+        payment = self.sale.payments.get()
+        response = self.client.get(reverse("kassa"))
+        self.assertContains(response, reverse("payment_edit", args=[payment.pk]))
+        self.assertContains(
+            response, reverse("kassa_entry_detail", args=["payment", payment.pk])
+        )
+        self.assertNotContains(response, reverse("payment_delete", args=[payment.pk]))
+
+    def test_detail_panel_shows_the_figures_and_the_delete_button(self):
+        payment = self.sale.payments.get()
+        response = self.client.get(
+            reverse("kassa_entry_detail", args=["payment", payment.pk]),
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+        self.assertContains(response, reverse("payment_delete", args=[payment.pk]))
+        self.assertContains(response, reverse("payment_edit", args=[payment.pk]))
+        self.assertContains(response, reverse("sale_detail", args=[self.sale.pk]))
+        self.assertContains(response, "Bank komissiyasi")   # the 2% line
+        self.assertContains(response, "Sotuvchi")           # who carries the fee
+
+    def test_commission_detail_points_at_the_payment_it_came_from(self):
+        payment = self.sale.payments.get()
+        response = self.client.get(
+            reverse("kassa_entry_detail", args=["commission", payment.pk]),
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+        self.assertContains(response, "Komissiya alohida yozuv emas")
+        self.assertContains(response, reverse("payment_edit", args=[payment.pk]))
+
+    def test_seller_cannot_open_another_sellers_row(self):
+        payment = self.sale.payments.get()
+        self.client.force_login(self.sales2)
+        response = self.client.get(
+            reverse("kassa_entry_detail", args=["payment", payment.pk])
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_unknown_kind_is_rejected(self):
+        response = self.client.get(reverse("kassa_entry_detail", args=["xyz", 1]))
+        self.assertEqual(response.status_code, 404)
+
+    def test_per_employee_row_carries_the_fee_and_nets_the_till(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("kassa"))
+        row = next(
+            r for r in response.context["per_employee"] if r["uid"] == self.sales1.pk
+        )
+        self.assertEqual(row["commission"], Decimal("2000.00"))
+        # sale1 in setUpTestData was paid 240 000 cash; add this transfer's 100 000
+        # gross, then the fee comes back off the till.
+        self.assertEqual(row["cash"], Decimal("338000.00"))
+
+
 class RemittanceTests(BaseSetup):
     """Ishlab chiqarishga topshirish — a seller handing cash back to production.
     It repays the seller→production debt (= tannarx of goods they've sold) and
@@ -2391,6 +2617,308 @@ class RemittanceTests(BaseSetup):
         log = AuditLog.objects.filter(target_type="Topshiruv").first()
         self.assertIsNotNone(log)
         self.assertEqual(log.action, AuditLog.Action.CREATE)
+
+
+class ApplyLocalStateTests(BaseSetup):
+    """The one-shot deploy command: seed the payroll, sweep every record onto the one
+    seller, and never do either twice."""
+
+    EMAIL = "komola@test.com"
+
+    def setUp(self):
+        self.seller = self.sales1
+        self.seller.email = self.EMAIL
+        self.seller.save(update_fields=["email"])
+
+    def _run(self, **opts):
+        out = StringIO()
+        call_command("apply_local_state", stdout=out, **opts)
+        return out.getvalue()
+
+    def test_seeds_the_four_staff(self):
+        self._run()
+        self.assertEqual(Employee.objects.count(), 4)
+        self.assertEqual(
+            Employee.objects.get(name="Тошхужайува Комола").salary,
+            Decimal("26000000"),
+        )
+
+    def test_moves_every_stray_record_onto_the_seller(self):
+        # sale2 belongs to sales2 in BaseSetup, along with its client and payment.
+        self.assertEqual(self.sale2.sales_rep, self.sales2)
+        self._run()
+        self.sale2.refresh_from_db()
+        self.assertEqual(self.sale2.sales_rep, self.seller)
+        self.assertFalse(Sale.objects.exclude(sales_rep=self.seller).exists())
+        self.assertFalse(Client.objects.exclude(owner=self.seller).exists())
+        self.assertFalse(Payment.objects.exclude(created_by=self.seller).exists())
+
+    def test_second_run_is_a_no_op(self):
+        self._run()
+        Employee.objects.all().delete()
+        output = self._run()
+        self.assertIn("allaqachon qo'llangan", output)
+        self.assertEqual(Employee.objects.count(), 0)  # nothing re-seeded
+
+    def test_force_runs_it_again(self):
+        self._run()
+        Employee.objects.all().delete()
+        self._run(force=True)
+        self.assertEqual(Employee.objects.count(), 4)
+
+    def test_dry_run_changes_nothing(self):
+        output = self._run(dry_run=True)
+        self.assertIn("DRY RUN", output)
+        self.assertEqual(Employee.objects.count(), 0)
+        self.sale2.refresh_from_db()
+        self.assertEqual(self.sale2.sales_rep, self.sales2)   # left alone
+        self.assertFalse(
+            AuditLog.objects.filter(target_type="APPLY_LOCAL_STATE").exists()
+        )
+
+    def test_refuses_when_the_seller_is_missing(self):
+        self.seller.email = "boshqa@test.com"
+        self.seller.save(update_fields=["email"])
+        output = self._run()
+        self.assertIn("topilmadi", output)
+        self.assertEqual(Employee.objects.count(), 0)
+        self.sale2.refresh_from_db()
+        self.assertEqual(self.sale2.sales_rep, self.sales2)
+
+    def test_corrects_a_changed_salary(self):
+        Employee.objects.create(name="Мансуров Шерзод", salary=Decimal("1"))
+        self._run()
+        self.assertEqual(
+            Employee.objects.get(name="Мансуров Шерзод").salary, Decimal("8000000")
+        )
+        self.assertEqual(Employee.objects.count(), 4)
+
+
+class ProductionRefundTests(RemittanceTests):
+    """Ishlab chiqarishdan qaytarish — production handing cash back to a seller. The
+    same handover row with a negative amount, so it lifts the till and the production
+    debt by exactly what a handover of that size would have dropped them by.
+
+    Inherits RemittanceTests' fixture (sales1 holds 440k cash, owes 360k tannarx) and
+    its `_remit` helper; the handover cases re-run here harmlessly."""
+
+    def _refund(self, user, amount, seller=None):
+        self.client.force_login(user)
+        data = {
+            "date": timezone.localdate().isoformat(),
+            "amount": amount, "method": "cash",
+        }
+        if seller is not None:
+            data["seller"] = seller.pk
+        return self.client.post(
+            reverse("remittance_refund_create"), data,
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+
+    def test_refund_raises_cash_and_debt_back(self):
+        today = timezone.localdate()
+        self._remit(self.sales1, "150000")
+        before = _kassa_summary(today, today, rep=self.sales1)
+
+        self._refund(self.sales1, "50000")
+        row = ProductionRemittance.objects.get(amount__lt=0)
+        self.assertEqual(row.amount, Decimal("-50000"))   # stored signed
+        self.assertTrue(row.is_refund)
+        self.assertEqual(row.abs_amount, Decimal("50000"))  # shown positive
+
+        after = _kassa_summary(today, today, rep=self.sales1)
+        self.assertEqual(after["cash"] - before["cash"], Decimal("50000"))
+        self.assertEqual(
+            after["production_debt"] - before["production_debt"], Decimal("50000")
+        )
+        # "Topshirilgan" reads net: 150 000 handed over, 50 000 come back.
+        self.assertEqual(after["remitted"], Decimal("100000.00"))
+
+    def test_refund_cannot_exceed_what_was_remitted(self):
+        self._remit(self.sales1, "150000")
+        response = self._refund(self.sales1, "200000")
+        self.assertEqual(response.status_code, 422)
+        self.assertContains(
+            response, "Qaytarish topshirilgandan ko&#x27;p", status_code=422
+        )
+        self.assertFalse(ProductionRemittance.objects.filter(amount__lt=0).exists())
+
+    def test_refund_needs_no_cash_in_the_till(self):
+        # Hand over the whole till, then take a return: unlike a handover, a return
+        # ADDS cash, so an empty till is no obstacle.
+        self._remit(self.sales1, "440000")
+        self.assertEqual(seller_cash_on_hand(self.sales1), Decimal("0"))
+        self._refund(self.sales1, "100000")
+        self.assertEqual(seller_cash_on_hand(self.sales1), Decimal("100000"))
+
+    def test_refund_shows_as_an_inflow_row_in_the_ledger(self):
+        self._remit(self.sales1, "150000")
+        self._refund(self.sales1, "50000")
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"))
+        backs = [
+            t for t in response.context["outflow_rows"]
+            if t["kind"] == "remittance_back"
+        ]
+        self.assertEqual(len(backs), 1)
+        self.assertEqual(backs[0]["amount_som"], Decimal("-50000"))  # nets the total
+        self.assertEqual(backs[0]["amount_abs"], Decimal("50000"))   # printed figure
+
+    def test_editing_a_refund_shows_the_positive_figure(self):
+        self._remit(self.sales1, "150000")
+        self._refund(self.sales1, "50000")
+        row = ProductionRemittance.objects.get(amount__lt=0)
+        response = self.client.get(
+            reverse("remittance_edit", args=[row.pk]),
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+        self.assertEqual(response.context["form"].initial["amount"], Decimal("50000"))
+        self.assertContains(response, "Qaytarishni tahrirlash")
+
+    def test_seller_field_is_pinned_to_self_on_a_refund(self):
+        self._remit(self.sales1, "150000")
+        self._refund(self.sales1, "10000", seller=self.sales2)
+        row = ProductionRemittance.objects.get(amount__lt=0)
+        self.assertEqual(row.seller, self.sales1)
+
+    def test_refund_is_audited(self):
+        self._remit(self.sales1, "150000")
+        self._refund(self.sales1, "50000")
+        log = AuditLog.objects.filter(target_type="Topshiruv").first()
+        self.assertEqual(log.action, AuditLog.Action.CREATE)
+        self.assertIn("qaytarib oldi", log.summary)
+
+
+class EmployeePayrollTests(BaseSetup):
+    """Xodimlar — a monthly wage, and everything the worker draws from the till in
+    that month counted against it."""
+
+    def setUp(self):
+        self.worker = Employee.objects.create(
+            name="Косимов Рахматжон", salary=Decimal("2000000")
+        )
+        self.today = timezone.localdate()
+
+    def _pay(self, amount, employee=None, category="Oylik / xodim", on=None):
+        self.client.force_login(self.admin)
+        return self.client.post(
+            reverse("expense_create"),
+            {
+                "date": (on or self.today).isoformat(),
+                "amount": amount, "currency": "uzs", "category": category,
+                "method": "cash", "employee": (employee or self.worker).pk,
+            },
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+
+    def test_payout_counts_against_this_months_salary(self):
+        self._pay("500000")
+        self.assertEqual(
+            self.worker.paid_in(self.today.year, self.today.month), Decimal("500000")
+        )
+        self.assertEqual(
+            self.worker.remaining_in(self.today.year, self.today.month),
+            Decimal("1500000"),
+        )
+
+    def test_any_category_counts_not_only_the_wage_one(self):
+        # "Kassadan pul olishganda ham oyligidan minus bo'lsin": what ties the money
+        # to the worker is the employee field, not what it was filed under.
+        self._pay("300000", category="Boshqa")
+        self.assertEqual(
+            self.worker.remaining_in(self.today.year, self.today.month),
+            Decimal("1700000"),
+        )
+
+    def test_untagged_expense_touches_nobody(self):
+        self.client.force_login(self.admin)
+        self.client.post(
+            reverse("expense_create"),
+            {"date": self.today.isoformat(), "amount": "400000", "currency": "uzs",
+             "category": "Benzin / transport", "method": "cash"},
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+        self.assertEqual(
+            self.worker.paid_in(self.today.year, self.today.month), Decimal("0")
+        )
+
+    def test_salary_resets_each_month(self):
+        last_month = self.today.replace(day=1) - timedelta(days=1)
+        self._pay("2000000", on=last_month)
+        self.assertEqual(
+            self.worker.remaining_in(last_month.year, last_month.month), Decimal("0")
+        )
+        # A new month starts the wage over — last month's payout doesn't carry.
+        self.assertEqual(
+            self.worker.remaining_in(self.today.year, self.today.month),
+            Decimal("2000000"),
+        )
+
+    def test_overdraw_shows_as_a_negative_remainder(self):
+        self._pay("2500000")
+        self.assertEqual(
+            self.worker.remaining_in(self.today.year, self.today.month),
+            Decimal("-500000"),
+        )
+
+    def test_payout_still_leaves_the_till(self):
+        # A wage is an ordinary kassa outflow: it must show in the chiqim ledger.
+        self._pay("500000")
+        response = self.client.get(reverse("kassa"))
+        rows = [r for r in response.context["outflow_rows"] if r["kind"] == "expense"]
+        self.assertEqual(sum(r["amount_som"] for r in rows), Decimal("500000"))
+
+    def test_page_lists_rows_and_totals(self):
+        Employee.objects.create(name="Мансуров Шерзод", salary=Decimal("8000000"))
+        self._pay("500000")
+        response = self.client.get(reverse("employee_list"))
+        rows = {r["employee"].name: r for r in response.context["rows"]}
+        self.assertEqual(rows["Косимов Рахматжон"]["paid"], Decimal("500000"))
+        self.assertEqual(rows["Косимов Рахматжон"]["remaining"], Decimal("1500000"))
+        self.assertEqual(response.context["totals"]["salary"], Decimal("10000000"))
+        self.assertEqual(response.context["totals"]["remaining"], Decimal("9500000"))
+
+    def test_month_can_be_chosen(self):
+        last_month = self.today.replace(day=1) - timedelta(days=1)
+        self._pay("700000", on=last_month)
+        response = self.client.get(
+            reverse("employee_list"), {"oy": f"{last_month.year}-{last_month.month:02d}"}
+        )
+        rows = {r["employee"].name: r for r in response.context["rows"]}
+        self.assertEqual(rows["Косимов Рахматжон"]["paid"], Decimal("700000"))
+
+    def test_junk_month_falls_back_to_this_one(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("employee_list"), {"oy": "2026-77"})
+        self.assertEqual(
+            response.context["month_value"], f"{self.today.year}-{self.today.month:02d}"
+        )
+
+    def test_seller_cannot_see_salaries(self):
+        self.client.force_login(self.sales1)
+        self.assertEqual(self.client.get(reverse("employee_list")).status_code, 403)
+        self.assertEqual(self.client.get(reverse("employee_create")).status_code, 403)
+
+    def test_paid_worker_is_deactivated_not_deleted(self):
+        self._pay("100000")
+        self.client.post(reverse("employee_delete", args=[self.worker.pk]))
+        self.worker.refresh_from_db()
+        self.assertFalse(self.worker.is_active)  # history kept
+
+    def test_unpaid_worker_is_deleted_outright(self):
+        self.client.force_login(self.admin)
+        self.client.post(reverse("employee_delete", args=[self.worker.pk]))
+        self.assertFalse(Employee.objects.filter(pk=self.worker.pk).exists())
+
+    def test_duplicate_name_is_refused(self):
+        self.client.force_login(self.admin)
+        response = self.client.post(
+            reverse("employee_create"),
+            {"name": "косимов рахматжон", "salary": "1000000", "is_active": "on"},
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(Employee.objects.count(), 1)
 
 
 class ProfitPayoutTests(BaseSetup):

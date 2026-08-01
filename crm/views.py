@@ -4,11 +4,12 @@ from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.contrib import messages
+from django.core.exceptions import PermissionDenied
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Count, F, Max, ProtectedError, Q, Sum, Value
 from django.db.models.functions import Replace, TruncMonth
-from django.http import HttpResponse, JsonResponse
+from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -23,11 +24,13 @@ from .forms import (
     ClientForm,
     ClientTransferForm,
     DebtPaymentForm,
+    EmployeeForm,
     ExpenseForm,
     PaymentEditForm,
     ProductForm,
     ProductionReceiptForm,
     ProductionReceiptItemFormSet,
+    ProductionRefundForm,
     ProductionRemittanceForm,
     ProfitPayoutForm,
     ReturnForm,
@@ -41,6 +44,7 @@ from .models import (
     ITEM_WEIGHT_KG,
     MICRON_CHOICES,
     PAYING_KINDS,
+    PAYMENT_CREDIT,
     PAYMENT_NET,
     PROFIT,
     RETURN_AMOUNT,
@@ -49,6 +53,7 @@ from .models import (
     SIZE_CHOICES,
     AuditLog,
     Client,
+    Employee,
     Expense,
     Payment,
     client_advance_balance,
@@ -72,17 +77,17 @@ def _visible_clients(user):
 
 def _advance_balance_map(client_pks, seller):
     """{client_pk: advance balance} for the given clients, in ONE query. Mirrors
-    `client_advance_balance` (deposits minus consumption, net of bank fees) but batched,
-    so a whole list can be sorted/annotated without an N+1. Seller-scoped when `seller`
-    is set; otherwise the client's total across every seller's till."""
+    `client_advance_balance` (deposits minus consumption, gross of bank fees) but
+    batched, so a whole list can be sorted/annotated without an N+1. Seller-scoped when
+    `seller` is set; otherwise the client's total across every seller's till."""
     rows = Payment.objects.filter(client__in=client_pks)
     if seller is not None:
         rows = rows.filter(created_by=seller)
     agg = rows.values("client").annotate(
-        dep=Sum(PAYMENT_NET, filter=Q(
+        dep=Sum(PAYMENT_CREDIT, filter=Q(
             kind__in=[Payment.Kind.ADVANCE_IN, Payment.Kind.RETURN_CREDIT]
         )),
-        used=Sum(PAYMENT_NET, filter=Q(kind=Payment.Kind.ADVANCE_USED)),
+        used=Sum(PAYMENT_CREDIT, filter=Q(kind=Payment.Kind.ADVANCE_USED)),
     )
     return {
         r["client"]: (r["dep"] or Decimal("0")) - (r["used"] or Decimal("0"))
@@ -895,11 +900,12 @@ _PAY_EVENTS = {
 
 
 def _payment_event(payment):
-    """One payment as a history row. Paying kinds count net of the bank fee —
-    that is what actually reduced the debt, so the running balance stays honest."""
+    """One payment as a history row. Each row counts what it actually credited the
+    client with, so the running balance follows their debt: the full sum they sent
+    when the seller carried the bank fee, the net when they carried it themselves."""
     label, cls, icon = _PAY_EVENTS[payment.kind]
     paying = payment.kind in PAYING_KINDS
-    amount = payment.net_amount if paying else payment.amount
+    amount = payment.credited_amount
     if paying:
         delta = -amount
     elif payment.kind == Payment.Kind.ADVANCE_IN:
@@ -1381,18 +1387,19 @@ def _date_range_context(request):
 
 
 def _outstanding_balance(sales):
-    """Total still owed across the given sales: item revenue − returns − net payments,
+    """Total still owed across the given sales: item revenue − returns − payments,
     plus any carried-over opening balance.
 
-    Payments are netted of bank fees (amount − commission) and returned goods are
-    subtracted, matching how each sale's remaining balance is computed. `opening_amount`
+    Payments count gross (a bank fee is the seller's cost, not the client's) and
+    returned goods are subtracted, matching how each sale's remaining balance is
+    computed. `opening_amount`
     (0 on a normal sale) is the pre-CRM debt that has no line items — it must be added
     here or an imported opening debt would total to zero. Mirrors the `remaining`
     annotation in `SaleQuerySet.with_balance`."""
     pks = sales.values("pk")
     revenue = SaleItem.objects.filter(sale__in=pks).aggregate(v=Sum(REVENUE))["v"] or 0
     returned = Return.objects.filter(sale__in=pks).aggregate(v=Sum(RETURN_AMOUNT))["v"] or 0
-    paid = Payment.objects.filter(sale__in=pks).aggregate(v=Sum(PAYMENT_NET))["v"] or 0
+    paid = Payment.objects.filter(sale__in=pks).aggregate(v=Sum(PAYMENT_CREDIT))["v"] or 0
     opening = Sale.objects.filter(pk__in=pks).aggregate(v=Sum("opening_amount"))["v"] or 0
     return revenue - returned - paid + opening
 
@@ -1645,36 +1652,47 @@ def _client_outstanding_fifo(request, client):
     )
 
 
-def _gross_up(net, is_transfer, percent, currency, exchange_rate):
-    """One slice of a lump payment, as (so'm gross, figure in its own currency).
+def _slice_figures(credit, percent, payer, currency, exchange_rate):
+    """One slice of a lump payment, as (so'm gross, bank fee, figure in its currency).
 
-    Grossing the slice back up keeps the recorded fee at `percent`, so the
-    commission is the exact difference and the net credited stays precise. The
-    dollar figure (what the dollar till counts) is the gross at the payment's
+    `credit` is what this receipt's debt must fall by. Which sum the client actually
+    transferred for that depends on who carries the fee:
+
+      seller: the client sent exactly `credit`; the bank's cut is charged on top of
+              it, against the seller, so gross == credit.
+      client: the client had to send MORE so that `credit` survived the bank — the
+              slice is grossed back up, and the difference is the recorded fee.
+
+    The dollar figure (what the dollar till counts) is the gross at the payment's
     rate; a so'm payment's original is simply the so'm."""
-    if is_transfer and percent < Decimal("100"):
-        gross = (net / (Decimal("1") - percent / Decimal("100"))).quantize(
+    if payer == Payment.Payer.CLIENT and percent < Decimal("100"):
+        gross = (credit / (Decimal("1") - percent / Decimal("100"))).quantize(
             Decimal("0.01"), ROUND_HALF_UP
         )
+        commission = gross - credit
     else:
-        gross = net
+        gross = credit
+        commission = (gross * percent / Decimal("100")).quantize(
+            Decimal("0.01"), ROUND_HALF_UP
+        )
     if currency == Payment.Currency.USD and exchange_rate:
         original = (gross / exchange_rate).quantize(Decimal("0.01"), ROUND_HALF_UP)
     else:
         original = gross
-    return gross, original
+    return gross, commission, original
 
 
 def _distribute_debt_payment(
     sales, amount, method, percent, note, user, currency=None, exchange_rate=Decimal("0"),
-    on_date=None, client=None,
+    on_date=None, client=None, payer=Payment.Payer.SELLER,
 ):
     """Spread a lump payment across FIFO-ordered debts, oldest first.
 
-    `amount` is the gross the client handed over; on a bank transfer the bank
-    withholds `percent`, so only the net (amount − commission) reduces the debt.
-    Each receipt is credited its net share up to its outstanding balance; the
-    last one reached may receive a partial payment.
+    `amount` is the gross the client handed over. How much of it pays down debt turns
+    on `payer`: with the fee on the seller the whole sum counts, with it on the client
+    only the net does and they still owe the bank's cut. Each receipt is credited its
+    share up to its outstanding balance; the last one reached may receive a partial
+    payment.
 
     A client may hand over MORE than they owe. Whatever is left once every receipt
     is settled becomes their advance (kredit) — an ADVANCE_IN deposit against
@@ -1686,59 +1704,54 @@ def _distribute_debt_payment(
     """
     is_transfer = method == Payment.Method.TRANSFER
     percent = percent if is_transfer else Decimal("0")
+    payer = payer if (is_transfer and percent) else Payment.Payer.SELLER
     currency = currency or Payment.Currency.UZS
     on_date = on_date or timezone.localdate()  # backdated when an old debt is settled
-    commission_total = (amount * percent / Decimal("100")).quantize(
-        Decimal("0.01"), ROUND_HALF_UP
-    )
-    net_left = amount - commission_total
+    # What the client's debts can absorb in total — the fee is off the top when they
+    # are the ones carrying it.
+    if payer == Payment.Payer.CLIENT:
+        fee_total = (amount * percent / Decimal("100")).quantize(
+            Decimal("0.01"), ROUND_HALF_UP
+        )
+        left = amount - fee_total
+    else:
+        left = amount
     touched = 0
+
+    def _create(credit, **extra):
+        gross, commission, original = _slice_figures(
+            credit, percent, payer, currency, exchange_rate
+        )
+        Payment.objects.create(
+            amount=gross,
+            amount_original=original,
+            currency=currency,
+            exchange_rate=exchange_rate,
+            method=method,
+            commission=commission,
+            commission_percent=percent,
+            commission_payer=payer,
+            note=note,
+            date=on_date,
+            created_by=user,
+            **extra,
+        )
+
     with transaction.atomic():
         for sale in sales:
-            if net_left <= 0:
+            if left <= 0:
                 break
             due = sale.remaining or Decimal("0")
-            chunk_net = min(net_left, due)
-            if chunk_net <= 0:
+            chunk = min(left, due)
+            if chunk <= 0:
                 continue
-            chunk_gross, chunk_original = _gross_up(
-                chunk_net, is_transfer, percent, currency, exchange_rate
-            )
-            Payment.objects.create(
-                sale=sale,
-                amount=chunk_gross,
-                amount_original=chunk_original,
-                currency=currency,
-                exchange_rate=exchange_rate,
-                method=method,
-                commission=chunk_gross - chunk_net,
-                commission_percent=percent,
-                note=note,
-                kind=Payment.Kind.DEBT,
-                date=on_date,
-                created_by=user,
-            )
-            net_left -= chunk_net
+            _create(chunk, sale=sale, kind=Payment.Kind.DEBT)
+            left -= chunk
             touched += 1
         surplus = Decimal("0")
-        if net_left > 0 and client is not None:
-            surplus = net_left
-            gross, original = _gross_up(net_left, is_transfer, percent, currency, exchange_rate)
-            Payment.objects.create(
-                sale=None,
-                client=client,
-                amount=gross,
-                amount_original=original,
-                currency=currency,
-                exchange_rate=exchange_rate,
-                method=method,
-                commission=gross - net_left,
-                commission_percent=percent,
-                note=note,
-                kind=Payment.Kind.ADVANCE_IN,
-                date=on_date,
-                created_by=user,
-            )
+        if left > 0 and client is not None:
+            surplus = left
+            _create(left, sale=None, client=client, kind=Payment.Kind.ADVANCE_IN)
     return touched, surplus
 
 
@@ -1858,6 +1871,7 @@ def client_debt_pay(request, pk):
                 exchange_rate=form.cleaned_data["exchange_rate"],
                 on_date=form.cleaned_data["date"],
                 client=client,
+                payer=form.cleaned_data["commission_payer"],
             )
             AuditLog.record(
                 request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
@@ -1919,6 +1933,7 @@ def client_advance_pay(request, pk):
                 method=cd["method"],
                 commission=cd["commission"],
                 commission_percent=cd["commission_percent"],
+                commission_payer=cd["commission_payer"],
                 note=cd["note"],
                 kind=Payment.Kind.ADVANCE_IN,
                 date=cd["date"],
@@ -1970,7 +1985,7 @@ def _reconcile_client_advance(client, seller):
             for u in used:
                 if balance >= 0:
                     break
-                balance += u.net_amount  # freeing this returns its money to the pool
+                balance += u.credited_amount  # freeing this returns it to the pool
                 u.delete()               # ...and the sale it covered owes again
         _apply_advance_to_open_sales(client, seller)
 
@@ -1992,6 +2007,7 @@ def advance_edit(request, pk):
             payment.method = cd["method"]
             payment.commission = cd["commission"]
             payment.commission_percent = cd["commission_percent"]
+            payment.commission_payer = cd["commission_payer"]
             payment.note = cd["note"]
             payment.date = cd["date"]
             payment.save()
@@ -2011,6 +2027,7 @@ def advance_edit(request, pk):
         "currency": payment.currency,
         "exchange_rate": payment.exchange_rate or "",
         "commission_percent": payment.commission_percent or "",
+        "commission_payer": payment.commission_payer,
         "note": payment.note,
     })
     return _render_advance_edit(request, payment, form)
@@ -2038,7 +2055,7 @@ def advance_delete(request, pk):
     `_reconcile_client_advance`), so the money trail stays consistent."""
     payment = get_object_or_404(_advance_in_qs(request.user), pk=pk)
     client, seller = payment.client, payment.created_by
-    spent = client_advance_balance(client, seller) < payment.net_amount
+    spent = client_advance_balance(client, seller) < payment.credited_amount
     if request.method == "POST":
         summary = f"{client.name} — avans {payment.amount:,.0f} so'm"
         payment.delete()
@@ -2091,9 +2108,9 @@ def payment_delete(request, pk):
 
 def payment_edit(request, pk):
     """Fix a mistaken payment (Kirim) — amount, currency, method, commission, note.
-    The sale's remaining debt re-derives from the new net automatically. Admins/
+    The sale's remaining debt re-derives from the new amount automatically. Admins/
     managers may edit any payment; a seller may edit only payments they took in
-    themselves. The net is capped so the sale can't become over-paid."""
+    themselves. The amount is capped so the sale can't become over-paid."""
     qs = Payment.objects.select_related("sale", "sale__client")
     if not request.user.can_see_all_records:
         qs = qs.filter(created_by=request.user)
@@ -2101,9 +2118,9 @@ def payment_edit(request, pk):
     if payment.kind in (Payment.Kind.ADVANCE_IN, Payment.Kind.ADVANCE_USED):
         messages.error(request, "Avans to'lovi bu yerdan tahrirlanmaydi.")
         return form_reload(request, reverse("kassa"))
-    # This receipt's ceiling: the sale's remaining already excludes this payment's
-    # current net, so add it back to get how much this one may cover.
-    max_amount = payment.sale.debt_remaining + payment.net_amount
+    # This receipt's ceiling: the sale's remaining already excludes what this payment
+    # credited, so add that back to get how much this one may cover.
+    max_amount = payment.sale.debt_remaining + payment.credited_amount
     title = "To'lovni tahrirlash"
     form = PaymentEditForm(request.POST or None, instance=payment, max_amount=max_amount)
     if request.method == "POST":
@@ -2294,12 +2311,24 @@ def _realized_profit_by_seller(date_from, date_to, rep=None):
     net_revenue/net_cost_total drop the goods that came back, and net_paid drops money
     already handed back to the client, so an over-returned sale can't keep earning
     profit on cash it no longer holds.
+
+    Bank fees the SELLER agreed to carry are then subtracted per seller: the client's
+    debt was cleared by the full amount they transferred, so the bank's cut comes
+    straight out of the seller's earnings (as it already does out of their till). A
+    fee charged to the client is left alone — it stays on their balance and is still
+    owed, so it costs the seller nothing. Fees follow the PAYMENT's date, the day the
+    money and the fee actually moved.
     `date_from=None` drops the lower bound for the cumulative (as-of date_to) total."""
     sales = Sale.objects.filter(date__lte=date_to)
+    fees = Payment.objects.filter(
+        date__lte=date_to, commission__gt=0, commission_payer=Payment.Payer.SELLER
+    )
     if date_from is not None:
         sales = sales.filter(date__gte=date_from)
+        fees = fees.filter(date__gte=date_from)
     if rep is not None:
         sales = sales.filter(sales_rep=rep)
+        fees = fees.filter(created_by=rep)
     by_seller = {}
     for s in sales.with_balance().values(
         "sales_rep", "net_revenue", "net_cost_total", "net_paid"
@@ -2308,6 +2337,9 @@ def _realized_profit_by_seller(date_from, date_to, rep=None):
             Decimal("0"), min(s["net_paid"], s["net_revenue"]) - s["net_cost_total"]
         )
         by_seller[s["sales_rep"]] = by_seller.get(s["sales_rep"], Decimal("0")) + realized
+    for f in fees.values("created_by").annotate(s=Sum("commission")):
+        uid = f["created_by"]
+        by_seller[uid] = by_seller.get(uid, Decimal("0")) - (f["s"] or Decimal("0"))
     return by_seller
 
 
@@ -2405,11 +2437,12 @@ def _kassa_summary(date_from, date_to, rep=None):
 
 def _per_employee_kassa(date_from, date_to, rep=None):
     """Per-seller kassa control for the window. Each row carries: money taken in
-    (so'm net / dollars), money paid out, the profit their sales earned, the tannarx
-    of what they sold (= their production debt before handovers), how much they've
-    handed back to production, and two derived figures —
+    (so'm gross / dollars), the bank fees withheld from them, money paid out, the
+    profit their sales earned, the tannarx of what they sold (= their production debt
+    before handovers), how much they've handed back to production, and two derived
+    figures —
 
-      cash            = so'm income − expenses − remitted   (naqd qo'lida)
+      cash            = so'm income − bank fees − expenses − remitted  (naqd qo'lida)
       production_debt = sold tannarx − remitted             (ishlab chiqarishga qarz)
       net             = realized profit − expenses          (samaradorlik)
 
@@ -2420,7 +2453,7 @@ def _per_employee_kassa(date_from, date_to, rep=None):
     This is a standing control snapshot: every column is cumulative as of date_to
     (the day filter's lower bound is dropped), so cash on hand and production debt
     read as the true outstanding totals and each row reconciles
-    (debt = sold − remitted, cash = income − expenses − remitted)."""
+    (debt = sold − remitted, cash = income − fees − expenses − remitted)."""
     window = {"date__lte": date_to}
     sale_window = {"sale__date__lte": date_to}
     # Exclude ADVANCE_USED — already counted as income at deposit time (ADVANCE_IN).
@@ -2451,6 +2484,7 @@ def _per_employee_kassa(date_from, date_to, rep=None):
             "in_som": Decimal("0"), "in_usd": Decimal("0"),
             "out_som": Decimal("0"), "out_usd": Decimal("0"),
             "expense_total": Decimal("0"), "profit": Decimal("0"),
+            "commission": Decimal("0"),
             "sold_cost": Decimal("0"), "remitted": Decimal("0"),
             "paid_profit": Decimal("0"), "refunded": Decimal("0"),
             # Carried-over pre-CRM production debt, part of this seller's debt from day one.
@@ -2471,12 +2505,15 @@ def _per_employee_kassa(date_from, date_to, rep=None):
 
     for r in (
         payments.values("created_by", "currency")
-        .annotate(som=Sum(PAYMENT_NET), usd_amt=Sum("amount_original"))
+        .annotate(som=Sum("amount"), fee=Sum("commission"), usd_amt=Sum("amount_original"))
     ):
         rr = row(r["created_by"])
-        # Cash combines currencies: PAYMENT_NET is the so'm value of every payment,
-        # so a dollar payment counts toward in_som at its so'm value too.
+        # Cash combines currencies: `amount` is the so'm value of every payment, so a
+        # dollar payment counts toward in_som at its so'm value too. Income is the
+        # gross taken in; the bank's cut is subtracted separately below, which keeps
+        # the fee visible as its own figure instead of hiding inside the income.
         rr["in_som"] += r["som"] or Decimal("0")
+        rr["commission"] += r["fee"] or Decimal("0")
         if r["currency"] == usd:
             rr["in_usd"] += r["usd_amt"] or Decimal("0")
 
@@ -2514,10 +2551,11 @@ def _per_employee_kassa(date_from, date_to, rep=None):
 
     result = []
     for rr in rows.values():
-        # Cash left: income, less money refunded to clients, less expenses, less handed
-        # to production, less profit handed to the boss.
+        # Cash left: gross income, less the bank fees that never reached the till, less
+        # money refunded to clients, less expenses, less handed to production, less
+        # profit handed to the boss.
         rr["cash"] = (
-            rr["in_som"] - rr["refunded"] - rr["expense_total"]
+            rr["in_som"] - rr["commission"] - rr["refunded"] - rr["expense_total"]
             - rr["remitted"] - rr["paid_profit"]
         )
         rr["production_debt"] = rr["opening_debt"] + rr["sold_cost"] - rr["remitted"]
@@ -2585,12 +2623,34 @@ def _kassa_transactions(expenses, dates, filters, rep):
                 "title": client.name if client else "—", "subtitle": p.get_kind_display(),
                 "method": p.get_method_display(), "method_code": p.method,
                 "currency": p.currency,
-                "amount_som": p.net_amount, "amount_original": p.original_amount,
+                # Gross: the whole sum the client handed over came in. The bank's cut
+                # goes out again as its own `commission` row below, so the ledger shows
+                # both sides instead of quietly netting them off.
+                "amount_som": p.amount, "amount_original": p.original_amount,
                 "exchange_rate": p.exchange_rate, "commission_percent": p.commission_percent,
                 "created_by": p.created_by,
-                "sale_pk": p.sale_id, "pk": p.pk, "kind": "payment",
+                "sale_pk": p.sale_id, "client_pk": client.pk if client else None,
+                "pk": p.pk, "kind": "payment",
                 "is_advance": p.kind == Payment.Kind.ADVANCE_IN,
             })
+            # The bank fee on a transfer: money that never reached the till, charged to
+            # the seller (the client's debt fell by the full amount). Always so'm — the
+            # `commission` field is stored in so'm even on a dollar payment.
+            if p.commission:
+                rows.append({
+                    "date": p.date, "created_at": p.created_at, "direction": "commission",
+                    "title": client.name if client else "—",
+                    # No subtitle: the "Komissiya" badge on the row already says it.
+                    "subtitle": "",
+                    "method": p.get_method_display(), "method_code": p.method,
+                    "currency": Payment.Currency.UZS,
+                    "amount_som": p.commission, "amount_original": p.commission,
+                    "exchange_rate": Decimal("0"),
+                    "commission_percent": p.commission_percent,
+                    "created_by": p.created_by,
+                    "sale_pk": p.sale_id, "client_pk": client.pk if client else None,
+                    "pk": p.pk, "kind": "commission",
+                })
         # Production handovers — so'm only, so a dollar-currency filter hides them.
         if filters["currency"] != Payment.Currency.USD:
             remittances = ProductionRemittance.objects.select_related(
@@ -2601,14 +2661,24 @@ def _kassa_transactions(expenses, dates, filters, rep):
             if filters["method"] in dict(Payment.Method.choices):
                 remittances = remittances.filter(method=filters["method"])
             for m in remittances:
+                # A negative handover is production giving the cash back. It stays in
+                # the chiqim ledger (same stream, same row actions) but carries its own
+                # kind so the page can print it as an inflow — and `amount_som` keeps
+                # the sign, so the ledger total nets it off on its own.
                 rows.append({
                     "date": m.date, "created_at": m.created_at, "direction": "remit",
-                    "title": str(m.seller), "subtitle": "Ishlab chiqarishga topshiruv",
+                    "title": str(m.seller),
+                    "subtitle": (
+                        "Ishlab chiqarishdan qaytarildi" if m.is_refund
+                        else "Ishlab chiqarishga topshiruv"
+                    ),
                     "method": m.get_method_display(), "method_code": m.method,
                     "currency": Payment.Currency.UZS,
                     "amount_som": m.amount, "amount_original": m.amount,
+                    "amount_abs": m.abs_amount,
                     "exchange_rate": Decimal("0"), "created_by": m.created_by,
-                    "pk": m.pk, "kind": "remittance",
+                    "pk": m.pk,
+                    "kind": "remittance_back" if m.is_refund else "remittance",
                 })
         # Profit handovers to the boss — so'm only, so a dollar-currency filter hides them.
         if filters["currency"] != Payment.Currency.USD:
@@ -2665,7 +2735,7 @@ def _kassa_transactions(expenses, dates, filters, rep):
             "currency": e.currency,
             "amount_som": e.amount, "amount_original": e.original_amount,
             "exchange_rate": e.exchange_rate, "created_by": e.created_by,
-            "pk": e.pk, "kind": "expense",
+            "pk": e.pk, "kind": "expense", "employee_pk": e.employee_id,
         })
     rows.sort(key=lambda r: (r["date"], r["created_at"]), reverse=True)
     return rows
@@ -2681,11 +2751,13 @@ def kassa_view(request):
     summary = _kassa_summary(date_from, date_to, rep=rep)
     transactions = _kassa_transactions(expenses, dates, filters, rep)
     # Two side-by-side ledgers: kirim (client payments) on the left, chiqim
-    # (expenses + production handovers) on the right. Totals use amount_som so a
-    # USD payment counts at its so'm value. Newest-first order is inherited.
+    # (expenses, production handovers and bank fees) on the right. Totals use
+    # amount_som so a USD payment counts at its so'm value. Newest-first order is
+    # inherited.
     income_rows = [t for t in transactions if t["direction"] == "in"]
     outflow_rows = [
-        t for t in transactions if t["direction"] in ("out", "remit", "profit", "refund")
+        t for t in transactions
+        if t["direction"] in ("out", "remit", "profit", "refund", "commission")
     ]
     income_total = sum((t["amount_som"] for t in income_rows), Decimal("0"))
     outflow_total = sum((t["amount_som"] for t in outflow_rows), Decimal("0"))
@@ -2708,7 +2780,7 @@ def kassa_view(request):
     seller_totals = {
         key: sum((r[key] for r in seller_rows), Decimal("0"))
         for key in ("cash", "production_debt", "sold_cost", "remitted", "paid_profit",
-                    "expense_total", "net")
+                    "expense_total", "commission", "net")
     }
     my_row = None
     if not request.user.can_see_all_records:
@@ -2801,8 +2873,10 @@ def _xlsx_book_response(filename, sheets):
 _OUTFLOW_LABELS = {
     "expense": "Rasxot",
     "remittance": "Ishlab chiqarishga topshiruv",
+    "remittance_back": "Ishlab chiqarishdan qaytarildi",
     "profit": "Foyda topshiruvi",
     "refund": "Qaytarish (naqd berildi)",
+    "commission": "Bank komissiyasi",
 }
 
 
@@ -2813,7 +2887,8 @@ def _kassa_ledger(request):
     rows = _kassa_transactions(expenses, dates, filters, rep)
     income = [r for r in rows if r["direction"] == "in"]
     outflow = [
-        r for r in rows if r["direction"] in ("out", "remit", "profit", "refund")
+        r for r in rows
+        if r["direction"] in ("out", "remit", "profit", "refund", "commission")
     ]
     return income, outflow
 
@@ -2855,8 +2930,8 @@ def _income_sheet(income):
 
 
 def _outflow_sheet(outflow):
-    """The Chiqim tab: rasxot, ishlab chiqarishga topshiruv, foyda topshiruvi and
-    cash refunded to clients — everything that left the till."""
+    """The Chiqim tab: rasxot, ishlab chiqarishga topshiruv, foyda topshiruvi, bank
+    fees and cash refunded to clients — everything that left the till."""
     headers = [
         "Sana", "Turi", "Tavsif", "Izoh", "Usul", "Valyuta",
         "Chiqim summa (so'm)", "Asl summa", "Kurs", "Kim kiritdi",
@@ -2974,8 +3049,17 @@ def _expense_response(request, form, title, invalid=False):
 
 def expense_create(request):
     """Record a payout from the till. Any logged-in user may add one — staff come to
-    the cashier and the expense is written against the kassa (logged for audit)."""
-    form = ExpenseForm(request.POST or None)
+    the cashier and the expense is written against the kassa (logged for audit).
+
+    The Xodimlar page links in with ?employee=<pk>, which preselects the worker and
+    the wage category so paying someone is one click from their row."""
+    initial = {}
+    employee_pk = request.GET.get("employee", "")
+    if request.method == "GET" and employee_pk.isdigit():
+        if Employee.objects.filter(pk=employee_pk, is_active=True).exists():
+            initial["employee"] = employee_pk
+            initial["category"] = SALARY_CATEGORY
+    form = ExpenseForm(request.POST or None, initial=initial)
     title = "Chiqim qo'shish"
     if request.method == "POST":
         if form.is_valid():
@@ -2986,14 +3070,18 @@ def expense_create(request):
                 f" · ${expense.original_amount:,.2f} × {expense.exchange_rate:,.0f}"
                 if expense.currency == Payment.Currency.USD else ""
             )
+            who = f" · {expense.employee}" if expense.employee_id else ""
             AuditLog.record(
                 request.user, AuditLog.Action.CREATE, "Chiqim", expense.pk,
                 f"{expense.category} chiqimi "
-                f"({expense.get_method_display()}){usd} "
+                f"({expense.get_method_display()}){usd}{who} "
                 f"— {expense.amount:,.0f} so'm",
             )
             messages.success(request, f"Chiqim qo'shildi: {expense.amount:,.0f} so'm.")
-            return form_success(request, reverse("kassa"))
+            # Only a known route may be returned to — `next` comes from the URL, so it
+            # is never trusted as a raw address.
+            back = "employee_list" if request.GET.get("next") == "xodimlar" else "kassa"
+            return form_success(request, reverse(back))
         return _expense_response(request, form, title, invalid=True)
     return _expense_response(request, form, title)
 
@@ -3042,10 +3130,387 @@ def expense_delete(request, pk):
     )
 
 
+# --- Kassa amalining ichi ----------------------------------------------------
+
+def _money(value):
+    """Space-grouped so'm — the way every template prints money. Non-breaking spaces,
+    so a figure never splits across two lines however narrow the panel gets."""
+    return f"{value:,.0f}".replace(",", " ") + " so'm"
+
+
+def _percent(value):
+    """A rate without its trailing zeros: 4.00 reads as 4, 1.50 as 1.5."""
+    return f"{float(value):g}"
+
+
+def _entry_payment(request, pk, fee_only=False):
+    """A client payment (or the bank fee taken out of one — same row, read two ways)."""
+    qs = Payment.objects.select_related("sale", "sale__client", "client", "created_by")
+    if not request.user.can_see_all_records:
+        qs = qs.filter(created_by=request.user)
+    p = get_object_or_404(qs, pk=pk)
+    advance = p.kind == Payment.Kind.ADVANCE_IN
+    client = p.sale.client if p.sale else p.client
+    rows = [
+        ("Sana", p.date.strftime("%d.%m.%Y")),
+        ("Mijoz", client.name if client else "—"),
+        ("Turi", p.get_kind_display()),
+        ("To'lov usuli", p.get_method_display()),
+        ("Mijoz yubordi", _money(p.amount)),
+    ]
+    if p.currency == Payment.Currency.USD:
+        rows.append((
+            "Valyuta",
+            f"${p.original_amount:,.2f} × {p.exchange_rate:,.0f}".replace(",", " "),
+        ))
+    if p.commission:
+        rows += [
+            (f"Bank komissiyasi ({_percent(p.commission_percent)}%)",
+             f"−{_money(p.commission)}"),
+            ("Kassaga tushdi", _money(p.net_amount)),
+            ("Komissiyani kim ko'tardi", p.get_commission_payer_display()),
+        ]
+    if not advance:
+        rows.append(("Mijoz qarzidan yechildi", _money(p.credited_amount)))
+        if p.fee_on_client:
+            rows.append(("Mijozda qolgan komissiya", _money(p.commission)))
+    else:
+        rows.append(("Qarzga ta'siri", "Yo'q — avans sifatida saqlanadi"))
+    if p.note:
+        rows.append(("Izoh", p.note))
+    rows.append(("Kim qabul qildi", str(p.created_by)))
+
+    if advance:
+        edit, delete = "advance_edit", "advance_delete"
+    else:
+        edit, delete = "payment_edit", "payment_delete"
+    context = {
+        "title": "Bank komissiyasi" if fee_only else p.get_kind_display(),
+        "rows": rows,
+        "edit_url": reverse(edit, args=[p.pk]),
+        "edit_label": "To'lovni tahrirlash",
+        "delete_url": reverse(delete, args=[p.pk]),
+        "delete_label": "To'lovni o'chirish",
+    }
+    if fee_only:
+        # The fee has no life of its own: both buttons act on the payment it came out
+        # of, so the labels say so plainly rather than pretending the fee is a record.
+        context["note"] = (
+            "Komissiya alohida yozuv emas — u shu to'lovning bir qismi. Foizni "
+            "o'zgartirish uchun to'lovni tahrirlang; to'lov o'chirilsa komissiya ham "
+            "yo'qoladi."
+        )
+    if p.sale_id:
+        context["open_url"] = reverse("sale_detail", args=[p.sale_id])
+        context["open_label"] = "Sotuvni ochish"
+    elif client:
+        context["open_url"] = reverse("client_history", args=[client.pk])
+        context["open_label"] = "Mijoz tarixi"
+    return context
+
+
+def _entry_refund(request, pk):
+    """Cash handed back to a client. Undone by editing the return it settles."""
+    qs = Payment.objects.select_related("client", "created_by").prefetch_related(
+        "settled_return"
+    )
+    if not request.user.can_see_all_records:
+        qs = qs.filter(created_by=request.user)
+    p = get_object_or_404(qs, pk=pk, kind=Payment.Kind.REFUND_OUT)
+    linked = list(p.settled_return.all())
+    rows = [
+        ("Sana", p.date.strftime("%d.%m.%Y")),
+        ("Mijoz", str(p.client) if p.client else "—"),
+        ("Berilgan summa", _money(p.amount)),
+        ("To'lov usuli", p.get_method_display()),
+        ("Kim berdi", str(p.created_by)),
+    ]
+    if p.note:
+        rows.append(("Izoh", p.note))
+    context = {
+        "title": "Qaytarish (naqd berildi)",
+        "rows": rows,
+        "note": (
+            "Bu yozuv qaytarishdan kelib chiqadi — bekor qilish uchun qaytarishning "
+            "o'zini tahrirlang."
+        ),
+    }
+    if linked:
+        context["edit_url"] = reverse("return_edit", args=[linked[0].pk])
+        context["edit_label"] = "Qaytarishni tahrirlash"
+    if p.sale_id:
+        context["open_url"] = reverse("sale_detail", args=[p.sale_id])
+        context["open_label"] = "Sotuvni ochish"
+    return context
+
+
+def _entry_expense(request, pk):
+    qs = Expense.objects.select_related("created_by", "employee")
+    if not request.user.can_see_all_records:
+        qs = qs.filter(created_by=request.user)
+    e = get_object_or_404(qs, pk=pk)
+    rows = [
+        ("Sana", e.date.strftime("%d.%m.%Y")),
+        ("Turkum", e.category),
+        ("Summa", _money(e.amount)),
+        ("To'lov usuli", e.get_method_display()),
+    ]
+    if e.currency == Payment.Currency.USD:
+        rows.append((
+            "Valyuta",
+            f"${e.original_amount:,.2f} × {e.exchange_rate:,.0f}".replace(",", " "),
+        ))
+    if e.employee_id:
+        rows.append(("Xodim", f"{e.employee.name} — oyligidan ayrildi"))
+    if e.note:
+        rows.append(("Izoh", e.note))
+    rows.append(("Kim kiritdi", str(e.created_by)))
+    context = {
+        "title": "Chiqim (rasxot)",
+        "rows": rows,
+        "edit_url": reverse("expense_edit", args=[e.pk]),
+        "edit_label": "Chiqimni tahrirlash",
+        "delete_url": reverse("expense_delete", args=[e.pk]),
+        "delete_label": "Chiqimni o'chirish",
+    }
+    if e.employee_id and request.user.can_see_all_records:
+        context["open_url"] = reverse("employee_list")
+        context["open_label"] = "Xodimlar bo'limi"
+    return context
+
+
+def _entry_remittance(request, pk):
+    qs = ProductionRemittance.objects.select_related("seller", "created_by")
+    if not request.user.can_see_all_records:
+        qs = qs.filter(seller=request.user)
+    r = get_object_or_404(qs, pk=pk)
+    rows = [
+        ("Sana", r.date.strftime("%d.%m.%Y")),
+        ("Sotuvchi", str(r.seller)),
+        ("Summa", _money(r.abs_amount)),
+        ("Yo'nalishi",
+         "Ishlab chiqarish sotuvchiga qaytardi" if r.is_refund
+         else "Sotuvchi ishlab chiqarishga topshirdi"),
+        ("Kassaga ta'siri",
+         f"+{_money(r.abs_amount)}" if r.is_refund else f"−{_money(r.abs_amount)}"),
+        ("I.ch. qarziga ta'siri",
+         f"+{_money(r.abs_amount)}" if r.is_refund else f"−{_money(r.abs_amount)}"),
+        ("To'lov usuli", r.get_method_display()),
+    ]
+    if r.note:
+        rows.append(("Izoh", r.note))
+    rows.append(("Kim kiritdi", str(r.created_by)))
+    return {
+        "title": "Ishlab chiqarishdan qaytarish" if r.is_refund
+                 else "Ishlab chiqarishga topshiruv",
+        "rows": rows,
+        "edit_url": reverse("remittance_edit", args=[r.pk]),
+        "edit_label": "Tahrirlash",
+        "delete_url": reverse("remittance_delete", args=[r.pk]),
+        "delete_label": "O'chirish",
+    }
+
+
+def _entry_profit(request, pk):
+    qs = ProfitPayout.objects.select_related("seller", "created_by")
+    if not request.user.can_see_all_records:
+        qs = qs.filter(seller=request.user)
+    x = get_object_or_404(qs, pk=pk)
+    rows = [
+        ("Sana", x.date.strftime("%d.%m.%Y")),
+        ("Sotuvchi", str(x.seller)),
+        ("Summa", _money(x.amount)),
+        ("To'lov usuli", x.get_method_display()),
+        ("Kassaga ta'siri", f"−{_money(x.amount)}"),
+        ("I.ch. qarziga ta'siri", "Yo'q — qarz allaqachon yopilgan"),
+    ]
+    if x.note:
+        rows.append(("Izoh", x.note))
+    rows.append(("Kim kiritdi", str(x.created_by)))
+    return {
+        "title": "Foyda topshiruvi",
+        "rows": rows,
+        "edit_url": reverse("profit_payout_edit", args=[x.pk]),
+        "edit_label": "Tahrirlash",
+        "delete_url": reverse("profit_payout_delete", args=[x.pk]),
+        "delete_label": "O'chirish",
+    }
+
+
+def kassa_entry_detail(request, kind, pk):
+    """The inside of one kassa row: what it is, what it moved, and the buttons that
+    change or remove it.
+
+    The ledger rows themselves carry only [tahrirlash] and [ko'rish] — deleting lives
+    one step in, behind this panel, so a mis-click in a dense table can't erase money.
+    Every builder scopes its queryset the same way the edit/delete views do, so a
+    seller can only open their own rows."""
+    builders = {
+        "payment": lambda: _entry_payment(request, pk),
+        "advance": lambda: _entry_payment(request, pk),
+        "commission": lambda: _entry_payment(request, pk, fee_only=True),
+        "refund": lambda: _entry_refund(request, pk),
+        "expense": lambda: _entry_expense(request, pk),
+        "remittance": lambda: _entry_remittance(request, pk),
+        "remittance_back": lambda: _entry_remittance(request, pk),
+        "profit": lambda: _entry_profit(request, pk),
+    }
+    build = builders.get(kind)
+    if build is None:
+        raise Http404("Noma'lum amal turi")
+    context = build()
+    template = (
+        "crm/_entry_detail_modal.html" if is_ajax(request) else "crm/entry_detail.html"
+    )
+    return render(request, template, context)
+
+
+# --- Xodimlar (payroll) ------------------------------------------------------
+
+# The category a wage payout is filed under by default. It is only a suggestion —
+# `Expense.category` stays free text; what actually ties money to a worker is the
+# `employee` field, so an advance filed as "Boshqa" still counts against their pay.
+SALARY_CATEGORY = "Oylik / xodim"
+
+
+def _payroll_month(request):
+    """The month the Xodimlar page is showing, from ?oy=YYYY-MM (this month by
+    default). A wage is a monthly figure, so every total on the page is scoped to one
+    calendar month rather than the shared day-range filter."""
+    today = timezone.localdate()
+    raw = request.GET.get("oy", "")
+    try:
+        year, month = (int(part) for part in raw.split("-", 1))
+        date(year, month, 1)  # rejects month 0/13 and any junk
+    except (ValueError, TypeError):
+        year, month = today.year, today.month
+    return year, month
+
+
+def employee_list(request):
+    """Payroll: everyone on the books, their monthly wage, what they have drawn from
+    the till this month and what is still owed.
+
+    Wages are only visible to admins/managers — a seller has no business seeing what
+    the staff earn."""
+    if not request.user.can_see_all_records:
+        raise PermissionDenied
+    year, month = _payroll_month(request)
+    employees = Employee.objects.all()
+    rows = []
+    for e in employees:
+        paid = e.paid_in(year, month)
+        rows.append({
+            "employee": e,
+            "paid": paid,
+            "remaining": e.salary - paid,
+        })
+    totals = {
+        "salary": sum((r["employee"].salary for r in rows if r["employee"].is_active), Decimal("0")),
+        "paid": sum((r["paid"] for r in rows), Decimal("0")),
+        "remaining": sum(
+            (r["remaining"] for r in rows if r["employee"].is_active), Decimal("0")
+        ),
+    }
+    payouts = (
+        Expense.objects.filter(
+            employee__isnull=False, date__year=year, date__month=month
+        )
+        .select_related("employee", "created_by")
+        .order_by("-date", "-created_at")
+    )
+    return render(request, "crm/employee_list.html", {
+        "rows": rows,
+        "totals": totals,
+        "payouts": payouts,
+        "month_value": f"{year:04d}-{month:02d}",
+        "month_label": date(year, month, 1).strftime("%m.%Y"),
+    })
+
+
+def employee_create(request):
+    if not request.user.can_see_all_records:
+        raise PermissionDenied
+    form = EmployeeForm(request.POST or None)
+    title = "Yangi xodim"
+    if request.method == "POST":
+        if form.is_valid():
+            employee = form.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Xodim", employee.pk,
+                f"{employee.name} qo'shildi — oyligi {employee.salary:,.0f} so'm",
+            )
+            messages.success(request, f"“{employee.name}” qo'shildi.")
+            return form_success(request, reverse("employee_list"))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
+
+
+def employee_edit(request, pk):
+    if not request.user.can_see_all_records:
+        raise PermissionDenied
+    employee = get_object_or_404(Employee, pk=pk)
+    form = EmployeeForm(request.POST or None, instance=employee)
+    title = "Xodimni tahrirlash"
+    if request.method == "POST":
+        if form.is_valid():
+            form.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Xodim", employee.pk,
+                f"{employee.name} yangilandi — oyligi {employee.salary:,.0f} so'm",
+            )
+            messages.success(request, "Xodim yangilandi.")
+            return form_success(request, reverse("employee_list"))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
+
+
+def employee_delete(request, pk):
+    """Remove someone from the payroll. Refused once money has been paid to them —
+    erasing the worker would orphan a real till outflow, so they are deactivated
+    instead (they keep their history and stop appearing in the pickers)."""
+    if not request.user.can_see_all_records:
+        raise PermissionDenied
+    employee = get_object_or_404(Employee, pk=pk)
+    paid_ever = employee.expenses.exists()
+    if request.method == "POST":
+        if paid_ever:
+            employee.is_active = False
+            employee.save(update_fields=["is_active"])
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Xodim", employee.pk,
+                f"{employee.name} faol emas deb belgilandi",
+            )
+            messages.success(request, f"“{employee.name}” faol emas deb belgilandi.")
+        else:
+            name = employee.name
+            employee.delete()
+            AuditLog.record(
+                request.user, AuditLog.Action.DELETE, "Xodim", pk, f"{name} o'chirildi"
+            )
+            messages.success(request, f"“{name}” o'chirildi.")
+        return form_reload(request, reverse("employee_list"))
+    if paid_ever:
+        body = (
+            f"“{employee.name}”ga kassadan pul berilgan, shuning uchun butunlay "
+            f"o'chirib bo'lmaydi — chiqim yozuvlari egasiz qolardi. Uning o'rniga "
+            f"faol emas deb belgilanadi: tarixi saqlanadi, ro'yxatlarda chiqmaydi. "
+            f"Davom etasizmi?"
+        )
+        button = "Ha, faol emas qilish"
+    else:
+        body = f"“{employee.name}” ro'yxatdan o'chiriladi. Davom etasizmi?"
+        button = "Ha, o'chirish"
+    return render_confirm(
+        request, "Xodimni o'chirish", body, button, confirm_class="btn-danger"
+    )
+
+
 def _remit_summary(remit):
+    verb = "ishlab chiqarishdan qaytarib oldi" if remit.is_refund else "topshirdi"
     return (
-        f"Sotuvchi {remit.seller} topshirdi "
-        f"({remit.get_method_display()}) — {remit.amount:,.0f} so'm"
+        f"Sotuvchi {remit.seller} {verb} "
+        f"({remit.get_method_display()}) — {remit.abs_amount:,.0f} so'm"
     )
 
 
@@ -3078,14 +3543,50 @@ def remittance_create(request):
     return form_response(request, form, title, modal_template="crm/_remittance_modal.html")
 
 
+def remittance_refund_create(request):
+    """Record cash production hands BACK to a seller — a handover in reverse. Same
+    permissions as filing one: a seller may only file their own, admins/managers may
+    file for anyone (?seller= preselects from the per-seller control table).
+
+    Stored as a negative handover, so the seller's till and their production debt both
+    climb back by the amount returned."""
+    initial = {}
+    seller_pk = request.GET.get("seller", "")
+    if request.method == "GET" and request.user.can_see_all_records and seller_pk.isdigit():
+        initial["seller"] = seller_pk
+    form = ProductionRefundForm(request.POST or None, user=request.user, initial=initial)
+    title = "Ishlab chiqarishdan qaytarish"
+    if request.method == "POST":
+        if form.is_valid():
+            remit = form.save(commit=False)
+            # A seller cannot spoof the seller field (it's disabled, so absent from
+            # POST) — pin it to themselves.
+            if not request.user.can_see_all_records:
+                remit.seller = request.user
+            remit.created_by = request.user
+            remit.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Topshiruv", remit.pk,
+                _remit_summary(remit),
+            )
+            messages.success(request, f"Qaytarildi: {remit.abs_amount:,.0f} so'm.")
+            return form_success(request, reverse("kassa"))
+        return form_response(request, form, title, invalid=True, modal_template="crm/_refund_modal.html")
+    return form_response(request, form, title, modal_template="crm/_refund_modal.html")
+
+
 def remittance_edit(request, pk):
-    """Fix a mistaken handover. Admins/managers may edit any; a seller may edit only
-    their own."""
+    """Fix a mistaken handover — or a mistaken return, which is the same row with a
+    negative amount and so gets the return form. Admins/managers may edit any; a
+    seller may edit only their own."""
     qs = ProductionRemittance.objects.all() if request.user.can_see_all_records \
         else ProductionRemittance.objects.filter(seller=request.user)
     remit = get_object_or_404(qs, pk=pk)
-    title = "Topshiruvni tahrirlash"
-    form = ProductionRemittanceForm(request.POST or None, instance=remit, user=request.user)
+    refund = remit.is_refund
+    title = "Qaytarishni tahrirlash" if refund else "Topshiruvni tahrirlash"
+    modal = "crm/_refund_modal.html" if refund else "crm/_remittance_modal.html"
+    form_class = ProductionRefundForm if refund else ProductionRemittanceForm
+    form = form_class(request.POST or None, instance=remit, user=request.user)
     if request.method == "POST":
         if form.is_valid():
             remit = form.save(commit=False)
@@ -3096,29 +3597,32 @@ def remittance_edit(request, pk):
                 request.user, AuditLog.Action.UPDATE, "Topshiruv", remit.pk,
                 _remit_summary(remit),
             )
-            messages.success(request, "Topshiruv yangilandi.")
+            messages.success(
+                request, "Qaytarish yangilandi." if refund else "Topshiruv yangilandi."
+            )
             return form_success(request, reverse("kassa"))
-        return form_response(request, form, title, invalid=True, modal_template="crm/_remittance_modal.html")
-    return form_response(request, form, title, modal_template="crm/_remittance_modal.html")
+        return form_response(request, form, title, invalid=True, modal_template=modal)
+    return form_response(request, form, title, modal_template=modal)
 
 
 def remittance_delete(request, pk):
-    """Remove a mistaken handover. Admins/managers may erase any; a seller may erase
-    only their own."""
+    """Remove a mistaken handover (or return). Admins/managers may erase any; a seller
+    may erase only their own."""
     qs = ProductionRemittance.objects.select_related("seller", "created_by")
     if not request.user.can_see_all_records:
         qs = qs.filter(seller=request.user)
     remit = get_object_or_404(qs, pk=pk)
+    noun = "qaytarish" if remit.is_refund else "topshiruv"
     if request.method == "POST":
         summary = _remit_summary(remit)
         remit.delete()
         AuditLog.record(request.user, AuditLog.Action.DELETE, "Topshiruv", pk, summary)
-        messages.success(request, "Topshiruv o'chirildi.")
+        messages.success(request, f"{noun.capitalize()} o'chirildi.")
         return form_reload(request, reverse("kassa"))
     return render_confirm(
         request,
-        "Topshiruvni o'chirish",
-        f"{remit.amount:,.0f} so'm topshiruv o'chiriladi. Davom etasizmi?",
+        f"{noun.capitalize()}ni o'chirish",
+        f"{remit.abs_amount:,.0f} so'm {noun} o'chiriladi. Davom etasizmi?",
         "Ha, o'chirish",
         confirm_class="btn-danger",
     )
@@ -3715,8 +4219,8 @@ def _client_advance_map(user):
         )
         .values("client")
         .annotate(
-            deposited=Sum(PAYMENT_NET, filter=Q(kind=Payment.Kind.ADVANCE_IN)),
-            used=Sum(PAYMENT_NET, filter=Q(kind=Payment.Kind.ADVANCE_USED)),
+            deposited=Sum(PAYMENT_CREDIT, filter=Q(kind=Payment.Kind.ADVANCE_IN)),
+            used=Sum(PAYMENT_CREDIT, filter=Q(kind=Payment.Kind.ADVANCE_USED)),
         )
     )
     result = {}
@@ -3918,6 +4422,7 @@ def sale_pay(request, pk):
                 exchange_rate=cd["exchange_rate"],
                 on_date=cd["date"],
                 client=sale.client,
+                payer=cd["commission_payer"],
             )
             applied = Decimal("0")
             if surplus > 0:

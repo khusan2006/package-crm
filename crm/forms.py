@@ -10,6 +10,7 @@ from accounts.models import User
 
 from .models import (
     Client,
+    Employee,
     Expense,
     Payment,
     Product,
@@ -22,6 +23,7 @@ from .models import (
     SaleItem,
     StockEntry,
     seller_cash_on_hand,
+    seller_remitted_total,
     seller_withdrawable_profit,
 )
 
@@ -164,6 +166,17 @@ class DebtPaymentForm(forms.Form):
         max_value=Decimal("100"),
         help_text="Faqat bank o'tkazmasi uchun — bank ushlab qoladigan foiz",
     )
+    commission_payer = forms.ChoiceField(
+        label="Komissiyani kim ko'taradi",
+        choices=Payment.Payer.choices,
+        initial=Payment.Payer.SELLER,
+        required=False,
+        widget=forms.RadioSelect,
+        help_text=(
+            "Sotuvchidan — mijoz qarzi yuborgan summasiga to'liq yopiladi. "
+            "Mijozdan — qarzidan faqat komissiyasiz qismi yechiladi, foiz qarz bo'lib qoladi"
+        ),
+    )
     note = forms.CharField(
         label="Izoh",
         max_length=255,
@@ -198,15 +211,21 @@ class DebtPaymentForm(forms.Form):
         commission = (amount * percent / Decimal("100")).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
+        # With no fee there is nobody to charge it to, so the choice collapses to the
+        # default rather than being stored as a meaningless preference.
+        payer = cleaned.get("commission_payer") or Payment.Payer.SELLER
+        if not commission:
+            payer = Payment.Payer.SELLER
+        cleaned["commission_payer"] = payer
         if commission > amount:
             self.add_error(
                 "commission_percent", "Komissiya to'lov summasidan ko'p bo'lishi mumkin emas."
             )
         # Overpayment is allowed on purpose: a client may hand over more than they
         # owe, and the surplus becomes their advance (kredit) — the views split it
-        # off after the open receipts are settled. Only the net (amount −
-        # commission) counts as money received, so that is what they split.
-        cleaned["net"] = amount - commission
+        # off after the open receipts are settled. The full gross is what gets split:
+        # a bank fee is withheld from the seller, so it never shrinks the client's
+        # credit.
         cleaned["amount"] = amount  # canonical so'm value the views persist
         cleaned["amount_original"] = entered  # the physical figure (dollars for USD)
         # A backdated payment keeps the day the client actually handed the money
@@ -223,18 +242,19 @@ class DebtPaymentForm(forms.Form):
 class PaymentEditForm(forms.ModelForm):
     """Fix a mistaken payment (Kirim). Full edit of a single receipt: amount,
     currency + rate, method, bank commission and note. `amount` persists as so'm
-    (a dollar payment is entered in dollars and converted at the hand-typed rate);
-    `net` (amount − commission) is what pays down the debt, so it may not exceed
-    `max_amount` — the sale's remaining plus whatever this payment already covers,
-    which keeps the sale from becoming over-paid. `kind`/`sale`/`created_by` are
-    fixed; only the money figures are editable."""
+    (a dollar payment is entered in dollars and converted at the hand-typed rate) and
+    is what pays down the debt in full, so it may not exceed `max_amount` — the sale's
+    remaining plus whatever this payment already covers, which keeps the sale from
+    becoming over-paid. The bank fee sits on top, charged to the seller.
+    `kind`/`sale`/`created_by` are fixed; only the money figures are editable."""
 
     class Meta:
         model = Payment
         fields = ["date", "amount", "currency", "exchange_rate", "method",
-                  "commission_percent", "note"]
+                  "commission_percent", "commission_payer", "note"]
         widgets = {
             "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "commission_payer": forms.RadioSelect,
             "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — qo'shimcha ma'lumot"}),
         }
 
@@ -247,7 +267,14 @@ class PaymentEditForm(forms.ModelForm):
         self.fields["exchange_rate"].required = False
         self.fields["exchange_rate"].help_text = "Faqat dollar to'lovi uchun — har safar qo'lda kiritiladi"
         self.fields["commission_percent"].required = False
-        self.fields["commission_percent"].help_text = "Faqat bank o'tkazmasi uchun — bank ushlab qoladigan foiz"
+        self.fields["commission_percent"].help_text = (
+            "Faqat bank o'tkazmasi uchun — bank ushlab qoladigan foiz"
+        )
+        self.fields["commission_payer"].required = False
+        self.fields["commission_payer"].help_text = (
+            "Sotuvchidan — mijoz qarzi yuborgan summasiga to'liq yopiladi. "
+            "Mijozdan — qarzidan faqat komissiyasiz qismi yechiladi, foiz qarz bo'lib qoladi"
+        )
         _mark_money(self.fields["amount"], self.fields["exchange_rate"])
         # Editing a dollar payment: show the original dollars in the amount field
         # (not the stored so'm), so re-saving converts at the rate correctly.
@@ -286,16 +313,20 @@ class PaymentEditForm(forms.ModelForm):
             self.add_error(
                 "commission_percent", "Komissiya to'lov summasidan ko'p bo'lishi mumkin emas."
             )
-        # Only the net (amount − commission) pays down the debt, so the net — not
-        # the gross — is what may not exceed the room left on the sale.
-        net = amount - commission
-        if self.max_amount is not None and net > self.max_amount:
+        payer = cleaned.get("commission_payer") or Payment.Payer.SELLER
+        if not commission:
+            payer = Payment.Payer.SELLER
+        cleaned["commission_payer"] = payer
+        # What may not exceed the room left on the sale is what this payment CREDITS —
+        # the gross when the seller carries the fee, the net when the client does.
+        credit = amount - commission if payer == Payment.Payer.CLIENT else amount
+        if self.max_amount is not None and credit > self.max_amount:
             self.add_error(
                 "amount", f"Qoldiqdan ({self.max_amount:.0f} so'm) ko'p bo'lishi mumkin emas."
             )
-        # `amount`/`exchange_rate`/`commission_percent` are form fields (persisted
-        # via cleaned); `commission`/`amount_original` are not, so set them on the
-        # instance directly.
+        # `amount`/`exchange_rate`/`commission_percent`/`commission_payer` are form
+        # fields (persisted via cleaned); `commission`/`amount_original` are not, so
+        # set them on the instance directly.
         self.instance.commission = commission
         self.instance.amount_original = entered
         cleaned["amount"] = amount
@@ -304,14 +335,54 @@ class PaymentEditForm(forms.ModelForm):
         return cleaned
 
 
+class EmployeeForm(forms.ModelForm):
+    """A payroll worker and their monthly wage."""
+
+    class Meta:
+        model = Employee
+        fields = ["name", "salary", "is_active", "note"]
+        widgets = {
+            "name": forms.TextInput(attrs={"placeholder": "Masalan: Косимов Рахматжон"}),
+            "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — lavozimi, izoh"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _mark_money(self.fields["salary"])
+
+    def clean_salary(self):
+        salary = self.cleaned_data.get("salary")
+        if salary is not None and salary <= 0:
+            raise forms.ValidationError("Oylik 0 dan katta bo'lishi kerak.")
+        return salary
+
+    def clean_name(self):
+        # Case-folded in Python rather than with `iexact`: the names here are Cyrillic
+        # and SQLite's LIKE only case-folds ASCII, so an `iexact` guard would pass the
+        # test suite and then behave differently on Postgres. The payroll is a handful
+        # of rows, so comparing them in Python costs nothing.
+        name = (self.cleaned_data.get("name") or "").strip()
+        taken = Employee.objects.all()
+        if self.instance.pk:
+            taken = taken.exclude(pk=self.instance.pk)
+        folded = name.casefold()
+        if any(existing.casefold() == folded for existing in taken.values_list("name", flat=True)):
+            raise forms.ValidationError("Bu ismli xodim allaqachon bor.")
+        return name
+
+
 class ExpenseForm(forms.ModelForm):
     """A payout from the till. `method` records which wallet it left (cash/card/bank);
     `currency` records whether it left the so'm or the dollar till. A dollar expense is
-    entered in dollars with a hand-typed rate and converted to a so'm `amount`."""
+    entered in dollars with a hand-typed rate and converted to a so'm `amount`.
+
+    Tagging an `employee` turns it into money against that worker's monthly wage —
+    the wage itself or an advance they drew; the Xodimlar page counts both."""
 
     class Meta:
         model = Expense
-        fields = ["date", "amount", "currency", "exchange_rate", "category", "method", "note"]
+        fields = ["date", "amount", "currency", "exchange_rate", "category", "method",
+                  "employee", "note"]
         widgets = {
             "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
             "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — nima uchun"}),
@@ -330,6 +401,18 @@ class ExpenseForm(forms.ModelForm):
         self.fields["amount"].help_text = "Tanlangan valyutada — dollar tanlansa, dollardagi summa"
         self.fields["exchange_rate"].required = False
         self.fields["exchange_rate"].help_text = "Faqat dollar chiqimi uchun — qo'lda kiritiladi"
+        # Only people still on the payroll are offered — but an expense already tied
+        # to someone who has since left keeps showing them, or editing it would fail.
+        staff = Employee.objects.filter(is_active=True)
+        if self.instance.pk and self.instance.employee_id:
+            staff = staff | Employee.objects.filter(pk=self.instance.employee_id)
+        self.fields["employee"].queryset = staff.distinct()
+        self.fields["employee"].required = False
+        # A plain <select>, not the searchable combobox: this field is optional and
+        # the combobox hides its blank row, which would leave no way to say "nobody"
+        # (or to clear a mistagged expense).
+        self.fields["employee"].empty_label = "— xodimga tegishli emas —"
+        self.fields["employee"].help_text = "Tanlansa, shu oyning oyligidan ayriladi"
         _mark_money(self.fields["amount"], self.fields["exchange_rate"])
         # Editing a dollar expense: show the original dollars in the amount field
         # (not the stored so'm), so re-saving converts at the rate correctly.
@@ -415,6 +498,52 @@ class ProductionRemittanceForm(forms.ModelForm):
                     f"Kassada yetarli pul yo'q. {seller} qo'lida hozir "
                     f"{available:,.0f} so'm bor — {amount:,.0f} so'm topshirib bo'lmaydi."
                 )
+        return cleaned
+
+
+class ProductionRefundForm(ProductionRemittanceForm):
+    """Production handing cash BACK to a seller (Ishlab chiqarishdan qaytarish) — the
+    mirror of a handover: the seller's till grows and their production debt grows with
+    it. The user types a plain positive figure; it is stored as a negative
+    `ProductionRemittance.amount` so every handover total nets it off on its own.
+
+    The only limit is symmetry: production cannot return more than it has received,
+    so the amount is capped at the seller's net remitted so far."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["amount"].label = "Qaytarilgan summa (so'm)"
+        # An existing return is stored negative; show it the way it was typed.
+        if self.instance.pk and self.instance.amount < 0:
+            self.initial["amount"] = -self.instance.amount
+
+    def clean_amount(self):
+        amount = self.cleaned_data.get("amount")
+        if amount is not None and amount <= 0:
+            raise forms.ValidationError("Summa 0 dan katta bo'lishi kerak.")
+        return amount
+
+    def clean(self):
+        # Deliberately skips ProductionRemittanceForm.clean: that one guards the till
+        # against going negative, which a return can never do — it ADDS cash.
+        cleaned = forms.ModelForm.clean(self)
+        seller = cleaned.get("seller")
+        if self.user is not None and not self.user.can_see_all_records:
+            seller = self.user
+        amount = cleaned.get("amount")
+        if seller is not None and amount:
+            remitted = seller_remitted_total(
+                seller, exclude_remittance_pk=self.instance.pk
+            )
+            if amount > remitted:
+                raise forms.ValidationError(
+                    f"Qaytarish topshirilgandan ko'p bo'lishi mumkin emas. {seller} "
+                    f"hozirgacha jami {remitted:,.0f} so'm topshirgan — "
+                    f"{amount:,.0f} so'm qaytarib bo'lmaydi."
+                )
+            # Stored signed: a return is a handover running the other way.
+            cleaned["amount"] = -amount
+            self.instance.amount = -amount
         return cleaned
 
 

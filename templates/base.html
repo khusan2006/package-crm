@@ -64,6 +64,12 @@
 
       <div class="nav-group">
         <div class="nav-group-label">Nazorat</div>
+        {% if user.can_see_all_records %}
+        <a class="nav-item {% if 'employee' in url_name %}active{% endif %}" href="{% url 'employee_list' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+          <span>Xodimlar</span>
+        </a>
+        {% endif %}
         <a class="nav-item {% if 'audit' in url_name %}active{% endif %}" href="{% url 'audit_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/><line x1="9" y1="11" x2="12" y2="11"/></svg></span>
           <span>Hisobotlar</span>
@@ -610,10 +616,21 @@
     function fmt(s) { var d = parseIso(s); return d ? d.getDate() + '-' + MONTHS[d.getMonth()] : ''; }
     // ISO ⇄ hand-typed dd.mm.yyyy, for the manually editable Dan/Gacha fields.
     function disp(s) { var d = parseIso(s); return d ? pad(d.getDate()) + '.' + pad(d.getMonth() + 1) + '.' + d.getFullYear() : ''; }
+    // Forgiving about HOW the date was typed, strict about whether it exists.
+    // Accepts 05.08.2026, 5/8/2026, 5-8-26 and bare digits (05082026 / 050826) —
+    // people type all of these, and silently ignoring the ones we didn't anticipate
+    // is what made manual entry feel broken.
     function fromDisp(s) {
-      var m = (s || '').trim().match(/^(\d{1,2})[.,\/\-](\d{1,2})[.,\/\-](\d{4})$/);
-      if (!m) { return ''; }
+      var v = (s || '').trim();
+      var m = v.match(/^(\d{1,2})[.,\/\-\s](\d{1,2})[.,\/\-\s](\d{2}|\d{4})$/);
+      if (!m) {
+        var digits = v.replace(/\D/g, '');
+        if (digits.length === 8) { m = [v, digits.slice(0, 2), digits.slice(2, 4), digits.slice(4)]; }
+        else if (digits.length === 6) { m = [v, digits.slice(0, 2), digits.slice(2, 4), digits.slice(4)]; }
+        else { return ''; }
+      }
       var dd = +m[1], mm = +m[2], yy = +m[3];
+      if (m[3].length === 2) { yy += 2000; }   // 26 → 2026
       var d = new Date(yy, mm - 1, dd);
       // reject impossible dates (e.g. 31.02.2026 rolls over to March)
       if (d.getFullYear() !== yy || d.getMonth() !== mm - 1 || d.getDate() !== dd) { return ''; }
@@ -743,8 +760,33 @@
       }
       var preset = e.target.closest('[data-preset]');
       if (preset) { applyPreset(preset.getAttribute('data-preset')); return; }
-      if (e.target.closest('[data-apply]')) { apply(selStart, selEnd || selStart); }
+      if (e.target.closest('[data-apply]')) { applyTyped(); }
     });
+
+    // Read the two fields RIGHT NOW rather than trusting that a `change` event has
+    // already synced them. Clicking "Tanlash" blurs the input, and relying on that
+    // blur firing first is exactly the kind of ordering that leaves a hand-typed
+    // date silently ignored.
+    function applyTyped() {
+      var fromEl = pop.querySelector('[data-input="from"]');
+      var toEl = pop.querySelector('[data-input="to"]');
+      var fRaw = fromEl ? fromEl.value.trim() : '';
+      var tRaw = toEl ? toEl.value.trim() : '';
+      var f = fromDisp(fRaw);
+      var t = fromDisp(tRaw);
+      // A field with something unreadable in it stops the apply and says so, instead
+      // of quietly falling back to a date the user never asked for.
+      var bad = false;
+      if (fromEl) { markInvalid(fromEl, fRaw && !f); bad = bad || (fRaw && !f); }
+      if (toEl) { markInvalid(toEl, tRaw && !t); bad = bad || (tRaw && !t); }
+      if (bad) { return; }
+      if (!f && !t) { f = selStart; t = selEnd; }
+      apply(f || t, t || f);
+    }
+
+    function markInvalid(el, isBad) {
+      el.classList.toggle('is-invalid', !!isBad);
+    }
 
     // Manual entry: typing (or picking) in the Dan/Gacha fields updates the range
     function syncFromInputs(focusEl) {
@@ -764,14 +806,19 @@
       var el = e.target.closest('[data-input]');
       if (el) { syncFromInputs(el); }
     });
-    pop.addEventListener('keydown', function (e) {
-      if (e.key !== 'Enter') { return; }
+    // Typing again clears the "unreadable" mark, and a date that already parses moves
+    // the calendar with it so the two never disagree on screen.
+    pop.addEventListener('input', function (e) {
       var el = e.target.closest('[data-input]');
       if (!el) { return; }
+      markInvalid(el, false);
+      if (fromDisp(el.value)) { syncFromInputs(el); }
+    });
+    pop.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter') { return; }
+      if (!e.target.closest('[data-input]')) { return; }
       e.preventDefault();
-      var f = fromDisp(pop.querySelector('[data-input="from"]').value);
-      var t = fromDisp(pop.querySelector('[data-input="to"]').value) || f;
-      if (f) { apply(f, t); }
+      applyTyped();
     });
 
     document.addEventListener('click', function () { if (!pop.hidden) { closePop(); } });
@@ -822,9 +869,18 @@
       var commission = amount * pct / 100;
       var net = amount - commission;
       out.hidden = false;
+      // Who carries the fee decides how much of the transfer clears the debt. Either
+      // way the till only ever receives the net — the bank takes its cut in transit.
+      var payerEl = root.querySelector('[name=commission_payer]:checked');
+      var onClient = payerEl && payerEl.value === 'client';
       out.innerHTML =
-        "<span>Bank komissiyasi (" + pct + "%)</span><strong>−" + money(commission) + " so'm</strong>"
-        + "<span>Qo'lga tegadigan summa</span><strong>" + money(net) + " so'm</strong>";
+        "<span>Mijoz qarzidan yechiladi</span><strong>" + money(onClient ? net : amount) + " so'm</strong>"
+        + "<span>Bank komissiyasi (" + pct + "%) — " + (onClient ? "mijozdan" : "sotuvchidan")
+        + "</span><strong>−" + money(commission) + " so'm</strong>"
+        + (onClient
+            ? "<span>Mijozda qarz bo'lib qoladi</span><strong>" + money(commission) + " so'm</strong>"
+            : "")
+        + "<span>Kassaga tushadi</span><strong>" + money(net) + " so'm</strong>";
     }
     function recalcAll() {
       Array.prototype.forEach.call(document.querySelectorAll('[data-debt-pay]'), recalc);
@@ -838,6 +894,61 @@
     document.addEventListener('modal:loaded', recalcAll);
     if (document.readyState !== 'loading') { recalcAll(); }
     else { document.addEventListener('DOMContentLoaded', recalcAll); }
+  })();
+
+  // Wide tables (Kassa kirim/chiqim and friends) scroll sideways by grabbing them
+  // with the mouse, not only by hunting for the scrollbar at the bottom.
+  (function () {
+    // A press only becomes a drag after this much travel; below it the press is
+    // still a plain click, so selecting text and hitting row icons keep working.
+    var THRESHOLD = 4;
+    var drag = null;
+
+    function scrollable(el) {
+      return el.scrollWidth - el.clientWidth > 1;
+    }
+    // The grab cursor appears only where there is really something to scroll,
+    // so a table that already fits doesn't promise an interaction it hasn't got.
+    function refresh() {
+      Array.prototype.forEach.call(
+        document.querySelectorAll('.table-wrap'),
+        function (el) { el.classList.toggle('is-draggable', scrollable(el)); }
+      );
+    }
+    function stop() {
+      if (!drag) { return; }
+      drag.wrap.classList.remove('is-dragging');
+      drag = null;
+    }
+
+    document.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) { return; }
+      var wrap = e.target.closest ? e.target.closest('.table-wrap') : null;
+      if (!wrap || !scrollable(wrap)) { return; }
+      // Anything the user can click or type into keeps its own behaviour.
+      if (e.target.closest('a, button, input, select, textarea, label')) { return; }
+      drag = { wrap: wrap, x: e.clientX, left: wrap.scrollLeft, moved: false };
+    });
+
+    document.addEventListener('mousemove', function (e) {
+      if (!drag) { return; }
+      // The button was released somewhere we never saw (outside the window).
+      if (e.buttons === 0) { stop(); return; }
+      var dx = e.clientX - drag.x;
+      if (!drag.moved) {
+        if (Math.abs(dx) < THRESHOLD) { return; }
+        drag.moved = true;
+        drag.wrap.classList.add('is-dragging');
+      }
+      drag.wrap.scrollLeft = drag.left - dx;
+      e.preventDefault();  // no text selection while dragging
+    });
+
+    document.addEventListener('mouseup', stop);
+    window.addEventListener('resize', refresh);
+    document.addEventListener('modal:loaded', refresh);
+    if (document.readyState !== 'loading') { refresh(); }
+    else { document.addEventListener('DOMContentLoaded', refresh); }
   })();
 
   // Live thousands-grouping on money inputs. Renders "1 000 000" as the user

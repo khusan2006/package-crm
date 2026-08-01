@@ -240,9 +240,21 @@ def _sale_item_sum(expr):
     )
 
 
-# A payment's net contribution to the debt: the gross paid minus the bank fee.
-# Cash/card carry no commission, so net == amount there.
+# What a payment actually leaves in the SELLER's till: the gross paid minus the bank
+# fee. Cash/card carry no commission, so net == amount there. The till loses the fee
+# whichever way `commission_payer` points — the bank takes its cut before the money
+# lands. Who ends up bearing it is a debt-side question; see PAYMENT_CREDIT.
 PAYMENT_NET = ExpressionWrapper(F("amount") - F("commission"), output_field=MONEY)
+
+
+# What a payment takes off the CLIENT's debt. Per-payment choice: with the fee on the
+# seller the client is credited everything they sent; with the fee on the client only
+# the net clears, so they still owe the bank's cut.
+PAYMENT_CREDIT = Case(
+    When(commission_payer="client", then=F("amount") - F("commission")),
+    default=F("amount"),
+    output_field=MONEY,
+)
 
 
 # Payment kinds that represent the client paying money INTO a sale. The two
@@ -252,15 +264,16 @@ PAYING_KINDS = ("sale", "debt", "advance_used")
 
 
 def _sale_paid_sum():
-    """A subquery summing the net payments credited against one sale.
+    """A subquery summing the payments credited against one sale.
 
-    Only the net (amount − commission) reduces the debt — on a bank transfer the
-    client bears the fee, so a 100k transfer with a 5k fee clears only 95k."""
+    How much a transfer clears depends on who was made to carry the bank's fee — see
+    `PAYMENT_CREDIT`. With the fee on the seller a 100k transfer clears the full 100k;
+    with it on the client only 95k of the debt goes away and they still owe 5k."""
     return Coalesce(
         Subquery(
             Payment.objects.filter(sale=OuterRef("pk"), kind__in=PAYING_KINDS)
             .values("sale")
-            .annotate(s=Sum(PAYMENT_NET))
+            .annotate(s=Sum(PAYMENT_CREDIT))
             .values("s"),
             output_field=MONEY,
         ),
@@ -438,10 +451,12 @@ class Sale(models.Model):
 
     @property
     def paid_amount(self):
-        # Net of bank fees: only (amount − commission) counts toward the debt. Limited
-        # to the kinds that move money IN — a settlement row also carries this sale.
+        # Credited, not gross: a transfer whose fee was put on the client clears only
+        # its net. Limited to the kinds that move money IN — a settlement row also
+        # carries this sale.
         return (
-            self.payments.filter(kind__in=PAYING_KINDS).aggregate(s=Sum(PAYMENT_NET))["s"]
+            self.payments.filter(kind__in=PAYING_KINDS)
+            .aggregate(s=Sum(PAYMENT_CREDIT))["s"]
             or Decimal("0")
         )
 
@@ -760,6 +775,18 @@ class Payment(models.Model):
         UZS = "uzs", "So'm"
         USD = "usd", "Dollar"
 
+    class Payer(models.TextChoices):
+        """Who is out of pocket for a bank transfer's fee.
+
+        SELLER: the client's debt falls by the whole sum they transferred and the fee
+        comes out of the seller's till and earnings — the firm absorbs the bank's cut.
+        CLIENT: only the net reaches the client's debt, so they still owe the fee and
+        will have to send it separately — the older arrangement, kept because some
+        clients are billed that way."""
+
+        SELLER = "seller", "Sotuvchidan ushlansin"
+        CLIENT = "client", "Mijozdan ushlansin"
+
     date = models.DateField("Sana", default=timezone.localdate)
     # `amount` is always the so'm value — the canonical figure every debt, till and
     # report total is built on. A dollar payment is converted here at entry time.
@@ -779,14 +806,22 @@ class Payment(models.Model):
     method = models.CharField(
         "To'lov usuli", max_length=8, choices=Method.choices, default=Method.CASH
     )
-    # Bank fee withheld on a transfer. Only the net (amount − commission) both
-    # lands in the till AND reduces the client's debt — the client bears the fee.
+    # Bank fee withheld on a transfer. It always leaves the till (the bank takes it
+    # in transit); `commission_payer` decides who ends up bearing it — the seller,
+    # whose earnings shrink, or the client, whose debt only falls by the net.
     commission = models.DecimalField(
         "Bank komissiyasi (so'm)", max_digits=18, decimal_places=2, default=0
     )
     # Percentage the bank withholds on a transfer; `commission` is derived from it.
     commission_percent = models.DecimalField(
         "Bank ushlagan foiz (%)", max_digits=5, decimal_places=2, default=0
+    )
+    # Chosen per payment on the form. Defaults to SELLER, which is also what every
+    # pre-existing row gets: the fee was already coming out of the till, so treating
+    # history as seller-borne keeps those tills and debts exactly as audited.
+    commission_payer = models.CharField(
+        "Komissiyani kim ko'taradi", max_length=6,
+        choices=Payer.choices, default=Payer.SELLER,
     )
     note = models.CharField("Izoh", max_length=255, blank=True)
     kind = models.CharField("Turi", max_length=16, choices=Kind.choices)
@@ -821,9 +856,22 @@ class Payment(models.Model):
 
     @property
     def net_amount(self):
-        """What actually reaches the till after the bank fee — and, since the
-        client bears the fee, also the amount credited against their debt."""
+        """What actually reaches the seller's till after the bank fee — always the
+        gross less the fee, since the bank takes its cut before the money lands."""
         return self.amount - (self.commission or Decimal("0"))
+
+    @property
+    def credited_amount(self):
+        """What this payment takes off the client's debt: everything they sent, unless
+        the fee was put on them, in which case only the net clears and the fee stays
+        on their balance."""
+        if self.commission_payer == self.Payer.CLIENT:
+            return self.net_amount
+        return self.amount
+
+    @property
+    def fee_on_client(self):
+        return bool(self.commission) and self.commission_payer == self.Payer.CLIENT
 
     @property
     def original_amount(self):
@@ -834,6 +882,45 @@ class Payment(models.Model):
 
     def __str__(self):
         return f"{self.get_kind_display()}: {self.amount} so'm ({self.date})"
+
+
+class Employee(models.Model):
+    """A salaried worker (Xodim) and the monthly wage they are owed.
+
+    Deliberately NOT a CRM login: these are the people on the payroll, most of whom
+    never touch the system. Money reaches them as an ordinary till outflow tagged with
+    `Expense.employee`, so a wage payment is a kassa chiqim like any other — what this
+    model adds is the monthly figure those payouts are measured against."""
+
+    name = models.CharField("Ismi", max_length=120)
+    salary = models.DecimalField("Oylik (so'm)", max_digits=18, decimal_places=2)
+    is_active = models.BooleanField("Faol", default=True)
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Xodim"
+        verbose_name_plural = "Xodimlar"
+
+    def paid_in(self, year, month):
+        """What they have already taken from the till in that calendar month — the
+        wage itself and any advance alike, since both are money against the same
+        month's pay."""
+        return (
+            self.expenses.filter(date__year=year, date__month=month)
+            .aggregate(s=Sum("amount"))["s"]
+            or Decimal("0")
+        )
+
+    def remaining_in(self, year, month):
+        """Wage still owed for that month. Goes negative if they drew more than the
+        month's pay — a real state (an advance against next month), so it is shown
+        rather than clamped."""
+        return self.salary - self.paid_in(year, month)
+
+    def __str__(self):
+        return self.name
 
 
 class Expense(models.Model):
@@ -876,6 +963,17 @@ class Expense(models.Model):
         default=Payment.Method.CASH,
     )
     note = models.CharField("Izoh", max_length=255, blank=True)
+    # Set when this outflow is money going to a payroll worker — their wage, or an
+    # advance they drew from the till. Either way it counts against that month's pay
+    # (see `Employee.paid_in`); left empty for every other kind of expense.
+    employee = models.ForeignKey(
+        "Employee",
+        on_delete=models.PROTECT,
+        related_name="expenses",
+        verbose_name="Xodim",
+        null=True,
+        blank=True,
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -923,7 +1021,13 @@ class ProductionRemittance(models.Model):
     it is NOT an ordinary expense (an expense is the business's own cost).
 
     Always so'm: the production debt is denominated in so'm (tannarx is stored in
-    so'm), so a handover is recorded in so'm too."""
+    so'm), so a handover is recorded in so'm too.
+
+    A NEGATIVE `amount` is the same movement running backwards: production handing
+    cash back to the seller (Ishlab chiqarishdan qaytarish). Storing it as a signed
+    amount on this one model is deliberate — every figure that touches handovers is a
+    plain `Sum("amount")`, so a return raises the seller's till and their production
+    debt automatically, with no aggregate left to update separately."""
 
     date = models.DateField("Sana", default=timezone.localdate)
     seller = models.ForeignKey(
@@ -951,8 +1055,20 @@ class ProductionRemittance(models.Model):
         verbose_name = "Ishlab chiqarishga topshiruv"
         verbose_name_plural = "Ishlab chiqarishga topshiruvlar"
 
+    @property
+    def is_refund(self):
+        """True when production handed the cash back instead of receiving it."""
+        return self.amount < 0
+
+    @property
+    def abs_amount(self):
+        """The figure people say out loud — a return of 50 000 is "50 000", not
+        "−50 000". The sign only ever lives in the stored `amount`."""
+        return abs(self.amount)
+
     def __str__(self):
-        return f"Topshiruv · {self.seller}: {self.amount:,.0f} so'm ({self.date})"
+        label = "Qaytarish" if self.is_refund else "Topshiruv"
+        return f"{label} · {self.seller}: {self.abs_amount:,.0f} so'm ({self.date})"
 
 
 class ProfitPayout(models.Model):
@@ -1033,20 +1149,22 @@ def client_advance_balance(client, seller=None):
     """The credit a client holds: money put in (ADVANCE_IN deposits and RETURN_CREDIT
     from over-returned sales) minus what sales have since consumed (ADVANCE_USED).
     Positive = money held that the client hasn't taken goods for yet; zero = nothing
-    prepaid. Nets bank fees out, so only usable money counts. Advance is seller-bound,
-    so pass `seller` to get the balance in that one seller's till; omit it for the
-    client's total across all sellers (the admin overview figure)."""
+    prepaid. Each deposit counts for whatever it credited the client with, so a bank
+    fee only shrinks their credit when the fee was put on them. Advance is
+    seller-bound, so pass `seller` to get the balance in that one seller's till; omit
+    it for the client's total across all sellers (the admin overview figure)."""
     rows = Payment.objects.filter(client=client)
     if seller is not None:
         rows = rows.filter(created_by=seller)
     deposited = (
         rows.filter(
             kind__in=(Payment.Kind.ADVANCE_IN, Payment.Kind.RETURN_CREDIT)
-        ).aggregate(s=Sum(PAYMENT_NET))["s"]
+        ).aggregate(s=Sum(PAYMENT_CREDIT))["s"]
         or Decimal("0")
     )
     used = (
-        rows.filter(kind=Payment.Kind.ADVANCE_USED).aggregate(s=Sum(PAYMENT_NET))["s"]
+        rows.filter(kind=Payment.Kind.ADVANCE_USED)
+        .aggregate(s=Sum(PAYMENT_CREDIT))["s"]
         or Decimal("0")
     )
     return deposited - used
@@ -1079,6 +1197,17 @@ def seller_production_debt(seller):
         or Decimal("0")
     )
     return opening + sold_cost - remitted
+
+
+def seller_remitted_total(seller, exclude_remittance_pk=None):
+    """Net cash a seller has handed to production: handovers minus anything production
+    has already handed back. This is the ceiling on a new return — production can't
+    give back more than it ever received. `exclude_remittance_pk` drops one existing
+    row so editing it checks against the delta, not itself."""
+    qs = ProductionRemittance.objects.filter(seller=seller)
+    if exclude_remittance_pk:
+        qs = qs.exclude(pk=exclude_remittance_pk)
+    return qs.aggregate(s=Sum("amount"))["s"] or Decimal("0")
 
 
 def seller_withdrawable_profit(seller, exclude_payout_pk=None):

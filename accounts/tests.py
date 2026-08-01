@@ -1,4 +1,4 @@
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from axes.utils import reset
@@ -6,6 +6,11 @@ from axes.utils import reset
 from accounts.models import User
 
 
+# settings_test turns django-axes OFF, so ordinary tests never trip the lockout while
+# logging in. These two tests are about the lockout itself, so they switch it back on
+# for their own run — without this the lockout case can never pass, whatever the code
+# does.
+@override_settings(AXES_ENABLED=True)
 class BruteForceLoginTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(
