@@ -2619,6 +2619,82 @@ class RemittanceTests(BaseSetup):
         self.assertEqual(log.action, AuditLog.Action.CREATE)
 
 
+class FutureDateGuardTests(BaseSetup):
+    """A cash record dated ahead of today splits the books: the kassa page counts only
+    up to the day you are looking at, while the "enough in the till?" guard counts
+    every row. One future-dated handover made the page show money the form insisted
+    was already spent — so the forms refuse tomorrow outright."""
+
+    def setUp(self):
+        self.tomorrow = (timezone.localdate() + timedelta(days=1)).isoformat()
+        self.yesterday = (timezone.localdate() - timedelta(days=1)).isoformat()
+        self.sale = make_sale(
+            self.client1, self.sales1, self.product, is_debt=True,
+            date=timezone.localdate() - timedelta(days=2),
+        )
+        self.client.force_login(self.sales1)
+
+    def _ajax(self, url, data):
+        return self.client.post(
+            url, data, headers={"x-requested-with": "XMLHttpRequest"}
+        )
+
+    def test_remittance_refuses_tomorrow(self):
+        response = self._ajax(
+            reverse("remittance_create"),
+            {"date": self.tomorrow, "amount": "1000", "method": "cash"},
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertContains(response, "kelajakda", status_code=422)
+        self.assertFalse(ProductionRemittance.objects.exists())
+
+    def test_expense_refuses_tomorrow(self):
+        response = self._ajax(
+            reverse("expense_create"),
+            {"date": self.tomorrow, "amount": "1000", "currency": "uzs",
+             "category": "Boshqa", "method": "cash"},
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertFalse(Expense.objects.filter(category="Boshqa").exists())
+
+    def test_payment_refuses_tomorrow(self):
+        self._ajax(
+            reverse("sale_pay", args=[self.sale.pk]),
+            {"date": self.tomorrow, "amount": "1000", "method": "cash"},
+        )
+        self.assertFalse(self.sale.payments.exists())
+
+    def test_profit_payout_refuses_tomorrow(self):
+        response = self._ajax(
+            reverse("profit_payout_create"),
+            {"date": self.tomorrow, "amount": "1000", "method": "cash"},
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertFalse(ProfitPayout.objects.exists())
+
+    def test_backdating_still_works(self):
+        # Old ledgers are entered with their real dates — only the future is refused.
+        self._ajax(
+            reverse("sale_pay", args=[self.sale.pk]),
+            {"date": self.yesterday, "amount": "1000", "method": "cash"},
+        )
+        self.assertEqual(self.sale.payments.count(), 1)
+        self.assertEqual(
+            self.sale.payments.get().date, timezone.localdate() - timedelta(days=1)
+        )
+
+    def test_page_and_form_agree_on_cash(self):
+        # The two figures that disagreed: the kassa page's "Kassadagi pul" and the
+        # guard the handover form checks against.
+        today = timezone.localdate()
+        self._ajax(
+            reverse("sale_pay", args=[self.sale.pk]),
+            {"date": today.isoformat(), "amount": "50000", "method": "cash"},
+        )
+        page = _kassa_summary(today, today, rep=self.sales1)["cash"]
+        self.assertEqual(page, seller_cash_on_hand(self.sales1))
+
+
 class ApplyLocalStateTests(BaseSetup):
     """The one-shot deploy command: seed the payroll, sweep every record onto the one
     seller, and never do either twice."""

@@ -41,6 +41,19 @@ def _mark_money(*fields):
             field.widget.attrs.update(MONEY_WIDGET_ATTRS)
 
 
+def _reject_future(value):
+    """Money moves when it moves; it cannot move next month.
+
+    A cash record dated ahead of today also splits the books in two: the kassa page
+    counts only up to the day you are looking at, while the "is there enough in the
+    till" guard counts every row there is. One future-dated handover is enough to make
+    the page show money the form insists is already gone. Backdating stays allowed —
+    old ledgers are entered with their real dates."""
+    if value and value > timezone.localdate():
+        raise forms.ValidationError("Sana kelajakda bo'lishi mumkin emas.")
+    return value
+
+
 def _searchable_select(field, placeholder=""):
     """Turn a model-choice field into a searchable combobox picker: drop Django's
     "---------" blank label so the box shows `placeholder` instead of a dashed
@@ -188,6 +201,9 @@ class DebtPaymentForm(forms.Form):
         super().__init__(*args, **kwargs)
         _mark_money(self.fields["amount"], self.fields["exchange_rate"])
 
+    def clean_date(self):
+        return _reject_future(self.cleaned_data.get("date"))
+
     def clean(self):
         cleaned = super().clean()
         # Convert the entered amount to so'm — the base currency the debt lives in.
@@ -280,6 +296,9 @@ class PaymentEditForm(forms.ModelForm):
         # (not the stored so'm), so re-saving converts at the rate correctly.
         if self.instance.pk and self.instance.currency == Payment.Currency.USD:
             self.initial["amount"] = self.instance.amount_original
+
+    def clean_date(self):
+        return _reject_future(self.cleaned_data.get("date"))
 
     def clean_amount(self):
         amount = self.cleaned_data.get("amount")
@@ -419,6 +438,9 @@ class ExpenseForm(forms.ModelForm):
         if self.instance.pk and self.instance.currency == Payment.Currency.USD:
             self.initial["amount"] = self.instance.amount_original
 
+    def clean_date(self):
+        return _reject_future(self.cleaned_data.get("date"))
+
     def clean_amount(self):
         amount = self.cleaned_data.get("amount")
         if amount is not None and amount <= 0:
@@ -475,6 +497,9 @@ class ProductionRemittanceForm(forms.ModelForm):
             self.fields["seller"].queryset = sellers.filter(pk=user.pk)
             self.fields["seller"].initial = user
             self.fields["seller"].disabled = True
+
+    def clean_date(self):
+        return _reject_future(self.cleaned_data.get("date"))
 
     def clean_amount(self):
         amount = self.cleaned_data.get("amount")
@@ -575,6 +600,9 @@ class ProfitPayoutForm(forms.ModelForm):
             self.fields["seller"].queryset = sellers.filter(pk=user.pk)
             self.fields["seller"].initial = user
             self.fields["seller"].disabled = True
+
+    def clean_date(self):
+        return _reject_future(self.cleaned_data.get("date"))
 
     def clean_amount(self):
         amount = self.cleaned_data.get("amount")
