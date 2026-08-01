@@ -3059,6 +3059,10 @@ def expense_create(request):
         if Employee.objects.filter(pk=employee_pk, is_active=True).exists():
             initial["employee"] = employee_pk
             initial["category"] = SALARY_CATEGORY
+            # Arriving from a worker's row means a wage or an advance, so the answer
+            # is preselected here and nowhere else: picking someone by hand on a
+            # plain chiqim leaves it blank on purpose, and the form insists on one.
+            initial["counts_against_salary"] = True
     form = ExpenseForm(request.POST or None, initial=initial)
     title = "Chiqim qo'shish"
     if request.method == "POST":
@@ -3070,7 +3074,13 @@ def expense_create(request):
                 f" · ${expense.original_amount:,.2f} × {expense.exchange_rate:,.0f}"
                 if expense.currency == Payment.Currency.USD else ""
             )
-            who = f" · {expense.employee}" if expense.employee_id else ""
+            # Whether it came off the wage is the part an audit actually needs — the
+            # same worker and sum mean two different things depending on the flag.
+            who = (
+                f" · {expense.employee}"
+                f" ({'oyligidan' if expense.counts_against_salary else 'oyligidan emas'})"
+                if expense.employee_id else ""
+            )
             AuditLog.record(
                 request.user, AuditLog.Action.CREATE, "Chiqim", expense.pk,
                 f"{expense.category} chiqimi "
@@ -3261,7 +3271,9 @@ def _entry_expense(request, pk):
             f"${e.original_amount:,.2f} × {e.exchange_rate:,.0f}".replace(",", " "),
         ))
     if e.employee_id:
-        rows.append(("Xodim", f"{e.employee.name} — oyligidan ayrildi"))
+        held = "oyligidan ayrildi" if e.counts_against_salary \
+            else "oyligiga tegmadi — faqat kassadan chiqim"
+        rows.append(("Xodim", f"{e.employee.name} — {held}"))
     if e.note:
         rows.append(("Izoh", e.note))
     rows.append(("Kim kiritdi", str(e.created_by)))
@@ -3373,6 +3385,36 @@ def kassa_entry_detail(request, kind, pk):
 SALARY_CATEGORY = "Oylik / xodim"
 
 
+# Full month names for the payroll picker. A native <input type="month"> paints its
+# own label in the browser's locale ("Август" on a Russian Windows), which was the one
+# place the Uzbek UI stopped being Uzbek — so the page spells the months out itself.
+UZ_MONTHS = [
+    "Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun",
+    "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr",
+]
+
+
+def _uz_month(year, month):
+    return f"{UZ_MONTHS[month - 1]} {year}"
+
+
+def _month_shift(year, month, step):
+    """The month `step` places away, rolling the year over in either direction."""
+    index = year * 12 + (month - 1) + step
+    return index // 12, index % 12 + 1
+
+
+def _month_options(year, month, today, back=12):
+    """Months offered in the picker: a rolling year back from today, newest first.
+    A month reached by hand-editing ?oy= is folded in so the select never renders
+    blank on a URL that the view itself accepts."""
+    months = [_month_shift(today.year, today.month, -step) for step in range(back)]
+    if (year, month) not in months:
+        months.append((year, month))
+        months.sort(reverse=True)
+    return [{"value": f"{y:04d}-{m:02d}", "label": _uz_month(y, m)} for y, m in months]
+
+
 def _payroll_month(request):
     """The month the Xodimlar page is showing, from ?oy=YYYY-MM (this month by
     default). A wage is a monthly figure, so every total on the page is scoped to one
@@ -3419,12 +3461,19 @@ def employee_list(request):
         .select_related("employee", "created_by")
         .order_by("-date", "-created_at")
     )
+    today = timezone.localdate()
+    prev_year, prev_month = _month_shift(year, month, -1)
+    next_year, next_month = _month_shift(year, month, 1)
     return render(request, "crm/employee_list.html", {
         "rows": rows,
         "totals": totals,
         "payouts": payouts,
         "month_value": f"{year:04d}-{month:02d}",
-        "month_label": date(year, month, 1).strftime("%m.%Y"),
+        "month_label": _uz_month(year, month),
+        "month_options": _month_options(year, month, today),
+        "prev_month": f"{prev_year:04d}-{prev_month:02d}",
+        "next_month": f"{next_year:04d}-{next_month:02d}",
+        "is_current_month": (year, month) == (today.year, today.month),
     })
 
 

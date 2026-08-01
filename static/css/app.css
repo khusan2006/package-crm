@@ -620,16 +620,20 @@ html[data-theme="dark"] #theme-toggle .ico-sun { display: block; }
    eye into the first slot and leave a ragged edge down the column; pinning each icon
    to its own column keeps the gap where the missing action was.
    Deleting is deliberately absent here: it lives inside the ko'rish panel, one step
-   away from a mis-click in a dense table. */
-.ledger-table .row-actions {
-  display: grid;
+   away from a mis-click in a dense table.
+   The grid sits on an inner span, never on the <td> itself: a cell set to
+   `display: grid` stops being a table cell, so its bottom border is painted at the
+   grid box's own height instead of collapsing into the row's — which left a visible
+   kink in the divider line where the action column starts. */
+.ledger-table td.row-actions { text-align: right; white-space: nowrap; }
+.ledger-table .ra-slots {
+  display: inline-grid;
   grid-template-columns: repeat(2, 28px);
   gap: 2px;
-  justify-content: end;
-  white-space: nowrap;
+  vertical-align: middle;
 }
-.ledger-table .row-actions .act-edit { grid-column: 1; }
-.ledger-table .row-actions .act-view { grid-column: 2; }
+.ledger-table .ra-slots .act-edit { grid-column: 1; }
+.ledger-table .ra-slots .act-view { grid-column: 2; }
 /* Ghost action icons: quiet by default, sharpen on row hover */
 .ledger-table .icon-action {
   width: 28px; height: 28px;
@@ -1556,6 +1560,44 @@ ul.errorlist li::before { content: "⚠ "; }
 .daterange-trigger .daterange-text { white-space: nowrap; }
 .daterange-trigger .cal-ico { width: 16px; height: 16px; color: var(--text-muted); flex-shrink: 0; }
 .daterange.is-open .daterange-trigger .cal-ico { color: var(--accent); }
+
+/* ---- Month picker (Xodimlar) -------------------------------------------------
+   The payroll page filters by whole months, not a day range, so it gets the same
+   segmented pill with a <select> where the date range keeps its calendar trigger.
+   A native <input type="month"> was doing this job before, but the browser writes
+   that label in the OS locale — a Russian Windows put "Август 2026" in the middle
+   of an otherwise Uzbek page, and the widget ignored the app's form styling. */
+.month-bar { display: flex; align-items: center; gap: 8px; }
+.month-pick {
+  display: inline-flex;
+  align-items: stretch;
+  margin: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+.month-pick a.datebar-btn:first-child { border-radius: var(--r) 0 0 var(--r); }
+.month-pick a.datebar-btn:last-of-type { border-radius: 0 var(--r) var(--r) 0; }
+/* The chevron is a background image, so it can't inherit currentColor — this slate
+   reads the same against both the light and the dark surface. */
+.month-pick-select {
+  width: auto;
+  max-width: none;
+  min-width: 148px;
+  padding: 8px 32px 8px 14px;
+  appearance: none;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>") no-repeat right 9px center / 14px 14px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+.month-pick-select:hover { background-color: var(--surface-hover); }
+.month-pick-select:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* Toolbar action buttons (Bugun / Filtrlash / Excel) share the segmented date
    control's look, so the whole toolbar row reads as one consistent set. */

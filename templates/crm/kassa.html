@@ -84,6 +84,7 @@
         <td class="num">{% if t.currency == 'usd' %}${{ t.amount_original|floatformat:"2g" }}{% else %}{{ t.amount_original|floatformat:"0g" }}{% endif %}</td>
         <td class="num amt-in">{% if t.is_advance %}<span class="muted">—</span>{% else %}<strong>+{{ t.amount_som|floatformat:"0g" }}</strong>{% endif %}</td>
         <td class="row-actions">
+          <span class="ra-slots">
           {% if t.sale_pk %}
           <a class="icon-action act-edit" href="{% url 'payment_edit' t.pk %}" data-modal title="To'lovni tahrirlash">{% include "crm/_ico_edit.html" %}</a>
           <a class="icon-action act-view" href="{% url 'kassa_entry_detail' 'payment' t.pk %}" data-modal title="Ochib ko'rish">{% include "crm/_ico_eye.html" %}</a>
@@ -91,6 +92,7 @@
           <a class="icon-action act-edit" href="{% url 'advance_edit' t.pk %}" data-modal title="Avansni tahrirlash">{% include "crm/_ico_edit.html" %}</a>
           <a class="icon-action act-view" href="{% url 'kassa_entry_detail' 'advance' t.pk %}" data-modal title="Ochib ko'rish">{% include "crm/_ico_eye.html" %}</a>
           {% endif %}
+          </span>
         </td>
       </tr>
       {% empty %}<tr><td colspan="7" class="muted">Bu davrda kirim yo'q.</td></tr>{% endfor %}
@@ -124,6 +126,7 @@
         {# A return from production is money coming IN, so it prints as a plus. #}
         <td class="num">{% if t.kind == 'remittance_back' %}<strong class="amt-in">+{{ t.amount_abs|floatformat:"0g" }}</strong>{% elif t.kind == 'remittance' %}<strong style="color:var(--violet)">−{{ t.amount_som|floatformat:"0g" }}</strong>{% elif t.kind == 'profit' %}<strong style="color:var(--success)">−{{ t.amount_som|floatformat:"0g" }}</strong>{% else %}<strong class="amt-out">−{{ t.amount_som|floatformat:"0g" }}</strong>{% endif %}</td>
         <td class="row-actions">
+          <span class="ra-slots">
           {% if t.kind == 'remittance' or t.kind == 'remittance_back' %}
           <a class="icon-action act-edit" href="{% url 'remittance_edit' t.pk %}" data-modal title="Tahrirlash">{% include "crm/_ico_edit.html" %}</a>
           {% elif t.kind == 'profit' %}
@@ -137,6 +140,7 @@
           <a class="icon-action act-edit" href="{% url 'expense_edit' t.pk %}" data-modal title="Tahrirlash">{% include "crm/_ico_edit.html" %}</a>
           {% endif %}
           <a class="icon-action act-view" href="{% url 'kassa_entry_detail' t.kind t.pk %}" data-modal title="Ochib ko'rish">{% include "crm/_ico_eye.html" %}</a>
+          </span>
         </td>
       </tr>
       {% empty %}<tr><td colspan="6" class="muted">Bu davrda chiqim yo'q.</td></tr>{% endfor %}

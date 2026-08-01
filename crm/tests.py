@@ -2875,15 +2875,21 @@ class EmployeePayrollTests(BaseSetup):
         )
         self.today = timezone.localdate()
 
-    def _pay(self, amount, employee=None, category="Oylik / xodim", on=None):
+    def _pay(self, amount, employee=None, category="Oylik / xodim", on=None,
+             from_salary=True):
+        """A till payout tagged with a worker. `from_salary` is the radio pair:
+        "ushlansin" for a wage or an advance, "ushlanmasin" for an errand they paid
+        for out of the till. Pass None to leave it unanswered."""
         self.client.force_login(self.admin)
+        data = {
+            "date": (on or self.today).isoformat(),
+            "amount": amount, "currency": "uzs", "category": category,
+            "method": "cash", "employee": (employee or self.worker).pk,
+        }
+        if from_salary is not None:
+            data["counts_against_salary"] = "True" if from_salary else "False"
         return self.client.post(
-            reverse("expense_create"),
-            {
-                "date": (on or self.today).isoformat(),
-                "amount": amount, "currency": "uzs", "category": category,
-                "method": "cash", "employee": (employee or self.worker).pk,
-            },
+            reverse("expense_create"), data,
             headers={"x-requested-with": "XMLHttpRequest"},
         )
 
@@ -2898,13 +2904,66 @@ class EmployeePayrollTests(BaseSetup):
         )
 
     def test_any_category_counts_not_only_the_wage_one(self):
-        # "Kassadan pul olishganda ham oyligidan minus bo'lsin": what ties the money
-        # to the worker is the employee field, not what it was filed under.
+        # "Kassadan pul olishganda ham oyligidan minus bo'lsin": an advance filed under
+        # any heading still comes off the wage — the category is free text and never
+        # decides the money; the checkbox does.
         self._pay("300000", category="Boshqa")
         self.assertEqual(
             self.worker.remaining_in(self.today.year, self.today.month),
             Decimal("1700000"),
         )
+
+    def test_errand_expense_leaves_the_wage_alone(self):
+        # "Benzin, obed — faqat kassadan minus bo'lsin": the worker is named so the
+        # receipt says who spent it, but the money is the firm's, not their wage.
+        self._pay("400000", category="Benzin / transport", from_salary=False)
+        self.assertEqual(
+            self.worker.paid_in(self.today.year, self.today.month), Decimal("0")
+        )
+        self.assertEqual(
+            self.worker.remaining_in(self.today.year, self.today.month),
+            Decimal("2000000"),
+        )
+
+    def test_errand_expense_still_drains_the_till(self):
+        self._pay("400000", category="Ovqat (obed)", from_salary=False)
+        response = self.client.get(reverse("kassa"))
+        rows = [r for r in response.context["outflow_rows"] if r["kind"] == "expense"]
+        self.assertEqual(sum(r["amount_som"] for r in rows), Decimal("400000"))
+
+    def test_wage_and_errand_in_one_month_are_told_apart(self):
+        self._pay("500000")                                     # oylik
+        self._pay("400000", category="Benzin", from_salary=False)  # ish xarajati
+        self.assertEqual(
+            self.worker.paid_in(self.today.year, self.today.month), Decimal("500000")
+        )
+        response = self.client.get(reverse("employee_list"))
+        row = {r["employee"].name: r for r in response.context["rows"]}["Косимов Рахматжон"]
+        self.assertEqual(row["paid"], Decimal("500000"))
+        self.assertEqual(row["remaining"], Decimal("1500000"))
+        # Both rows stay listed under the worker — the errand is visible, just not charged.
+        self.assertEqual(len(response.context["payouts"]), 2)
+
+    def test_tagging_a_worker_forces_an_answer(self):
+        # Neither option picked while somebody is named: the form refuses rather than
+        # guessing whose money it was.
+        response = self._pay("250000", from_salary=None)
+        self.assertEqual(response.status_code, 422)
+        self.assertFalse(Expense.objects.filter(employee=self.worker).exists())
+
+    def test_flag_is_cleared_when_nobody_is_tagged(self):
+        # Ticking the box and then choosing no worker must not leave a live claim
+        # behind: with nobody named there is no wage for it to point at.
+        self.client.force_login(self.admin)
+        self.client.post(
+            reverse("expense_create"),
+            {"date": self.today.isoformat(), "amount": "150000", "currency": "uzs",
+             "category": "Ijara", "method": "cash", "counts_against_salary": "True"},
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+        expense = Expense.objects.get(category="Ijara")
+        self.assertIsNone(expense.employee_id)
+        self.assertFalse(expense.counts_against_salary)
 
     def test_untagged_expense_touches_nobody(self):
         self.client.force_login(self.admin)

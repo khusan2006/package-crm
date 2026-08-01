@@ -12,11 +12,21 @@
 <div class="card">
   <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
     <h2 style="margin:0;">Oylik hisobi · {{ month_label }}</h2>
-    <form method="get" style="display:flex;align-items:center;gap:8px;margin:0;">
-      <label for="oy" class="field-hint" style="margin:0;">Oy:</label>
-      <input type="month" id="oy" name="oy" value="{{ month_value }}" onchange="this.form.submit()">
-      <noscript><button type="submit" class="btn btn-sm">Ko'rsat</button></noscript>
-    </form>
+    <div class="month-bar">
+      {% if not is_current_month %}<a class="btn btn-sm btn-ghost" href="{% url 'employee_list' %}">Shu oy</a>{% endif %}
+      <form method="get" class="month-pick" role="group" aria-label="Oy tanlash">
+        <a class="datebar-btn" href="?oy={{ prev_month }}" title="Oldingi oy" aria-label="Oldingi oy">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        </a>
+        <select id="oy" name="oy" class="month-pick-select" aria-label="Oy" onchange="this.form.submit()">
+          {% for o in month_options %}<option value="{{ o.value }}"{% if o.value == month_value %} selected{% endif %}>{{ o.label }}</option>{% endfor %}
+        </select>
+        <a class="datebar-btn" href="?oy={{ next_month }}" title="Keyingi oy" aria-label="Keyingi oy">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        </a>
+        <noscript><button type="submit" class="btn btn-sm">Ko'rsat</button></noscript>
+      </form>
+    </div>
   </div>
 
   {% if rows %}
@@ -62,7 +72,7 @@
     </tr>
   </table>
   </div>
-  <p class="field-hint" style="margin-top:10px;">“Pul berish” kassadan chiqim yozadi va shu oyning oyligidan ayiradi — oylik bo'lsa ham, avans bo'lsa ham. Chiqimni Kassa sahifasidan tahrirlash yoki o'chirish mumkin, qoldiq o'zi qayta hisoblanadi.</p>
+  <p class="field-hint" style="margin-top:10px;">“Pul berish” kassadan chiqim yozadi va shu oyning oyligidan ayiradi — oylik bo'lsa ham, avans bo'lsa ham. Xodim ish uchun sarflagan benzin, obed kabi xarajatlarda chiqim formasidagi “Oyligidan ushlansin” belgisini oling: kassadan minus bo'ladi, oyligiga tegmaydi. Chiqimni Kassa sahifasidan tahrirlash yoki o'chirish mumkin, qoldiq o'zi qayta hisoblanadi.</p>
   {% else %}
   <p class="muted">Hali xodim qo'shilmagan. O'ng pastdagi “Yangi xodim” tugmasi bilan qo'shing.</p>
   {% endif %}
@@ -77,7 +87,8 @@
     <tr>
       <td>{{ e.date|date:"d.m.Y" }}</td>
       <td>{{ e.employee.name }}</td>
-      <td>{{ e.category }}</td>
+      {# Tagged with the worker but not held back from their pay — an errand they paid for. #}
+      <td>{{ e.category }}{% if not e.counts_against_salary %} <span class="badge badge-info">Oyligidan emas</span>{% endif %}</td>
       <td>{% include "crm/_method_badge.html" with code=e.method label=e.get_method_display %}</td>
       <td class="num amt-out">−{{ e.amount|floatformat:"0g" }}</td>
       <td>{{ e.note|default:"—" }}</td>

@@ -862,6 +862,12 @@
       Array.prototype.forEach.call(root.querySelectorAll('.transfer-only'), function (el) {
         el.hidden = !isTransfer;
       });
+      // "Oyligidan ushlansin" only makes sense once a worker is named — with nobody
+      // picked there is no wage to hold it back from (the form clears it on save).
+      var employeeEl = root.querySelector('[name=employee]');
+      Array.prototype.forEach.call(root.querySelectorAll('.employee-only'), function (el) {
+        el.hidden = !(employeeEl && employeeEl.value);
+      });
       var out = root.querySelector('[data-net]');
       if (!out) { return; }
       var pct = pctEl ? (parseFloat(pctEl.value) || 0) : 0;

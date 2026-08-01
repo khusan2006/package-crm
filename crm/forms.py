@@ -395,13 +395,28 @@ class ExpenseForm(forms.ModelForm):
     `currency` records whether it left the so'm or the dollar till. A dollar expense is
     entered in dollars with a hand-typed rate and converted to a so'm `amount`.
 
-    Tagging an `employee` turns it into money against that worker's monthly wage —
-    the wage itself or an advance they drew; the Xodimlar page counts both."""
+    Tagging an `employee` names who the money went to or who spent it;
+    `counts_against_salary` decides whether it also comes off that month's wage — on
+    for a wage or an advance, off for petrol or lunch the worker bought for the
+    business."""
+
+    # Two spelled-out options rather than a lone tick box. This answer decides whether
+    # money leaves somebody's wage, and an unticked box looks identical whether it was
+    # answered or simply overlooked — the same reason the bank fee asks who carries it
+    # with a pair of radios instead of a checkbox.
+    counts_against_salary = forms.TypedChoiceField(
+        label="Oylik hisobiga ta'siri",
+        choices=[(True, "Oyligidan ushlansin"), (False, "Oyligidan ushlanmasin")],
+        coerce=lambda value: value == "True",
+        empty_value=None,
+        required=False,  # hidden, and meaningless, while no worker is picked
+        widget=forms.RadioSelect,
+    )
 
     class Meta:
         model = Expense
         fields = ["date", "amount", "currency", "exchange_rate", "category", "method",
-                  "employee", "note"]
+                  "employee", "counts_against_salary", "note"]
         widgets = {
             "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
             "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — nima uchun"}),
@@ -431,7 +446,11 @@ class ExpenseForm(forms.ModelForm):
         # the combobox hides its blank row, which would leave no way to say "nobody"
         # (or to clear a mistagged expense).
         self.fields["employee"].empty_label = "— xodimga tegishli emas —"
-        self.fields["employee"].help_text = "Tanlansa, shu oyning oyligidan ayriladi"
+        self.fields["employee"].help_text = "Kimga berildi yoki kim sarfladi"
+        self.fields["counts_against_salary"].help_text = (
+            "Oylik yoki avans bo'lsa — “ushlansin”. Benzin, obed kabi ish xarajatlarida "
+            "— “ushlanmasin”: kassadan chiqim bo'ladi, xodim oyligiga tegmaydi."
+        )
         _mark_money(self.fields["amount"], self.fields["exchange_rate"])
         # Editing a dollar expense: show the original dollars in the amount field
         # (not the stored so'm), so re-saving converts at the rate correctly.
@@ -466,6 +485,18 @@ class ExpenseForm(forms.ModelForm):
         self.instance.amount_original = entered
         cleaned["amount"] = som
         cleaned["exchange_rate"] = rate
+        # The answer only means anything next to a worker. Clearing it on an untagged
+        # expense keeps a stale "yes" from coming back to life if the row is later
+        # edited and someone is picked — the choice is hidden while nobody is.
+        if not cleaned.get("employee"):
+            cleaned["counts_against_salary"] = False
+        elif cleaned.get("counts_against_salary") is None:
+            # Someone is named but neither option was picked. Defaulting either way
+            # would quietly decide whose money this is, so the form asks instead.
+            self.add_error(
+                "counts_against_salary",
+                "Tanlang: bu pul xodim oyligidan ushlansinmi yoki yo'q.",
+            )
         return cleaned
 
 

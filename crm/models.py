@@ -904,11 +904,16 @@ class Employee(models.Model):
         verbose_name_plural = "Xodimlar"
 
     def paid_in(self, year, month):
-        """What they have already taken from the till in that calendar month — the
-        wage itself and any advance alike, since both are money against the same
-        month's pay."""
+        """What they have already drawn against that month's pay — the wage itself and
+        any advance alike, since both are money against the same month.
+
+        Expenses merely *tagged* with them are excluded: a worker who buys petrol or
+        lunch for the business is spending the firm's money, not their own wage, so
+        those rows are `counts_against_salary=False` and only move the till."""
         return (
-            self.expenses.filter(date__year=year, date__month=month)
+            self.expenses.filter(
+                date__year=year, date__month=month, counts_against_salary=True
+            )
             .aggregate(s=Sum("amount"))["s"]
             or Decimal("0")
         )
@@ -963,9 +968,9 @@ class Expense(models.Model):
         default=Payment.Method.CASH,
     )
     note = models.CharField("Izoh", max_length=255, blank=True)
-    # Set when this outflow is money going to a payroll worker — their wage, or an
-    # advance they drew from the till. Either way it counts against that month's pay
-    # (see `Employee.paid_in`); left empty for every other kind of expense.
+    # Set when a payroll worker is involved in this outflow — either as the person
+    # being paid, or as the person who spent the money. Left empty for every other
+    # kind of expense.
     employee = models.ForeignKey(
         "Employee",
         on_delete=models.PROTECT,
@@ -974,6 +979,12 @@ class Expense(models.Model):
         null=True,
         blank=True,
     )
+    # Only meaningful alongside `employee`, and the reason tagging someone does not
+    # by itself touch their pay: a wage or an advance is money against this month's
+    # salary, but petrol or lunch the worker bought for the business is not — that
+    # leaves the till and stops there. `Employee.paid_in` counts only the former,
+    # so the worker can still be named on the receipt without losing wage over it.
+    counts_against_salary = models.BooleanField("Oyligidan ushlansin", default=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,

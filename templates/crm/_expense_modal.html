@@ -28,6 +28,12 @@ page still knows where to send the user back to after saving.{% endcomment %}
   <p>{{ form.method.label_tag }}{{ form.method }}{{ form.method.errors }}</p>
   <p>{{ form.employee.label_tag }}{{ form.employee }}{{ form.employee.errors }}
     {% if form.employee.help_text %}<span class="field-hint">{{ form.employee.help_text }}</span>{% endif %}</p>
+  {% comment %}Only shown once somebody is picked — with no worker there is nothing to
+  hold the money back from, and the form clears the flag on save anyway.{% endcomment %}
+  <div class="employee-only"{% if not form.employee.value %} hidden{% endif %}>
+    <p class="payer-choice">{{ form.counts_against_salary.label_tag }}{{ form.counts_against_salary }}{{ form.counts_against_salary.errors }}
+      <span class="field-hint">{{ form.counts_against_salary.help_text }}</span></p>
+  </div>
   <p>{{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}</p>
   <div class="modal-actions">
     <button type="submit" class="btn">Saqlash</button>
