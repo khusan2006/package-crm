@@ -42,6 +42,8 @@
     <th class="sticky-col">Mijoz</th>
     <th class="num">Ochiq cheklar</th>
     <th>Eng yaqin muddat</th>
+    <th>Oxirgi yuk</th>
+    <th>Oxirgi to'lov</th>
     <th class="num">Qarz qoldig'i</th>
     <th></th>
   </tr>
@@ -50,6 +52,14 @@
     <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=g.client.name %}<a href="{% url 'debt_client' g.client.pk %}">{{ g.client.name }}</a></span></td>
     <td class="num">{{ g.count }}{% if g.overdue_count %} <span class="muted">({{ g.overdue_count }} o'tgan)</span>{% endif %}</td>
     <td>{{ g.earliest|date:"d.m.Y" }} · {% deadline_badge g.earliest %}</td>
+    <td>
+      {% if g.last_sale %}<span title="{{ g.last_sale|date:'d.m.Y' }}">{{ g.last_sale|timeago_uz }}</span>
+      {% else %}<span class="muted">—</span>{% endif %}
+    </td>
+    <td>
+      {% if g.last_payment %}<span title="{{ g.last_payment|date:'d.m.Y' }}">{{ g.last_payment|timeago_uz }}</span>
+      {% else %}<span class="muted">Hech qachon</span>{% endif %}
+    </td>
     <td class="num"><strong>{{ g.remaining|floatformat:"0g" }}</strong> so'm</td>
     <td><a class="btn btn-sm btn-ghost" href="{% url 'debt_client' g.client.pk %}">Ko'rish</a></td>
   </tr>

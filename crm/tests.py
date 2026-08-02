@@ -1413,11 +1413,12 @@ class ListExportTests(BaseSetup):
         response = self.client.get(reverse("debt_export"))
         self.assertEqual(response.status_code, 200)
         rows = read_xlsx(response)
-        self.assertIn("Qarz qoldig'i", rows[0])
+        header = list(rows[0])
+        self.assertIn("Qarz qoldig'i", header)
         self.assertEqual(len(rows), 2)  # header + the one debtor
         self.assertEqual(rows[1][0], self.client1.name)
         self.assertEqual(rows[1][3], 1)  # ochiq cheklar
-        self.assertEqual(rows[1][7], 240000.0)
+        self.assertEqual(rows[1][header.index("Qarz qoldig'i")], 240000.0)
 
     def test_debt_export_honours_the_overdue_filter(self):
         self.client.force_login(self.admin)
@@ -3395,9 +3396,15 @@ class TimeagoUzTests(TestCase):
         self.assertEqual(timeago_uz(today - timedelta(days=400)), "1 yil oldin")
 
 
-class ClientLastSaleTests(BaseSetup):
-    """The client list shows how long ago each customer's last sale was, and
-    "Hech qachon" for a customer who has never bought."""
+class ClientLastActivityTests(BaseSetup):
+    """How long ago each customer last took goods and last paid — shown on the client
+    list ("Hech qachon" when they have done neither), on the qarzlar page and its
+    Excel, and on the debtor's own qarz page and history."""
+
+    def _rows(self):
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("client_list"))
+        return response, {c.name: c for c in response.context["page"]}
 
     def test_list_shows_time_since_last_sale(self):
         recent = Client.objects.create(name="Yaqin mijoz", owner=self.sales1)
@@ -3405,11 +3412,156 @@ class ClientLastSaleTests(BaseSetup):
                   date=timezone.localdate() - timedelta(days=3))
         Client.objects.create(name="Sotuvsiz mijoz", owner=self.sales1)  # never bought
 
-        self.client.force_login(self.admin)
-        response = self.client.get(reverse("client_list"))
-        self.assertContains(response, "Oxirgi sotuv")
+        response, _ = self._rows()
+        self.assertContains(response, "Oxirgi yuk")
+        self.assertContains(response, "Oxirgi to'lov")
         self.assertContains(response, "3 kun oldin")
         self.assertContains(response, "Hech qachon")
+
+    def test_last_payment_is_the_latest_money_in(self):
+        """Taking goods and paying for them are separate dates — a debtor who paid
+        something down last week still shows the old shipment date."""
+        today = timezone.localdate()
+        buyer = Client.objects.create(name="Qarzdor mijoz", owner=self.sales1)
+        sale = make_sale(buyer, self.sales1, self.product,
+                         date=today - timedelta(days=10), is_debt=True)
+        Payment.objects.create(
+            sale=sale, amount=Decimal("50000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=today - timedelta(days=2),
+            created_by=self.sales1,
+        )
+        never = Client.objects.create(name="Sotuvsiz mijoz", owner=self.sales1)
+
+        _, rows = self._rows()
+        self.assertEqual(rows[buyer.name].last_sale, today - timedelta(days=10))
+        self.assertEqual(rows[buyer.name].last_payment, today - timedelta(days=2))
+        self.assertIsNone(rows[never.name].last_sale)
+        self.assertIsNone(rows[never.name].last_payment)
+
+    def test_advance_deposit_counts_as_a_payment(self):
+        """An advance is money the client handed over, even with no sale attached."""
+        today = timezone.localdate()
+        client = Client.objects.create(name="Avansli mijoz", owner=self.sales1)
+        Payment.objects.create(
+            client=client, sale=None, amount=Decimal("70000"),
+            method=Payment.Method.CASH, kind=Payment.Kind.ADVANCE_IN,
+            date=today - timedelta(days=1), created_by=self.sales1,
+        )
+        _, rows = self._rows()
+        self.assertEqual(rows[client.name].last_payment, today - timedelta(days=1))
+
+    def test_opening_carry_over_dates_the_last_shipment(self):
+        """An imported old balance is dated on the client's ОЛДИ — the day they last
+        took goods before go-live (see `redate_opening_debts`) — so for a legacy
+        debtor with no CRM sale yet it is the answer to "oxirgi yuk". It is still not
+        a sale: the Sotuvlar count ignores it."""
+        old = Client.objects.create(name="Eski qarzdor", owner=self.sales1)
+        oldi = timezone.localdate() - timedelta(days=30)
+        Sale.objects.create(
+            client=old, sales_rep=self.sales1, date=oldi,
+            is_opening=True, opening_amount=Decimal("100000"),
+        )
+        _, rows = self._rows()
+        self.assertEqual(rows[old.name].last_sale, oldi)
+        self.assertEqual(rows[old.name].sale_count, 0)
+
+    def test_real_sale_wins_over_an_older_opening_balance(self):
+        """Once the client comes back for goods, the CRM sale is the later date and
+        the carry-over stops speaking for them."""
+        today = timezone.localdate()
+        old = Client.objects.create(name="Qaytgan mijoz", owner=self.sales1)
+        Sale.objects.create(
+            client=old, sales_rep=self.sales1, date=today - timedelta(days=40),
+            is_opening=True, opening_amount=Decimal("100000"),
+        )
+        make_sale(old, self.sales1, self.product, date=today - timedelta(days=5))
+        _, rows = self._rows()
+        self.assertEqual(rows[old.name].last_sale, today - timedelta(days=5))
+
+    def test_debt_and_history_pages_show_both_dates(self):
+        """The pair a collector rings up with belongs on the debtor's own qarz page
+        and on their history too, not only in the list."""
+        today = timezone.localdate()
+        buyer = Client.objects.create(name="Qarzdor mijoz", owner=self.sales1)
+        sale = make_sale(buyer, self.sales1, self.product,
+                         date=today - timedelta(days=9), is_debt=True)
+        Payment.objects.create(
+            sale=sale, amount=Decimal("50000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=today - timedelta(days=2),
+            created_by=self.sales1,
+        )
+        self.client.force_login(self.admin)
+        for page in ("debt_client", "client_history"):
+            with self.subTest(page=page):
+                response = self.client.get(reverse(page, args=[buyer.pk]))
+                self.assertEqual(response.context["last_sale"], today - timedelta(days=9))
+                self.assertEqual(response.context["last_payment"], today - timedelta(days=2))
+                self.assertContains(response, "Oxirgi yuk olgan")
+                self.assertContains(response, "Oxirgi to'lov")
+
+    def test_client_level_exports_carry_both_dates(self):
+        """What the collector reads on screen has to survive into the Excel: both
+        dates describe the client, so they ride along on every row of their sheets."""
+        today = timezone.localdate()
+        buyer = Client.objects.create(name="Eksportli qarzdor", owner=self.sales1)
+        sale = make_sale(buyer, self.sales1, self.product,
+                         date=today - timedelta(days=6), is_debt=True)
+        Payment.objects.create(
+            sale=sale, amount=Decimal("40000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=today - timedelta(days=1),
+            created_by=self.sales1,
+        )
+        self.client.force_login(self.admin)
+        for export in ("debt_client_export", "client_history_export"):
+            with self.subTest(export=export):
+                rows = read_xlsx(self.client.get(reverse(export, args=[buyer.pk])))
+                header = list(rows[0])
+                first = rows[1]
+                self.assertEqual(first[header.index("Oxirgi yuk olgan")],
+                                 (today - timedelta(days=6)).strftime("%d.%m.%Y"))
+                self.assertEqual(first[header.index("Oxirgi to'lov")],
+                                 (today - timedelta(days=1)).strftime("%d.%m.%Y"))
+
+    def test_debtor_list_and_export_carry_both_dates(self):
+        """The qarzlar page is where these dates get used, so both its rows and its
+        Excel carry them."""
+        today = timezone.localdate()
+        buyer = Client.objects.create(name="Qarzdor eksport", owner=self.sales1)
+        sale = make_sale(buyer, self.sales1, self.product,
+                         date=today - timedelta(days=12), is_debt=True)
+        Payment.objects.create(
+            sale=sale, amount=Decimal("30000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=today - timedelta(days=3),
+            created_by=self.sales1,
+        )
+        self.client.force_login(self.admin)
+        page = self.client.get(reverse("debt_list"))
+        row = next(g for g in page.context["debtors"] if g["client"] == buyer)
+        self.assertEqual(row["last_sale"], today - timedelta(days=12))
+        self.assertEqual(row["last_payment"], today - timedelta(days=3))
+
+        rows = read_xlsx(self.client.get(reverse("debt_export")))
+        header = list(rows[0])
+        excel = next(r for r in rows[1:] if r[0] == buyer.name)
+        self.assertEqual(excel[header.index("Oxirgi yuk olgan")],
+                         (today - timedelta(days=12)).strftime("%d.%m.%Y"))
+        self.assertEqual(excel[header.index("Oxirgi to'lov")],
+                         (today - timedelta(days=3)).strftime("%d.%m.%Y"))
+
+    def test_export_carries_both_dates(self):
+        today = timezone.localdate()
+        buyer = Client.objects.create(name="Eksport mijozi", owner=self.sales1)
+        make_sale(buyer, self.sales1, self.product, date=today - timedelta(days=4))
+
+        self.client.force_login(self.admin)
+        rows = read_xlsx(self.client.get(reverse("client_export")))
+        header = list(rows[0])
+        self.assertIn("Oxirgi yuk olgan", header)
+        self.assertIn("Oxirgi to'lov", header)
+        row = next(r for r in rows[1:] if r[0] == buyer.name)
+        stamp = (today - timedelta(days=4)).strftime("%d.%m.%Y")
+        self.assertEqual(row[header.index("Oxirgi yuk olgan")], stamp)
+        self.assertEqual(row[header.index("Oxirgi to'lov")], stamp)
 
 
 class OmborReportTests(BaseSetup):

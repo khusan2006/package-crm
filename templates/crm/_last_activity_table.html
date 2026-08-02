@@ -1,0 +1,21 @@
+{% load crm_extras %}
+{# The two dates a collector rings a client up with. Shared by the qarz page and the
+   client's history so both read the same, and both Excel exports carry them too. #}
+<div class="card">
+  <h2>Oxirgi harakat</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Nima</th><th>Sana</th><th>Qachon</th></tr>
+    <tr>
+      <td>Oxirgi yuk olgan</td>
+      <td>{% if last_sale %}<strong>{{ last_sale|date:"d.m.Y" }}</strong>{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td class="muted">{% if last_sale %}{{ last_sale|timeago_uz }}{% else %}hali yuk olmagan{% endif %}</td>
+    </tr>
+    <tr>
+      <td>Oxirgi to'lov</td>
+      <td>{% if last_payment %}<strong>{{ last_payment|date:"d.m.Y" }}</strong>{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td class="muted">{% if last_payment %}{{ last_payment|timeago_uz }}{% else %}hali to'lov qilmagan{% endif %}</td>
+    </tr>
+  </table>
+  </div>
+</div>

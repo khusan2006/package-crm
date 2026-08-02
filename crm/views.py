@@ -639,7 +639,10 @@ def _client_rows(request):
     advance and open debt attached. Shared by the page and its Excel export."""
     clients = (
         _visible_clients(request.user)
-        .annotate(sale_count=Count("sales"), last_sale=Max("sales__date"))
+        # Real sales only: an opening carry-over is a balance moved into the CRM, not
+        # a receipt written here, so it is not one of the client's sales. Its date is
+        # a different matter — see `_last_sale_map`.
+        .annotate(sale_count=Count("sales", filter=Q(sales__is_opening=False)))
         .order_by("name")
     )
     q = request.GET.get("q", "").strip()
@@ -656,12 +659,17 @@ def _client_rows(request):
     # Advance (prepaid) balance per client, batched in one query. A seller sees their own
     # till's balance; an admin/manager sees the client's total across every seller's till.
     scope = None if request.user.can_see_all_records else request.user
-    adv_map = _advance_balance_map(clients.values_list("pk", flat=True), scope)
-    debt_map = _client_debt_map(request.user)
     rows = list(clients)
+    pks = [c.pk for c in rows]
+    adv_map = _advance_balance_map(pks, scope)
+    debt_map = _client_debt_map(request.user)
+    sale_map = _last_sale_map(request.user, pks)
+    pay_map = _last_payment_map(request.user, pks)
     for c in rows:
         c.advance = adv_map.get(c.pk, Decimal("0"))
         c.debt = debt_map.get(c.pk, Decimal("0"))
+        c.last_sale = sale_map.get(c.pk)
+        c.last_payment = pay_map.get(c.pk)
     # Clients holding an advance float to the top (biggest first), then everyone by name.
     rows.sort(key=lambda c: (0 if c.advance > 0 else 1, -c.advance, c.name.lower()))
     return rows, q
@@ -674,6 +682,64 @@ def _client_debt_map(user):
         .values("client").annotate(owed=Sum("remaining"))
     )
     return {r["client"]: r["owed"] or Decimal("0") for r in agg}
+
+
+def _last_sale_map(user, client_pks):
+    """{client_pk: date they last took goods}, in one query.
+
+    Opening carry-overs count here, unlike everywhere else: `redate_opening_debts`
+    dates each one on the client's ОЛДИ — the day they last took goods before
+    go-live — so for a client whose trading predates the CRM that receipt is the
+    answer, and most of today's debtors have no other sale. It costs nothing for the
+    rest: an opening balance is always older than their real sales, so Max() still
+    lands on the last real shipment."""
+    qs = Sale.objects.visible_to(user).filter(client__in=client_pks)
+    return {
+        r["client"]: r["last"] for r in qs.values("client").annotate(last=Max("date"))
+    }
+
+
+def _last_payment_map(user, client_pks):
+    """{client_pk: date they last handed money over}, in two queries.
+
+    Only money coming IN from the client counts: what was paid on a receipt (sale /
+    debt) and advance deposits. Spending advance credit (advance_used) is not a new
+    payment — that cash arrived on the deposit's own date, which is the one worth
+    showing — and return credits / refunds move money the other way. Opening
+    advances are dropped too: that money was received before go-live and carries the
+    import's date, so it says nothing about when the client last actually paid."""
+    on_sales = Payment.objects.filter(
+        sale__client__in=client_pks, kind__in=(Payment.Kind.SALE, Payment.Kind.DEBT)
+    )
+    advances = Payment.objects.filter(
+        client__in=client_pks, sale__isnull=True,
+        kind=Payment.Kind.ADVANCE_IN, is_opening=False,
+    )
+    if not user.can_see_all_records:
+        # Same scoping as everywhere else: a seller sees their own receipts and the
+        # advances they took into their own till.
+        on_sales = on_sales.filter(sale__sales_rep=user)
+        advances = advances.filter(created_by=user)
+    last = {}
+    # A payment hangs off either the sale's client or the client directly, so the two
+    # sides are aggregated separately and the later date wins.
+    for qs, key in ((on_sales, "sale__client"), (advances, "client")):
+        for row in qs.values(key).annotate(last=Max("date")):
+            pk, when = row[key], row["last"]
+            if when and (pk not in last or when > last[pk]):
+                last[pk] = when
+    return last
+
+
+def _client_activity(user, client):
+    """(last took goods, last paid) for one client — the pair the qarz and tarix
+    pages lead with, read through the same maps the list pages use so one client's
+    dates never disagree with the row they came from."""
+    pks = [client.pk]
+    return (
+        _last_sale_map(user, pks).get(client.pk),
+        _last_payment_map(user, pks).get(client.pk),
+    )
 
 
 def client_list(request):
@@ -698,7 +764,8 @@ def client_export(request):
     rows, _ = _client_rows(request)
     headers = [
         "Ismi", "Kompaniya", "Telefon", "Manzil", "Mas'ul xodim",
-        "Avans (so'm)", "Qarz (so'm)", "Sotuvlar soni", "Oxirgi sotuv", "Izoh",
+        "Avans (so'm)", "Qarz (so'm)", "Sotuvlar soni",
+        "Oxirgi yuk olgan", "Oxirgi to'lov", "Izoh",
     ]
     data = [
         [
@@ -711,6 +778,7 @@ def client_export(request):
             float(c.debt),
             c.sale_count,
             c.last_sale.strftime("%d.%m.%Y") if c.last_sale else "",
+            c.last_payment.strftime("%d.%m.%Y") if c.last_payment else "",
             c.notes,
         ]
         for c in rows
@@ -1028,10 +1096,13 @@ def client_history(request, pk):
     single timeline, with what they owed after each step."""
     client = get_object_or_404(_visible_clients(request.user), pk=pk)
     events = _client_events(request, client)
+    last_sale, last_payment = _client_activity(request.user, client)
     return render(request, "crm/client_history.html", {
         "client": client,
         "events": events,
         "totals": _client_history_totals(request, client, events),
+        "last_sale": last_sale,
+        "last_payment": last_payment,
     })
 
 
@@ -1042,6 +1113,14 @@ def client_history_export(request, pk):
     headers = [
         "Sana", "Amal", "Tafsilot", "Summa",
         "Qarz o'zgarishi", "Qarz qoldig'i", "Usul", "Kim", "Izoh",
+        "Oxirgi yuk olgan", "Oxirgi to'lov",
+    ]
+    # The last two are client-level, so they repeat down every row — the same pair the
+    # page shows above the timeline, carried into the file the client is sent.
+    last_sale, last_payment = _client_activity(request.user, client)
+    stamps = [
+        last_sale.strftime("%d.%m.%Y") if last_sale else "",
+        last_payment.strftime("%d.%m.%Y") if last_payment else "",
     ]
     rows = [
         [
@@ -1054,6 +1133,7 @@ def client_history_export(request, pk):
             e["method_label"],
             str(e["user"]),
             e["note"],
+            *stamps,
         ]
         for e in events
     ]
@@ -1503,6 +1583,15 @@ def _debtor_rows(request):
             group["overdue_count"] += 1
             overdue_total += remaining
 
+    # When each debtor last took goods and last paid — the two dates you want in front
+    # of you before ringing them up.
+    pks = list(groups)
+    sale_map = _last_sale_map(request.user, pks)
+    pay_map = _last_payment_map(request.user, pks)
+    for pk, group in groups.items():
+        group["last_sale"] = sale_map.get(pk)
+        group["last_payment"] = pay_map.get(pk)
+
     # Most urgent first: overdue (earliest deadlines) at the top
     debtors = sorted(groups.values(), key=lambda g: g["earliest"] or today)
     return debtors, filters, total_debt, overdue_total
@@ -1557,7 +1646,8 @@ def debt_export(request):
     today = timezone.localdate()
     headers = [
         "Mijoz", "Telefon", "Mas'ul xodim", "Ochiq cheklar",
-        "Muddati o'tgan cheklar", "Eng yaqin muddat", "Holat", "Qarz qoldig'i",
+        "Muddati o'tgan cheklar", "Eng yaqin muddat", "Holat",
+        "Oxirgi yuk olgan", "Oxirgi to'lov", "Qarz qoldig'i",
     ]
     rows = []
     for g in debtors:
@@ -1570,9 +1660,11 @@ def debt_export(request):
             g["overdue_count"],
             earliest.strftime("%d.%m.%Y") if earliest else "",
             "Muddati o'tgan" if earliest and earliest < today else "Muddatida",
+            g["last_sale"].strftime("%d.%m.%Y") if g["last_sale"] else "",
+            g["last_payment"].strftime("%d.%m.%Y") if g["last_payment"] else "",
             float(g["remaining"]),
         ])
-    return _xlsx_response("qarzlar.xlsx", "Qarzlar", headers, rows, {8: "#,##0.00"})
+    return _xlsx_response("qarzlar.xlsx", "Qarzlar", headers, rows, {10: "#,##0.00"})
 
 
 def _open_receipts(request, client):
@@ -1601,6 +1693,7 @@ def debt_client(request, pk):
         .filter(client=client)
         .order_by("-date", "-created_at")
     )
+    last_sale, last_payment = _client_activity(request.user, client)
     return render(
         request,
         "crm/debt_client.html",
@@ -1610,6 +1703,8 @@ def debt_client(request, pk):
             "total": total,
             "advance": advance,
             "advance_deposits": advance_deposits,
+            "last_sale": last_sale,
+            "last_payment": last_payment,
         },
     )
 
@@ -1620,8 +1715,11 @@ def debt_client_export(request, pk):
     today = timezone.localdate()
     headers = [
         "Sana", "Mahsulotlar", "Sotuvchi", "Umumiy", "To'langan",
-        "Qoldiq", "Muddat", "Holat",
+        "Qoldiq", "Muddat", "Holat", "Oxirgi yuk olgan", "Oxirgi to'lov",
     ]
+    # Client-level dates, so they repeat down every row: whoever opens the file reads
+    # them off the first line instead of hunting for a summary block.
+    last_sale, last_payment = _client_activity(request.user, client)
     rows = []
     for sale in _open_receipts(request, client):
         deadline = sale.debt_deadline
@@ -1635,6 +1733,8 @@ def debt_client_export(request, pk):
             float(sale.remaining),
             deadline.strftime("%d.%m.%Y") if deadline else "",
             f"{(today - deadline).days} kun o'tgan" if overdue else "Muddatida",
+            last_sale.strftime("%d.%m.%Y") if last_sale else "",
+            last_payment.strftime("%d.%m.%Y") if last_payment else "",
         ])
     number_formats = {4: "#,##0.00", 5: "#,##0.00", 6: "#,##0.00"}
     return _xlsx_response(
