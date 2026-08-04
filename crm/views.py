@@ -1,3 +1,4 @@
+import calendar
 import math
 import re
 from datetime import date, timedelta
@@ -1444,12 +1445,35 @@ def _active_filter_chips(request, filters, clients, products, reps):
     return _filter_chips(request, specs)
 
 
-def _date_range_context(request):
+def _month_end(day):
+    """The last date of the calendar month `day` falls in."""
+    return day.replace(day=calendar.monthrange(day.year, day.month)[1])
+
+
+def _date_range_context(request, default_window="today"):
     """Parse ?dan/?gacha into a today-default window plus the navigation vars
-    the shared toolbar's date-range picker needs."""
+    the shared toolbar's date-range picker needs.
+
+    `default_window` picks what a page opens on when NEITHER date is given:
+    "today", or "month" for the whole current calendar month (what the ombor
+    report wants — it reads as a monthly sverka, and a single day's slice of one
+    is usually empty). Once either date is in the URL the old parsing stands
+    unchanged, so every existing link, filter and day-step arrow still means
+    exactly what it did.
+
+    `is_month` tells the toolbar the window is one whole calendar month, so it can
+    label it by name ("Avgust") instead of spelling out both end dates."""
     today = timezone.localdate()
-    date_from = _parse_date(request.GET.get("dan")) or today
-    date_to = _parse_date(request.GET.get("gacha")) or date_from
+    dan = _parse_date(request.GET.get("dan"))
+    gacha = _parse_date(request.GET.get("gacha"))
+    if dan is None and gacha is None and default_window == "month":
+        date_from = today.replace(day=1)
+        date_to = _month_end(today)
+    elif dan is None and gacha is None:
+        date_from = date_to = today
+    else:
+        date_from = dan or today
+        date_to = gacha or date_from
     if date_to < date_from:
         date_from, date_to = date_to, date_from
     return {
@@ -1457,6 +1481,7 @@ def _date_range_context(request):
         "date_to": date_to,
         "range_days": (date_to - date_from).days + 1,
         "is_single_day": date_from == date_to,
+        "is_month": date_from.day == 1 and date_to == _month_end(date_from),
         "is_today": date_from == today and date_to == today,
         "prev_from": (date_from - timedelta(days=1)).isoformat(),
         "prev_to": (date_to - timedelta(days=1)).isoformat(),
@@ -4028,6 +4053,12 @@ def receipt_delete(request, pk):
     )
 
 
+# The ombor report opens on the whole current month, not on today like the other
+# dated pages: it is read as a monthly sverka, and a single day's slice is usually
+# empty. A whole month also lets the toolbar name the window ("Avgust").
+OMBOR_DEFAULT_WINDOW = "month"
+
+
 def _ombor_items(request, date_from, date_to):
     """Sale lines inside the window, scoped to the viewer and narrowed by the ombor
     filters (product search + seller). Shared by the page and its Excel export so
@@ -4073,7 +4104,7 @@ def ombor_view(request):
     selected date window. A seller sees only their own sales; admins/managers see
     every seller's combined total (and can filter to one seller). Click a product to
     drill into who bought it. Mirrors the debts page's group-then-detail shape."""
-    dates = _date_range_context(request)
+    dates = _date_range_context(request, OMBOR_DEFAULT_WINDOW)
     date_from, date_to = dates["date_from"], dates["date_to"]
 
     items, filters, reps, rep_obj = _ombor_items(request, date_from, date_to)
@@ -4112,7 +4143,7 @@ def ombor_view(request):
 def ombor_export(request):
     """The sold-goods report as .xlsx — same window, search and seller filter as the
     page. This is the sheet a monthly production-vs-sold sverka is built from."""
-    dates = _date_range_context(request)
+    dates = _date_range_context(request, OMBOR_DEFAULT_WINDOW)
     items, _, _, _ = _ombor_items(request, dates["date_from"], dates["date_to"])
     rows = _ombor_rows(items)
 
