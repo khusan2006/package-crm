@@ -120,7 +120,7 @@
       {% for t in outflow_rows %}
       <tr>
         <td>{{ t.date|date:"d.m.Y" }}</td>
-        <td>{% if t.kind == 'remittance' %}<span class="badge badge-remit">Topshirish</span> {% elif t.kind == 'remittance_back' %}<span class="badge badge-info">I.ch. qaytardi</span> {% elif t.kind == 'profit' %}<span class="badge badge-ok">Foyda</span> {% elif t.kind == 'refund' %}<span class="badge badge-neutral">Qaytarish</span> {% elif t.kind == 'commission' %}<span class="badge badge-danger">Komissiya</span> {% endif %}{{ t.title }}{% if t.kind == 'expense' and t.subtitle %} <span class="cell-note">· {{ t.subtitle }}</span>{% endif %}</td>
+        <td>{% if t.kind == 'remittance' %}<span class="badge badge-remit">Topshirish</span> {% elif t.kind == 'remittance_back' %}<span class="badge badge-info">I.ch. qaytardi</span> {% elif t.kind == 'profit' %}<span class="badge badge-ok">Foyda</span> {% elif t.kind == 'refund' %}{% if t.is_adjust %}<span class="badge badge-neutral">Narx tuzatildi</span>{% else %}<span class="badge badge-neutral">Qaytarish</span>{% endif %} {% elif t.kind == 'commission' %}<span class="badge badge-danger">Komissiya</span> {% endif %}{{ t.title }}{% if t.kind == 'expense' and t.subtitle %} <span class="cell-note">· {{ t.subtitle }}</span>{% endif %}</td>
         <td>{% include "crm/_method_badge.html" with code=t.method_code label=t.method %}</td>
         <td class="num muted">{% if t.kind == 'commission' %}{{ t.commission_percent|floatformat:"-2g" }}%{% elif t.currency == 'usd' %}{{ t.exchange_rate|floatformat:"0g" }}{% else %}—{% endif %}</td>
         {# A return from production is money coming IN, so it prints as a plus. #}
@@ -131,8 +131,13 @@
           <a class="icon-action act-edit" href="{% url 'remittance_edit' t.pk %}" data-modal title="Tahrirlash">{% include "crm/_ico_edit.html" %}</a>
           {% elif t.kind == 'profit' %}
           <a class="icon-action act-edit" href="{% url 'profit_payout_edit' t.pk %}" data-modal title="Foyda topshiruvini tahrirlash">{% include "crm/_ico_edit.html" %}</a>
-          {% elif t.kind == 'refund' %}{% if t.return_pk and user.can_see_all_records or t.return_pk and t.created_by == user %}
+          {% elif t.kind == 'refund' %}{% if user.can_see_all_records or t.created_by == user %}
+          {# A price correction has no return behind it, so its action opens the sale. #}
+          {% if t.is_adjust and t.sale_pk %}
+          <a class="icon-action act-edit" href="{% url 'sale_edit' t.sale_pk %}" data-modal title="Sotuvni tahrirlash">{% include "crm/_ico_edit.html" %}</a>
+          {% elif t.return_pk %}
           <a class="icon-action act-edit" href="{% url 'return_edit' t.return_pk %}" data-modal title="Qaytarishni tahrirlash">{% include "crm/_ico_edit.html" %}</a>
+          {% endif %}
           {% endif %}
           {% elif t.kind == 'commission' %}
           <a class="icon-action act-edit" href="{% url 'payment_edit' t.pk %}" data-modal title="To'lovni tahrirlash">{% include "crm/_ico_edit.html" %}</a>

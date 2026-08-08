@@ -42,12 +42,14 @@ from .forms import (
 )
 from .models import (
     COST,
+    CREDIT_BACK_KINDS,
     ITEM_WEIGHT_KG,
     MICRON_CHOICES,
     PAYING_KINDS,
     PAYMENT_CREDIT,
     PAYMENT_NET,
     PROFIT,
+    REFUND_KINDS,
     RETURN_AMOUNT,
     RETURN_COST,
     REVENUE,
@@ -965,6 +967,8 @@ _PAY_EVENTS = {
     Payment.Kind.ADVANCE_IN: ("Avans olindi", "badge-ok", "in"),
     Payment.Kind.RETURN_CREDIT: ("Qaytarishdan kredit", "badge-shipped", "return"),
     Payment.Kind.REFUND_OUT: ("Naqd qaytarildi", "badge-danger", "out"),
+    Payment.Kind.ADJUST_CREDIT: ("Narx tuzatildi — kreditga", "badge-shipped", "return"),
+    Payment.Kind.ADJUST_REFUND: ("Narx tuzatildi — naqd berildi", "badge-danger", "out"),
 }
 
 
@@ -979,7 +983,7 @@ def _payment_event(payment):
         delta = -amount
     elif payment.kind == Payment.Kind.ADVANCE_IN:
         delta = Decimal("0")
-    else:  # return_credit / refund_out — money owed back to the client
+    else:  # a settlement kind — money owed back to the client
         delta = amount
     notes = []
     if payment.commission:
@@ -2485,9 +2489,10 @@ def _kassa_summary(date_from, date_to, rep=None):
     # when it was deposited (ADVANCE_IN), so its consumption must not count again.
     payments = Payment.objects.till_income()
     expenses = Expense.objects.all()
-    # Cash handed back to clients on over-returned sales. till_income() already drops
-    # these, so they have to be brought in separately as an outflow.
-    refunds = Payment.objects.filter(kind=Payment.Kind.REFUND_OUT)
+    # Cash handed back to clients on over-returned or price-corrected sales.
+    # till_income() already drops these, so they have to be brought in separately
+    # as an outflow.
+    refunds = Payment.objects.filter(kind__in=REFUND_KINDS)
     if rep is not None:
         payments = payments.filter(created_by=rep)
         expenses = expenses.filter(created_by=rep)
@@ -2586,7 +2591,7 @@ def _per_employee_kassa(date_from, date_to, rep=None):
     expenses = Expense.objects.filter(**window)
     sale_items = SaleItem.objects.filter(**sale_window)
     restocked = Return.objects.filter(restock=True, **sale_window)
-    refunds = Payment.objects.filter(kind=Payment.Kind.REFUND_OUT, **window)
+    refunds = Payment.objects.filter(kind__in=REFUND_KINDS, **window)
     remittances = ProductionRemittance.objects.filter(**window)
     payouts = ProfitPayout.objects.filter(**window)
     if rep is not None:
@@ -2824,11 +2829,12 @@ def _kassa_transactions(expenses, dates, filters, rep):
                     "exchange_rate": Decimal("0"), "created_by": pp.created_by,
                     "pk": pp.pk, "kind": "profit",
                 })
-    # Cash refunded to clients on over-returned sales. Not an expense (the business
-    # bore no cost — it is the client's own money going back), but it leaves the till
-    # all the same, so it belongs in the outflow ledger or the drawer won't reconcile.
+    # Cash refunded to clients on over-returned or price-corrected sales. Not an expense
+    # (the business bore no cost — it is the client's own money going back), but it
+    # leaves the till all the same, so it belongs in the outflow ledger or the drawer
+    # won't reconcile.
     refunds = Payment.objects.filter(
-        kind=Payment.Kind.REFUND_OUT,
+        kind__in=REFUND_KINDS,
         date__gte=dates["date_from"], date__lte=dates["date_to"],
     ).select_related("client", "created_by").prefetch_related("settled_return")
     if rep is not None:
@@ -2838,19 +2844,25 @@ def _kassa_transactions(expenses, dates, filters, rep):
     if filters["currency"] in dict(Payment.Currency.choices):
         refunds = refunds.filter(currency=filters["currency"])
     for rf in refunds:
-        # A refund is only ever corrected by undoing its return, so carry the return's
-        # pk onto the row — the kassa "Bekor qilish" action links straight to it.
+        # A return's refund is only ever corrected by undoing that return, so carry its
+        # pk onto the row — the kassa action links straight to it. A price correction
+        # has no return behind it; there the action links to the sale (see sale_pk).
         linked = list(rf.settled_return.all())
+        is_adjust = rf.kind == Payment.Kind.ADJUST_REFUND
         rows.append({
             "date": rf.date, "created_at": rf.created_at, "direction": "refund",
             "title": str(rf.client) if rf.client else "—",
-            "subtitle": rf.note or "Qaytarish uchun naqd berildi",
+            "subtitle": rf.note or (
+                "Narx tuzatildi — naqd qaytarildi" if is_adjust
+                else "Qaytarish uchun naqd berildi"
+            ),
             "method": rf.get_method_display(), "method_code": rf.method,
             "currency": rf.currency,
             "amount_som": rf.amount, "amount_original": rf.original_amount,
             "exchange_rate": rf.exchange_rate, "created_by": rf.created_by,
             "pk": rf.pk, "kind": "refund", "sale_pk": rf.sale_id,
             "return_pk": linked[0].pk if linked else None,
+            "is_adjust": is_adjust,
         })
     for e in expenses:
         rows.append({
@@ -3345,17 +3357,21 @@ def _entry_payment(request, pk, fee_only=False):
 
 
 def _entry_refund(request, pk):
-    """Cash handed back to a client. Undone by editing the return it settles."""
+    """Cash handed back to a client — either settling a return or correcting a price
+    that was too high. Neither is edited here: the return is undone through the return
+    itself, the correction by re-editing the sale."""
     qs = Payment.objects.select_related("client", "created_by").prefetch_related(
         "settled_return"
     )
     if not request.user.can_see_all_records:
         qs = qs.filter(created_by=request.user)
-    p = get_object_or_404(qs, pk=pk, kind=Payment.Kind.REFUND_OUT)
+    p = get_object_or_404(qs, pk=pk, kind__in=REFUND_KINDS)
+    is_adjust = p.kind == Payment.Kind.ADJUST_REFUND
     linked = list(p.settled_return.all())
     rows = [
         ("Sana", p.date.strftime("%d.%m.%Y")),
         ("Mijoz", str(p.client) if p.client else "—"),
+        ("Sababi", "Narx tuzatildi" if is_adjust else "Tovar qaytdi"),
         ("Berilgan summa", _money(p.amount)),
         ("To'lov usuli", p.get_method_display()),
         ("Kim berdi", str(p.created_by)),
@@ -3363,14 +3379,23 @@ def _entry_refund(request, pk):
     if p.note:
         rows.append(("Izoh", p.note))
     context = {
-        "title": "Qaytarish (naqd berildi)",
+        "title": (
+            "Narx tuzatildi (naqd berildi)" if is_adjust
+            else "Qaytarish (naqd berildi)"
+        ),
         "rows": rows,
         "note": (
+            "Bu yozuv sotuv narxi tuzatilganda paydo bo'lgan — o'zgartirish uchun "
+            "sotuvni qayta tahrirlang."
+            if is_adjust else
             "Bu yozuv qaytarishdan kelib chiqadi — bekor qilish uchun qaytarishning "
             "o'zini tahrirlang."
         ),
     }
-    if linked:
+    if is_adjust and p.sale_id:
+        context["edit_url"] = reverse("sale_edit", args=[p.sale_id])
+        context["edit_label"] = "Sotuvni tahrirlash"
+    elif linked:
         context["edit_url"] = reverse("return_edit", args=[linked[0].pk])
         context["edit_label"] = "Qaytarishni tahrirlash"
     if p.sale_id:
@@ -4370,7 +4395,9 @@ def sale_detail(request, pk):
     )
 
 
-def _render_sale_form(request, form, formset, title, invalid=False, zakaz_shortfall=None):
+def _render_sale_form(
+    request, form, formset, title, invalid=False, zakaz_shortfall=None, overpay=None
+):
     context = {
         "form": form,
         "formset": formset,
@@ -4378,10 +4405,11 @@ def _render_sale_form(request, form, formset, title, invalid=False, zakaz_shortf
         "products_json": _product_price_map(),
         "client_advance_json": _client_advance_map(request.user),
         "zakaz_shortfall": zakaz_shortfall,
+        "overpay": overpay,
         "size_suggestions": [c[0] for c in SIZE_CHOICES],
         "micron_suggestions": [c[0] for c in MICRON_CHOICES],
     }
-    keep_open = invalid or bool(zakaz_shortfall)
+    keep_open = invalid or bool(zakaz_shortfall) or bool(overpay)
     if is_ajax(request):
         return render(request, "crm/_sale_modal.html", context, status=422 if keep_open else 200)
     return render(request, "crm/sale_form.html", context)
@@ -4391,15 +4419,20 @@ def _client_advance_map(user):
     """{client_pk: balance} for clients this user (as seller) is holding an advance
     for — so the sale form can flag "this client has X prepaid" the moment they're
     picked. Scoped to `user` because that's the seller whose advance a new sale would
-    actually consume. Only positive balances are included."""
+    actually consume. Only positive balances are included.
+
+    Counts the same kinds as `client_advance_balance`, credit owed back from returns
+    and price corrections included — otherwise the hint would contradict the balance
+    the sale then actually draws on."""
+    deposit_kinds = (Payment.Kind.ADVANCE_IN,) + CREDIT_BACK_KINDS
     rows = (
         Payment.objects.filter(
             created_by=user,
-            kind__in=[Payment.Kind.ADVANCE_IN, Payment.Kind.ADVANCE_USED],
+            kind__in=deposit_kinds + (Payment.Kind.ADVANCE_USED,),
         )
         .values("client")
         .annotate(
-            deposited=Sum(PAYMENT_CREDIT, filter=Q(kind=Payment.Kind.ADVANCE_IN)),
+            deposited=Sum(PAYMENT_CREDIT, filter=Q(kind__in=deposit_kinds)),
             used=Sum(PAYMENT_CREDIT, filter=Q(kind=Payment.Kind.ADVANCE_USED)),
         )
     )
@@ -4503,45 +4536,155 @@ def _return_conflict(formset):
     return None
 
 
+def _weight_dropped(sale, formset):
+    """True when the edit takes goods OFF the receipt instead of only re-pricing it.
+
+    Both end in the same over-payment, but they are different events: if the goods
+    physically came back this should have been a Return, which restocks them and
+    relieves the seller of the tannarx. A price correction deliberately does neither,
+    so the form warns rather than guessing which one the seller meant.
+
+    Weights are read fresh from the database: `cleaned_data["id"]` hands back the very
+    instance the formset has already overwritten with the new values, so comparing
+    against `item.weight` would compare a number with itself."""
+    original = dict(sale.items.values_list("pk", "weight"))
+    for f in formset.forms:
+        cleaned = getattr(f, "cleaned_data", None)
+        item = cleaned.get("id") if cleaned else None
+        if not cleaned or item is None or item.pk is None:
+            continue
+        was = original.get(item.pk)
+        if was is None:
+            continue
+        if cleaned.get("DELETE"):
+            return True
+        weight = cleaned.get("weight")
+        if weight is not None and weight < was:
+            return True
+    return False
+
+
+def _settle_overpay(sale, excess, refunded, user):
+    """Post the money side of a downward price correction — the mirror of
+    `_settle_return`, without any goods moving.
+
+    The client paid against a total that has now shrunk, so the difference is theirs:
+    parked as advance credit (default — the cash never leaves the drawer, it is only
+    re-labelled) or handed back as cash. Must run AFTER the new lines are saved, so the
+    credit settles onto a receipt that already carries the corrected total.
+
+    Deliberately always so'm / cash / no fee: this is not a payment the client made but
+    a bookkeeping correction of one, and the till only ever knows it in so'm."""
+    settlement = Payment.objects.create(
+        sale=sale,
+        client=sale.client,
+        # Today, not the sale's date: the money moves now. A refund backdated into a
+        # closed period would silently restate a till that has already been handed over.
+        date=timezone.localdate(),
+        amount=excess,
+        amount_original=excess,
+        currency=Payment.Currency.UZS,
+        method=Payment.Method.CASH,
+        commission=Decimal("0"),
+        commission_percent=Decimal("0"),
+        kind=Payment.Kind.ADJUST_REFUND if refunded else Payment.Kind.ADJUST_CREDIT,
+        note="Narx tuzatildi",
+        created_by=user,
+    )
+    if not refunded:
+        # Spend the fresh credit on whatever else the client still owes.
+        _apply_advance_to_open_sales(sale.client, user)
+    return settlement
+
+
+def _sale_edit_message(overpay, refunded):
+    if overpay <= 0:
+        return "Sotuv yangilandi."
+    if refunded:
+        return (
+            f"Sotuv yangilandi. Ortiqcha {overpay:,.0f} so'm mijozga naqd qaytarildi "
+            f"— kassadan chiqdi."
+        )
+    return (
+        f"Sotuv yangilandi. Ortiqcha {overpay:,.0f} so'm mijoz avansiga o'tdi — "
+        f"uning boshqa qarzlariga ishlatiladi."
+    )
+
+
+@transaction.atomic
 def sale_edit(request, pk):
+    """Edit a sale — including correcting a price that turns out to have been wrong
+    after the client already paid.
+
+    Dropping the total below what has been paid used to be refused outright, which left
+    a genuine mistake with no way out. A Return is the wrong instrument here: the goods
+    are still with the client, so it would shrink the sold kg, offer to restock stock
+    that never came back, and still leave the tannarx wrong. "The goods came back" and
+    "the price was wrong" are two different events.
+
+    So the edit asks instead of refusing, and writes nothing until answered: park the
+    over-payment as client credit (nothing leaves the till) or hand it back in cash.
+    The old hard block survives as the thing that makes the question unskippable — a
+    receipt must never be left sitting at a negative balance."""
     sale = get_object_or_404(Sale.objects.visible_to(request.user), pk=pk)
     form = SaleForm(request.POST or None, instance=sale, user=request.user)
     formset = SaleItemFormSet(request.POST or None, instance=sale, prefix="items")
-    if request.method == "POST":
-        if form.is_valid() and formset.is_valid():
-            conflict = _return_conflict(formset)
-            if conflict:
-                form.add_error(None, conflict)
-                return _render_sale_form(
-                    request, form, formset, "Sotuvni tahrirlash", invalid=True
-                )
-            # An edit must not drop the total below what the client has effectively
-            # paid and still holds goods for, or the sale would read as over-paid (a
-            # negative balance) with no refund. Returned goods, and money already
-            # handed back for them, are both out of that comparison.
-            net_paid = sale.paid_amount - sale.settled_amount
-            returned = sale.returned_amount
-            new_total = _formset_total(formset)
-            if new_total - returned < net_paid:
-                form.add_error(
-                    None,
-                    f"Jami summa ({new_total:,.0f} so'm) juda kam: qaytarilgan tovar "
-                    f"({returned:,.0f} so'm) hisobga olinganda ham mijoz "
-                    f"{net_paid:,.0f} so'm to'lagan.",
-                )
-                return _render_sale_form(request, form, formset, "Sotuvni tahrirlash", invalid=True)
-            sale = form.save()
-            formset.save()
-            _mark_fulfilment(sale, [], only_unset=True)
-            AuditLog.record(
-                request.user, AuditLog.Action.UPDATE, "Sotuv", sale.pk,
-                f"Mijoz {sale.client.name}, {sale.items.count()} ta mahsulot "
-                f"— {sale.total_price:,.0f} so'm",
+    title = "Sotuvni tahrirlash"
+    if request.method != "POST":
+        return _render_sale_form(request, form, formset, title)
+    if not (form.is_valid() and formset.is_valid()):
+        return _render_sale_form(request, form, formset, title, invalid=True)
+    conflict = _return_conflict(formset)
+    if conflict:
+        form.add_error(None, conflict)
+        return _render_sale_form(request, form, formset, title, invalid=True)
+
+    # How much the client would be over-paid by once the new total applies. Returned
+    # goods, and money already handed back for them, are both out of the comparison.
+    net_paid = sale.paid_amount - sale.settled_amount
+    returned = sale.returned_amount
+    overpay = net_paid - (_formset_total(formset) - returned)
+    choice = request.POST.get("overpay_settlement") or ""
+    refunded = choice == ReturnForm.SETTLE_REFUND
+    if overpay > 0:
+        overpay_ctx = {
+            "amount": overpay,
+            "cash_on_hand": seller_cash_on_hand(request.user),
+            "weight_dropped": _weight_dropped(sale, formset),
+        }
+        if choice not in (ReturnForm.SETTLE_ADVANCE, ReturnForm.SETTLE_REFUND):
+            return _render_sale_form(
+                request, form, formset, title, overpay=overpay_ctx
             )
-            messages.success(request, "Sotuv yangilandi.")
-            return form_reload(request, reverse("sale_list"))
-        return _render_sale_form(request, form, formset, "Sotuvni tahrirlash", invalid=True)
-    return _render_sale_form(request, form, formset, "Sotuvni tahrirlash")
+        if refunded and overpay > overpay_ctx["cash_on_hand"]:
+            form.add_error(
+                None,
+                f"Naqd qaytarish uchun kassada pul yetarli emas: kerak "
+                f"{overpay:,.0f} so'm, kassada "
+                f"{overpay_ctx['cash_on_hand']:,.0f} so'm. Avans variantini tanlang "
+                f"yoki avval kassaga pul kiriting.",
+            )
+            return _render_sale_form(
+                request, form, formset, title, invalid=True, overpay=overpay_ctx
+            )
+
+    sale = form.save()
+    formset.save()
+    _mark_fulfilment(sale, [], only_unset=True)
+    if overpay > 0:
+        _settle_overpay(sale, overpay, refunded, request.user)
+    summary = (
+        f"Mijoz {sale.client.name}, {sale.items.count()} ta mahsulot "
+        f"— {sale.total_price:,.0f} so'm"
+    )
+    if overpay > 0:
+        summary += (
+            f"; ortiqcha {overpay:,.0f} so'm "
+            f"({'naqd qaytarildi' if refunded else 'avansga'})"
+        )
+    AuditLog.record(request.user, AuditLog.Action.UPDATE, "Sotuv", sale.pk, summary)
+    messages.success(request, _sale_edit_message(overpay, refunded))
+    return form_reload(request, reverse("sale_list"))
 
 
 def sale_mark_paid(request, pk):

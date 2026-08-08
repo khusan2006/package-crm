@@ -10,6 +10,30 @@
 </div>
 {% endif %}
 
+{% if overpay %}
+{# New total is below what the client paid; nothing saves until one is picked. #}
+<div class="flash flash-warn">
+  <strong>Mijoz {{ overpay.amount|floatformat:"0g" }} so'm ortiqcha to'lagan bo'ladi.</strong>
+  <p style="margin:6px 0 0;">Yangi summa mijoz to'lagan puldan kam. Bu pul qayerga ketsin?</p>
+  {% if overpay.weight_dropped %}
+  <p style="margin:6px 0 0;">
+    <strong>Diqqat:</strong> og'irlik kamaytirildi. Agar tovar haqiqatan qaytgan bo'lsa,
+    bu yerda emas, «Qaytarish» orqali kiriting — aks holda sotilgan kg va ombor
+    hisoboti noto'g'ri qoladi.
+  </p>
+  {% endif %}
+  <label style="display:block;margin-top:8px;">
+    <input type="radio" name="overpay_settlement" value="advance" checked>
+    Avans bo'lib qolsin — keyingi qarzlariga ishlatiladi (kassadan pul chiqmaydi)
+  </label>
+  <label style="display:block;margin-top:4px;">
+    <input type="radio" name="overpay_settlement" value="refund">
+    Naqd qaytarilsin — kassadan chiqadi
+    <span class="cell-note">(kassada: {{ overpay.cash_on_hand|floatformat:"0g" }} so'm)</span>
+  </label>
+</div>
+{% endif %}
+
 <p>{{ form.date.label_tag }}{{ form.date }}{{ form.date.errors }}</p>
 
 <p class="qa-container">

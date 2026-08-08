@@ -157,19 +157,32 @@
     </tr>
   </table>
   </div>
-  {% if settlements %}
-  <p class="field-hint" style="margin:10px 0 4px;">
-    Qaytarilgan tovar avval qarzni yopdi. Mijoz allaqachon to'lagan ortiqcha qism
-    quyidagicha qaytarildi:
+</div>
+{% endif %}
+
+{# Its own card: a price correction settles money back on a sale with no returns. #}
+{% if settlements %}
+<div class="card">
+  <h2>Mijozga qaytarilgan pul</h2>
+  <p class="field-hint" style="margin:0 0 8px;">
+    Mijoz allaqachon to'lagan, lekin unga tegishli bo'lib qolgan summa quyidagicha
+    hisoblandi:
   </p>
   <div class="table-wrap">
   <table>
-    <tr><th>Sana</th><th>Qanday</th><th class="num">Summa</th><th>Kim</th></tr>
+    <tr><th>Sana</th><th>Sababi</th><th>Qanday</th><th class="num">Summa</th><th>Kim</th></tr>
     {% for s in settlements %}
     <tr>
       <td>{{ s.date|date:"d.m.Y" }}</td>
       <td>
-        {% if s.kind == 'refund_out' %}
+        {% if s.kind == 'adjust_credit' or s.kind == 'adjust_refund' %}
+          Narx tuzatildi
+        {% else %}
+          Tovar qaytdi
+        {% endif %}
+      </td>
+      <td>
+        {% if s.kind == 'refund_out' or s.kind == 'adjust_refund' %}
           <span class="badge badge-neutral">Naqd berildi</span>
         {% else %}
           <span class="badge badge-paid">Avansga o'tdi</span>
@@ -180,12 +193,11 @@
     </tr>
     {% endfor %}
     <tr class="row-total">
-      <td><strong>Jami qaytarilgan pul</strong></td><td></td>
+      <td><strong>Jami qaytarilgan pul</strong></td><td></td><td></td>
       <td class="num"><strong>{{ settled|floatformat:"0g" }}</strong></td><td></td>
     </tr>
   </table>
   </div>
-  {% endif %}
 </div>
 {% endif %}
 {% endblock %}

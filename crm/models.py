@@ -257,10 +257,25 @@ PAYMENT_CREDIT = Case(
 )
 
 
-# Payment kinds that represent the client paying money INTO a sale. The two
-# return-settlement kinds also carry a `sale`, but they move money the other way,
+# Payment kinds that represent the client paying money INTO a sale. The
+# settlement kinds also carry a `sale`, but they move money the other way,
 # so they must never be counted here — see `_sale_settlement_sum`.
 PAYING_KINDS = ("sale", "debt", "advance_used")
+
+
+# Money handed BACK to the client on a sale, grouped by what it does to the till.
+# Two situations produce it and they must stay tellable apart — goods came back
+# (return_*), or the goods are still with the client and only the price was wrong
+# (adjust_*) — but the money behaves identically, so every balance reads the group,
+# never the individual kind. Written as raw strings, like PAYING_KINDS above,
+# because they are needed before `Payment.Kind` exists.
+#
+# CREDIT_BACK: nothing leaves the drawer — the cash is already in it from the
+# original payment and is merely re-labelled as the client's advance credit.
+# REFUND: cash physically handed over, so it leaves the till.
+CREDIT_BACK_KINDS = ("return_credit", "adjust_credit")
+REFUND_KINDS = ("refund_out", "adjust_refund")
+SETTLEMENT_KINDS = CREDIT_BACK_KINDS + REFUND_KINDS
 
 
 def _sale_paid_sum():
@@ -282,18 +297,19 @@ def _sale_paid_sum():
 
 
 def _sale_settlement_sum():
-    """A subquery summing what has been given back to the client on one sale — the
-    excess of a return over the debt it cancelled, settled either as advance credit
-    (RETURN_CREDIT) or as cash handed over (REFUND_OUT).
+    """A subquery summing what has been given back to the client on one sale —
+    settled either as advance credit (CREDIT_BACK_KINDS) or as cash handed over
+    (REFUND_KINDS). Two things put money here: the excess of a return over the debt
+    it cancelled, and a downward price correction on an already-paid sale.
 
-    This is what stops an over-returned sale from sitting at a permanent negative
-    balance: the goods leave via `returned`, the money the client had already paid
-    comes back via `settled`, and the receipt lands back on zero."""
+    This is what stops such a sale from sitting at a permanent negative balance: the
+    value leaves via `returned` (or via the lower total), the money the client had
+    already paid comes back via `settled`, and the receipt lands back on zero."""
     return Coalesce(
         Subquery(
             Payment.objects.filter(
                 sale=OuterRef("pk"),
-                kind__in=(Payment.Kind.RETURN_CREDIT, Payment.Kind.REFUND_OUT),
+                kind__in=SETTLEMENT_KINDS,
             )
             .values("sale")
             .annotate(s=Sum("amount"))
@@ -462,12 +478,11 @@ class Sale(models.Model):
 
     @property
     def settled_amount(self):
-        """Money handed back to the client on this sale — the over-returned excess,
-        parked as advance credit or paid out in cash."""
+        """Money handed back to the client on this sale — the over-returned excess or a
+        downward price correction, parked as advance credit or paid out in cash."""
         return (
-            self.payments.filter(
-                kind__in=(Payment.Kind.RETURN_CREDIT, Payment.Kind.REFUND_OUT)
-            ).aggregate(s=Sum("amount"))["s"]
+            self.payments.filter(kind__in=SETTLEMENT_KINDS)
+            .aggregate(s=Sum("amount"))["s"]
             or Decimal("0")
         )
 
@@ -725,11 +740,12 @@ class PaymentQuerySet(models.QuerySet):
     def till_income(self):
         """Only payments that represent real cash arriving in a till.
 
-        Three kinds are excluded. ADVANCE_USED: that money already entered the till as
-        an ADVANCE_IN deposit, so counting the consumption again would double it.
-        RETURN_CREDIT: likewise already in the till from the original payment — the
-        return only re-labels it as the client's credit. REFUND_OUT: money leaving,
-        not arriving; it is subtracted separately in `seller_cash_on_hand`.
+        ADVANCE_USED is excluded: that money already entered the till as an ADVANCE_IN
+        deposit, so counting the consumption again would double it. So are the
+        SETTLEMENT_KINDS — CREDIT_BACK is likewise already in the till from the original
+        payment and only gets re-labelled as the client's credit, while REFUND is money
+        leaving, not arriving; refunds are subtracted separately in
+        `seller_cash_on_hand`.
 
         Per-sale debt math is separate and DOES count ADVANCE_USED (it settles the
         receipt) — see `_sale_paid_sum`.
@@ -738,11 +754,7 @@ class PaymentQuerySet(models.QuerySet):
         pre-CRM and is not sitting in any till today — it only carries the client's
         prepaid credit forward, so it must never inflate cash on hand."""
         return self.exclude(is_opening=True).exclude(
-            kind__in=(
-                self.model.Kind.ADVANCE_USED,
-                self.model.Kind.RETURN_CREDIT,
-                self.model.Kind.REFUND_OUT,
-            )
+            kind__in=(self.model.Kind.ADVANCE_USED,) + SETTLEMENT_KINDS
         )
 
 
@@ -770,6 +782,12 @@ class Payment(models.Model):
         # route — cash physically handed back, so it leaves the till.
         RETURN_CREDIT = "return_credit", "Qaytarishdan kredit"
         REFUND_OUT = "refund_out", "Qaytarish (naqd berildi)"
+        # The same two routes, for the other reason money can be owed back: the goods
+        # are still with the client and only the PRICE was wrong. A return would be the
+        # wrong tool — it would shrink the sold kg, offer to restock goods that never
+        # came back, and still leave the tannarx untouched. See `_settle_overpay`.
+        ADJUST_CREDIT = "adjust_credit", "Narx tuzatildi (kreditga)"
+        ADJUST_REFUND = "adjust_refund", "Narx tuzatildi (naqd berildi)"
 
     class Currency(models.TextChoices):
         UZS = "uzs", "So'm"
@@ -1133,11 +1151,11 @@ def seller_cash_on_hand(seller, exclude_remittance_pk=None, exclude_payout_pk=No
         Payment.objects.filter(created_by=seller).till_income().aggregate(s=Sum(PAYMENT_NET))["s"]
         or Decimal("0")
     )
-    # Cash handed back on an over-returned sale. Refunds are recorded without a bank
-    # fee, so the full amount is what leaves the drawer.
+    # Cash handed back on an over-returned or over-priced sale. Refunds are recorded
+    # without a bank fee, so the full amount is what leaves the drawer.
     refunded = (
         Payment.objects.filter(
-            created_by=seller, kind=Payment.Kind.REFUND_OUT
+            created_by=seller, kind__in=REFUND_KINDS
         ).aggregate(s=Sum("amount"))["s"]
         or Decimal("0")
     )
@@ -1157,8 +1175,9 @@ def seller_cash_on_hand(seller, exclude_remittance_pk=None, exclude_payout_pk=No
 
 
 def client_advance_balance(client, seller=None):
-    """The credit a client holds: money put in (ADVANCE_IN deposits and RETURN_CREDIT
-    from over-returned sales) minus what sales have since consumed (ADVANCE_USED).
+    """The credit a client holds: money put in (ADVANCE_IN deposits, plus the
+    CREDIT_BACK_KINDS owed back from over-returned or price-corrected sales) minus what
+    sales have since consumed (ADVANCE_USED).
     Positive = money held that the client hasn't taken goods for yet; zero = nothing
     prepaid. Each deposit counts for whatever it credited the client with, so a bank
     fee only shrinks their credit when the fee was put on them. Advance is
@@ -1169,7 +1188,7 @@ def client_advance_balance(client, seller=None):
         rows = rows.filter(created_by=seller)
     deposited = (
         rows.filter(
-            kind__in=(Payment.Kind.ADVANCE_IN, Payment.Kind.RETURN_CREDIT)
+            kind__in=(Payment.Kind.ADVANCE_IN,) + CREDIT_BACK_KINDS
         ).aggregate(s=Sum(PAYMENT_CREDIT))["s"]
         or Decimal("0")
     )

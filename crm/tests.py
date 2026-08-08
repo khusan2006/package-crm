@@ -3980,3 +3980,177 @@ class OmborExportTests(BaseSetup):
         rows = read_xlsx(self.client.get(reverse("ombor_export")))
         by_sku = {r[1]: r for r in rows[1:]}
         self.assertEqual(by_sku[self.product.sku][3], 10.0)
+
+
+class SalePriceCorrectionTests(BaseSetup):
+    """Correcting a price that was typed wrong and only caught after the client paid.
+
+    The goods stay with the client, so a Return is the wrong instrument — this is the
+    other event: the sale total drops, and the difference the client has already handed
+    over becomes theirs, either as credit or as cash back."""
+
+    def _edit(self, sale, price, cost="18000", weight="10", settlement=None):
+        item = sale.items.first()
+        data = {
+            "date": sale.date.isoformat(),
+            "client": sale.client.pk,
+            "debt_days": str((sale.debt_deadline - sale.date).days),
+            "items-TOTAL_FORMS": "1",
+            "items-INITIAL_FORMS": "1",
+            "items-MIN_NUM_FORMS": "1",
+            "items-MAX_NUM_FORMS": "1000",
+            "items-0-id": item.pk,
+            "items-0-product": self.product.pk,
+            "items-0-dimension": "kg",
+            "items-0-weight": weight,
+            "items-0-price": price,
+            "items-0-cost_price": cost,
+        }
+        if settlement:
+            data["overpay_settlement"] = settlement
+        return self.client.post(reverse("sale_edit", args=[sale.pk]), data)
+
+    def _remaining(self, sale):
+        return Sale.objects.filter(pk=sale.pk).with_balance()[0].remaining
+
+    def _settlements(self, sale):
+        return Payment.objects.filter(
+            sale=sale,
+            kind__in=(Payment.Kind.ADJUST_CREDIT, Payment.Kind.ADJUST_REFUND),
+        )
+
+    def test_nothing_is_saved_until_the_question_is_answered(self):
+        # 10 kg x 24 000 = 240 000, paid in full. Dropping to 18 000 leaves the client
+        # 60 000 over-paid — the edit must stop and ask, not guess.
+        sale = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        till = seller_cash_on_hand(self.sales1)
+        response = self._edit(sale, "18000")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "overpay_settlement")
+        self.assertEqual(sale.items.get().price, Decimal("24000"))
+        self.assertFalse(self._settlements(sale).exists())
+        self.assertEqual(seller_cash_on_hand(self.sales1), till)
+
+    def test_advance_route_leaves_the_cash_in_the_till(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        till = seller_cash_on_hand(self.sales1)
+        self._edit(sale, "18000", settlement="advance")
+        self.assertEqual(sale.items.get().price, Decimal("18000"))
+        self.assertEqual(sale.settled_amount, Decimal("60000"))
+        # The receipt lands back on zero rather than reading as over-paid.
+        self.assertEqual(self._remaining(sale), Decimal("0"))
+        self.assertEqual(sale.debt_remaining, Decimal("0"))
+        # No cash moved — it was only relabelled as the client's credit.
+        self.assertEqual(seller_cash_on_hand(self.sales1), till)
+        self.assertEqual(
+            client_advance_balance(self.client1, self.sales1), Decimal("60000")
+        )
+
+    def test_refund_route_takes_the_cash_out_of_the_till(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        till = seller_cash_on_hand(self.sales1)
+        self._edit(sale, "18000", settlement="refund")
+        self.assertEqual(sale.settled_amount, Decimal("60000"))
+        self.assertEqual(self._remaining(sale), Decimal("0"))
+        self.assertEqual(till - seller_cash_on_hand(self.sales1), Decimal("60000"))
+        # Cash went back to the client, so nothing is held as credit.
+        self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("0"))
+
+    def test_cash_refund_is_blocked_when_the_till_is_short(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        Expense.objects.create(
+            amount=seller_cash_on_hand(self.sales1) - Decimal("5000"),
+            category="Boshqa", date=timezone.localdate(), created_by=self.sales1,
+        )
+        response = self._edit(sale, "18000", settlement="refund")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "kassada pul yetarli emas")
+        # The whole edit is refused, not half-applied.
+        self.assertEqual(sale.items.get().price, Decimal("24000"))
+        self.assertFalse(self._settlements(sale).exists())
+
+    def test_credit_settles_the_clients_other_open_debts(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        other = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        self.client.force_login(self.sales1)
+        self._edit(sale, "18000", settlement="advance")
+        # 240 000 owed on the other receipt, 60 000 of credit lands on it.
+        self.assertEqual(self._remaining(other), Decimal("180000"))
+        self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("0"))
+
+    def test_correction_never_counts_as_till_income(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        before = Payment.objects.till_income().count()
+        self._edit(sale, "18000", settlement="advance")
+        self.assertTrue(self._settlements(sale).exists())
+        # The settlement row must stay out of income — that money is already counted
+        # once, from the original payment.
+        self.assertEqual(Payment.objects.till_income().count(), before)
+
+    def test_raising_the_price_needs_no_question(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        response = self._edit(sale, "30000")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(sale.items.get().price, Decimal("30000"))
+        self.assertFalse(self._settlements(sale).exists())
+        self.assertEqual(self._remaining(sale), Decimal("60000"))  # now owes more
+
+    def test_dropping_the_weight_warns_that_a_return_may_be_meant(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        response = self._edit(sale, "24000", weight="8")
+        self.assertContains(response, "Qaytarish")
+        # Still allowed, just flagged — the seller decides which event it was.
+        self._edit(sale, "24000", weight="8", settlement="advance")
+        self.assertEqual(sale.items.get().weight, Decimal("8"))
+
+    def test_correction_settles_on_top_of_an_existing_return(self):
+        sale = make_sale(self.client1, self.sales1, self.product)  # 240 000, paid
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_return", args=[sale.pk]),
+            {"sale_item": sale.items.first().pk, "weight": "2", "restock": "on"},
+        )  # 48 000 of goods back, parked as credit
+        # Re-price the line at 18 000: 180 000 sold less the 48 000 returned = 132 000
+        # owed, against 240 000 paid less the 48 000 already credited back = 192 000.
+        # The return keeps the price it was taken back at — correcting the sale does
+        # not restate goods that have already physically moved.
+        self._edit(sale, "18000", settlement="advance")
+        self.assertEqual(self._remaining(sale), Decimal("0"))
+        self.assertEqual(self._settlements(sale).get().amount, Decimal("60000"))
+        # 48 000 from the return + 60 000 from the correction.
+        self.assertEqual(
+            client_advance_balance(self.client1, self.sales1), Decimal("108000")
+        )
+
+    def test_deleting_a_corrected_sale_reclaims_the_spent_credit(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        other = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        self.client.force_login(self.sales1)
+        self._edit(sale, "18000", settlement="advance")
+        self.assertEqual(self._remaining(other), Decimal("180000"))
+        self.client.post(reverse("sale_delete", args=[sale.pk]))
+        # The credit went with the sale, so the other receipt owes the full sum again.
+        self.assertEqual(self._remaining(other), Decimal("240000"))
+        self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("0"))
+
+    def test_correction_is_audited_with_where_the_money_went(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        self._edit(sale, "18000", settlement="advance")
+        entry = AuditLog.objects.filter(action="update", target_id=sale.pk).latest("pk")
+        self.assertIn("avansga", entry.summary)
+
+    def test_sale_detail_shows_the_correction_without_any_return(self):
+        sale = make_sale(self.client1, self.sales1, self.product)
+        self.client.force_login(self.sales1)
+        self._edit(sale, "18000", settlement="refund")
+        response = self.client.get(reverse("sale_detail", args=[sale.pk]))
+        self.assertContains(response, "Mijozga qaytarilgan pul")
+        self.assertContains(response, "Narx tuzatildi")
