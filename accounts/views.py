@@ -5,6 +5,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils.decorators import method_decorator
 
+from crm.models import seller_production_debt
 from crm.utils import form_response, form_success
 
 from .decorators import role_required
@@ -21,7 +22,18 @@ class LoginView(auth_views.LoginView):
 
 @role_required(User.Role.ADMIN)
 def user_list(request):
-    users = User.objects.order_by("username")
+    """The staff list, with each seller's standing production debt alongside them.
+
+    The figure is per-user rather than batched: this list is a handful of staff, and
+    `seller_production_debt` is the one definition of that number — recomputing it
+    here in SQL would be a second copy to keep in step."""
+    users = list(User.objects.order_by("username"))
+    for account in users:
+        account.production_debt = (
+            seller_production_debt(account)
+            if account.role == User.Role.SALES
+            else None
+        )
     return render(request, "accounts/user_list.html", {"users": users})
 
 

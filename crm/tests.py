@@ -13,12 +13,14 @@ from accounts.models import User
 
 from .forms import SaleForm
 from .models import (
+    COST,
     AuditLog,
     Client,
     Employee,
     Expense,
     Payment,
     Product,
+    ProductionAdjustment,
     ProductionReceipt,
     ProductionReceiptItem,
     ProductionRemittance,
@@ -30,6 +32,7 @@ from .models import (
     client_advance_balance,
     seller_cash_on_hand,
     seller_production_debt,
+    seller_withdrawable_profit,
 )
 from .views import (
     XLSX_CONTENT_TYPE,
@@ -4344,4 +4347,185 @@ class OpeningDebtEditTests(BaseSetup):
         self.assertEqual(response.status_code, 200)
         self.assertContains(
             response, reverse("client_opening_debt", args=[self.client1.pk]), count=2
+        )
+
+
+class ProductionDebtAdjustTests(BaseSetup):
+    """Admin corrections to what a seller owes production.
+
+    The debt is otherwise derived from documents; this is the one term with none
+    behind it, so it is admin-only, always reasoned, and never touches the till."""
+
+    URL = "production_adjust_create"
+
+    def _post(self, seller, amount, operation="add", reason="ledger", note="", date=None):
+        return self.client.post(
+            reverse(self.URL),
+            {
+                "seller": seller.pk,
+                "operation": operation,
+                "amount": amount,
+                "reason": reason,
+                "note": note,
+                "date": (date or timezone.localdate()).isoformat(),
+            },
+        )
+
+    def test_admin_can_raise_the_debt(self):
+        self.client.force_login(self.admin)
+        before = seller_production_debt(self.sales1)
+        response = self._post(self.sales1, "5000000")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            seller_production_debt(self.sales1), before + Decimal("5000000")
+        )
+
+    def test_admin_can_lower_the_debt(self):
+        self.client.force_login(self.admin)
+        before = seller_production_debt(self.sales1)
+        self._post(self.sales1, "2000000", operation="subtract")
+        self.assertEqual(
+            seller_production_debt(self.sales1), before - Decimal("2000000")
+        )
+
+    def test_correction_never_touches_the_till(self):
+        self.client.force_login(self.admin)
+        till = seller_cash_on_hand(self.sales1)
+        self._post(self.sales1, "5000000")
+        # This is the line the whole feature turns on: a remittance moves cash, a
+        # correction only restates the debt.
+        self.assertEqual(seller_cash_on_hand(self.sales1), till)
+
+    def test_correction_never_touches_sales_or_profit(self):
+        self.client.force_login(self.admin)
+        sold = SaleItem.objects.aggregate(s=Sum(COST))["s"]
+        self._post(self.sales1, "5000000")
+        self.assertEqual(SaleItem.objects.aggregate(s=Sum(COST))["s"], sold)
+        self.assertEqual(Sale.objects.count(), Sale.objects.count())
+
+    def test_a_seller_cannot_correct_their_own_debt(self):
+        self.client.force_login(self.sales1)
+        before = seller_production_debt(self.sales1)
+        response = self._post(self.sales1, "9000000", operation="subtract")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(seller_production_debt(self.sales1), before)
+
+    def test_a_manager_cannot_correct_either(self):
+        self.client.force_login(self.manager)
+        response = self._post(self.sales1, "1000000")
+        self.assertEqual(response.status_code, 403)
+
+    def test_other_reason_demands_a_note(self):
+        self.client.force_login(self.admin)
+        before = seller_production_debt(self.sales1)
+        response = self._post(self.sales1, "1000000", reason="other")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(seller_production_debt(self.sales1), before)
+        # …and goes through once the reason is actually written down.
+        self._post(self.sales1, "1000000", reason="other", note="Sverka farqi")
+        self.assertEqual(
+            seller_production_debt(self.sales1), before + Decimal("1000000")
+        )
+
+    def test_steered_reasons_are_warned_about_but_allowed(self):
+        # A forgotten handover really belongs in Topshirish; the form says so on the
+        # page, but an admin who knows the old record is gone can still proceed.
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse(self.URL))
+        self.assertContains(response, "adjust-steer-map")
+        self.assertContains(response, "Topshirish")
+        before = seller_production_debt(self.sales1)
+        self.assertEqual(self._post(self.sales1, "700000", reason="remittance").status_code, 302)
+        self.assertEqual(
+            seller_production_debt(self.sales1), before + Decimal("700000")
+        )
+
+    def test_zero_and_future_dates_are_refused(self):
+        self.client.force_login(self.admin)
+        before = seller_production_debt(self.sales1)
+        self.assertEqual(self._post(self.sales1, "0").status_code, 200)
+        self.assertEqual(
+            self._post(
+                self.sales1, "1000", date=timezone.localdate() + timedelta(days=2)
+            ).status_code,
+            200,
+        )
+        self.assertEqual(seller_production_debt(self.sales1), before)
+
+    def test_correction_shows_in_the_kassa_seller_row(self):
+        self.client.force_login(self.admin)
+        self._post(self.sales1, "5000000")
+        rows = {r["uid"]: r for r in _per_employee_kassa(
+            timezone.localdate() - timedelta(days=1), timezone.localdate()
+        )}
+        row = rows[self.sales1.pk]
+        self.assertEqual(row["adjusted"], Decimal("5000000"))
+        self.assertEqual(
+            row["production_debt"],
+            row["opening_debt"] + row["sold_cost"] - row["remitted"] + Decimal("5000000"),
+        )
+
+    def test_correction_is_listed_separately_from_the_till_ledger(self):
+        self.client.force_login(self.admin)
+        self._post(self.sales1, "5000000", note="Sverka farqi")
+        response = self.client.get(reverse("kassa"))
+        self.assertContains(response, "Ishlab chiqarish qarzi tuzatishlari")
+        self.assertContains(response, "Sverka farqi")
+        # It must NOT be counted as money leaving the drawer.
+        kinds = [r["kind"] for r in response.context["outflow_rows"]]
+        self.assertNotIn("adjust", kinds)
+
+    def test_voiding_a_correction_restores_the_debt(self):
+        self.client.force_login(self.admin)
+        before = seller_production_debt(self.sales1)
+        self._post(self.sales1, "5000000")
+        adj = ProductionAdjustment.objects.latest("pk")
+        self.client.post(reverse("production_adjust_delete", args=[adj.pk]))
+        self.assertFalse(ProductionAdjustment.objects.filter(pk=adj.pk).exists())
+        self.assertEqual(seller_production_debt(self.sales1), before)
+
+    def test_a_seller_cannot_void_a_correction(self):
+        self.client.force_login(self.admin)
+        self._post(self.sales1, "5000000")
+        adj = ProductionAdjustment.objects.latest("pk")
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("production_adjust_delete", args=[adj.pk]))
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(ProductionAdjustment.objects.filter(pk=adj.pk).exists())
+
+    def test_change_is_audited_with_the_reason(self):
+        self.client.force_login(self.admin)
+        self._post(self.sales1, "5000000", reason="ledger")
+        entry = AuditLog.objects.latest("pk")
+        self.assertIn("5,000,000", entry.summary)
+        self.assertIn("Eski daftar", entry.summary)
+
+    def test_user_list_shows_each_sellers_debt_and_the_action(self):
+        self.client.force_login(self.admin)
+        self._post(self.sales1, "5000000")
+        response = self.client.get(reverse("user_list"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Ishlab chiq. qarzi")
+        self.assertContains(
+            response, reverse("production_adjust_create") + f"?seller={self.sales1.pk}"
+        )
+        rows = {u.pk: u for u in response.context["users"]}
+        self.assertEqual(
+            rows[self.sales1.pk].production_debt, seller_production_debt(self.sales1)
+        )
+        # An admin owes production nothing — the column stays empty for them.
+        self.assertIsNone(rows[self.admin.pk].production_debt)
+
+    def test_only_admins_can_open_the_user_list(self):
+        self.client.force_login(self.sales1)
+        self.assertEqual(self.client.get(reverse("user_list")).status_code, 403)
+
+    def test_withdrawable_profit_follows_the_corrected_debt(self):
+        # Profit may only be handed up once production is covered, so a correction
+        # has to move that ceiling too or the two figures disagree.
+        self.client.force_login(self.admin)
+        before = seller_withdrawable_profit(self.sales1)
+        self._post(self.sales1, "1000000")
+        self.assertEqual(
+            seller_withdrawable_profit(self.sales1), before - Decimal("1000000")
         )

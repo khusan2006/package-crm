@@ -1052,6 +1052,26 @@
     document.addEventListener('modal:loaded', update);
   })();
 
+  // Production-debt correction: two of the four reasons name a case whose real fix
+  // lives in another form (a forgotten handover, an unrecorded sale). Say so as soon
+  // as one is picked — the server still accepts it, but not silently.
+  (function () {
+    function update() {
+      var form = document.querySelector('[data-adjust-form]');
+      if (!form) { return; }
+      var out = form.querySelector('[data-adjust-steer]');
+      var map = document.getElementById('adjust-steer-map');
+      if (!out || !map) { return; }
+      var picked = form.querySelector('input[name="reason"]:checked');
+      var messages = JSON.parse(map.textContent || '{}');
+      var text = picked ? messages[picked.value] : null;
+      out.textContent = text || '';
+      out.hidden = !text;
+    }
+    document.addEventListener('change', update);
+    document.addEventListener('modal:loaded', update);
+  })();
+
   // Phone inputs (data-phone): lock a "+998 " prefix and let the user type only
   // the 9 national digits, auto-grouped as "90 123 45 67". A bare "+998" with no
   // national digits is collapsed to empty on submit, so the field stays optional.

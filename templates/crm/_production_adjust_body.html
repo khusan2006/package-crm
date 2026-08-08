@@ -1,0 +1,25 @@
+{% csrf_token %}
+{% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
+
+<div class="flash flash-warn">
+  Bu yozuv <strong>faqat qarzni</strong> o'zgartiradi — kassadan pul chiqmaydi va
+  kirmaydi. Pul haqiqatan harakatlangan bo'lsa, «Topshirish» yoki «Qaytarish»dan
+  foydalaning.
+</div>
+
+<p>{{ form.seller.label_tag }}{{ form.seller }}{{ form.seller.errors }}</p>
+<p>{{ form.operation.label_tag }}{{ form.operation }}{{ form.operation.errors }}</p>
+<p>
+  {{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}
+  <span class="helptext">{{ form.amount.help_text }}</span>
+</p>
+<p>{{ form.reason.label_tag }}{{ form.reason }}{{ form.reason.errors }}</p>
+{# Filled in by base.html when a reason whose real fix lives elsewhere is picked. #}
+<div class="flash flash-error" data-adjust-steer hidden></div>
+<p>
+  {{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}
+  <span class="helptext">{{ form.note.help_text }}</span>
+</p>
+<p>{{ form.date.label_tag }}{{ form.date }}{{ form.date.errors }}</p>
+
+{{ steered_json|json_script:"adjust-steer-map" }}

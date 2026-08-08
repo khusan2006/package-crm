@@ -5,7 +5,7 @@
 {% block content %}
 <div class="table-wrap">
 <table>
-  <tr><th class="sticky-col">Login</th><th>Ismi</th><th>Email</th><th>Rol</th><th>Faol</th></tr>
+  <tr><th class="sticky-col">Login</th><th>Ismi</th><th>Email</th><th>Rol</th><th class="num">Ishlab chiq. qarzi</th><th>Faol</th><th></th></tr>
   {% for account in users %}
   <tr>
     <td class="sticky-col">
@@ -17,8 +17,15 @@
     <td>{{ account.get_full_name|default:"—" }}</td>
     <td>{{ account.email|default:"—" }}</td>
     <td><span class="badge badge-neutral">{{ account.get_role_display }}</span></td>
+    {# Only sellers owe production; an admin/manager has no such debt to show. #}
+    <td class="num">{% if account.production_debt is not None %}<strong class="amt-debt">{{ account.production_debt|floatformat:"0g" }}</strong>{% else %}<span class="muted">—</span>{% endif %}</td>
     <td>
       {% if account.is_active %}<span class="badge badge-paid">Faol</span>{% else %}<span class="badge badge-cancelled">Faol emas</span>{% endif %}
+    </td>
+    <td class="row-actions">
+      {% if account.production_debt is not None %}
+      <a class="btn btn-ghost btn-sm" href="{% url 'production_adjust_create' %}?seller={{ account.pk }}" data-modal title="Ishlab chiqarish qarzini tuzatish (pul harakatlanmaydi)">Qarzni tuzatish</a>
+      {% endif %}
     </td>
   </tr>
   {% endfor %}

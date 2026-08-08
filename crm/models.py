@@ -1100,6 +1100,67 @@ class ProductionRemittance(models.Model):
         return f"{label} · {self.seller}: {self.abs_amount:,.0f} so'm ({self.date})"
 
 
+class ProductionAdjustment(models.Model):
+    """An admin correction to what a seller owes production, with NO money moving.
+
+    The debt is otherwise fully derived — opening balance, plus the tannarx of what
+    the seller sold, less restocked returns, less what they handed over — and each of
+    those terms has a document behind it. Reality sometimes disagrees with the sum
+    anyway: an old ledger was wrong, or a figure was carried over badly. This is the
+    one place that difference can be written down and named.
+
+    The line NOT to cross: a remittance moves cash (it leaves the till AND pays down
+    the debt); an adjustment only restates the debt. Recording a forgotten handover
+    here would fix the debt and leave the till permanently overstated — which is why
+    `reason` is mandatory and the form steers those cases to the right tool instead.
+
+    A NEGATIVE `amount` lowers the debt, positive raises it, so every figure that
+    reads adjustments is a plain `Sum("amount")` — the same trick
+    `ProductionRemittance` uses for returns."""
+
+    class Reason(models.TextChoices):
+        LEDGER = "ledger", "Eski daftar/sverka xato edi"
+        REMITTANCE = "remittance", "Topshirilgan pul kiritilmagan"
+        SALE = "sale", "Sotuv kiritilmagan"
+        OTHER = "other", "Boshqa"
+
+    date = models.DateField("Sana", default=timezone.localdate)
+    seller = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="production_adjustments",
+        verbose_name="Sotuvchi",
+    )
+    amount = models.DecimalField("Summa (so'm)", max_digits=18, decimal_places=2)
+    reason = models.CharField("Sababi", max_length=12, choices=Reason.choices)
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="recorded_production_adjustments",
+        verbose_name="Kim kiritdi",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date", "-created_at"]
+        verbose_name = "Ishlab chiqarish qarzi tuzatishi"
+        verbose_name_plural = "Ishlab chiqarish qarzi tuzatishlari"
+
+    @property
+    def lowers_debt(self):
+        return self.amount < 0
+
+    @property
+    def abs_amount(self):
+        """The figure people say out loud — the sign only lives in `amount`."""
+        return abs(self.amount)
+
+    def __str__(self):
+        sign = "−" if self.lowers_debt else "+"
+        return f"Tuzatish · {self.seller}: {sign}{self.abs_amount:,.0f} so'm ({self.date})"
+
+
 class ProfitPayout(models.Model):
     """Profit a seller hands up to the owner/boss (Foyda topshirish).
 
@@ -1210,7 +1271,11 @@ def seller_production_debt(seller):
     cost — otherwise a write-off would silently erase a real liability.
 
     `opening_production_debt` is the carried-over pre-CRM liability (0 for a normal
-    seller); it lifts the debt from day one and is paid down by the same remittances."""
+    seller); it lifts the debt from day one and is paid down by the same remittances.
+
+    Admin corrections (`ProductionAdjustment`) are added on top, signed. They restate
+    the debt without any money moving, so they deliberately touch nothing else — the
+    till, the profit and every sales figure are left exactly as they were."""
     opening = seller.opening_production_debt or Decimal("0")
     sold_cost = (
         SaleItem.objects.filter(sale__sales_rep=seller).aggregate(s=Sum(COST))["s"]
@@ -1226,7 +1291,11 @@ def seller_production_debt(seller):
         ProductionRemittance.objects.filter(seller=seller).aggregate(s=Sum("amount"))["s"]
         or Decimal("0")
     )
-    return opening + sold_cost - remitted
+    adjusted = (
+        ProductionAdjustment.objects.filter(seller=seller).aggregate(s=Sum("amount"))["s"]
+        or Decimal("0")
+    )
+    return opening + sold_cost - remitted + adjusted
 
 
 def seller_remitted_total(seller, exclude_remittance_pk=None):

@@ -209,6 +209,10 @@
         <a class="btn btn-violet btn-sm" href="{% url 'remittance_create' %}?seller={{ r.uid }}" data-modal>Topshirish</a>
         <a class="btn btn-danger btn-sm" href="{% url 'remittance_refund_create' %}?seller={{ r.uid }}" data-modal>Qaytarish</a>
         <a class="btn btn-success btn-sm" href="{% url 'profit_payout_create' %}?seller={{ r.uid }}" data-modal>Foyda</a>
+        {# Restates the debt without moving money — admin only, see production_adjust_create. #}
+        {% if user.is_admin_role %}
+        <a class="btn btn-ghost btn-sm" href="{% url 'production_adjust_create' %}?seller={{ r.uid }}" data-modal title="Qarzni tuzatish (pul harakatlanmaydi)">Tuzatish</a>
+        {% endif %}
       </td>
     </tr>
     {% endfor %}
@@ -227,6 +231,39 @@
   </table>
   </div>
   {% else %}<p class="muted">Bu davrda harakat yo'q.</p>{% endif %}
+</div>
+{% endif %}
+
+{# Not till movements, so they get their own list — the drawer must still reconcile. #}
+{% if debt_adjustments %}
+<div class="card">
+  <h2>Ishlab chiqarish qarzi tuzatishlari</h2>
+  <p class="field-hint" style="margin:0 0 8px;">
+    Qarz raqamini to'g'rilash uchun kiritilgan yozuvlar. Pul harakatlanmagan —
+    kassaga ta'sir qilmaydi.
+  </p>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Sana</th><th>Sotuvchi</th><th>Sababi</th><th class="num">Summa</th><th>Kim kiritdi</th><th></th></tr>
+    {% for a in debt_adjustments %}
+    <tr>
+      <td>{{ a.date|date:"d.m.Y" }}</td>
+      <td>{{ a.seller }}</td>
+      <td>{{ a.get_reason_display }}{% if a.note %} <span class="cell-note">· {{ a.note }}</span>{% endif %}</td>
+      <td class="num">
+        {% if a.lowers_debt %}<strong class="amt-in">−{{ a.abs_amount|floatformat:"0g" }}</strong>
+        {% else %}<strong class="amt-debt">+{{ a.abs_amount|floatformat:"0g" }}</strong>{% endif %}
+      </td>
+      <td>{{ a.created_by }}</td>
+      <td class="row-actions">
+        {% if user.is_admin_role %}
+        <a class="icon-action danger" href="{% url 'production_adjust_delete' a.pk %}" data-modal title="Tuzatishni bekor qilish">{% include "crm/_ico_trash.html" %}</a>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
 </div>
 {% endif %}
 

@@ -14,6 +14,7 @@ from .models import (
     Expense,
     Payment,
     Product,
+    ProductionAdjustment,
     ProductionReceipt,
     ProductionReceiptItem,
     ProductionRemittance,
@@ -1095,4 +1096,86 @@ class OpeningDebtForm(forms.Form):
                 f"ko'pi bilan {room:,.0f} so'm ayirish mumkin."
             )
         self.new_total = new_total
+        return cleaned
+
+
+class ProductionAdjustForm(forms.ModelForm):
+    """An admin moving a seller's production debt up or down without money changing
+    hands.
+
+    Two things are deliberate here. The amount is entered POSITIVE with a separate
+    direction, because "add 5 000 000" is how the correction is spoken and a typed
+    minus sign is easy to lose. And `reason` is mandatory: two of its four options are
+    not really adjustments at all — a forgotten handover belongs in Topshirish, a
+    missing sale in the sale form — and naming the case is what lets the form say so.
+
+    Those two are warned about, not blocked. The right record cannot always be
+    reconstructed years later, and an admin who knows that should still be able to
+    close the gap; what matters is that the choice is on the record."""
+
+    ADD = "add"
+    SUBTRACT = "subtract"
+
+    # Reasons whose real fix lives somewhere else — the form points there instead.
+    STEERED = {
+        ProductionAdjustment.Reason.REMITTANCE: (
+            "Topshirilgan pulni bu yerda tuzatsangiz qarz to'g'rilanadi, lekin kassa "
+            "o'sha summaga ortiqcha bo'lib qolaveradi. To'g'ri yo'li — «Topshirish» "
+            "orqali o'sha to'lovni o'z sanasi bilan kiritish."
+        ),
+        ProductionAdjustment.Reason.SALE: (
+            "Kiritilmagan sotuvni bu yerda tuzatsangiz qarz to'g'rilanadi, lekin "
+            "sotuv, foyda va ombor hisoboti noto'g'ri qolaveradi. To'g'ri yo'li — "
+            "o'sha sotuvni o'z sanasi bilan kiritish."
+        ),
+    }
+
+    operation = forms.ChoiceField(
+        label="Amal",
+        choices=[(ADD, "Qarzga qo'shish (+)"), (SUBTRACT, "Qarzdan ayirish (−)")],
+        initial=ADD,
+        widget=forms.RadioSelect,
+    )
+
+    class Meta:
+        model = ProductionAdjustment
+        fields = ["date", "seller", "amount", "reason", "note"]
+        widgets = {
+            "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "reason": forms.RadioSelect,
+            "note": forms.TextInput(attrs={"placeholder": "Nima bo'lganini yozing"}),
+        }
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user = user
+        self.fields["amount"].label = "Summa (so'm)"
+        self.fields["amount"].help_text = (
+            "Qarzga qo'shiladigan yoki undan ayiriladigan summa"
+        )
+        _mark_money(self.fields["amount"])
+        self.fields["reason"].empty_label = None
+        self.fields["note"].help_text = "«Boshqa» tanlansa — majburiy"
+        self.fields["seller"].queryset = User.objects.filter(
+            is_active=True, role=User.Role.SALES
+        ).order_by("first_name", "last_name", "username")
+        _searchable_select(self.fields["seller"], "Sotuvchini tanlang")
+
+    def clean_date(self):
+        return _reject_future(self.cleaned_data.get("date"))
+
+    def clean_amount(self):
+        amount = self.cleaned_data.get("amount")
+        if amount is not None and amount <= 0:
+            raise forms.ValidationError("Summa 0 dan katta bo'lishi kerak.")
+        return amount
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get("reason") == ProductionAdjustment.Reason.OTHER and not cleaned.get("note"):
+            self.add_error("note", "«Boshqa» tanlanganda sababni yozish shart.")
+        amount = cleaned.get("amount")
+        if amount is not None and cleaned.get("operation") == self.SUBTRACT:
+            cleaned["amount"] = -amount
+            self.instance.amount = -amount
         return cleaned

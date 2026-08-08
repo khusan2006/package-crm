@@ -91,6 +91,17 @@ urlpatterns = [
     path("kassa/topshirish/", crm_views.remittance_create, name="remittance_create"),
     path("kassa/qaytarish/", crm_views.remittance_refund_create, name="remittance_refund_create"),
     path("kassa/topshirish/<int:pk>/edit/", crm_views.remittance_edit, name="remittance_edit"),
+    # production-debt corrections (admin only)
+    path(
+        "kassa/qarz-tuzatish/",
+        crm_views.production_adjust_create,
+        name="production_adjust_create",
+    ),
+    path(
+        "kassa/qarz-tuzatish/<int:pk>/delete/",
+        crm_views.production_adjust_delete,
+        name="production_adjust_delete",
+    ),
     path("kassa/topshirish/<int:pk>/delete/", crm_views.remittance_delete, name="remittance_delete"),
     path("kassa/foyda/", crm_views.profit_payout_create, name="profit_payout_create"),
     path("kassa/foyda/<int:pk>/edit/", crm_views.profit_payout_edit, name="profit_payout_edit"),

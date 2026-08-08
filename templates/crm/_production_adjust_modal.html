@@ -1,0 +1,11 @@
+<div class="modal-head">
+  <h2>{{ title }}</h2>
+  <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
+</div>
+<form method="post" action="{% url 'production_adjust_create' %}" class="stacked" data-adjust-form>
+  {% include "crm/_production_adjust_body.html" %}
+  <div class="modal-actions">
+    <button type="submit" class="btn">Saqlash</button>
+    <button type="button" class="btn btn-ghost" data-modal-close>Bekor qilish</button>
+  </div>
+</form>

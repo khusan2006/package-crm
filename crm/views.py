@@ -34,6 +34,7 @@ from .forms import (
     ProductionReceiptForm,
     ProductionReceiptItemFormSet,
     ProductionRefundForm,
+    ProductionAdjustForm,
     ProductionRemittanceForm,
     ProfitPayoutForm,
     ReturnForm,
@@ -64,6 +65,7 @@ from .models import (
     client_advance_balance,
     Product,
     ProductionReceipt,
+    ProductionAdjustment,
     ProductionRemittance,
     ProfitPayout,
     Return,
@@ -71,6 +73,7 @@ from .models import (
     SaleItem,
     StockEntry,
     seller_cash_on_hand,
+    seller_production_debt,
 )
 from .utils import form_reload, form_response, form_success, is_ajax, render_confirm
 
@@ -2616,6 +2619,12 @@ def _kassa_summary(date_from, date_to, rep=None):
         opening_debt = rep.opening_production_debt or Decimal("0")
     else:
         opening_debt = User.objects.aggregate(s=Sum("opening_production_debt"))["s"] or Decimal("0")
+    # Admin corrections to the debt. Signed, and cumulative like every other standing
+    # balance here. They never reach `cash_on_hand` — no money moved.
+    adjust_qs = ProductionAdjustment.objects.filter(date__lte=date_to)
+    if rep is not None:
+        adjust_qs = adjust_qs.filter(seller=rep)
+    adjusted_cum = adjust_qs.aggregate(s=Sum("amount"))["s"] or Decimal("0")
     # Cash on hand combines every method AND currency: Payment.amount is always the
     # so'm value (a dollar payment is converted at entry), so PAYMENT_NET nets a
     # dollar payment to its so'm too — no currency filter here.
@@ -2646,10 +2655,11 @@ def _kassa_summary(date_from, date_to, rep=None):
         # already handed to the boss — all cumulative.
         "remitted": remitted,
         "paid_profit": paid_profit,
-        "production_debt": opening_debt + cost_cum - remitted_cum,
+        "production_debt": opening_debt + cost_cum - remitted_cum + adjusted_cum,
         "cash": cash_on_hand,
         # Profit still sitting in the till, free to hand up: cash beyond the debt.
-        "withdrawable_profit": cash_on_hand - (opening_debt + cost_cum - remitted_cum),
+        "withdrawable_profit": cash_on_hand
+        - (opening_debt + cost_cum - remitted_cum + adjusted_cum),
         "profit": profit,
         "expense_total": expense_total,
         "refunded": refunded,
@@ -2686,6 +2696,7 @@ def _per_employee_kassa(date_from, date_to, rep=None):
     refunds = Payment.objects.filter(kind__in=REFUND_KINDS, **window)
     remittances = ProductionRemittance.objects.filter(**window)
     payouts = ProfitPayout.objects.filter(**window)
+    adjustments = ProductionAdjustment.objects.filter(**window)
     if rep is not None:
         payments = payments.filter(created_by=rep)
         expenses = expenses.filter(created_by=rep)
@@ -2694,6 +2705,7 @@ def _per_employee_kassa(date_from, date_to, rep=None):
         refunds = refunds.filter(created_by=rep)
         remittances = remittances.filter(seller=rep)
         payouts = payouts.filter(seller=rep)
+        adjustments = adjustments.filter(seller=rep)
 
     users = {u.pk: u for u in User.objects.all()}
     usd = Payment.Currency.USD
@@ -2709,6 +2721,8 @@ def _per_employee_kassa(date_from, date_to, rep=None):
             "commission": Decimal("0"),
             "sold_cost": Decimal("0"), "remitted": Decimal("0"),
             "paid_profit": Decimal("0"), "refunded": Decimal("0"),
+            # Signed admin corrections to the production debt — no money behind them.
+            "adjusted": Decimal("0"),
             # Carried-over pre-CRM production debt, part of this seller's debt from day one.
             "opening_debt": (u.opening_production_debt if u else Decimal("0")) or Decimal("0"),
         }
@@ -2724,6 +2738,9 @@ def _per_employee_kassa(date_from, date_to, rep=None):
         if u.opening_production_debt:
             if rep is None or (rep is not None and u.pk == rep.pk):
                 row(u.pk)
+    # Same for a seller whose only movement is an admin correction.
+    for uid in adjustments.values_list("seller", flat=True).distinct():
+        row(uid)
 
     for r in (
         payments.values("created_by", "currency")
@@ -2768,6 +2785,9 @@ def _per_employee_kassa(date_from, date_to, rep=None):
     for r in payouts.values("seller").annotate(s=Sum("amount")):
         row(r["seller"])["paid_profit"] += r["s"] or Decimal("0")
 
+    for r in adjustments.values("seller").annotate(s=Sum("amount")):
+        row(r["seller"])["adjusted"] += r["s"] or Decimal("0")
+
     for r in refunds.values("created_by").annotate(s=Sum("amount")):
         row(r["created_by"])["refunded"] += r["s"] or Decimal("0")
 
@@ -2780,7 +2800,9 @@ def _per_employee_kassa(date_from, date_to, rep=None):
             rr["in_som"] - rr["commission"] - rr["refunded"] - rr["expense_total"]
             - rr["remitted"] - rr["paid_profit"]
         )
-        rr["production_debt"] = rr["opening_debt"] + rr["sold_cost"] - rr["remitted"]
+        rr["production_debt"] = (
+            rr["opening_debt"] + rr["sold_cost"] - rr["remitted"] + rr["adjusted"]
+        )
         rr["net"] = rr["profit"] - rr["expense_total"]  # samaradorlik: foyda − rasxot
         result.append(rr)
     result.sort(key=lambda r: (r["in_som"] + r["profit"]), reverse=True)
@@ -3015,9 +3037,20 @@ def kassa_view(request):
     if not request.user.can_see_all_records:
         my_row = seller_rows[0] if seller_rows else None
 
+    # Debt corrections for the window. Listed on their own — they move no cash, so
+    # putting them in the outflow ledger would stop the drawer reconciling. A seller
+    # sees only the ones filed against them.
+    adjustments = ProductionAdjustment.objects.filter(
+        date__gte=date_from, date__lte=date_to
+    ).select_related("seller", "created_by")
+    if rep is not None:
+        adjustments = adjustments.filter(seller=rep)
+    elif not request.user.can_see_all_records:
+        adjustments = adjustments.filter(seller=request.user)
     export_qs = request.GET.urlencode()
     return render(request, "crm/kassa.html", {
         "summary": summary,
+        "debt_adjustments": adjustments,
         "income_rows": income_rows,
         "outflow_rows": outflow_rows,
         "income_total": income_total,
@@ -5129,5 +5162,101 @@ def sale_delete(request, pk):
         "Sotuvni o'chirish",
         f"Bu sotuv butunlay o'chiriladi.{warn} Davom etasizmi?",
         "Ha, o'chirish",
+        confirm_class="btn-danger",
+    )
+
+
+def _render_production_adjust(request, form, invalid=False):
+    """The correction form, as a modal or a full page. Not `form_response`: its
+    full-page branch renders the generic form template, which would drop the steering
+    warnings — the part that keeps this form from being misused."""
+    context = {
+        "form": form,
+        "title": "Ishlab chiqarish qarzini tuzatish",
+        # {reason: message} for the warnings wired up in base.html.
+        "steered_json": {str(k): v for k, v in ProductionAdjustForm.STEERED.items()},
+    }
+    if is_ajax(request):
+        return render(
+            request, "crm/_production_adjust_modal.html", context,
+            status=422 if invalid else 200,
+        )
+    return render(request, "crm/_production_adjust_page.html", context)
+
+
+def _adjust_summary(adj):
+    sign = "kamaytirildi" if adj.lowers_debt else "oshirildi"
+    note = f" — {adj.note}" if adj.note else ""
+    return (
+        f"Sotuvchi {adj.seller} ishlab chiqarish qarzi {sign}: "
+        f"{adj.abs_amount:,.0f} so'm ({adj.get_reason_display()}){note}"
+    )
+
+
+@role_required(User.Role.ADMIN)
+def production_adjust_create(request):
+    """Correct what a seller owes production, without any money moving.
+
+    Admin only, and deliberately so: this is the one figure in the system with no
+    document behind it, and the seller it belongs to must never be able to shrink
+    their own liability. Reachable from the per-seller control table on the kassa
+    page, which preselects the seller via ?seller=.
+
+    The form warns when the chosen reason names a case whose real fix lives elsewhere
+    (a forgotten handover, an unrecorded sale) but does not refuse it — see
+    `ProductionAdjustForm`."""
+    initial = {}
+    seller_pk = request.GET.get("seller", "")
+    if request.method == "GET" and seller_pk.isdigit():
+        initial["seller"] = seller_pk
+    form = ProductionAdjustForm(request.POST or None, user=request.user, initial=initial)
+    if request.method == "POST":
+        if form.is_valid():
+            adj = form.save(commit=False)
+            adj.created_by = request.user
+            adj.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Tuzatish", adj.pk,
+                _adjust_summary(adj),
+            )
+            messages.success(
+                request,
+                f"Qarz tuzatildi. {adj.seller} ishlab chiqarishga qarzi endi "
+                f"{seller_production_debt(adj.seller):,.0f} so'm.",
+            )
+            # Reachable from both the kassa control table and the user list, so the
+            # modal reloads wherever it was opened from rather than jumping to one.
+            return form_reload(request, reverse("kassa"))
+        return _render_production_adjust(request, form, invalid=True)
+    return _render_production_adjust(request, form)
+
+
+@role_required(User.Role.ADMIN)
+def production_adjust_delete(request, pk):
+    """Undo a correction. There is no edit: a wrong figure is voided and re-entered,
+    so the audit trail keeps both the mistake and its withdrawal instead of quietly
+    rewriting one row."""
+    adj = get_object_or_404(ProductionAdjustment.objects.select_related("seller"), pk=pk)
+    if request.method == "POST":
+        summary = _adjust_summary(adj)
+        seller, adj_pk = adj.seller, adj.pk
+        adj.delete()
+        AuditLog.record(
+            request.user, AuditLog.Action.VOID, "Tuzatish", adj_pk,
+            f"Bekor qilindi: {summary}",
+        )
+        messages.success(
+            request,
+            f"Tuzatish bekor qilindi. {seller} ishlab chiqarishga qarzi endi "
+            f"{seller_production_debt(seller):,.0f} so'm.",
+        )
+        return form_reload(request, reverse("kassa"))
+    sign = "kamaytirgan" if adj.lowers_debt else "oshirgan"
+    return render_confirm(
+        request,
+        "Tuzatishni bekor qilish",
+        f"{adj.seller} qarzini {adj.abs_amount:,.0f} so'mga {sign} tuzatish "
+        f"o'chiriladi va qarz avvalgi holiga qaytadi. Davom etasizmi?",
+        "Ha, bekor qilish",
         confirm_class="btn-danger",
     )
