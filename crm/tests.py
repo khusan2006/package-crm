@@ -3,6 +3,7 @@ from decimal import Decimal
 from io import BytesIO, StringIO
 
 from django.core.management import call_command
+from django.db.models import Sum
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -4154,3 +4155,193 @@ class SalePriceCorrectionTests(BaseSetup):
         response = self.client.get(reverse("sale_detail", args=[sale.pk]))
         self.assertContains(response, "Mijozga qaytarilgan pul")
         self.assertContains(response, "Narx tuzatildi")
+
+
+class OpeningDebtEditTests(BaseSetup):
+    """Setting a client's carried-over pre-CRM debt from the app.
+
+    These balances only ever arrived through the import commands, so a wrong old ledger
+    could not be put right without a shell. The seller types the sum they were told to
+    add (or subtract) — a delta — and the form works out the new total."""
+
+    def _opening(self, client, amount, paid=None, date=None):
+        sale = Sale.objects.create(
+            client=client, sales_rep=client.owner,
+            date=date or timezone.localdate() - timedelta(days=30),
+            debt_deadline=(date or timezone.localdate() - timedelta(days=30))
+            + timedelta(days=7),
+            is_opening=True, opening_amount=Decimal(amount),
+        )
+        if paid:
+            Payment.objects.create(
+                sale=sale, client=client, amount=Decimal(paid),
+                method=Payment.Method.CASH, kind=Payment.Kind.DEBT,
+                date=sale.date, created_by=client.owner,
+            )
+        return sale
+
+    def _post(self, client, amount, operation="add", date=None):
+        return self.client.post(
+            reverse("client_opening_debt", args=[client.pk]),
+            {
+                "operation": operation,
+                "amount": amount,
+                "date": (date or timezone.localdate()).isoformat(),
+            },
+        )
+
+    def _remaining(self, sale):
+        return Sale.objects.filter(pk=sale.pk).with_balance()[0].remaining
+
+    def _client_debt(self, client):
+        return sum(
+            (s.remaining for s in Sale.objects.filter(client=client).with_balance()),
+            Decimal("0"),
+        )
+
+    def test_adding_a_sum_lifts_what_the_client_owes(self):
+        opening = self._opening(self.client1, "1000000")
+        self.client.force_login(self.sales1)
+        # The seller types what they were told to add, not the new total.
+        response = self._post(self.client1, "500000")
+        self.assertEqual(response.status_code, 302)
+        opening.refresh_from_db()
+        self.assertEqual(opening.opening_amount, Decimal("1500000"))
+        self.assertEqual(self._remaining(opening), Decimal("1500000"))
+
+    def test_subtracting_a_sum_reduces_what_the_client_owes(self):
+        opening = self._opening(self.client1, "1000000")
+        self.client.force_login(self.sales1)
+        self._post(self.client1, "600000", operation="subtract")
+        opening.refresh_from_db()
+        self.assertEqual(opening.opening_amount, Decimal("400000"))
+        self.assertEqual(self._remaining(opening), Decimal("400000"))
+
+    def test_cannot_subtract_below_what_has_already_been_paid_on_it(self):
+        opening = self._opening(self.client1, "1000000", paid="600000")
+        self.client.force_login(self.sales1)
+        response = self._post(self.client1, "500000", operation="subtract")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "kam qilib")
+        opening.refresh_from_db()
+        self.assertEqual(opening.opening_amount, Decimal("1000000"))
+
+    def test_can_subtract_exactly_down_to_what_has_been_paid(self):
+        opening = self._opening(self.client1, "1000000", paid="600000")
+        self.client.force_login(self.sales1)
+        self._post(self.client1, "400000", operation="subtract")
+        opening.refresh_from_db()
+        self.assertEqual(opening.opening_amount, Decimal("600000"))
+        self.assertEqual(self._remaining(opening), Decimal("0"))
+
+    def test_creates_the_balance_when_the_client_has_none(self):
+        self.assertFalse(Sale.objects.filter(client=self.client1, is_opening=True).exists())
+        self.client.force_login(self.sales1)
+        self._post(self.client1, "750000")
+        opening = Sale.objects.get(client=self.client1, is_opening=True)
+        self.assertEqual(opening.opening_amount, Decimal("750000"))
+        self.assertEqual(opening.sales_rep, self.client1.owner)
+        # No line items — an opening balance carries no goods.
+        self.assertEqual(opening.items.count(), 0)
+
+    def test_opening_debt_never_touches_revenue_or_profit(self):
+        self.client.force_login(self.sales1)
+        before = Sale.objects.with_totals().aggregate(s=Sum("total"))["s"]
+        self._post(self.client1, "5000000")
+        after = Sale.objects.with_totals().aggregate(s=Sum("total"))["s"]
+        self.assertEqual(after, before)
+
+    def test_a_future_date_is_refused(self):
+        self._opening(self.client1, "1000000")
+        self.client.force_login(self.sales1)
+        response = self._post(
+            self.client1, "200000", date=timezone.localdate() + timedelta(days=3)
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "kelajakda")
+
+    def test_moving_the_date_carries_the_deadline_with_it(self):
+        start = timezone.localdate() - timedelta(days=30)
+        opening = self._opening(self.client1, "1000000", date=start)
+        window = opening.debt_deadline - opening.date
+        self.client.force_login(self.sales1)
+        self._post(self.client1, "100000", date=start + timedelta(days=10))
+        opening.refresh_from_db()
+        # The terms stay the same length, so how overdue the client is is not restated.
+        self.assertEqual(opening.debt_deadline - opening.date, window)
+
+    def test_raising_it_soaks_up_credit_the_client_is_holding(self):
+        self.client.force_login(self.sales1)
+        Payment.objects.create(
+            client=self.client1, amount=Decimal("300000"),
+            method=Payment.Method.CASH, kind=Payment.Kind.ADVANCE_IN,
+            date=timezone.localdate(), created_by=self.sales1,
+        )
+        self.assertEqual(
+            client_advance_balance(self.client1, self.sales1), Decimal("300000")
+        )
+        self._post(self.client1, "1000000")
+        opening = Sale.objects.get(client=self.client1, is_opening=True)
+        # The held credit lands on the new receivable instead of sitting idle.
+        self.assertEqual(self._remaining(opening), Decimal("700000"))
+        self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("0"))
+
+    def test_change_is_audited_with_the_before_and_after(self):
+        self._opening(self.client1, "1000000")
+        self.client.force_login(self.sales1)
+        self._post(self.client1, "500000")
+        entry = AuditLog.objects.filter(action="update").latest("pk")
+        self.assertIn("1,000,000", entry.summary)
+        self.assertIn("1,500,000", entry.summary)
+
+    def test_a_seller_cannot_touch_another_sellers_client(self):
+        self._opening(self.client2, "1000000")  # client2 belongs to sales2
+        self.client.force_login(self.sales1)
+        response = self._post(self.client2, "9000000")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            Sale.objects.get(client=self.client2, is_opening=True).opening_amount,
+            Decimal("1000000"),
+        )
+
+    def test_form_shows_the_current_figure_and_leaves_the_sum_empty(self):
+        self._opening(self.client1, "1234000")
+        self.client.force_login(self.sales1)
+        response = self.client.get(
+            reverse("client_opening_debt", args=[self.client1.pk])
+        )
+        self.assertEqual(response.status_code, 200)
+        # The current balance is shown (and handed to the live preview) …
+        self.assertContains(response, "1234000")
+        self.assertContains(response, 'data-current="1234000.00"')
+        # … but the sum box starts blank: it is what to ADD, not the total.
+        self.assertNotContains(response, 'name="amount" value=')
+        # Adding is the default; subtracting has to be chosen deliberately.
+        self.assertContains(response, 'id="id_operation_0" checked')
+
+    def test_a_sum_of_zero_is_refused(self):
+        opening = self._opening(self.client1, "1000000")
+        self.client.force_login(self.sales1)
+        response = self._post(self.client1, "0")
+        self.assertEqual(response.status_code, 200)
+        opening.refresh_from_db()
+        self.assertEqual(opening.opening_amount, Decimal("1000000"))
+
+    def test_client_history_links_to_the_form(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_history", args=[self.client1.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response, reverse("client_opening_debt", args=[self.client1.pk])
+        )
+
+    def test_debt_page_links_to_the_form(self):
+        # The debt page is where the opening row is actually looked at, so the edit
+        # has to be reachable from there — the sale form cannot open it (no items).
+        self._opening(self.client1, "1000000")
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("debt_client", args=[self.client1.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response, reverse("client_opening_debt", args=[self.client1.pk]), count=2
+        )

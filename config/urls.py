@@ -31,6 +31,11 @@ urlpatterns = [
     path("clients/<int:pk>/delete/", crm_views.client_delete, name="client_delete"),
     path("clients/<int:pk>/transfer/", crm_views.client_transfer, name="client_transfer"),
     path("clients/<int:pk>/advance/", crm_views.client_advance_pay, name="client_advance_pay"),
+    path(
+        "clients/<int:pk>/boshlangich-qarz/",
+        crm_views.client_opening_debt,
+        name="client_opening_debt",
+    ),
     path("advance/<int:pk>/edit/", crm_views.advance_edit, name="advance_edit"),
     path("advance/<int:pk>/delete/", crm_views.advance_delete, name="advance_delete"),
     # products

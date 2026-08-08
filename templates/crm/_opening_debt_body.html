@@ -1,0 +1,39 @@
+{% csrf_token %}
+{% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
+
+{# data-current feeds the live preview wired up in base.html. #}
+<div class="opening-box" data-opening-box
+     data-current="{{ opening.opening_amount|default:0|stringformat:'s' }}">
+  <div class="ob-current">
+    {% if opening %}
+      Hozirgi boshlang'ich qarz:
+      <strong>{{ opening.opening_amount|floatformat:"0g" }} so'm</strong>{% if opening.paid_amount %},
+      shundan <strong>{{ opening.paid_amount|floatformat:"0g" }} so'm</strong> to'langan{% endif %}.
+    {% else %}
+      Bu mijozda hali boshlang'ich qarz yo'q — yangisi yaratiladi.
+    {% endif %}
+  </div>
+  <div class="ob-next">
+    <span class="ob-next-label">Yangi boshlang'ich qarz</span>
+    <span class="ob-next-value" data-opening-preview>—</span>
+  </div>
+</div>
+
+<p>
+  {{ form.operation.label_tag }}
+  {{ form.operation }}
+  {{ form.operation.errors }}
+</p>
+<p>
+  {{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}
+  <span class="helptext">{{ form.amount.help_text }}</span>
+</p>
+<p>
+  {{ form.date.label_tag }}{{ form.date }}{{ form.date.errors }}
+  <span class="helptext">{{ form.date.help_text }}</span>
+</p>
+<p class="field-hint">
+  Boshlang'ich qarz — mijozning CRM'gacha bo'lgan eski qarzi. Unda tovar yo'q,
+  shuning uchun savdo, foyda va sotilgan kg hisobotlariga ta'sir qilmaydi — faqat
+  qarzni o'zgartiradi.
+</p>

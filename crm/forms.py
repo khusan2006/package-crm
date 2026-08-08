@@ -1025,3 +1025,74 @@ class ClientTransferForm(forms.Form):
             "first_name", "last_name", "username"
         )
         _searchable_select(self.fields["new_owner"], "Sotuvchini tanlang")
+
+
+class OpeningDebtForm(forms.Form):
+    """Move a client's opening balance — the pre-CRM debt they carried in — up or down
+    by a given sum.
+
+    Until now these only ever arrived through the import commands, so a client whose old
+    ledger was wrong (or who turned out to owe more than the sverka showed) could not be
+    put right from the app at all.
+
+    The sum entered is a DELTA, not the new total. A total field reads cleaner in
+    isolation, but in practice the seller is told "add 1 138 300 to this client" and
+    would have to add it to whatever is already on the card by hand — arithmetic done
+    on a phone, against a figure they cannot see while typing. Here the current balance
+    is shown, the amount is what they were told, and the direction is a choice.
+
+    An opening balance carries no goods: it never touches revenue, profit or sold kg,
+    only the receivable. That is also why it cannot be dropped below what has already
+    been paid against it — the receipt would go negative with nobody owed the
+    difference (`sale_edit` refuses the same thing for the same reason)."""
+
+    ADD = "add"
+    SUBTRACT = "subtract"
+
+    operation = forms.ChoiceField(
+        label="Amal",
+        choices=[(ADD, "Qo'shish (+)"), (SUBTRACT, "Ayirish (−)")],
+        initial=ADD,
+        widget=forms.RadioSelect,
+    )
+    amount = forms.DecimalField(
+        label="Summa (so'm)",
+        max_digits=18,
+        decimal_places=2,
+        min_value=Decimal("0.01"),
+        help_text="Qo'shiladigan (yoki ayiriladigan) summa — umumiy qarz emas",
+    )
+    date = forms.DateField(
+        label="Sana",
+        widget=forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+        help_text="Qarz qachondan hisoblanadi — kechikish shu sanadan o'lchanadi",
+        validators=[_reject_future],
+    )
+
+    def __init__(self, *args, current=None, paid=None, **kwargs):
+        # Where the balance stands now, and what has already been paid against it —
+        # the floor the new figure cannot go under.
+        self.current = current or Decimal("0")
+        self.paid = paid or Decimal("0")
+        # Filled in by clean(): the figure that will be stored. The view reads it so
+        # the arithmetic lives in exactly one place.
+        self.new_total = self.current
+        super().__init__(*args, **kwargs)
+        _mark_money(self.fields["amount"])
+
+    def clean(self):
+        cleaned = super().clean()
+        amount, operation = cleaned.get("amount"), cleaned.get("operation")
+        if amount is None or not operation:
+            return cleaned
+        delta = amount if operation == self.ADD else -amount
+        new_total = self.current + delta
+        if new_total < self.paid:
+            room = self.current - self.paid
+            raise forms.ValidationError(
+                f"Bu qarzga allaqachon {self.paid:,.0f} so'm to'langan, shuning uchun "
+                f"boshlang'ich qarzni {self.paid:,.0f} so'mdan kam qilib bo'lmaydi — "
+                f"ko'pi bilan {room:,.0f} so'm ayirish mumkin."
+            )
+        self.new_total = new_total
+        return cleaned

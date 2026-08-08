@@ -1027,6 +1027,31 @@
     document.addEventListener('modal:loaded', function (e) { enhance(e.detail || document); });
   })();
 
+  // Opening-balance form: show what the balance will BECOME while the sum is typed.
+  // The field holds a delta ("add 1 138 300"), because that is what the seller is
+  // told — without this line they would be adding it to the current figure in their
+  // head, on a phone, against a number they cannot see while typing.
+  (function () {
+    function update() {
+      var box = document.querySelector('[data-opening-box]');
+      if (!box) { return; }
+      var out = box.querySelector('[data-opening-preview]');
+      var form = box.closest('form');
+      if (!out || !form) { return; }
+      var amountEl = form.querySelector('input[name="amount"]');
+      var op = form.querySelector('input[name="operation"]:checked');
+      var current = parseFloat(box.getAttribute('data-current')) || 0;
+      var raw = amountEl ? String(amountEl.value).replace(/\s/g, '').replace(',', '.') : '';
+      var amount = parseFloat(raw);
+      if (!raw || isNaN(amount)) { out.textContent = '—'; return; }
+      var next = current + (op && op.value === 'subtract' ? -amount : amount);
+      out.textContent = next.toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + " so'm";
+    }
+    document.addEventListener('input', update);
+    document.addEventListener('change', update);
+    document.addEventListener('modal:loaded', update);
+  })();
+
   // Phone inputs (data-phone): lock a "+998 " prefix and let the user type only
   // the 9 national digits, auto-grouped as "90 123 45 67". A bare "+998" with no
   // national digits is collapsed to empty on submit, so the field stays optional.

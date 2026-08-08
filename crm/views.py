@@ -22,11 +22,13 @@ from accounts.decorators import role_required
 from accounts.models import User
 
 from .forms import (
+    DEFAULT_DEBT_DAYS,
     ClientForm,
     ClientTransferForm,
     DebtPaymentForm,
     EmployeeForm,
     ExpenseForm,
+    OpeningDebtForm,
     PaymentEditForm,
     ProductForm,
     ProductionReceiptForm,
@@ -1148,6 +1150,96 @@ def client_history_export(request, pk):
     return _xlsx_response(
         f"mijoz-{client.pk}-tarix.xlsx", "Tarix", headers, rows, number_formats
     )
+
+
+def _opening_sale(client):
+    """The receipt carrying a client's pre-CRM debt, if they have one. There is at most
+    one per client (the importers create a single row); the oldest wins if an older
+    import ever left two behind."""
+    return Sale.objects.filter(client=client, is_opening=True).order_by("pk").first()
+
+
+def _render_opening_debt(request, client, sale, form, invalid=False):
+    context = {
+        "form": form,
+        "client": client,
+        "opening": sale,
+        "title": f"Boshlang'ich qarz: {client.name}",
+    }
+    if is_ajax(request):
+        return render(
+            request, "crm/_opening_debt_modal.html", context,
+            status=422 if invalid else 200,
+        )
+    return render(request, "crm/_opening_debt_page.html", context)
+
+
+@transaction.atomic
+def client_opening_debt(request, pk):
+    """Set (or first record) a client's opening balance — the debt they carried in from
+    before the CRM existed.
+
+    These used to arrive only through the import commands, so a client whose old ledger
+    was wrong could not be corrected from the app at all: the figure could be read but
+    never touched. The seller enters the sum to add (or subtract) and the form does the
+    arithmetic — see `OpeningDebtForm` for why it is a delta and not a total.
+
+    An opening balance has no line items, so it never disturbs revenue, profit or sold
+    kg — it moves the receivable and nothing else. Lowering it below what has already
+    been paid against it is refused, for the same reason `sale_edit` refuses it: the
+    receipt would go negative with nobody owed the difference.
+
+    Deliberately not restricted to admins: the seller who owns the client is the one who
+    knows their old ledger, and every change is written to the audit log with the before
+    and after figures. Visibility is the existing rule — a seller sees only their own
+    clients."""
+    client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    sale = _opening_sale(client)
+    paid = (sale.paid_amount - sale.settled_amount) if sale else Decimal("0")
+    was = sale.opening_amount if sale else Decimal("0")
+    if request.method == "POST":
+        form = OpeningDebtForm(request.POST, current=was, paid=paid)
+        if form.is_valid():
+            amount, on_date = form.new_total, form.cleaned_data["date"]
+            if sale is None:
+                sale = Sale.objects.create(
+                    client=client,
+                    sales_rep=client.owner or request.user,
+                    date=on_date,
+                    debt_deadline=on_date + timedelta(days=DEFAULT_DEBT_DAYS),
+                    is_opening=True,
+                    opening_amount=amount,
+                )
+                action = AuditLog.Action.CREATE
+            else:
+                # Carry the deadline with the date rather than recomputing it: these
+                # debts are imported with their own terms, and silently resetting the
+                # window would restate how overdue the client is.
+                if sale.debt_deadline:
+                    sale.debt_deadline += on_date - sale.date
+                sale.date = on_date
+                sale.opening_amount = amount
+                sale.save(update_fields=["opening_amount", "date", "debt_deadline"])
+                action = AuditLog.Action.UPDATE
+            # A raised balance is a fresh open receipt any credit the client holds
+            # should settle onto; a lowered one may free credit that was already spent.
+            _reconcile_client_advance(client, sale.sales_rep)
+            AuditLog.record(
+                request.user, action, "Sotuv", sale.pk,
+                f"Mijoz {client.name} boshlang'ich qarzi "
+                f"{was:,.0f} → {amount:,.0f} so'm",
+            )
+            messages.success(
+                request,
+                f"Boshlang'ich qarz saqlandi: {amount:,.0f} so'm "
+                f"(oldin {was:,.0f} so'm).",
+            )
+            return form_reload(request, reverse("client_history", args=[client.pk]))
+        return _render_opening_debt(request, client, sale, form, invalid=True)
+    form = OpeningDebtForm(current=was, paid=paid, initial={
+        "date": sale.date if sale else timezone.localdate(),
+    })
+    return _render_opening_debt(request, client, sale, form)
 
 
 # --- Products -----------------------------------------------------------------

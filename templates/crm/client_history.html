@@ -37,6 +37,9 @@
     </div>
     <div class="kpi-value">{{ totals.debt|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta muted">{% if totals.debt > 0 %}<a href="{% url 'debt_client' client.pk %}">ochiq cheklar →</a>{% else %}qarz yo'q{% endif %}</div>
+    <div class="kpi-meta" style="margin-top:6px;">
+      <a class="btn btn-sm btn-ghost" href="{% url 'client_opening_debt' client.pk %}" data-modal>Boshlang'ich qarz</a>
+    </div>
   </div>
 
   {% if totals.advance %}

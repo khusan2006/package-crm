@@ -4436,3 +4436,57 @@ ul.errorlist li::before {
   color: var(--text-faint);
   font-weight: 400;
 }
+
+/* ============================================================
+   Opening-balance form — the before/after panel
+   ============================================================ */
+
+/* The sum field holds a DELTA ("add 1 138 300"), so the figure the client will
+   actually end up owing is computed, not typed. That makes it the one number the
+   seller has to check before committing — framed and in the debt colour so it
+   cannot be skimmed past. */
+.opening-box {
+  border: 2px solid var(--danger);
+  border-radius: var(--r-lg);
+  background: var(--danger-soft);
+  padding: 13px 15px;
+  margin-bottom: 16px;
+  font-size: 13.5px;
+}
+
+.opening-box .ob-current {
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.opening-box .ob-current strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.opening-box .ob-next {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 11px;
+  padding-top: 11px;
+  border-top: 1px dashed color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.opening-box .ob-next-label {
+  font-weight: 600;
+  color: var(--danger);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 11.5px;
+}
+
+.opening-box .ob-next-value {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.1;
+  color: var(--danger);
+  font-variant-numeric: tabular-nums;
+}
