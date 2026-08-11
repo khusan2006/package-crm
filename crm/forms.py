@@ -256,6 +256,153 @@ class DebtPaymentForm(forms.Form):
         return cleaned
 
 
+class AdvanceForm(DebtPaymentForm):
+    """Taking an advance, or fixing one that was already taken.
+
+    Everything a debt payment asks is asked here too; the one extra question is whether
+    the cash is arriving in the drawer right now. Normally it is. But the old sverkas
+    are full of money that was taken in months ago and only recorded as an advance
+    today — book that as a kirim and the day's income swells by cash nobody handed
+    over. Until now the only way round it was to write the deposit and then go and
+    correct the till by hand, every single time.
+
+    Saying no keeps the client's credit exactly the same and only holds the money out
+    of the till (`Payment.is_opening`) — the same treatment the imported pre-CRM
+    advances already get, for the same reason."""
+
+    IN_KASSA = "yes"
+    OUT_OF_KASSA = "no"
+
+    to_kassa = forms.ChoiceField(
+        label="Pul kassaga kirim bo'lsinmi?",
+        choices=[
+            (IN_KASSA, "Ha — pul hozir qo'lga tegdi"),
+            (OUT_OF_KASSA, "Yo'q — pul avvalroq olingan, faqat avans yozilsin"),
+        ],
+        initial=IN_KASSA,
+        widget=forms.RadioSelect,
+        help_text=(
+            "“Yo'q” tanlansa mijozning avansi xuddi shunday yoziladi, lekin kassa "
+            "kirimiga qo'shilmaydi — eski hisob-kitobdagi pulni ikkinchi marta "
+            "kirim qilmaslik uchun"
+        ),
+    )
+
+    def clean(self):
+        cleaned = super().clean()
+        # The view stores a boolean, not the radio's string: `is_opening` is what the
+        # till and every advance figure actually read.
+        cleaned["is_opening"] = cleaned.get("to_kassa") == self.OUT_OF_KASSA
+        return cleaned
+
+
+class AdvanceRemoveForm(forms.Form):
+    """Taking an advance deposit off a client — and the question that decides what the
+    till does about it.
+
+    A deposit gets removed for two completely different reasons and they must not share
+    one button. Either it should never have been written (wrong client, wrong figure,
+    entered twice), in which case the record simply goes and the till is left as if it
+    had never happened; or the client asked for their money back and got it, in which
+    case the deposit stands and the cash leaving is recorded on the day it left. Doing
+    the second as a deletion would quietly rewrite an old day's kirim — the very thing
+    that makes a reconciled day stop matching the notebook it was counted against.
+
+    A cash return can only give back credit the client is still holding, so it is capped
+    at their advance balance: anything already spent on a receipt is not theirs to take,
+    and handing it over would drag settled sales back into debt.
+
+    Money going back gets the same till question the money coming in got (`AdvanceForm`),
+    and for the same reason: the client's credit going away and a note leaving the
+    drawer are two separate facts. Settle an old sverka balance and the credit has to
+    go while the till stays put — charge it anyway and the drawer ends the day short by
+    money it never held."""
+
+    ERASE = "erase"
+    CASH_OUT = "cash_out"
+    FROM_KASSA = "yes"
+    OUTSIDE_KASSA = "no"
+
+    mode = forms.ChoiceField(
+        label="Nima bo'ldi?",
+        choices=[
+            (ERASE, "Xato yozilgan — butunlay o'chirilsin"),
+            (CASH_OUT, "Pul mijozga qaytarildi — kassadan chiqim bo'lsin"),
+        ],
+        initial=ERASE,
+        widget=forms.RadioSelect,
+    )
+    amount = forms.DecimalField(
+        label="Qaytarilgan summa (so'm)",
+        max_digits=18,
+        decimal_places=2,
+        required=False,
+        min_value=Decimal("0.01"),
+        help_text="Faqat pul qaytarilganda — hammasi emas, bir qismi ham bo'lishi mumkin",
+    )
+    date = forms.DateField(
+        label="Qaytarilgan sana",
+        required=False,
+        widget=forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+        help_text="Pul kassadan qaysi kuni chiqqan bo'lsa — o'sha kun",
+        validators=[_reject_future],
+    )
+    from_kassa = forms.ChoiceField(
+        label="Pul kassadan chiqdimi?",
+        choices=[
+            (FROM_KASSA, "Ha — pul kassadan berildi"),
+            (OUTSIDE_KASSA, "Yo'q — kassaga tegmasin, faqat avansdan yechilsin"),
+        ],
+        initial=FROM_KASSA,
+        required=False,
+        widget=forms.RadioSelect,
+        help_text=(
+            "“Yo'q” tanlansa mijozning avansi kamayadi, lekin kassadan chiqim "
+            "yozilmaydi — pul kassadan chiqmagan bo'lsa (eski hisob-kitob) shunday"
+        ),
+    )
+    note = forms.CharField(
+        label="Izoh",
+        max_length=255,
+        required=False,
+        widget=forms.TextInput(attrs={"placeholder": "Ixtiyoriy — nima uchun"}),
+    )
+
+    def __init__(self, *args, deposit_amount=None, balance=None, **kwargs):
+        # What this deposit credited the client with (the sum offered back by default)
+        # and what they still hold across every deposit (the ceiling).
+        self.deposit_amount = deposit_amount or Decimal("0")
+        self.balance = balance or Decimal("0")
+        super().__init__(*args, **kwargs)
+        _mark_money(self.fields["amount"])
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get("mode") != self.CASH_OUT:
+            return cleaned
+        amount = cleaned.get("amount")
+        if amount is None:
+            # Left blank means "give back what this deposit was" — the common case,
+            # so it is filled in rather than refused.
+            amount = min(self.deposit_amount, self.balance)
+            if amount <= 0:
+                raise forms.ValidationError(
+                    "Bu mijozda qaytariladigan avans qolmagan — avans allaqachon "
+                    "sotuvlarga ishlatilgan. Xato bo'lsa, “butunlay o'chirilsin”ni "
+                    "tanlang."
+                )
+            cleaned["amount"] = amount
+        if amount > self.balance:
+            raise forms.ValidationError(
+                f"Mijozda hozir {self.balance:,.0f} so'm avans bor — undan ko'pini "
+                f"qaytarib bo'lmaydi. Qolgani sotuvlarga ishlatilgan."
+            )
+        cleaned["date"] = cleaned.get("date") or timezone.localdate()
+        # Same flag, same meaning as on the way in: this money is not in the drawer.
+        cleaned["is_opening"] = cleaned.get("from_kassa") == self.OUTSIDE_KASSA
+        return cleaned
+
+
 class PaymentEditForm(forms.ModelForm):
     """Fix a mistaken payment (Kirim). Full edit of a single receipt: amount,
     currency + rate, method, bank commission and note. `amount` persists as so'm

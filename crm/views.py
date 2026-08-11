@@ -23,6 +23,8 @@ from accounts.models import User
 
 from .forms import (
     DEFAULT_DEBT_DAYS,
+    AdvanceForm,
+    AdvanceRemoveForm,
     ClientForm,
     ClientTransferForm,
     DebtPaymentForm,
@@ -44,8 +46,9 @@ from .forms import (
     StockEntryForm,
 )
 from .models import (
+    ADVANCE_DEPOSIT_KINDS,
+    ADVANCE_SPENT_KINDS,
     COST,
-    CREDIT_BACK_KINDS,
     ITEM_WEIGHT_KG,
     MICRON_CHOICES,
     PAYING_KINDS,
@@ -92,10 +95,8 @@ def _advance_balance_map(client_pks, seller):
     if seller is not None:
         rows = rows.filter(created_by=seller)
     agg = rows.values("client").annotate(
-        dep=Sum(PAYMENT_CREDIT, filter=Q(
-            kind__in=[Payment.Kind.ADVANCE_IN, Payment.Kind.RETURN_CREDIT]
-        )),
-        used=Sum(PAYMENT_CREDIT, filter=Q(kind=Payment.Kind.ADVANCE_USED)),
+        dep=Sum(PAYMENT_CREDIT, filter=Q(kind__in=ADVANCE_DEPOSIT_KINDS)),
+        used=Sum(PAYMENT_CREDIT, filter=Q(kind__in=ADVANCE_SPENT_KINDS)),
     )
     return {
         r["client"]: (r["dep"] or Decimal("0")) - (r["used"] or Decimal("0"))
@@ -713,9 +714,10 @@ def _last_payment_map(user, client_pks):
     Only money coming IN from the client counts: what was paid on a receipt (sale /
     debt) and advance deposits. Spending advance credit (advance_used) is not a new
     payment — that cash arrived on the deposit's own date, which is the one worth
-    showing — and return credits / refunds move money the other way. Opening
-    advances are dropped too: that money was received before go-live and carries the
-    import's date, so it says nothing about when the client last actually paid."""
+    showing — and return credits / refunds move money the other way. Advances marked
+    `is_opening` are dropped too: their cash was taken in earlier and the row carries
+    the day it was written up, not the day the client handed anything over, so it says
+    nothing about when they last actually paid."""
     on_sales = Payment.objects.filter(
         sale__client__in=client_pks, kind__in=(Payment.Kind.SALE, Payment.Kind.DEBT)
     )
@@ -970,6 +972,7 @@ _PAY_EVENTS = {
     Payment.Kind.DEBT: ("Qarz to'lovi", "badge-ok", "in"),
     Payment.Kind.ADVANCE_USED: ("Avansdan yechildi", "badge-info", "in"),
     Payment.Kind.ADVANCE_IN: ("Avans olindi", "badge-ok", "in"),
+    Payment.Kind.ADVANCE_OUT: ("Avans qaytarildi", "badge-danger", "out"),
     Payment.Kind.RETURN_CREDIT: ("Qaytarishdan kredit", "badge-shipped", "return"),
     Payment.Kind.REFUND_OUT: ("Naqd qaytarildi", "badge-danger", "out"),
     Payment.Kind.ADJUST_CREDIT: ("Narx tuzatildi — kreditga", "badge-shipped", "return"),
@@ -986,7 +989,9 @@ def _payment_event(payment):
     amount = payment.credited_amount
     if paying:
         delta = -amount
-    elif payment.kind == Payment.Kind.ADVANCE_IN:
+    elif payment.kind in (Payment.Kind.ADVANCE_IN, Payment.Kind.ADVANCE_OUT):
+        # Credit moving into or out of the client's own pool. Neither touches what
+        # they owe — only an advance actually spent on a receipt does that.
         delta = Decimal("0")
     else:  # a settlement kind — money owed back to the client
         delta = amount
@@ -1810,10 +1815,12 @@ def debt_client(request, pk):
     total = sum((s.remaining for s in sales), Decimal("0"))
     scope = None if request.user.can_see_all_records else request.user
     advance = client_advance_balance(client, scope)
-    # The individual advance deposits, each editable/voidable right here — so a mistaken
-    # advance can be fixed from the client's own page, not only from the kassa ledger.
-    advance_deposits = (
-        _advance_in_qs(request.user)
+    # Every movement on this client's advance pool — deposits and money handed back —
+    # each editable/voidable right here. The kassa ledger is not enough on its own: a
+    # deposit taken in outside the till, or a return that never touched it, appears
+    # nowhere on that page, and an entry with no screen to reach it cannot be undone.
+    advance_moves = (
+        _advance_move_qs(request.user)
         .filter(client=client)
         .order_by("-date", "-created_at")
     )
@@ -1826,7 +1833,7 @@ def debt_client(request, pk):
             "sales": sales,
             "total": total,
             "advance": advance,
-            "advance_deposits": advance_deposits,
+            "advance_moves": advance_moves,
             "last_sale": last_sale,
             "last_payment": last_payment,
         },
@@ -2137,14 +2144,20 @@ def _render_client_advance(request, client, balance, form, invalid=False):
 def client_advance_pay(request, pk):
     """Take an advance (oldindan to'lov) from a client into the seller's till.
 
-    The cash enters the kassa now (ADVANCE_IN) — it is real income the moment it's
-    received. It is then spent oldest-debt-first on the client's open receipts; any
-    surplus stays as their advance balance to cover future sales (it is NOT refunded).
-    Advance is seller-bound: it sits in the till of whoever took it."""
+    The cash normally enters the kassa now (ADVANCE_IN) — it is real income the moment
+    it's received. It is then spent oldest-debt-first on the client's open receipts;
+    any surplus stays as their advance balance to cover future sales (it is NOT
+    refunded). Advance is seller-bound: it sits in the till of whoever took it.
+
+    The form's one extra question is whether the cash is arriving now. Answer no —
+    money taken in long ago and only being written up today, which is most of what the
+    old sverkas turn out to hold — and the deposit is recorded exactly the same but
+    kept out of the till, so today's kirim isn't inflated by cash nobody handed over
+    (see `AdvanceForm`)."""
     client = get_object_or_404(_visible_clients(request.user), pk=pk)
     balance = client_advance_balance(client, request.user)
     if request.method == "POST":
-        form = DebtPaymentForm(request.POST)
+        form = AdvanceForm(request.POST)
         if form.is_valid():
             cd = form.cleaned_data
             Payment.objects.create(
@@ -2160,6 +2173,7 @@ def client_advance_pay(request, pk):
                 commission_payer=cd["commission_payer"],
                 note=cd["note"],
                 kind=Payment.Kind.ADVANCE_IN,
+                is_opening=cd["is_opening"],
                 date=cd["date"],
                 created_by=request.user,
             )
@@ -2168,10 +2182,12 @@ def client_advance_pay(request, pk):
                 request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
                 f"Mijoz {client.name} avans to'lovi "
                 f"({_method_label(cd['method'])}){_usd_note(cd)} "
-                f"— {cd['amount']:,.0f} so'm",
+                f"— {cd['amount']:,.0f} so'm{_kassa_note(cd['is_opening'])}",
             )
             left = client_advance_balance(client, request.user)
             msg = f"Avans qabul qilindi: {cd['amount']:,.0f} so'm."
+            if cd["is_opening"]:
+                msg += " Kassaga kirim qilinmadi."
             if applied > 0:
                 msg += f" {applied:,.0f} so'm ochiq qarzga taqsimlandi."
             if left > 0:
@@ -2179,16 +2195,33 @@ def client_advance_pay(request, pk):
             messages.success(request, msg)
             return form_reload(request, reverse("client_list"))
         return _render_client_advance(request, client, balance, form, invalid=True)
-    form = DebtPaymentForm(initial={
+    form = AdvanceForm(initial={
         "method": Payment.Method.CASH, "date": timezone.localdate(),
     })
     return _render_client_advance(request, client, balance, form)
+
+
+def _kassa_note(is_opening):
+    """The audit-log tail that says whether an advance touched the till. Silent when
+    it did — that is the ordinary case and needs no remark."""
+    return " (kassaga kirim qilinmadi)" if is_opening else ""
 
 
 def _advance_in_qs(user):
     """Advance deposits this user is allowed to touch — their own, or all for an
     admin/manager."""
     qs = Payment.objects.filter(kind=Payment.Kind.ADVANCE_IN).select_related("client")
+    if not user.can_see_all_records:
+        qs = qs.filter(created_by=user)
+    return qs
+
+
+def _advance_move_qs(user):
+    """Both sides of the advance pool — deposits and money handed back — under the
+    same visibility rule."""
+    qs = Payment.objects.filter(
+        kind__in=(Payment.Kind.ADVANCE_IN, Payment.Kind.ADVANCE_OUT)
+    ).select_related("client")
     if not user.can_see_all_records:
         qs = qs.filter(created_by=user)
     return qs
@@ -2215,15 +2248,23 @@ def _reconcile_client_advance(client, seller):
 
 
 def advance_edit(request, pk):
-    """Fix a mistaken advance deposit (amount / method / note). If the new amount is
-    smaller than what sales already drew, the excess is clawed back automatically
-    (those sales revert to debt) — see `_reconcile_client_advance`."""
+    """Fix a mistaken advance deposit (amount / method / note / whether it hit the
+    till). If the new amount is smaller than what sales already drew, the excess is
+    clawed back automatically (those sales revert to debt) — see
+    `_reconcile_client_advance`.
+
+    The till question is editable after the fact on purpose: a deposit booked as a
+    kirim which turns out to be money collected weeks ago can be taken back out of the
+    day's income here, instead of the seller ringing someone to fix the kassa by hand.
+    The client's credit is untouched either way — only where the cash is said to be
+    changes."""
     payment = get_object_or_404(_advance_in_qs(request.user), pk=pk)
     client, seller = payment.client, payment.created_by
     if request.method == "POST":
-        form = DebtPaymentForm(request.POST)
+        form = AdvanceForm(request.POST)
         if form.is_valid():
             cd = form.cleaned_data
+            payment.is_opening = cd["is_opening"]
             payment.amount = cd["amount"]
             payment.amount_original = cd["amount_original"]
             payment.currency = cd["currency"]
@@ -2239,12 +2280,19 @@ def advance_edit(request, pk):
             _reconcile_client_advance(client, seller)
             AuditLog.record(
                 request.user, AuditLog.Action.UPDATE, "To'lov", client.pk,
-                f"Mijoz {client.name} avansi o'zgartirildi — {payment.amount:,.0f} so'm",
+                f"Mijoz {client.name} avansi o'zgartirildi — {payment.amount:,.0f} so'm"
+                f"{_kassa_note(payment.is_opening)}",
             )
             messages.success(request, "Avans yangilandi.")
-            return form_reload(request, reverse("kassa"))
+            # A deposit kept out of the till isn't on the kassa page at all, so the
+            # client's own card is where it goes back to being visible.
+            fallback = (
+                reverse("debt_client", args=[client.pk]) if payment.is_opening
+                else reverse("kassa")
+            )
+            return form_reload(request, fallback)
         return _render_advance_edit(request, payment, form, invalid=True)
-    form = DebtPaymentForm(initial={
+    form = AdvanceForm(initial={
         "date": payment.date,
         "amount": _clean_amount(payment.original_amount),
         "method": payment.method,
@@ -2253,6 +2301,9 @@ def advance_edit(request, pk):
         "commission_percent": payment.commission_percent or "",
         "commission_payer": payment.commission_payer,
         "note": payment.note,
+        "to_kassa": (
+            AdvanceForm.OUT_OF_KASSA if payment.is_opening else AdvanceForm.IN_KASSA
+        ),
     })
     return _render_advance_edit(request, payment, form)
 
@@ -2274,31 +2325,138 @@ def _render_advance_edit(request, payment, form, invalid=False):
 
 
 def advance_delete(request, pk):
-    """Remove a mistaken advance deposit. If sales had already drawn on it, those
+    """Take an advance deposit off a client — and ask which of the two things that
+    actually means, because they are not the same event.
+
+    "Xato yozilgan" removes the record outright. If sales had already drawn on it those
     allocations are peeled back and the sales revert to debt (see
-    `_reconcile_client_advance`), so the money trail stays consistent."""
+    `_reconcile_client_advance`), so the money trail stays consistent. The till is left
+    as though the deposit had never been written.
+
+    "Pul qaytarildi" is the opposite: the deposit stands, because the cash really did
+    come in on its own date, and the money going back out is written as its own
+    ADVANCE_OUT row on the day it left. That way a day already counted and reconciled
+    doesn't silently change its kirim weeks later because a client asked for their
+    credit back. Only credit the client still holds can be handed over — the form caps
+    it at their balance, so settled sales are never dragged back into debt to fund a
+    refund (see `AdvanceRemoveForm`)."""
     payment = get_object_or_404(_advance_in_qs(request.user), pk=pk)
     client, seller = payment.client, payment.created_by
-    spent = client_advance_balance(client, seller) < payment.credited_amount
+    balance = client_advance_balance(client, seller)
     if request.method == "POST":
-        summary = f"{client.name} — avans {payment.amount:,.0f} so'm"
+        form = AdvanceRemoveForm(
+            request.POST, deposit_amount=payment.credited_amount, balance=balance
+        )
+        if form.is_valid():
+            cd = form.cleaned_data
+            if cd["mode"] == AdvanceRemoveForm.CASH_OUT:
+                Payment.objects.create(
+                    client=client,
+                    sale=None,
+                    amount=cd["amount"],
+                    amount_original=cd["amount"],
+                    method=payment.method,
+                    note=cd["note"] or "Avans mijozga qaytarildi",
+                    kind=Payment.Kind.ADVANCE_OUT,
+                    is_opening=cd["is_opening"],
+                    date=cd["date"],
+                    created_by=seller,
+                )
+                where = (
+                    "kassaga tegmadi" if cd["is_opening"] else "kassadan chiqim"
+                )
+                AuditLog.record(
+                    request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
+                    f"Mijoz {client.name} avansi qaytarildi — "
+                    f"{cd['amount']:,.0f} so'm ({where})",
+                )
+                messages.success(
+                    request,
+                    f"Avans qaytarildi: {cd['amount']:,.0f} so'm — "
+                    f"{'kassaga tegilmadi' if cd['is_opening'] else 'kassadan chiqim qilindi'}.",
+                )
+            else:
+                AuditLog.record(
+                    request.user, AuditLog.Action.VOID, "To'lov", client.pk,
+                    f"{client.name} — avans {payment.amount:,.0f} so'm o'chirildi "
+                    f"(xato yozuv)",
+                )
+                payment.delete()
+                messages.success(request, "Avans o'chirildi.")
+            # Either route can leave the pool out of step — a deletion may have taken
+            # away credit sales were already living on, a cash return shrinks it — so
+            # both settle through the same reconcile.
+            _reconcile_client_advance(client, seller)
+            return form_reload(request, reverse("debt_client", args=[client.pk]))
+        return _render_advance_remove(request, payment, balance, form, invalid=True)
+    # Offer back what this deposit put in, but never more than the client still holds:
+    # the rest is already sitting on their receipts. Nothing left means nothing to
+    # pre-fill, and the form says so if that route is picked anyway.
+    returnable = min(payment.credited_amount, balance)
+    form = AdvanceRemoveForm(
+        deposit_amount=payment.credited_amount,
+        balance=balance,
+        initial={
+            "amount": _clean_amount(returnable) if returnable > 0 else "",
+            "date": timezone.localdate(),
+        },
+    )
+    return _render_advance_remove(request, payment, balance, form)
+
+
+def _render_advance_remove(request, payment, balance, form, invalid=False):
+    context = {
+        "form": form,
+        "payment": payment,
+        "client": payment.client,
+        "advance_balance": balance,
+        # What sales have already eaten. Named on the page because it is the number
+        # that explains why a cash return may be capped below the deposit.
+        "spent": max(payment.credited_amount - balance, Decimal("0")),
+        "title": f"Avansni o'chirish: {payment.client.name}",
+    }
+    if is_ajax(request):
+        return render(
+            request, "crm/_advance_remove_modal.html", context,
+            status=422 if invalid else 200,
+        )
+    return render(request, "crm/_advance_remove_page.html", context)
+
+
+def advance_out_delete(request, pk):
+    """Undo an advance return — the client's credit comes back and the till stops
+    showing the money as gone. The way out of a mis-clicked refund, and the reason the
+    cash-out route is safe to offer at all."""
+    qs = Payment.objects.filter(kind=Payment.Kind.ADVANCE_OUT).select_related("client")
+    if not request.user.can_see_all_records:
+        qs = qs.filter(created_by=request.user)
+    payment = get_object_or_404(qs, pk=pk)
+    client, seller = payment.client, payment.created_by
+    if request.method == "POST":
+        summary = f"{client.name} — qaytarilgan avans {payment.amount:,.0f} so'm bekor qilindi"
         payment.delete()
+        # The freed credit lands back on whatever the client still owes.
         _reconcile_client_advance(client, seller)
         AuditLog.record(request.user, AuditLog.Action.VOID, "To'lov", client.pk, summary)
-        messages.success(request, "Avans o'chirildi.")
+        messages.success(request, "Avans qaytarilishi bekor qilindi.")
         return form_reload(request, reverse("kassa"))
-    warn = (
-        " Bu avans allaqachon sotuv(lar)ga ishlatilgan — o'chirilsa, o'sha sotuvlar "
-        "qaytadan qarzga aylanadi."
-        if spent else ""
-    )
     return render_confirm(
         request,
-        "Avansni o'chirish",
-        f"“{client.name}” — {payment.amount:,.0f} so'm avans o'chiriladi.{warn} Davom etasizmi?",
-        "Ha, o'chirish",
+        "Avans qaytarilishini bekor qilish",
+        f"“{client.name}” — {payment.amount:,.0f} so'm avans qaytarilishi bekor "
+        f"qilinadi: pul kassadan chiqmagan hisoblanadi va mijozning avansi tiklanadi. "
+        f"Davom etasizmi?",
+        "Ha, bekor qilish",
         confirm_class="btn-danger",
     )
+
+
+# Advance movements are money on the client's credit pool, not on a receipt, so the
+# ordinary payment edit/void refuses them: each has its own view, which also puts the
+# pool back in balance afterwards.
+ADVANCE_KINDS = (
+    Payment.Kind.ADVANCE_IN, Payment.Kind.ADVANCE_USED, Payment.Kind.ADVANCE_OUT,
+)
 
 
 def payment_delete(request, pk):
@@ -2309,7 +2467,7 @@ def payment_delete(request, pk):
     if not request.user.can_see_all_records:
         qs = qs.filter(created_by=request.user)
     payment = get_object_or_404(qs, pk=pk)
-    if payment.kind in (Payment.Kind.ADVANCE_IN, Payment.Kind.ADVANCE_USED):
+    if payment.kind in ADVANCE_KINDS:
         messages.error(request, "Avans to'lovi bu yerdan o'chirilmaydi.")
         return form_reload(request, reverse("kassa"))
     if request.method == "POST":
@@ -2339,7 +2497,7 @@ def payment_edit(request, pk):
     if not request.user.can_see_all_records:
         qs = qs.filter(created_by=request.user)
     payment = get_object_or_404(qs, pk=pk)
-    if payment.kind in (Payment.Kind.ADVANCE_IN, Payment.Kind.ADVANCE_USED):
+    if payment.kind in ADVANCE_KINDS:
         messages.error(request, "Avans to'lovi bu yerdan tahrirlanmaydi.")
         return form_reload(request, reverse("kassa"))
     # This receipt's ceiling: the sale's remaining already excludes what this payment
@@ -2584,10 +2742,10 @@ def _kassa_summary(date_from, date_to, rep=None):
     # when it was deposited (ADVANCE_IN), so its consumption must not count again.
     payments = Payment.objects.till_income()
     expenses = Expense.objects.all()
-    # Cash handed back to clients on over-returned or price-corrected sales.
-    # till_income() already drops these, so they have to be brought in separately
-    # as an outflow.
-    refunds = Payment.objects.filter(kind__in=REFUND_KINDS)
+    # Cash handed back to clients — on over-returned or price-corrected sales, and
+    # advances returned to them. till_income() already drops these, so they have to be
+    # brought in separately as an outflow.
+    refunds = Payment.objects.till_outflow()
     if rep is not None:
         payments = payments.filter(created_by=rep)
         expenses = expenses.filter(created_by=rep)
@@ -2693,7 +2851,7 @@ def _per_employee_kassa(date_from, date_to, rep=None):
     expenses = Expense.objects.filter(**window)
     sale_items = SaleItem.objects.filter(**sale_window)
     restocked = Return.objects.filter(restock=True, **sale_window)
-    refunds = Payment.objects.filter(kind__in=REFUND_KINDS, **window)
+    refunds = Payment.objects.till_outflow().filter(**window)
     remittances = ProductionRemittance.objects.filter(**window)
     payouts = ProfitPayout.objects.filter(**window)
     adjustments = ProductionAdjustment.objects.filter(**window)
@@ -2943,12 +3101,11 @@ def _kassa_transactions(expenses, dates, filters, rep):
                     "exchange_rate": Decimal("0"), "created_by": pp.created_by,
                     "pk": pp.pk, "kind": "profit",
                 })
-    # Cash refunded to clients on over-returned or price-corrected sales. Not an expense
-    # (the business bore no cost — it is the client's own money going back), but it
-    # leaves the till all the same, so it belongs in the outflow ledger or the drawer
-    # won't reconcile.
-    refunds = Payment.objects.filter(
-        kind__in=REFUND_KINDS,
+    # Cash handed back to clients: settling an over-returned or price-corrected sale,
+    # or giving a client the advance they were holding. Not an expense (the business
+    # bore no cost — it is the client's own money going back), but it leaves the till
+    # all the same, so it belongs in the outflow ledger or the drawer won't reconcile.
+    refunds = Payment.objects.till_outflow().filter(
         date__gte=dates["date_from"], date__lte=dates["date_to"],
     ).select_related("client", "created_by").prefetch_related("settled_return")
     if rep is not None:
@@ -2963,20 +3120,26 @@ def _kassa_transactions(expenses, dates, filters, rep):
         # has no return behind it; there the action links to the sale (see sale_pk).
         linked = list(rf.settled_return.all())
         is_adjust = rf.kind == Payment.Kind.ADJUST_REFUND
+        # An advance return hangs off no sale and no return, so it gets its own row
+        # kind: the panel behind it is the one that can undo it.
+        is_advance_out = rf.kind == Payment.Kind.ADVANCE_OUT
         rows.append({
             "date": rf.date, "created_at": rf.created_at, "direction": "refund",
             "title": str(rf.client) if rf.client else "—",
             "subtitle": rf.note or (
-                "Narx tuzatildi — naqd qaytarildi" if is_adjust
+                "Avans mijozga qaytarildi" if is_advance_out
+                else "Narx tuzatildi — naqd qaytarildi" if is_adjust
                 else "Qaytarish uchun naqd berildi"
             ),
             "method": rf.get_method_display(), "method_code": rf.method,
             "currency": rf.currency,
             "amount_som": rf.amount, "amount_original": rf.original_amount,
             "exchange_rate": rf.exchange_rate, "created_by": rf.created_by,
-            "pk": rf.pk, "kind": "refund", "sale_pk": rf.sale_id,
+            "pk": rf.pk, "kind": "advance_out" if is_advance_out else "refund",
+            "sale_pk": rf.sale_id,
             "return_pk": linked[0].pk if linked else None,
             "is_adjust": is_adjust,
+            "client_pk": rf.client_id,
         })
     for e in expenses:
         rows.append({
@@ -3138,6 +3301,7 @@ _OUTFLOW_LABELS = {
     "remittance_back": "Ishlab chiqarishdan qaytarildi",
     "profit": "Foyda topshiruvi",
     "refund": "Qaytarish (naqd berildi)",
+    "advance_out": "Avans qaytarildi",
     "commission": "Bank komissiyasi",
 }
 
@@ -3448,6 +3612,10 @@ def _entry_payment(request, pk, fee_only=False):
             rows.append(("Mijozda qolgan komissiya", _money(p.commission)))
     else:
         rows.append(("Qarzga ta'siri", "Yo'q — avans sifatida saqlanadi"))
+        rows.append((
+            "Kassaga kirim",
+            "Yo'q — pul avvalroq olingan" if p.is_opening else "Ha",
+        ))
     if p.note:
         rows.append(("Izoh", p.note))
     rows.append(("Kim qabul qildi", str(p.created_by)))
@@ -3477,6 +3645,41 @@ def _entry_payment(request, pk, fee_only=False):
         context["open_label"] = "Sotuvni ochish"
     elif client:
         context["open_url"] = reverse("client_history", args=[client.pk])
+        context["open_label"] = "Mijoz tarixi"
+    return context
+
+
+def _entry_advance_out(request, pk):
+    """A client's prepaid credit handed back to them in cash. The deposit it came out
+    of is untouched — undoing this row is what puts the credit back, so that is the
+    only action offered here."""
+    qs = Payment.objects.select_related("client", "created_by")
+    if not request.user.can_see_all_records:
+        qs = qs.filter(created_by=request.user)
+    p = get_object_or_404(qs, pk=pk, kind=Payment.Kind.ADVANCE_OUT)
+    rows = [
+        ("Sana", p.date.strftime("%d.%m.%Y")),
+        ("Mijoz", str(p.client) if p.client else "—"),
+        ("Sababi", "Avans mijozga qaytarildi"),
+        ("Berilgan summa", _money(p.amount)),
+        ("To'lov usuli", p.get_method_display()),
+        ("Kassadan chiqim", "Yo'q — pul kassadan chiqmagan" if p.is_opening else "Ha"),
+        ("Kim berdi", str(p.created_by)),
+    ]
+    if p.note:
+        rows.append(("Izoh", p.note))
+    context = {
+        "title": "Avans qaytarildi",
+        "rows": rows,
+        "note": (
+            "Avans depoziti o'z o'rnida qoldi — pul o'sha kuni haqiqatan kirim "
+            "bo'lgan. Bu yozuv esa pulning qaytib chiqqanini ko'rsatadi."
+        ),
+        "delete_url": reverse("advance_out_delete", args=[p.pk]),
+        "delete_label": "Qaytarishni bekor qilish",
+    }
+    if p.client_id:
+        context["open_url"] = reverse("client_history", args=[p.client_id])
         context["open_label"] = "Mijoz tarixi"
     return context
 
@@ -3637,6 +3840,7 @@ def kassa_entry_detail(request, kind, pk):
         "advance": lambda: _entry_payment(request, pk),
         "commission": lambda: _entry_payment(request, pk, fee_only=True),
         "refund": lambda: _entry_refund(request, pk),
+        "advance_out": lambda: _entry_advance_out(request, pk),
         "expense": lambda: _entry_expense(request, pk),
         "remittance": lambda: _entry_remittance(request, pk),
         "remittance_back": lambda: _entry_remittance(request, pk),
@@ -4549,16 +4753,15 @@ def _client_advance_map(user):
     Counts the same kinds as `client_advance_balance`, credit owed back from returns
     and price corrections included — otherwise the hint would contradict the balance
     the sale then actually draws on."""
-    deposit_kinds = (Payment.Kind.ADVANCE_IN,) + CREDIT_BACK_KINDS
     rows = (
         Payment.objects.filter(
             created_by=user,
-            kind__in=deposit_kinds + (Payment.Kind.ADVANCE_USED,),
+            kind__in=ADVANCE_DEPOSIT_KINDS + ADVANCE_SPENT_KINDS,
         )
         .values("client")
         .annotate(
-            deposited=Sum(PAYMENT_CREDIT, filter=Q(kind__in=deposit_kinds)),
-            used=Sum(PAYMENT_CREDIT, filter=Q(kind=Payment.Kind.ADVANCE_USED)),
+            deposited=Sum(PAYMENT_CREDIT, filter=Q(kind__in=ADVANCE_DEPOSIT_KINDS)),
+            used=Sum(PAYMENT_CREDIT, filter=Q(kind__in=ADVANCE_SPENT_KINDS)),
         )
     )
     result = {}

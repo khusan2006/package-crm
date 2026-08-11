@@ -2,7 +2,7 @@
 {% csrf_token %}
 {% if advance %}
   {% if advance_balance %}<p class="muted">Joriy avans balansi: <strong style="color: var(--text);">{{ advance_balance|floatformat:"0g" }} so'm</strong></p>{% endif %}
-  <p class="field-hint" style="margin: 0 0 6px;">Pul darhol kassaga kirim bo'ladi. Ochiq qarz bo'lsa avval o'shanga (eng eski chek — FIFO) taqsimlanadi, ortig'i avans balansida qoladi.</p>
+  <p class="field-hint" style="margin: 0 0 6px;">Ochiq qarz bo'lsa avval o'shanga (eng eski chek — FIFO) taqsimlanadi, ortig'i avans balansida qoladi.</p>
 {% else %}
   <p class="muted">{% if fifo %}Umumiy qarz{% else %}Qoldiq{% endif %}: <strong style="color: var(--text);">{{ remaining|floatformat:"0g" }} so'm</strong></p>
   {% if fifo %}
@@ -48,4 +48,12 @@
     {% if form.commission_payer.help_text %}<span class="field-hint">{{ form.commission_payer.help_text }}</span>{% endif %}</p>
   <div class="pay-breakdown" data-net hidden></div>
 </div>
+{% if advance %}
+{% comment %}Eski sverkalardagi pul allaqachon olingan bo'lishi mumkin — o'shani
+ikkinchi marta kirim qilib yubormaslik uchun savol shu yerda so'raladi.{% endcomment %}
+<div class="kassa-choice">
+  <p class="payer-choice">{{ form.to_kassa.label_tag }}{{ form.to_kassa }}{{ form.to_kassa.errors }}</p>
+  <span class="field-hint">{{ form.to_kassa.help_text }}</span>
+</div>
+{% endif %}
 <p>{{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}</p>

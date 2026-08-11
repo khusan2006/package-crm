@@ -1,0 +1,48 @@
+{% csrf_token %}
+{% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
+
+{% comment %}Qaysi depozit olib tashlanayotgani va mijozda hozir nima turgani —
+tanlov shu ikki raqamga qarab qilinadi.{% endcomment %}
+<div class="remove-box">
+  <div class="rb-line">
+    <span>{{ payment.date|date:"d.m.Y" }} dagi avans</span>
+    <strong>{{ payment.amount|floatformat:"0g" }} so'm</strong>
+  </div>
+  <div class="rb-line">
+    <span>Mijozda hozir turgan avans</span>
+    <strong>{{ advance_balance|floatformat:"0g" }} so'm</strong>
+  </div>
+  {% if spent %}
+  <div class="rb-note">
+    Shundan {{ spent|floatformat:"0g" }} so'm allaqachon sotuvlarga ishlatilgan —
+    qaytarib berish faqat qolganidan mumkin.
+  </div>
+  {% endif %}
+</div>
+
+<p class="payer-choice">{{ form.mode.label_tag }}{{ form.mode }}{{ form.mode.errors }}</p>
+
+<div class="cashout-only" hidden>
+  <p>{{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}
+    <span class="field-hint">{{ form.amount.help_text }}</span></p>
+  <p>{{ form.date.label_tag }}{{ form.date }}{{ form.date.errors }}
+    <span class="field-hint">{{ form.date.help_text }}</span></p>
+  <div class="kassa-choice">
+    <p class="payer-choice">{{ form.from_kassa.label_tag }}{{ form.from_kassa }}{{ form.from_kassa.errors }}</p>
+    <span class="field-hint">{{ form.from_kassa.help_text }}</span>
+  </div>
+  <p>{{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}</p>
+  <p class="field-hint">
+    Avans depoziti o'z o'rnida qoladi — pul o'sha kuni haqiqatan kirim bo'lgan.
+    Chiqim esa siz ko'rsatgan kunga yoziladi, shunda yopilgan kunning kirimi
+    keyinchalik o'zgarib ketmaydi.
+  </p>
+</div>
+
+<div class="erase-only">
+  <p class="field-hint">
+    Yozuv butunlay o'chiriladi va kassada hech qachon bo'lmagandek bo'ladi.
+    {% if spent %}Bu avans sotuvlarga ishlatilgani uchun o'sha sotuvlar qaytadan
+    qarzga aylanadi.{% endif %}
+  </p>
+</div>

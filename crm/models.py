@@ -278,6 +278,25 @@ REFUND_KINDS = ("refund_out", "adjust_refund")
 SETTLEMENT_KINDS = CREDIT_BACK_KINDS + REFUND_KINDS
 
 
+# Everything that takes cash back OUT of the till and hands it to a client. The
+# settlement refunds above are one route; giving a client their prepaid advance back
+# (`advance_out`) is the other, and it hangs off no sale at all. They are grouped
+# because every till figure — cash on hand, the chiqim ledger, the drawer summary —
+# cares only that the money left, not why. What tells them apart is the debt side:
+# a refund settles a receipt, an advance return only shrinks the credit the client
+# was holding (see `client_advance_balance`).
+CASH_OUT_KINDS = REFUND_KINDS + ("advance_out",)
+
+
+# The two sides of a client's advance pool. Credit goes in as a deposit or as money
+# owed back on a sale; it leaves either onto a receipt (`advance_used`) or into the
+# client's hand (`advance_out`). `client_advance_balance` is deposits minus spent, and
+# the batched maps in the views must count exactly these — a list that disagrees with
+# the balance on the client's own page is worse than no figure at all.
+ADVANCE_DEPOSIT_KINDS = ("advance_in",) + CREDIT_BACK_KINDS
+ADVANCE_SPENT_KINDS = ("advance_used", "advance_out")
+
+
 def _sale_paid_sum():
     """A subquery summing the payments credited against one sale.
 
@@ -741,21 +760,31 @@ class PaymentQuerySet(models.QuerySet):
         """Only payments that represent real cash arriving in a till.
 
         ADVANCE_USED is excluded: that money already entered the till as an ADVANCE_IN
-        deposit, so counting the consumption again would double it. So are the
-        SETTLEMENT_KINDS — CREDIT_BACK is likewise already in the till from the original
-        payment and only gets re-labelled as the client's credit, while REFUND is money
-        leaving, not arriving; refunds are subtracted separately in
-        `seller_cash_on_hand`.
+        deposit, so counting the consumption again would double it. So is CREDIT_BACK —
+        likewise already in the till from the original payment, merely re-labelled as
+        the client's credit — and so is every CASH_OUT kind, which is money leaving
+        rather than arriving; those are subtracted separately in `seller_cash_on_hand`.
 
         Per-sale debt math is separate and DOES count ADVANCE_USED (it settles the
         receipt) — see `_sale_paid_sum`.
 
-        Opening-balance advances (is_opening) are also excluded: that cash arrived
-        pre-CRM and is not sitting in any till today — it only carries the client's
-        prepaid credit forward, so it must never inflate cash on hand."""
+        Advances marked `is_opening` are also excluded: that cash is not sitting in any
+        till today — either it arrived pre-CRM, or the seller booked the advance
+        precisely because the money had already been taken in earlier — so it only
+        carries the client's prepaid credit and must never inflate cash on hand."""
         return self.exclude(is_opening=True).exclude(
-            kind__in=(self.model.Kind.ADVANCE_USED,) + SETTLEMENT_KINDS
+            kind__in=(self.model.Kind.ADVANCE_USED,) + CREDIT_BACK_KINDS + CASH_OUT_KINDS
         )
+
+    def till_outflow(self):
+        """The mirror of `till_income`: money physically handed back to a client, so
+        it has to come off the drawer.
+
+        `is_opening` reads the same on both sides — the row moves the client's balance
+        but its cash is not in today's till. An advance returned outside the kassa is
+        the case: the client's credit goes, yet no note left the drawer, so charging
+        the till for it would leave the drawer short by money it never held."""
+        return self.filter(kind__in=CASH_OUT_KINDS).exclude(is_opening=True)
 
 
 class Payment(models.Model):
@@ -774,6 +803,14 @@ class Payment(models.Model):
         # credit on a sale WITHOUT adding new till income (see PaymentQuerySet).
         ADVANCE_IN = "advance_in", "Oldindan to'lov (avans)"
         ADVANCE_USED = "advance_used", "Avansdan yechildi"
+        # Held credit given back to the client in cash instead of being spent on a
+        # sale. It shrinks their advance balance exactly like ADVANCE_USED does, but
+        # the money leaves the drawer, so the till counts it as an outflow. The
+        # deposit it undoes is left standing: the cash really did come in on its own
+        # date, and rubbing that day's kirim out to account for money returned weeks
+        # later is how a closed day silently changes underneath the person who
+        # counted it.
+        ADVANCE_OUT = "advance_out", "Avans qaytarildi"
         # Settlement of a return whose value exceeds the sale's open debt — the client
         # had already paid for those goods, so the money is owed back to them.
         # RETURN_CREDIT parks it as advance credit: no cash moves (it is already in the
@@ -843,9 +880,12 @@ class Payment(models.Model):
     )
     note = models.CharField("Izoh", max_length=255, blank=True)
     kind = models.CharField("Turi", max_length=16, choices=Kind.choices)
-    # A carried-over pre-CRM advance: it holds the client's prepaid credit but the cash
-    # is NOT in any till today (it was received before go-live), so till_income() drops
-    # it. It still counts toward the client's advance balance like any ADVANCE_IN.
+    # An advance whose cash is NOT in any till today, so till_income() drops it. It
+    # still counts toward the client's advance balance like any ADVANCE_IN. Two things
+    # set it: the pre-CRM balances the import commands carry in, and an advance the
+    # seller books for money that was already taken into the drawer earlier — the old
+    # sverkas are full of those, and counting the kirim a second time now would inflate
+    # the day's income by cash nobody handed over today.
     is_opening = models.BooleanField("Ochilish avansi", default=False)
     # A per-sale payment (sale/debt/advance_used) carries `sale`; a client-level
     # advance deposit (advance_in) carries only `client` and leaves `sale` null.
@@ -1212,12 +1252,12 @@ def seller_cash_on_hand(seller, exclude_remittance_pk=None, exclude_payout_pk=No
         Payment.objects.filter(created_by=seller).till_income().aggregate(s=Sum(PAYMENT_NET))["s"]
         or Decimal("0")
     )
-    # Cash handed back on an over-returned or over-priced sale. Refunds are recorded
-    # without a bank fee, so the full amount is what leaves the drawer.
+    # Cash handed back to a client — on an over-returned or over-priced sale, or as
+    # their advance returned to them. These are recorded without a bank fee, so the
+    # full amount is what leaves the drawer.
     refunded = (
-        Payment.objects.filter(
-            created_by=seller, kind__in=REFUND_KINDS
-        ).aggregate(s=Sum("amount"))["s"]
+        Payment.objects.filter(created_by=seller).till_outflow()
+        .aggregate(s=Sum("amount"))["s"]
         or Decimal("0")
     )
     expense = (
@@ -1238,7 +1278,8 @@ def seller_cash_on_hand(seller, exclude_remittance_pk=None, exclude_payout_pk=No
 def client_advance_balance(client, seller=None):
     """The credit a client holds: money put in (ADVANCE_IN deposits, plus the
     CREDIT_BACK_KINDS owed back from over-returned or price-corrected sales) minus what
-    sales have since consumed (ADVANCE_USED).
+    has since left the pool — spent on a sale (ADVANCE_USED) or handed back to the
+    client in cash (ADVANCE_OUT).
     Positive = money held that the client hasn't taken goods for yet; zero = nothing
     prepaid. Each deposit counts for whatever it credited the client with, so a bank
     fee only shrinks their credit when the fee was put on them. Advance is
@@ -1248,13 +1289,12 @@ def client_advance_balance(client, seller=None):
     if seller is not None:
         rows = rows.filter(created_by=seller)
     deposited = (
-        rows.filter(
-            kind__in=(Payment.Kind.ADVANCE_IN,) + CREDIT_BACK_KINDS
-        ).aggregate(s=Sum(PAYMENT_CREDIT))["s"]
+        rows.filter(kind__in=ADVANCE_DEPOSIT_KINDS)
+        .aggregate(s=Sum(PAYMENT_CREDIT))["s"]
         or Decimal("0")
     )
     used = (
-        rows.filter(kind=Payment.Kind.ADVANCE_USED)
+        rows.filter(kind__in=ADVANCE_SPENT_KINDS)
         .aggregate(s=Sum(PAYMENT_CREDIT))["s"]
         or Decimal("0")
     )

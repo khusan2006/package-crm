@@ -11,7 +11,7 @@ from openpyxl import load_workbook
 
 from accounts.models import User
 
-from .forms import SaleForm
+from .forms import AdvanceForm, AdvanceRemoveForm, SaleForm
 from .models import (
     COST,
     AuditLog,
@@ -3734,6 +3734,9 @@ class AdvanceTests(TestCase):
             "amount": str(amount),
             "method": Payment.Method.CASH,
             "currency": Payment.Currency.UZS,
+            # The form always ships a choice here (the radio is pre-selected); "yes"
+            # is the ordinary case — the cash is arriving now.
+            "to_kassa": AdvanceForm.IN_KASSA,
         }
         data.update(extra)
         return self.client.post(
@@ -3825,7 +3828,8 @@ class AdvanceTests(TestCase):
         self.client.force_login(self.seller)
         resp = self.client.post(
             reverse("advance_edit", args=[p.pk]),
-            {"amount": "800000", "method": Payment.Method.CASH, "currency": Payment.Currency.UZS},
+            {"amount": "800000", "method": Payment.Method.CASH,
+             "currency": Payment.Currency.UZS, "to_kassa": AdvanceForm.IN_KASSA},
         )
         self.assertEqual(resp.status_code, 302)
         self.assertEqual(client_advance_balance(self.buyer, self.seller), Decimal("800000"))
@@ -3834,7 +3838,10 @@ class AdvanceTests(TestCase):
         self._deposit("500000")
         p = Payment.objects.get(kind=Payment.Kind.ADVANCE_IN)
         self.client.force_login(self.seller)
-        resp = self.client.post(reverse("advance_delete", args=[p.pk]))
+        resp = self.client.post(
+            reverse("advance_delete", args=[p.pk]),
+            {"mode": AdvanceRemoveForm.ERASE},
+        )
         self.assertEqual(resp.status_code, 302)
         self.assertEqual(client_advance_balance(self.buyer, self.seller), Decimal("0"))
         self.assertFalse(Payment.objects.filter(pk=p.pk).exists())
@@ -3845,7 +3852,10 @@ class AdvanceTests(TestCase):
         self.assertEqual(sale.debt_remaining, Decimal("0"))
         p = Payment.objects.get(kind=Payment.Kind.ADVANCE_IN)
         self.client.force_login(self.seller)
-        resp = self.client.post(reverse("advance_delete", args=[p.pk]))
+        resp = self.client.post(
+            reverse("advance_delete", args=[p.pk]),
+            {"mode": AdvanceRemoveForm.ERASE},
+        )
         self.assertEqual(resp.status_code, 302)
         # Deposit gone, its allocation clawed back → the sale owes again.
         self.assertFalse(Payment.objects.filter(pk=p.pk).exists())
@@ -3860,7 +3870,8 @@ class AdvanceTests(TestCase):
         self.client.force_login(self.seller)
         resp = self.client.post(
             reverse("advance_edit", args=[p.pk]),
-            {"amount": "100000", "method": Payment.Method.CASH, "currency": Payment.Currency.UZS},
+            {"amount": "100000", "method": Payment.Method.CASH,
+             "currency": Payment.Currency.UZS, "to_kassa": AdvanceForm.IN_KASSA},
         )
         self.assertEqual(resp.status_code, 302)
         # Only 100 000 remains prepaid → the sale keeps 100 000 covered, owes 140 000.
@@ -4529,3 +4540,396 @@ class ProductionDebtAdjustTests(BaseSetup):
         self.assertEqual(
             seller_withdrawable_profit(self.sales1), before - Decimal("1000000")
         )
+
+
+class AdvanceKassaChoiceTests(TestCase):
+    """Whether an advance touches the till — asked when it is taken, changeable after,
+    and asked again when it is removed.
+
+    The old sverkas are full of money collected months ago that only reaches the CRM
+    now. Booked as an ordinary advance it lands in today's kirim, so the day's income
+    swells by cash nobody handed over; the only fix was to write the deposit and then
+    go and correct the kassa by hand. And a deposit gets removed for two unrelated
+    reasons — it was wrong, or the client took their money back — which must not share
+    one button, because doing the second as a deletion rewrites the kirim of a day that
+    was already counted."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.seller = User.objects.create_user(
+            "t_advk_seller", password="x", role=User.Role.SALES
+        )
+        cls.buyer = Client.objects.create(name="Kassa avans mijoz", owner=cls.seller)
+        cls.product = Product.objects.create(
+            name="Kassa avans mahsulot", sku="ADVK-1",
+            cost_price=Decimal("18000"), price=Decimal("24000"),
+        )
+        give_ombor(cls.seller, cls.product, kg="100000")
+
+    def _deposit(self, amount, to_kassa=AdvanceForm.IN_KASSA):
+        self.client.force_login(self.seller)
+        response = self.client.post(
+            reverse("client_advance_pay", args=[self.buyer.pk]),
+            {
+                "amount": str(amount),
+                "method": Payment.Method.CASH,
+                "currency": Payment.Currency.UZS,
+                "to_kassa": to_kassa,
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        return Payment.objects.filter(kind=Payment.Kind.ADVANCE_IN).latest("pk")
+
+    def _sale(self, weight="10", price="24000"):
+        self.client.force_login(self.seller)
+        data = sale_post(self.buyer.pk, [one_item(self.product, weight=weight, price=price)])
+        self.assertEqual(self.client.post(reverse("sale_create"), data).status_code, 302)
+        return Sale.objects.latest("created_at")
+
+    def _remove(self, payment, **extra):
+        self.client.force_login(self.seller)
+        data = {"mode": AdvanceRemoveForm.CASH_OUT}
+        data.update(extra)
+        return self.client.post(reverse("advance_delete", args=[payment.pk]), data)
+
+    def _balance(self):
+        return client_advance_balance(self.buyer, self.seller)
+
+    # --- taking one in ---------------------------------------------------------
+
+    def test_advance_kept_out_of_the_till_still_credits_the_client(self):
+        deposit = self._deposit("1000000", to_kassa=AdvanceForm.OUT_OF_KASSA)
+        self.assertTrue(deposit.is_opening)
+        # The client holds the credit exactly as they would either way...
+        self.assertEqual(self._balance(), Decimal("1000000"))
+        # ...but the drawer never saw the money, so it must not read as cash on hand.
+        self.assertEqual(seller_cash_on_hand(self.seller), Decimal("0"))
+
+    def test_an_ordinary_advance_still_lands_in_the_till(self):
+        self._deposit("1000000")
+        self.assertEqual(seller_cash_on_hand(self.seller), Decimal("1000000"))
+
+    def test_a_till_free_advance_still_settles_open_debt(self):
+        sale = make_sale(self.buyer, self.seller, self.product, is_debt=True)  # 240 000
+        self._deposit("300000", to_kassa=AdvanceForm.OUT_OF_KASSA)
+        sale.refresh_from_db()
+        # Where the cash sits says nothing about what the client owes.
+        self.assertEqual(sale.debt_remaining, Decimal("0"))
+        self.assertEqual(self._balance(), Decimal("60000"))
+
+    def test_a_till_free_advance_stays_off_the_kassa_ledger(self):
+        self._deposit("500000", to_kassa=AdvanceForm.OUT_OF_KASSA)
+        self.client.force_login(self.seller)
+        response = self.client.get(reverse("kassa"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Kassa avans mijoz")
+
+    def test_the_till_answer_is_written_to_the_audit_log(self):
+        self._deposit("500000", to_kassa=AdvanceForm.OUT_OF_KASSA)
+        entry = AuditLog.objects.filter(action="payment").latest("pk")
+        self.assertIn("kassaga kirim qilinmadi", entry.summary)
+
+    # --- fixing one afterwards -------------------------------------------------
+
+    def test_a_deposit_can_be_taken_back_out_of_the_till(self):
+        deposit = self._deposit("500000")
+        self.assertEqual(seller_cash_on_hand(self.seller), Decimal("500000"))
+        self.client.force_login(self.seller)
+        response = self.client.post(
+            reverse("advance_edit", args=[deposit.pk]),
+            {
+                "amount": "500000",
+                "method": Payment.Method.CASH,
+                "currency": Payment.Currency.UZS,
+                "to_kassa": AdvanceForm.OUT_OF_KASSA,
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        deposit.refresh_from_db()
+        self.assertTrue(deposit.is_opening)
+        self.assertEqual(seller_cash_on_hand(self.seller), Decimal("0"))
+        # Only where the cash is said to be changed — the credit is untouched.
+        self.assertEqual(self._balance(), Decimal("500000"))
+
+    def test_a_till_free_deposit_can_be_put_back_into_the_till(self):
+        deposit = self._deposit("500000", to_kassa=AdvanceForm.OUT_OF_KASSA)
+        self.client.force_login(self.seller)
+        self.client.post(
+            reverse("advance_edit", args=[deposit.pk]),
+            {
+                "amount": "500000",
+                "method": Payment.Method.CASH,
+                "currency": Payment.Currency.UZS,
+                "to_kassa": AdvanceForm.IN_KASSA,
+            },
+        )
+        deposit.refresh_from_db()
+        self.assertFalse(deposit.is_opening)
+        self.assertEqual(seller_cash_on_hand(self.seller), Decimal("500000"))
+
+    def test_the_edit_form_opens_on_the_answer_already_stored(self):
+        deposit = self._deposit("500000", to_kassa=AdvanceForm.OUT_OF_KASSA)
+        self.client.force_login(self.seller)
+        response = self.client.get(reverse("advance_edit", args=[deposit.pk]))
+        self.assertEqual(response.status_code, 200)
+        form = response.context["form"]
+        self.assertEqual(form.initial["to_kassa"], AdvanceForm.OUT_OF_KASSA)
+
+    # --- giving the money back -------------------------------------------------
+
+    def test_returning_the_money_leaves_the_deposit_standing(self):
+        deposit = self._deposit("1000000")
+        response = self._remove(deposit, amount="1000000")
+        self.assertEqual(response.status_code, 302)
+        # The cash really did arrive on its own day, so that kirim stays put...
+        deposit.refresh_from_db()
+        self.assertFalse(deposit.is_opening)
+        # ...and the money going back is its own row on the day it left.
+        out = Payment.objects.get(kind=Payment.Kind.ADVANCE_OUT)
+        self.assertEqual(out.amount, Decimal("1000000"))
+        self.assertEqual(out.client, self.buyer)
+        self.assertEqual(out.created_by, self.seller)
+
+    def test_returning_the_money_empties_the_credit_and_the_till(self):
+        deposit = self._deposit("1000000")
+        self._remove(deposit, amount="1000000")
+        self.assertEqual(self._balance(), Decimal("0"))
+        self.assertEqual(seller_cash_on_hand(self.seller), Decimal("0"))
+
+    def test_part_of_an_advance_can_be_returned(self):
+        deposit = self._deposit("1000000")
+        self._remove(deposit, amount="400000")
+        self.assertEqual(self._balance(), Decimal("600000"))
+        self.assertEqual(seller_cash_on_hand(self.seller), Decimal("600000"))
+
+    def test_a_blank_amount_returns_what_the_deposit_put_in(self):
+        deposit = self._deposit("750000")
+        self._remove(deposit)
+        self.assertEqual(
+            Payment.objects.get(kind=Payment.Kind.ADVANCE_OUT).amount, Decimal("750000")
+        )
+
+    def test_cannot_hand_back_credit_the_sales_already_took(self):
+        deposit = self._deposit("1000000")
+        sale = self._sale()                       # 240 000 drawn from the advance
+        response = self._remove(deposit, amount="900000")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "qaytarib bo&#x27;lmaydi")
+        # Nothing moved: the settled sale is not dragged back into debt to fund it.
+        self.assertFalse(Payment.objects.filter(kind=Payment.Kind.ADVANCE_OUT).exists())
+        sale.refresh_from_db()
+        self.assertEqual(sale.debt_remaining, Decimal("0"))
+
+    def test_a_fully_spent_advance_has_nothing_to_hand_back(self):
+        deposit = self._deposit("240000")
+        self._sale()                              # eats the lot
+        self.assertEqual(self._balance(), Decimal("0"))
+        response = self._remove(deposit)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "qaytariladigan avans qolmagan")
+
+    def test_a_return_cannot_be_dated_in_the_future(self):
+        deposit = self._deposit("500000")
+        response = self._remove(
+            deposit,
+            amount="500000",
+            date=(timezone.localdate() + timedelta(days=2)).isoformat(),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "kelajakda")
+
+    def test_erasing_a_mistake_takes_the_kirim_with_it(self):
+        deposit = self._deposit("500000")
+        self.client.force_login(self.seller)
+        response = self.client.post(
+            reverse("advance_delete", args=[deposit.pk]),
+            {"mode": AdvanceRemoveForm.ERASE},
+        )
+        self.assertEqual(response.status_code, 302)
+        # The wrong record goes entirely — no outflow row, nothing left behind.
+        self.assertFalse(Payment.objects.filter(pk=deposit.pk).exists())
+        self.assertFalse(Payment.objects.filter(kind=Payment.Kind.ADVANCE_OUT).exists())
+        self.assertEqual(seller_cash_on_hand(self.seller), Decimal("0"))
+
+    def test_a_returned_advance_shows_in_the_kassa_outflow(self):
+        deposit = self._deposit("500000")
+        self._remove(deposit, amount="500000")
+        self.client.force_login(self.seller)
+        response = self.client.get(reverse("kassa"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Avans qaytdi")
+
+    def test_a_returned_advance_can_be_undone(self):
+        deposit = self._deposit("500000")
+        self._remove(deposit, amount="500000")
+        out = Payment.objects.get(kind=Payment.Kind.ADVANCE_OUT)
+        self.client.force_login(self.seller)
+        response = self.client.post(reverse("advance_out_delete", args=[out.pk]))
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(Payment.objects.filter(pk=out.pk).exists())
+        self.assertEqual(self._balance(), Decimal("500000"))
+        self.assertEqual(seller_cash_on_hand(self.seller), Decimal("500000"))
+
+    def test_undoing_a_return_puts_the_credit_back_on_open_debt(self):
+        deposit = self._deposit("500000")
+        self._remove(deposit, amount="500000")
+        sale = make_sale(self.buyer, self.seller, self.product, is_debt=True)  # 240 000
+        out = Payment.objects.get(kind=Payment.Kind.ADVANCE_OUT)
+        self.client.force_login(self.seller)
+        self.client.post(reverse("advance_out_delete", args=[out.pk]))
+        sale.refresh_from_db()
+        self.assertEqual(sale.debt_remaining, Decimal("0"))
+        self.assertEqual(self._balance(), Decimal("260000"))
+
+    def test_a_return_shows_on_the_client_history_without_moving_the_debt(self):
+        deposit = self._deposit("500000")
+        self._remove(deposit, amount="500000")
+        self.client.force_login(self.seller)
+        response = self.client.get(reverse("client_history", args=[self.buyer.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Avans qaytarildi")
+        # Credit leaving the pool is not a debt movement — the client owes nothing.
+        self.assertEqual(response.context["totals"]["debt"], Decimal("0"))
+
+    def test_another_sellers_advance_cannot_be_returned(self):
+        deposit = self._deposit("500000")
+        other = User.objects.create_user("t_advk_other", password="x", role=User.Role.SALES)
+        self.client.force_login(other)
+        response = self.client.post(
+            reverse("advance_delete", args=[deposit.pk]),
+            {"mode": AdvanceRemoveForm.CASH_OUT, "amount": "500000"},
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(Payment.objects.filter(kind=Payment.Kind.ADVANCE_OUT).exists())
+
+    def test_the_advance_form_leaks_no_template_comment(self):
+        # Django's {# ... #} only closes on the same line; spread over two it renders
+        # as plain text in the seller's face. Guard the one that carries the field.
+        self.client.force_login(self.seller)
+        response = self.client.get(
+            reverse("client_advance_pay", args=[self.buyer.pk])
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Pul kassaga kirim bo&#x27;lsinmi?")
+        self.assertNotContains(response, "{#")
+
+    def test_the_remove_dialog_offers_both_answers(self):
+        deposit = self._deposit("500000")
+        self.client.force_login(self.seller)
+        response = self.client.get(reverse("advance_delete", args=[deposit.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Xato yozilgan")
+        self.assertContains(response, "kassadan chiqim")
+
+    def test_the_remove_dialog_renders_as_a_modal(self):
+        deposit = self._deposit("1000000")
+        self._sale()                              # 240 000 drawn, 760 000 left
+        self.client.force_login(self.seller)
+        response = self.client.get(
+            reverse("advance_delete", args=[deposit.pk]),
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+        self.assertEqual(response.status_code, 200)
+        # What sales have eaten is named up front — it is the cap on a cash return.
+        # Money is printed with non-breaking spaces so a figure never wraps.
+        self.assertContains(response, "240 000")
+        self.assertEqual(response.context["form"].initial["amount"], Decimal("760000"))
+
+    def test_a_return_can_be_kept_off_the_till(self):
+        deposit = self._deposit("500000", to_kassa=AdvanceForm.OUT_OF_KASSA)
+        self._remove(
+            deposit, amount="500000", from_kassa=AdvanceRemoveForm.OUTSIDE_KASSA
+        )
+        out = Payment.objects.get(kind=Payment.Kind.ADVANCE_OUT)
+        self.assertTrue(out.is_opening)
+        # The credit is gone all the same — that is what the client asked for.
+        self.assertEqual(self._balance(), Decimal("0"))
+        # But no note left the drawer, so the till must not be charged for it. The
+        # deposit never entered it either, so both sides stay at zero.
+        self.assertEqual(seller_cash_on_hand(self.seller), Decimal("0"))
+
+    def test_a_till_free_return_does_not_shrink_a_till_that_holds_the_cash(self):
+        deposit = self._deposit("500000")            # this one did hit the drawer
+        self._remove(
+            deposit, amount="500000", from_kassa=AdvanceRemoveForm.OUTSIDE_KASSA
+        )
+        self.assertEqual(self._balance(), Decimal("0"))
+        # Money still in the till: the credit was settled some other way.
+        self.assertEqual(seller_cash_on_hand(self.seller), Decimal("500000"))
+
+    def test_a_till_free_return_stays_off_the_kassa_ledger(self):
+        deposit = self._deposit("500000", to_kassa=AdvanceForm.OUT_OF_KASSA)
+        self._remove(
+            deposit, amount="500000", from_kassa=AdvanceRemoveForm.OUTSIDE_KASSA
+        )
+        self.client.force_login(self.seller)
+        response = self.client.get(reverse("kassa"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Avans qaytdi")
+
+    def test_a_till_free_return_is_still_reachable_on_the_client_page(self):
+        # It shows nowhere in the kassa, so the client's own card has to carry it —
+        # an entry with no screen to reach it could never be undone.
+        deposit = self._deposit("500000", to_kassa=AdvanceForm.OUT_OF_KASSA)
+        self._remove(
+            deposit, amount="500000", from_kassa=AdvanceRemoveForm.OUTSIDE_KASSA
+        )
+        out = Payment.objects.get(kind=Payment.Kind.ADVANCE_OUT)
+        self.client.force_login(self.seller)
+        response = self.client.get(reverse("debt_client", args=[self.buyer.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, reverse("advance_out_delete", args=[out.pk]))
+        self.assertContains(response, "kassasiz")
+
+    def test_undoing_a_till_free_return_leaves_the_till_alone(self):
+        deposit = self._deposit("500000")
+        self._remove(
+            deposit, amount="500000", from_kassa=AdvanceRemoveForm.OUTSIDE_KASSA
+        )
+        out = Payment.objects.get(kind=Payment.Kind.ADVANCE_OUT)
+        self.client.force_login(self.seller)
+        self.client.post(reverse("advance_out_delete", args=[out.pk]))
+        self.assertEqual(self._balance(), Decimal("500000"))
+        self.assertEqual(seller_cash_on_hand(self.seller), Decimal("500000"))
+
+    def test_the_till_answer_on_a_return_is_audited(self):
+        deposit = self._deposit("500000")
+        self._remove(
+            deposit, amount="500000", from_kassa=AdvanceRemoveForm.OUTSIDE_KASSA
+        )
+        entry = AuditLog.objects.filter(action="payment").latest("pk")
+        self.assertIn("kassaga tegmadi", entry.summary)
+
+    def test_the_remove_dialog_asks_about_the_till(self):
+        deposit = self._deposit("500000")
+        self.client.force_login(self.seller)
+        response = self.client.get(reverse("advance_delete", args=[deposit.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Pul kassadan chiqdimi?")
+
+    def test_a_spent_advance_is_still_reachable_from_the_history_page(self):
+        # Once sales have eaten the credit the balance reads 0 and the client-list
+        # figure stops being a link — but the deposit is still there and may still be
+        # wrong, so the way to it must not depend on the balance.
+        self._deposit("240000")
+        self._sale()                              # eats the lot
+        self.assertEqual(self._balance(), Decimal("0"))
+        self.client.force_login(self.seller)
+        response = self.client.get(reverse("client_history", args=[self.buyer.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, reverse("debt_client", args=[self.buyer.pk]))
+        self.assertContains(response, "Avans harakatlari")
+
+    def test_the_client_page_carries_the_edit_and_delete_actions(self):
+        deposit = self._deposit("500000")
+        self.client.force_login(self.seller)
+        response = self.client.get(reverse("debt_client", args=[self.buyer.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, reverse("advance_edit", args=[deposit.pk]))
+        self.assertContains(response, reverse("advance_delete", args=[deposit.pk]))
+
+    def test_a_return_is_written_to_the_audit_log(self):
+        deposit = self._deposit("500000")
+        self._remove(deposit, amount="500000")
+        entry = AuditLog.objects.filter(action="payment").latest("pk")
+        self.assertIn("kassadan chiqim", entry.summary)

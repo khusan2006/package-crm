@@ -38,6 +38,11 @@ urlpatterns = [
     ),
     path("advance/<int:pk>/edit/", crm_views.advance_edit, name="advance_edit"),
     path("advance/<int:pk>/delete/", crm_views.advance_delete, name="advance_delete"),
+    path(
+        "advance/qaytarish/<int:pk>/delete/",
+        crm_views.advance_out_delete,
+        name="advance_out_delete",
+    ),
     # products
     path("products/", crm_views.product_list, name="product_list"),
     path("products/quick/", crm_views.product_quick_create, name="product_quick_create"),

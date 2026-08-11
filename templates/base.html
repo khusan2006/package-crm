@@ -1052,6 +1052,31 @@
     document.addEventListener('modal:loaded', update);
   })();
 
+  // Removing an advance: only one of the two answers involves money leaving the
+  // drawer, so the amount/date/izoh only appear once that one is picked. Otherwise
+  // the form asks when the cash went out on a form that isn't about cash going out.
+  (function () {
+    function update() {
+      Array.prototype.forEach.call(
+        document.querySelectorAll('[data-advance-remove]'),
+        function (form) {
+          var mode = form.querySelector('input[name="mode"]:checked');
+          var cashOut = mode && mode.value === 'cash_out';
+          Array.prototype.forEach.call(form.querySelectorAll('.cashout-only'), function (el) {
+            el.hidden = !cashOut;
+          });
+          Array.prototype.forEach.call(form.querySelectorAll('.erase-only'), function (el) {
+            el.hidden = cashOut;
+          });
+        }
+      );
+    }
+    document.addEventListener('change', update);
+    document.addEventListener('modal:loaded', update);
+    if (document.readyState !== 'loading') { update(); }
+    else { document.addEventListener('DOMContentLoaded', update); }
+  })();
+
   // Production-debt correction: two of the four reasons name a case whose real fix
   // lives in another form (a forgotten handover, an unrecorded sale). Say so as soon
   // as one is picked — the server still accepts it, but not silently.

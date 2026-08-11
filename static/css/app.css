@@ -4490,3 +4490,62 @@ ul.errorlist li::before {
   color: var(--danger);
   font-variant-numeric: tabular-nums;
 }
+
+/* The "did this money actually arrive?" question on the advance form. It is a
+   yes/no that quietly decides whether the day's kirim moves, so it gets a panel of
+   its own instead of sitting in the run of ordinary fields where it reads as one
+   more optional detail and gets left on its default. */
+.kassa-choice {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+
+.kassa-choice .payer-choice {
+  margin: 0;
+}
+
+.kassa-choice .field-hint {
+  display: block;
+  margin-top: 8px;
+}
+
+/* The figures behind an advance being removed: what the deposit was, what the
+   client still holds, and how much of it sales have already eaten. The cap on a
+   cash return comes straight out of these, so they are shown before the choice
+   rather than only in the error message that follows a wrong one. */
+.remove-box {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  font-size: 13.5px;
+}
+
+.remove-box .rb-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text-muted);
+}
+
+.remove-box .rb-line + .rb-line {
+  margin-top: 6px;
+}
+
+.remove-box .rb-line strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.remove-box .rb-note {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  color: var(--danger);
+  line-height: 1.45;
+}
