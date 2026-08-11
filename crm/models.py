@@ -297,6 +297,15 @@ ADVANCE_DEPOSIT_KINDS = ("advance_in",) + CREDIT_BACK_KINDS
 ADVANCE_SPENT_KINDS = ("advance_used", "advance_out")
 
 
+# A deposit whose figure was wrong can be corrected without rewriting the day it was
+# taken: the difference is written as its own dated row instead. Money-wise such a row
+# is an ordinary deposit or an ordinary advance return — no till or balance figure
+# needs to know it apart, which is exactly why it gets no new `Payment.Kind`. Only the
+# screens care, so that a correction is not read as "the client took their money back",
+# and they tell it by this note prefix.
+ADVANCE_ADJUST_NOTE = "Avans tuzatildi"
+
+
 def _sale_paid_sum():
     """A subquery summing the payments credited against one sale.
 

@@ -32,6 +32,11 @@ urlpatterns = [
     path("clients/<int:pk>/transfer/", crm_views.client_transfer, name="client_transfer"),
     path("clients/<int:pk>/advance/", crm_views.client_advance_pay, name="client_advance_pay"),
     path(
+        "clients/<int:pk>/advance/moves/",
+        crm_views.client_advance_moves,
+        name="client_advance_moves",
+    ),
+    path(
         "clients/<int:pk>/boshlangich-qarz/",
         crm_views.client_opening_debt,
         name="client_opening_debt",

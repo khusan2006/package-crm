@@ -1,0 +1,13 @@
+{% comment %}Bir mijozning avans bloki: balans va harakatlar. Mijozni tahrirlash
+oynasida ham, alohida avans oynasida ham shu blok turadi — ikkalasida bir xil
+ko'rinsin uchun bitta joyda yozilgan. Tugmalar bu yerda emas: ular chaqiruvchi
+oynaga qarab farq qiladi.{% endcomment %}
+<div class="adv-moves">
+  {% if section_title %}<h3 class="adv-moves-title">{{ section_title }}</h3>{% endif %}
+  {% include "crm/_advance_moves_intro.html" %}
+  {% if advance_moves %}
+  {% include "crm/_advance_moves_table.html" %}
+  {% else %}
+  <p class="muted">Bu mijozda avans harakati yo'q.</p>
+  {% endif %}
+</div>

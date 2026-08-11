@@ -11,8 +11,9 @@ from openpyxl import load_workbook
 
 from accounts.models import User
 
-from .forms import AdvanceForm, AdvanceRemoveForm, SaleForm
+from .forms import AdvanceEditForm, AdvanceForm, AdvanceRemoveForm, SaleForm
 from .models import (
+    ADVANCE_ADJUST_NOTE,
     COST,
     AuditLog,
     Client,
@@ -3878,6 +3879,200 @@ class AdvanceTests(TestCase):
         self.assertEqual(client_advance_balance(self.buyer, self.seller), Decimal("0"))
         sale.refresh_from_db()
         self.assertEqual(sale.debt_remaining, Decimal("140000"))
+
+    def test_client_list_advance_cell_opens_the_moves_dialog(self):
+        self._deposit("500000")
+        self.client.force_login(self.seller)
+        html = self.client.get(reverse("client_list")).content.decode()
+        self.assertIn(
+            reverse("client_advance_moves", args=[self.buyer.pk]), html
+        )
+
+    def test_client_list_still_reaches_a_deposit_the_sales_ate(self):
+        """Zero balance is not the same as nothing to fix: the deposit row survives
+        being spent, so the cell has to stay clickable or a wrong figure is stranded."""
+        self._deposit("240000")
+        self._make_sale_via_view()   # 240 000 — the whole deposit goes onto the sale
+        self.assertEqual(client_advance_balance(self.buyer, self.seller), Decimal("0"))
+        self.client.force_login(self.seller)
+        html = self.client.get(reverse("client_list")).content.decode()
+        self.assertIn(
+            reverse("client_advance_moves", args=[self.buyer.pk]), html
+        )
+
+    def test_moves_dialog_offers_edit_and_delete_per_deposit(self):
+        self._deposit("500000")
+        deposit = Payment.objects.get(kind=Payment.Kind.ADVANCE_IN)
+        self.client.force_login(self.seller)
+        html = self.client.get(
+            reverse("client_advance_moves", args=[self.buyer.pk]),
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        ).content.decode()
+        self.assertIn(reverse("advance_edit", args=[deposit.pk]), html)
+        self.assertIn(reverse("advance_delete", args=[deposit.pk]), html)
+
+    def test_client_edit_pencil_carries_the_advance_rows(self):
+        """The pencil is the button reached for when something about a client is
+        wrong, so a wrong deposit has to be fixable without leaving it."""
+        self._deposit("500000")
+        deposit = Payment.objects.get(kind=Payment.Kind.ADVANCE_IN)
+        self.client.force_login(self.seller)
+        html = self.client.get(
+            reverse("client_edit", args=[self.buyer.pk]),
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        ).content.decode()
+        self.assertIn(reverse("advance_edit", args=[deposit.pk]), html)
+        self.assertIn(reverse("advance_delete", args=[deposit.pk]), html)
+
+    def _edit(self, payment, amount, **extra):
+        data = {
+            "amount": str(amount),
+            "method": Payment.Method.CASH,
+            "currency": Payment.Currency.UZS,
+            "to_kassa": AdvanceForm.IN_KASSA,
+        }
+        data.update(extra)
+        return self.client.post(reverse("advance_edit", args=[payment.pk]), data)
+
+    def test_edit_difference_can_go_to_todays_kassa_as_its_own_row(self):
+        """The day a deposit was counted must be able to stay exactly as counted:
+        the change rides on a new row instead of rewriting the old one."""
+        self._deposit("300000")
+        deposit = Payment.objects.get(kind=Payment.Kind.ADVANCE_IN)
+        old_date = deposit.date
+        self.client.force_login(self.seller)
+        resp = self._edit(deposit, "350000", diff_mode=AdvanceEditForm.TODAY)
+        self.assertEqual(resp.status_code, 302)
+        deposit.refresh_from_db()
+        # Untouched: same figure, same day.
+        self.assertEqual(deposit.amount, Decimal("300000"))
+        self.assertEqual(deposit.date, old_date)
+        # The difference is its own deposit, dated today and in the till.
+        diff = Payment.objects.exclude(pk=deposit.pk).get(kind=Payment.Kind.ADVANCE_IN)
+        self.assertEqual(diff.amount, Decimal("50000"))
+        self.assertEqual(diff.date, timezone.localdate())
+        self.assertFalse(diff.is_opening)
+        self.assertTrue(diff.note.startswith(ADVANCE_ADJUST_NOTE))
+        # Either route, the client ends up holding the same credit.
+        self.assertEqual(client_advance_balance(self.buyer, self.seller), Decimal("350000"))
+
+    def test_edit_downwards_writes_the_difference_as_money_leaving(self):
+        self._deposit("300000")
+        deposit = Payment.objects.get(kind=Payment.Kind.ADVANCE_IN)
+        self.client.force_login(self.seller)
+        resp = self._edit(deposit, "250000", diff_mode=AdvanceEditForm.TODAY)
+        self.assertEqual(resp.status_code, 302)
+        deposit.refresh_from_db()
+        self.assertEqual(deposit.amount, Decimal("300000"))
+        out = Payment.objects.get(kind=Payment.Kind.ADVANCE_OUT)
+        self.assertEqual(out.amount, Decimal("50000"))
+        self.assertEqual(out.date, timezone.localdate())
+        self.assertFalse(out.is_opening)
+        self.assertEqual(client_advance_balance(self.buyer, self.seller), Decimal("250000"))
+
+    def test_edit_difference_can_stay_out_of_the_kassa(self):
+        """Same credit, no cash movement: the drawer never held this money."""
+        self._deposit("300000")
+        deposit = Payment.objects.get(kind=Payment.Kind.ADVANCE_IN)
+        self.client.force_login(self.seller)
+        before = seller_cash_on_hand(self.seller)
+        self._edit(deposit, "400000", diff_mode=AdvanceEditForm.NO_KASSA)
+        diff = Payment.objects.exclude(pk=deposit.pk).get(kind=Payment.Kind.ADVANCE_IN)
+        self.assertTrue(diff.is_opening)
+        self.assertEqual(seller_cash_on_hand(self.seller), before)
+        self.assertEqual(client_advance_balance(self.buyer, self.seller), Decimal("400000"))
+
+    def test_retro_edit_still_rewrites_the_original_row(self):
+        """The old behaviour is still there and is still the default — a figure typed
+        wrong an hour ago wants the row corrected, not a second row explaining it."""
+        self._deposit("300000")
+        deposit = Payment.objects.get(kind=Payment.Kind.ADVANCE_IN)
+        self.client.force_login(self.seller)
+        self._edit(deposit, "350000", diff_mode=AdvanceEditForm.RETRO)
+        deposit.refresh_from_db()
+        self.assertEqual(deposit.amount, Decimal("350000"))
+        self.assertEqual(Payment.objects.filter(kind=Payment.Kind.ADVANCE_IN).count(), 1)
+        self.assertEqual(client_advance_balance(self.buyer, self.seller), Decimal("350000"))
+
+    def test_unchanged_amount_writes_no_difference_row(self):
+        self._deposit("300000")
+        deposit = Payment.objects.get(kind=Payment.Kind.ADVANCE_IN)
+        self.client.force_login(self.seller)
+        self._edit(deposit, "300000", diff_mode=AdvanceEditForm.TODAY, note="izoh")
+        self.assertEqual(Payment.objects.filter(kind=Payment.Kind.ADVANCE_IN).count(), 1)
+        self.assertFalse(Payment.objects.filter(kind=Payment.Kind.ADVANCE_OUT).exists())
+        deposit.refresh_from_db()
+        self.assertEqual(deposit.note, "izoh")
+
+    def test_correction_row_is_not_labelled_as_money_returned(self):
+        """An advance return and a downward correction are the same money movement;
+        only the screens must tell them apart."""
+        self._deposit("300000")
+        deposit = Payment.objects.get(kind=Payment.Kind.ADVANCE_IN)
+        self.client.force_login(self.seller)
+        self._edit(deposit, "250000", diff_mode=AdvanceEditForm.TODAY)
+        html = self.client.get(
+            reverse("client_advance_moves", args=[self.buyer.pk]),
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        ).content.decode()
+        self.assertIn("tuzatish", html)
+        self.assertNotIn("qaytarildi", html)
+
+    def test_edit_dialog_offers_the_three_ways_to_place_the_difference(self):
+        self._deposit("300000")
+        deposit = Payment.objects.get(kind=Payment.Kind.ADVANCE_IN)
+        self.client.force_login(self.seller)
+        html = self.client.get(
+            reverse("advance_edit", args=[deposit.pk]),
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        ).content.decode()
+        self.assertIn("diff-only", html)
+        for value in (
+            AdvanceEditForm.RETRO, AdvanceEditForm.TODAY, AdvanceEditForm.NO_KASSA
+        ):
+            self.assertIn(f'value="{value}"', html)
+        # Taking a new advance has no earlier figure to differ from, so it must not
+        # inherit the question.
+        pay = self.client.get(
+            reverse("client_advance_pay", args=[self.buyer.pk]),
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        ).content.decode()
+        self.assertNotIn("diff-only", pay)
+
+    def test_advance_pay_dialog_shows_the_earlier_deposits(self):
+        """Someone about to write a deposit is the likeliest person to notice an
+        earlier one is wrong — fixing it must not mean writing a second deposit."""
+        self._deposit("500000")
+        deposit = Payment.objects.get(kind=Payment.Kind.ADVANCE_IN)
+        self.client.force_login(self.seller)
+        html = self.client.get(
+            reverse("client_advance_pay", args=[self.buyer.pk]),
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        ).content.decode()
+        self.assertIn(reverse("advance_edit", args=[deposit.pk]), html)
+        self.assertIn(reverse("advance_delete", args=[deposit.pk]), html)
+
+    def test_client_edit_still_saves_the_client_fields(self):
+        """The advance block rides along on the same screen but must not disturb the
+        form it sits under."""
+        self.client.force_login(self.seller)
+        response = self.client.post(
+            reverse("client_edit", args=[self.buyer.pk]),
+            {"name": "Avans mijoz (yangi)", "phone": "+998 90 111 22 33"},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.buyer.refresh_from_db()
+        self.assertEqual(self.buyer.name, "Avans mijoz (yangi)")
+
+    def test_moves_dialog_is_scoped_to_clients_the_user_may_see(self):
+        other = User.objects.create_user(
+            "t_adv_outsider", password="x", role=User.Role.SALES
+        )
+        self.client.force_login(other)
+        response = self.client.get(
+            reverse("client_advance_moves", args=[self.buyer.pk])
+        )
+        self.assertEqual(response.status_code, 404)
 
 
 class SaleFormRenderTests(BaseSetup):

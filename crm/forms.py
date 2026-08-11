@@ -296,6 +296,50 @@ class AdvanceForm(DebtPaymentForm):
         return cleaned
 
 
+class AdvanceEditForm(AdvanceForm):
+    """Fixing a deposit that is already written — plus the one question the plain
+    form has no reason to ask: what the till does about the difference.
+
+    Changing an amount in place quietly rewrites the day the deposit was taken. For a
+    figure typed wrong an hour ago that is exactly right. For a deposit from three
+    weeks back it is the same damage a deletion would do: a day that was counted and
+    signed off stops matching the notebook, and nobody looking at it later can tell
+    why. The two cases cannot share one behaviour, so the form asks which one this is.
+
+    "Farq bugungi kassaga" writes the difference as its own dated row — a deposit if
+    the figure went up, an advance return if it went down — and leaves the original
+    alone. The client's credit lands in the same place whichever route is picked; all
+    that changes is which day the money is said to have moved.
+
+    The question only appears when it has something to decide: with the amount left
+    alone there is no difference to place, and the answer is ignored."""
+
+    RETRO = "retro"
+    TODAY = "today"
+    NO_KASSA = "no_kassa"
+
+    diff_mode = forms.ChoiceField(
+        label="Summa farqi kassada qanday ko'rinsin?",
+        choices=[
+            (RETRO, "Eski kunning o'zi to'g'rilansin"),
+            (TODAY, "Farq bugungi kassaga yozilsin — ko'paysa kirim, kamaysa chiqim"),
+            (NO_KASSA, "Kassaga tegmasin — faqat mijoz avansi o'zgarsin"),
+        ],
+        initial=RETRO,
+        required=False,
+        widget=forms.RadioSelect,
+        help_text=(
+            "Bugun kiritilgan summani to'g'rilayotgan bo'lsangiz birinchisini "
+            "tanlang. Eski, sverka qilingan kunga tegmaslik uchun — ikkinchisini: "
+            "o'sha kun o'z holicha qoladi, farq esa bugungi sanada alohida qator "
+            "bo'lib yoziladi"
+        ),
+    )
+
+    def clean_diff_mode(self):
+        return self.cleaned_data.get("diff_mode") or self.RETRO
+
+
 class AdvanceRemoveForm(forms.Form):
     """Taking an advance deposit off a client — and the question that decides what the
     till does about it.

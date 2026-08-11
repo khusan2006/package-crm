@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · Paket CRM{% endblock %}
+{% block topbar_title %}{{ title }}{% endblock %}
+{% block content %}
+<div class="card">
+  {% include "crm/_advance_moves_section.html" %}
+  <div class="adv-moves adv-moves--foot">
+    <a class="btn btn-primary" href="{% url 'client_advance_pay' client.pk %}">Avans qabul qilish</a>
+    <a class="btn btn-ghost" href="{% url 'debt_client' client.pk %}">Qarz kartasi</a>
+  </div>
+</div>
+{% endblock %}

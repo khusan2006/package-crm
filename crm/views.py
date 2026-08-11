@@ -8,7 +8,18 @@ from django.contrib import messages
 from django.core.exceptions import PermissionDenied
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Count, F, Max, ProtectedError, Q, Sum, Value
+from django.db.models import (
+    BooleanField,
+    Case,
+    Count,
+    F,
+    Max,
+    ProtectedError,
+    Q,
+    Sum,
+    Value,
+    When,
+)
 from django.db.models.functions import Replace, TruncMonth
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -23,6 +34,7 @@ from accounts.models import User
 
 from .forms import (
     DEFAULT_DEBT_DAYS,
+    AdvanceEditForm,
     AdvanceForm,
     AdvanceRemoveForm,
     ClientForm,
@@ -46,6 +58,7 @@ from .forms import (
     StockEntryForm,
 )
 from .models import (
+    ADVANCE_ADJUST_NOTE,
     ADVANCE_DEPOSIT_KINDS,
     ADVANCE_SPENT_KINDS,
     COST,
@@ -674,8 +687,18 @@ def _client_rows(request):
     debt_map = _client_debt_map(request.user)
     sale_map = _last_sale_map(request.user, pks)
     pay_map = _last_payment_map(request.user, pks)
+    # A deposit fully spent on receipts leaves a zero balance but is still a row that
+    # may need fixing, so the Avans cell has to stay clickable for those clients too —
+    # a mistyped figure is not unreachable just because sales already ate it.
+    with_moves = set(
+        _advance_move_qs(request.user)
+        .filter(client__in=pks)
+        .values_list("client", flat=True)
+        .distinct()
+    )
     for c in rows:
         c.advance = adv_map.get(c.pk, Decimal("0"))
+        c.has_advance_moves = c.pk in with_moves
         c.debt = debt_map.get(c.pk, Decimal("0"))
         c.last_sale = sale_map.get(c.pk)
         c.last_payment = pay_map.get(c.pk)
@@ -882,6 +905,13 @@ def product_quick_create(request):
 
 
 def client_edit(request, pk):
+    """The client's own details — and their advance, on the same screen.
+
+    The advance rows have nothing to do with this form and are not saved by it. They
+    are here because this is the pencil: the button reached for when something about a
+    client is wrong. Sending someone who opened it to fix a mistyped deposit off to
+    another screen to find the same pencil again is the kind of detour that gets a
+    figure left wrong instead."""
     client = get_object_or_404(_visible_clients(request.user), pk=pk)
     form = ClientForm(
         request.POST or None, instance=client, user=request.user, check_duplicates=False
@@ -892,8 +922,23 @@ def client_edit(request, pk):
             form.save()
             messages.success(request, f"“{client.name}” mijozi yangilandi.")
             return form_reload(request, reverse("client_list"))
-        return form_response(request, form, title, invalid=True)
-    return form_response(request, form, title)
+        return _render_client_edit(request, client, form, title, invalid=True)
+    return _render_client_edit(request, client, form, title)
+
+
+def _render_client_edit(request, client, form, title, invalid=False):
+    context = {
+        "form": form,
+        "title": title,
+        "client": client,
+        **_client_advance_context(request, client),
+    }
+    if is_ajax(request):
+        return render(
+            request, "crm/_client_edit_modal.html", context,
+            status=422 if invalid else 200,
+        )
+    return render(request, "crm/_client_edit_page.html", context)
 
 
 def client_delete(request, pk):
@@ -1813,17 +1858,10 @@ def debt_client(request, pk):
     client = get_object_or_404(_visible_clients(request.user), pk=pk)
     sales = _open_receipts(request, client)
     total = sum((s.remaining for s in sales), Decimal("0"))
-    scope = None if request.user.can_see_all_records else request.user
-    advance = client_advance_balance(client, scope)
     # Every movement on this client's advance pool — deposits and money handed back —
     # each editable/voidable right here. The kassa ledger is not enough on its own: a
     # deposit taken in outside the till, or a return that never touched it, appears
     # nowhere on that page, and an entry with no screen to reach it cannot be undone.
-    advance_moves = (
-        _advance_move_qs(request.user)
-        .filter(client=client)
-        .order_by("-date", "-created_at")
-    )
     last_sale, last_payment = _client_activity(request.user, client)
     return render(
         request,
@@ -1832,10 +1870,9 @@ def debt_client(request, pk):
             "client": client,
             "sales": sales,
             "total": total,
-            "advance": advance,
-            "advance_moves": advance_moves,
             "last_sale": last_sale,
             "last_payment": last_payment,
+            **_client_advance_context(request, client),
         },
     )
 
@@ -2127,11 +2164,15 @@ def client_debt_pay(request, pk):
 
 
 def _render_client_advance(request, client, balance, form, invalid=False):
+    # The earlier deposits ride along under the form: the moment someone is about to
+    # write a new one is exactly when a wrong old one is spotted ("it's already in,
+    # just wrong"), and without them on screen the fix is a new deposit on top.
     context = {
         "form": form,
         "client": client,
         "advance_balance": balance,
         "title": f"Avans qabul qilish: {client.name}",
+        **_client_advance_context(request, client),
     }
     if is_ajax(request):
         return render(
@@ -2227,6 +2268,50 @@ def _advance_move_qs(user):
     return qs
 
 
+def _client_advance_context(request, client):
+    """The advance block shown on any screen that offers to fix one: the balance and
+    every movement behind it, under the caller's own visibility."""
+    scope = None if request.user.can_see_all_records else request.user
+    return {
+        "advance": client_advance_balance(client, scope),
+        "advance_moves": (
+            _advance_move_qs(request.user)
+            .filter(client=client)
+            # A correction's difference is written as an ordinary deposit or advance
+            # return, so the row alone can't say it apart — and money leaving on a
+            # correction must not be read as the client taking their cash back.
+            .annotate(is_adjust=Case(
+                When(note__startswith=ADVANCE_ADJUST_NOTE, then=Value(True)),
+                default=Value(False),
+                output_field=BooleanField(),
+            ))
+            .order_by("-date", "-created_at")
+        ),
+    }
+
+
+def client_advance_moves(request, pk):
+    """One client's advance movements, opened straight from the Mijozlar list.
+
+    The rows and their buttons already existed on the client's qarz card, but getting
+    there to fix a mistyped figure meant leaving the list, and for a client with no
+    open receipts that card is mostly empty — a long walk to reach two icons. A wrong
+    advance is noticed while scanning the list, so the fix belongs where it is noticed.
+
+    Nothing is decided here: the same `advance_edit` / `advance_delete` views do the
+    work, loaded into the same dialog. This screen only makes them reachable, which is
+    why it takes no POST."""
+    client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    context = {
+        "client": client,
+        "title": f"Avans harakatlari: {client.name}",
+        **_client_advance_context(request, client),
+    }
+    if is_ajax(request):
+        return render(request, "crm/_advance_moves_modal.html", context)
+    return render(request, "crm/_advance_moves_page.html", context)
+
+
 def _reconcile_client_advance(client, seller):
     """Bring a client's advance (for one seller) back into balance after a deposit
     was changed or removed. If deposits have shrunk below what sales already drew
@@ -2257,33 +2342,56 @@ def advance_edit(request, pk):
     kirim which turns out to be money collected weeks ago can be taken back out of the
     day's income here, instead of the seller ringing someone to fix the kassa by hand.
     The client's credit is untouched either way — only where the cash is said to be
-    changes."""
+    changes.
+
+    A changed amount asks one more question, because rewriting the figure in place also
+    rewrites the kirim of the day it was taken. That is right for a typo from an hour
+    ago and wrong for a deposit from three weeks back, so `AdvanceEditForm.diff_mode`
+    decides: correct the old day, or leave it alone and write the difference as its own
+    row dated today (a deposit if the figure went up, an advance return if it went
+    down), with or without touching the till. The client's credit ends up the same
+    either way; only the day the money is said to have moved differs.
+
+    The difference row is a plain so'm figure and carries no bank fee: a fee that also
+    needs correcting belongs to the original deposit, so that case goes the RETRO
+    route."""
     payment = get_object_or_404(_advance_in_qs(request.user), pk=pk)
     client, seller = payment.client, payment.created_by
     if request.method == "POST":
-        form = AdvanceForm(request.POST)
+        form = AdvanceEditForm(request.POST)
         if form.is_valid():
             cd = form.cleaned_data
+            mode = cd["diff_mode"]
+            was = payment.amount
+            delta = cd["amount"] - was
+            retro = mode == AdvanceEditForm.RETRO or not delta
             payment.is_opening = cd["is_opening"]
-            payment.amount = cd["amount"]
-            payment.amount_original = cd["amount_original"]
-            payment.currency = cd["currency"]
-            payment.exchange_rate = cd["exchange_rate"]
             payment.method = cd["method"]
-            payment.commission = cd["commission"]
-            payment.commission_percent = cd["commission_percent"]
-            payment.commission_payer = cd["commission_payer"]
             payment.note = cd["note"]
             payment.date = cd["date"]
+            # Off the RETRO route the deposit keeps the figure it was written with —
+            # its day stays exactly as it was counted — and only the difference moves.
+            if retro:
+                payment.amount = cd["amount"]
+                payment.amount_original = cd["amount_original"]
+                payment.currency = cd["currency"]
+                payment.exchange_rate = cd["exchange_rate"]
+                payment.commission = cd["commission"]
+                payment.commission_percent = cd["commission_percent"]
+                payment.commission_payer = cd["commission_payer"]
             payment.save()
+            if not retro:
+                _write_advance_difference(payment, delta, mode, was, cd["amount"])
             # Re-apply a bigger deposit, or claw back a smaller one, then settle debts.
             _reconcile_client_advance(client, seller)
             AuditLog.record(
                 request.user, AuditLog.Action.UPDATE, "To'lov", client.pk,
-                f"Mijoz {client.name} avansi o'zgartirildi — {payment.amount:,.0f} so'm"
+                f"Mijoz {client.name} avansi o'zgartirildi — "
+                f"{was:,.0f} → {cd['amount']:,.0f} so'm"
+                f"{'' if retro else _diff_note(mode)}"
                 f"{_kassa_note(payment.is_opening)}",
             )
-            messages.success(request, "Avans yangilandi.")
+            messages.success(request, _advance_edit_message(retro, delta, mode))
             # A deposit kept out of the till isn't on the kassa page at all, so the
             # client's own card is where it goes back to being visible.
             fallback = (
@@ -2292,7 +2400,7 @@ def advance_edit(request, pk):
             )
             return form_reload(request, fallback)
         return _render_advance_edit(request, payment, form, invalid=True)
-    form = AdvanceForm(initial={
+    form = AdvanceEditForm(initial={
         "date": payment.date,
         "amount": _clean_amount(payment.original_amount),
         "method": payment.method,
@@ -2306,6 +2414,50 @@ def advance_edit(request, pk):
         ),
     })
     return _render_advance_edit(request, payment, form)
+
+
+def _write_advance_difference(payment, delta, mode, was, now):
+    """Book the change in a deposit's figure as its own dated row, leaving the deposit
+    (and the day it was counted on) untouched.
+
+    Money-wise this is nothing new: more money is a deposit, less money is an advance
+    return, and every till and balance figure already knows how to read both. What the
+    row carries that they don't need is why it exists — the note says so, so a
+    correction is never read off the client's card as "they took their money back"."""
+    Payment.objects.create(
+        client=payment.client,
+        sale=None,
+        amount=abs(delta),
+        amount_original=abs(delta),
+        method=payment.method,
+        note=f"{ADVANCE_ADJUST_NOTE}: {was:,.0f} → {now:,.0f}",
+        kind=(
+            Payment.Kind.ADVANCE_IN if delta > 0 else Payment.Kind.ADVANCE_OUT
+        ),
+        is_opening=mode == AdvanceEditForm.NO_KASSA,
+        date=timezone.localdate(),
+        created_by=payment.created_by,
+    )
+
+
+def _diff_note(mode):
+    """The audit-log tail naming where a correction's difference was put."""
+    if mode == AdvanceEditForm.NO_KASSA:
+        return " (farq alohida yozildi, kassaga tegmadi)"
+    return " (farq bugungi kassaga yozildi)"
+
+
+def _advance_edit_message(retro, delta, mode):
+    if retro:
+        return "Avans yangilandi."
+    where = "kassaga tegilmadi" if mode == AdvanceEditForm.NO_KASSA else (
+        "kassaga kirim qilindi" if delta > 0 else "kassadan chiqim qilindi"
+    )
+    direction = "qo'shildi" if delta > 0 else "ayirildi"
+    return (
+        f"Avans tuzatildi: {abs(delta):,.0f} so'm {direction} — bugungi sanada "
+        f"alohida qator yozildi, {where}. Eski kun o'zgarmadi."
+    )
 
 
 def _render_advance_edit(request, payment, form, invalid=False):

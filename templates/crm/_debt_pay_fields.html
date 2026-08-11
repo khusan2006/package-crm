@@ -55,5 +55,15 @@ ikkinchi marta kirim qilib yubormaslik uchun savol shu yerda so'raladi.{% endcom
   <p class="payer-choice">{{ form.to_kassa.label_tag }}{{ form.to_kassa }}{{ form.to_kassa.errors }}</p>
   <span class="field-hint">{{ form.to_kassa.help_text }}</span>
 </div>
+{% comment %}Faqat tahrirlash formasida bor (AdvanceEditForm). Summani o'zgartirish
+o'sha avans yozilgan kunning kirimini ham o'zgartiradi — sverka qilingan kunga
+tegmaslikning yo'li shu yerda tanlanadi. JS uni summa o'zgarmaguncha
+yashirib turadi.{% endcomment %}
+{% if form.diff_mode %}
+<div class="kassa-choice diff-only" hidden>
+  <p class="payer-choice">{{ form.diff_mode.label_tag }}{{ form.diff_mode }}{{ form.diff_mode.errors }}</p>
+  <span class="field-hint">{{ form.diff_mode.help_text }}</span>
+</div>
+{% endif %}
 {% endif %}
 <p>{{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}</p>

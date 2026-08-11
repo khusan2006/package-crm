@@ -1,0 +1,26 @@
+<div class="modal-head">
+  <h2>{{ title }}</h2>
+  <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
+</div>
+<form method="post" action="{{ request.path }}" class="stacked">
+  {% csrf_token %}
+  {{ form.as_p }}
+  <div class="modal-actions">
+    <button type="submit" class="btn">Saqlash</button>
+    <button type="button" class="btn btn-ghost" data-modal-close>Bekor qilish</button>
+  </div>
+</form>
+{% comment %}Avans bloki formadan tashqarida: uni yuqoridagi "Saqlash" saqlamaydi,
+har bir qatorning o'z tugmasi bor. Shuning uchun ogohlantirish ham shu yerda —
+qatordagi qalamchani bosish oynani almashtiradi va yuqorida yozilgan, hali
+saqlanmagan matn yo'qoladi.{% endcomment %}
+{% include "crm/_advance_moves_section.html" with section_title="Avans" %}
+<div class="adv-moves adv-moves--foot">
+  <p class="muted adv-moves-warn">
+    Avans qatorini tahrirlasangiz yuqoridagi saqlanmagan o'zgarishlar yo'qoladi —
+    avval “Saqlash”ni bosing.
+  </p>
+  <div class="modal-actions">
+    <a class="btn btn-sm btn-ghost" href="{% url 'client_advance_pay' client.pk %}" data-modal>Avans qabul qilish</a>
+  </div>
+</div>

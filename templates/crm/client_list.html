@@ -61,7 +61,17 @@
       {% else %}<span class="muted">—</span>{% endif %}
     </td>
     <td>{{ client.owner }}</td>
-    <td class="num">{% if client.advance > 0 %}<a href="{% url 'debt_client' client.pk %}" title="Avansni ko'rish / tahrirlash"><strong style="color: var(--success);">{{ client.advance|floatformat:"0g" }}</strong></a>{% else %}<span class="muted">—</span>{% endif %}</td>
+    {% comment %}Avans raqami — uni tuzatadigan oynaning o'zi. Odam xato summani shu
+    ustunda ko'radi, shuning uchun tuzatish ham shu yerdan ochiladi; qarz kartasiga
+    borish shart emas. Balans nolga tushgan bo'lsa ham (avansni sotuvlar yeb bo'lgan)
+    katakcha bosiladigan qoladi, aks holda xato yozuvga yo'l qolmaydi.{% endcomment %}
+    <td class="num">
+      {% if client.advance > 0 %}
+      <a href="{% url 'client_advance_moves' client.pk %}" data-modal title="Avansni ko'rish / tahrirlash"><strong style="color: var(--success);">{{ client.advance|floatformat:"0g" }}</strong></a>
+      {% elif client.has_advance_moves %}
+      <a href="{% url 'client_advance_moves' client.pk %}" data-modal class="muted" title="Avans harakatlari — tuzatish">0</a>
+      {% else %}<span class="muted">—</span>{% endif %}
+    </td>
     <td class="num">{{ client.sale_count }}</td>
     <td>
       {% if client.last_sale %}<span title="{{ client.last_sale|date:'d.m.Y' }}">{{ client.last_sale|timeago_uz }}</span>

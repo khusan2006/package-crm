@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · Paket CRM{% endblock %}
+{% block topbar_title %}{{ title }}{% endblock %}
+{% block content %}
+<div class="card" style="max-width: 560px;">
+  <form method="post" class="stacked">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit" class="btn">Saqlash</button>
+  </form>
+</div>
+<div class="card">
+  {% include "crm/_advance_moves_section.html" with section_title="Avans" %}
+  <div class="adv-moves adv-moves--foot">
+    <a class="btn btn-sm btn-ghost" href="{% url 'client_advance_pay' client.pk %}">Avans qabul qilish</a>
+  </div>
+</div>
+{% endblock %}

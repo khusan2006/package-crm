@@ -2298,6 +2298,67 @@ tbody tr:hover td.sticky-col {
   padding: 14px 22px 22px;
 }
 
+/* ---- Avans harakatlari dialogi ---------------------------------------------
+   Bu oynaning butun mazmuni — qatorning oxiridagi tahrirlash/o'chirish tugmalari.
+   Odatdagi 560px modalda besh ustun sig'masdi va aynan o'sha tugmalar gorizontal
+   scroll ortiga tushib ketardi: ko'rinmagan tugma yo'q tugmadan farq qilmaydi.
+   Shuning uchun oyna kengroq ochiladi, ustunlar esa ixchamroq bo'ladi.
+   :has() ni bilmaydigan brauzer eski kenglikda qoladi — jadval baribir suriladi,
+   ya'ni yomonlashmaydi.
+   Kenglik faqat jadval bor bo'lganda oshadi: avansi yo'q mijozda bu blok ikki
+   qatorlik matn, uning uchun oynani cho'zish ortiqcha. */
+.modal:has(.adv-moves .table-wrap) {
+  width: min(760px, calc(100vw - var(--sidebar-w) - 32px));
+}
+
+@media (max-width: 560px) {
+  .modal:has(.adv-moves .table-wrap) {
+    width: min(760px, calc(100vw - 32px));
+  }
+}
+
+/* Ichki bo'shliq faqat modalda kerak — sahifada blok allaqachon .card ichida
+   turadi va u o'z paddingini beradi. */
+.modal .adv-moves {
+  padding: 12px 22px 0;
+}
+
+.modal .adv-moves--foot {
+  padding: 10px 22px 22px;
+}
+
+/* Mijozni tahrirlash oynasida avans formadan keyin keladi — chiziq ikkalasi bir
+   xil narsa emasligini aytadi: yuqorisini "Saqlash" saqlaydi, bu yerdagi
+   qatorlarning o'z tugmalari bor. */
+.adv-moves-title {
+  margin: 0 0 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  font-size: 15px;
+}
+
+.adv-moves-warn {
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+
+.adv-moves th,
+.adv-moves td {
+  padding: 11px 12px;
+}
+
+/* Izoh — kengligi oldindan noma'lum yagona ustun, shuning uchun o'ralishi
+   mumkin. Qolganlari nowrap bo'lib qoladi: sana yoki summa ikki qatorga
+   bo'linsa jadval o'qilmaydi. */
+.adv-moves td.note {
+  white-space: normal;
+  min-width: 150px;
+}
+
+.adv-moves .modal-actions {
+  margin-top: 16px;
+}
+
 .modal-actions {
   display: flex;
   gap: 10px;

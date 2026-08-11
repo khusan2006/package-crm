@@ -1,0 +1,14 @@
+<div class="modal-head">
+  <h2>{{ title }}</h2>
+  <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
+</div>
+{% include "crm/_advance_moves_section.html" %}
+{% comment %}Qarz kartasiga havola shu yerda qoladi: ilgari Mijozlardagi avans raqami
+o'sha kartaga olib borardi, endi bu oynani ochadi — o'sha yo'l yo'qolmasin.{% endcomment %}
+<div class="adv-moves adv-moves--foot">
+  <div class="modal-actions">
+    <a class="btn btn-primary" href="{% url 'client_advance_pay' client.pk %}" data-modal>Avans qabul qilish</a>
+    <a class="btn btn-ghost" href="{% url 'debt_client' client.pk %}">Qarz kartasi</a>
+    <button type="button" class="btn btn-ghost" data-modal-close>Yopish</button>
+  </div>
+</div>

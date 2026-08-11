@@ -8,4 +8,9 @@
     <button type="submit" class="btn">Qabul qilish</button>
   </form>
 </div>
+{% if advance_moves %}
+<div class="card">
+  {% include "crm/_advance_moves_section.html" with section_title="Avvalgi avanslar" %}
+</div>
+{% endif %}
 {% endblock %}

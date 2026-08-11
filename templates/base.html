@@ -862,6 +862,14 @@
       Array.prototype.forEach.call(root.querySelectorAll('.transfer-only'), function (el) {
         el.hidden = !isTransfer;
       });
+      // Where to put the difference is only a question once there is a difference.
+      // defaultValue is what the server rendered — i.e. the figure that is stored —
+      // so the block appears the moment the typed amount stops matching it.
+      var amountChanged =
+        amountEl.value.replace(/\s/g, '') !== amountEl.defaultValue.replace(/\s/g, '');
+      Array.prototype.forEach.call(root.querySelectorAll('.diff-only'), function (el) {
+        el.hidden = !amountChanged;
+      });
       // "Oyligidan ushlansin" only makes sense once a worker is named — with nobody
       // picked there is no wage to hold it back from (the form clears it on save).
       var employeeEl = root.querySelector('[name=employee]');

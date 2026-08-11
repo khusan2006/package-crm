@@ -9,3 +9,15 @@
     <button type="button" class="btn btn-ghost" data-modal-close>Bekor qilish</button>
   </div>
 </form>
+{% comment %}Avvalgi avanslar formadan tashqarida: yuqoridagi "Qabul qilish" yangi
+yozuv qo'shadi, bu yerdagi qatorlar esa allaqachon yozilganini tuzatadi. Xato summani
+ustiga yana bitta avans yozib emas, o'sha qatorni tahrirlab to'g'rilash kerak.{% endcomment %}
+{% if advance_moves %}
+{% include "crm/_advance_moves_section.html" with section_title="Avvalgi avanslar" %}
+<div class="adv-moves adv-moves--foot">
+  <p class="muted adv-moves-warn">
+    Eski summa xato bo'lsa yangi avans qo'shmang — o'sha qatordagi ✏️ ni bosing.
+    Yuqorida yozilgan, hali saqlanmagan ma'lumot yo'qoladi.
+  </p>
+</div>
+{% endif %}
