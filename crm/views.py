@@ -20,7 +20,7 @@ from django.db.models import (
     Value,
     When,
 )
-from django.db.models.functions import Replace, TruncMonth
+from django.db.models.functions import Coalesce, Replace, TruncMonth
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -2677,6 +2677,345 @@ def payment_edit(request, pk):
     )
 
 
+# --- Mijozlar to'lovlari (client payments) ------------------------------------
+
+# What this page counts as "the client paid us": money that actually changed hands.
+# `is_opening` advances are dropped — they carry a balance from before the CRM (or
+# cash taken into the drawer earlier), not money handed over on their date.
+RECEIVED_PAYMENT_KINDS = (
+    Payment.Kind.SALE,
+    Payment.Kind.DEBT,
+    Payment.Kind.ADVANCE_IN,
+)
+
+# Listed, but never counted. Spending held credit on a receipt moves no new money:
+# those so'm already arrived — and were already shown — as the ADVANCE_IN deposit,
+# so adding them to a total would report money the client never handed over. The row
+# still earns its place, because without it a receipt looks unpaid on the page that
+# is supposed to say how it got paid.
+CLIENT_PAYMENT_KINDS = RECEIVED_PAYMENT_KINDS + (Payment.Kind.ADVANCE_USED,)
+
+# Every money figure on this page carries this filter, so an advance being spent can
+# never leak into a sum.
+RECEIVED = ~Q(kind=Payment.Kind.ADVANCE_USED)
+
+# How each kind reads in the list: (label, badge class).
+_CLIENT_PAYMENT_LABELS = {
+    Payment.Kind.SALE: ("Sotuvda to'landi", "badge-neutral"),
+    Payment.Kind.DEBT: ("Qarz to'lovi", "badge-ok"),
+    Payment.Kind.ADVANCE_IN: ("Avans (oldindan)", "badge-info"),
+    Payment.Kind.ADVANCE_USED: ("Avansdan yechildi", "badge-shipped"),
+}
+
+
+def _payment_scope(user):
+    """The client payments a user may see: everything for an admin/manager, and for
+    a seller the payments on their own sales plus the advances they took in
+    themselves — the same rule the client history timeline uses.
+
+    `client_pk` is annotated because the client hangs off two different places: a
+    per-sale payment reaches it through the sale, an advance deposit carries it
+    directly. Grouping and filtering by client need the one column."""
+    qs = (
+        Payment.objects.filter(kind__in=CLIENT_PAYMENT_KINDS, is_opening=False)
+        .select_related("sale", "sale__client", "client", "created_by")
+        .annotate(client_pk=Coalesce("sale__client", "client"))
+    )
+    if user.can_see_all_records:
+        return qs
+    return qs.filter(Q(sale__sales_rep=user) | Q(sale__isnull=True, created_by=user))
+
+
+def _filter_payments(request):
+    """Client payments for the current filters, newest first.
+
+    Dates work exactly as they do on the sales list: the dan..gacha window (today by
+    default) is what the unfiltered page shows, but as soon as a content filter is
+    set — a client, a method, a search term — the window steps aside and the search
+    runs over every date. Picking a client from the drawer is how you ask "what has
+    this person ever paid us", and answering for today alone would make it useless.
+
+    Returns (queryset, filters, has_filters)."""
+    qs = _payment_scope(request.user)
+    keys = ("client", "rep", "method", "currency", "kind")
+    filters = {key: request.GET.get(key, "") for key in keys}
+    filters["q"] = request.GET.get("q", "").strip()
+
+    kinds = {str(k) for k in CLIENT_PAYMENT_KINDS}
+    if filters["kind"] not in kinds:
+        filters["kind"] = ""
+    if filters["method"] not in dict(Payment.Method.choices):
+        filters["method"] = ""
+    if filters["currency"] not in dict(Payment.Currency.choices):
+        filters["currency"] = ""
+
+    has_filters = bool(
+        filters["q"]
+        or filters["client"].isdigit()
+        or filters["kind"]
+        or filters["method"]
+        or filters["currency"]
+        or (filters["rep"].isdigit() and request.user.can_see_all_records)
+    )
+
+    dates = _date_range_context(request)
+    filters["dan"] = dates["date_from"].isoformat()
+    filters["gacha"] = dates["date_to"].isoformat()
+    if not has_filters:
+        qs = qs.filter(date__gte=dates["date_from"], date__lte=dates["date_to"])
+
+    if filters["q"]:
+        # The client sits behind two different paths, so match the clients first and
+        # then filter the payments by the pks that came back.
+        pks = _client_search(_visible_clients(request.user), filters["q"]).values("pk")
+        qs = qs.filter(client_pk__in=pks)
+    if filters["client"].isdigit():
+        qs = qs.filter(client_pk=filters["client"])
+    if filters["kind"]:
+        qs = qs.filter(kind=filters["kind"])
+    if filters["method"]:
+        qs = qs.filter(method=filters["method"])
+    if filters["currency"]:
+        qs = qs.filter(currency=filters["currency"])
+    if filters["rep"].isdigit() and request.user.can_see_all_records:
+        qs = qs.filter(created_by_id=filters["rep"])
+    return qs.order_by("-date", "-created_at"), filters, has_filters
+
+
+# Sums the KPI cards and the per-client rows are built from. `amount` is the so'm
+# value the client handed over — gross, like the kassa kirim ledger: the bank's cut is
+# shown beside it rather than quietly netted off. Everything here is scoped to
+# RECEIVED; `from_advance` is the one figure that counts the other side, and it is
+# reported apart from the totals precisely so it can't be mistaken for income.
+_PAYMENT_AGGREGATES = {
+    "total": Sum("amount", filter=RECEIVED),
+    "cash": Sum("amount", filter=RECEIVED & Q(method=Payment.Method.CASH)),
+    "card": Sum("amount", filter=RECEIVED & Q(method=Payment.Method.CARD)),
+    "transfer": Sum("amount", filter=RECEIVED & Q(method=Payment.Method.TRANSFER)),
+    "commission": Sum("commission", filter=RECEIVED),
+    "count": Count("pk", filter=RECEIVED),
+    "from_advance": Sum("amount", filter=Q(kind=Payment.Kind.ADVANCE_USED)),
+}
+
+
+def _payment_totals(payments):
+    """Period totals for the payments shown, with the method split. Empty sums come
+    back as None from the database; they are zeroed here so the template can do
+    arithmetic on them."""
+    totals = payments.aggregate(**_PAYMENT_AGGREGATES)
+    for key, value in totals.items():
+        if value is None:
+            totals[key] = Decimal("0")
+    # Clients who actually paid — a client whose only row is an advance being spent
+    # handed nothing over in this window. `client_pk` is an annotation, so the default
+    # -date ordering has to go: Django would otherwise carry the ordering columns into
+    # the SELECT and make every row distinct on its own.
+    totals["clients"] = (
+        payments.filter(RECEIVED).order_by().values("client_pk").distinct().count()
+    )
+    total = totals["total"] or Decimal("0")
+    for key in ("cash", "card", "transfer"):
+        totals[f"{key}_pct"] = (totals[key] / total * 100) if total else 0
+    return totals
+
+
+def _payment_rows(payments):
+    """One display row per payment. The client is resolved here (a sale payment
+    reaches it through the sale, an advance carries it directly) so the template
+    doesn't have to ask twice on every line."""
+    rows = []
+    for p in payments:
+        client = p.sale.client if p.sale else p.client
+        label, badge = _CLIENT_PAYMENT_LABELS[p.kind]
+        rows.append({
+            "pk": p.pk,
+            "date": p.date,
+            "client": client,
+            "label": label,
+            "badge": badge,
+            "is_advance": p.kind == Payment.Kind.ADVANCE_IN,
+            # False on an advance being spent: the row is shown, but no total counts
+            # it, and the page says so on the line itself.
+            "counted": p.kind != Payment.Kind.ADVANCE_USED,
+            "sale_pk": p.sale_id,
+            "method": p.get_method_display(),
+            "method_code": p.method,
+            "currency": p.currency,
+            "amount": p.amount,
+            "amount_original": p.original_amount,
+            "exchange_rate": p.exchange_rate,
+            "commission": p.commission,
+            # The reconciliation stamps its rows with a note that repeats the label
+            # word for word ("Avansdan yechildi"); printing both just says it twice.
+            "note": "" if p.note == label else p.note,
+            "created_by": p.created_by,
+        })
+    return rows
+
+
+def _payment_client_rows(payments):
+    """One row per client for the same payments: what they paid in the period, split
+    by method, with how many payments and when the last one landed. Biggest payer
+    first — the question this view answers is who has been paying.
+
+    `from_advance` sits outside the total, as everywhere else on this page. `last` is
+    the last payment they MADE, so an advance being spent does not pass for one."""
+    agg = (
+        payments.order_by()
+        .values("client_pk")
+        .annotate(**_PAYMENT_AGGREGATES, last=Max("date", filter=RECEIVED))
+        .order_by("-total")
+    )
+    agg = list(agg)
+    clients = Client.objects.in_bulk([r["client_pk"] for r in agg if r["client_pk"]])
+    rows = []
+    for r in agg:
+        client = clients.get(r["client_pk"])
+        if client is None:  # a payment whose client was deleted — nothing to show
+            continue
+        rows.append({
+            "client": client,
+            "total": r["total"] or Decimal("0"),
+            "cash": r["cash"] or Decimal("0"),
+            "card": r["card"] or Decimal("0"),
+            "transfer": r["transfer"] or Decimal("0"),
+            "from_advance": r["from_advance"] or Decimal("0"),
+            "count": r["count"],
+            "last": r["last"],
+        })
+    return rows
+
+
+def _payment_filter_chips(request, filters, clients, reps):
+    kind_labels = dict(Payment.Kind.choices)
+    method_labels = dict(Payment.Method.choices)
+    currency_labels = dict(Payment.Currency.choices)
+    client = (
+        clients.filter(pk=filters["client"]).first() if filters["client"].isdigit() else None
+    )
+    rep = reps.filter(pk=filters["rep"]).first() if reps and filters["rep"].isdigit() else None
+    return _filter_chips(request, [
+        {"param": "client", "label": "Mijoz", "value": client.name if client else ""},
+        {"param": "rep", "label": "Qabul qildi", "value": str(rep) if rep else ""},
+        {"param": "kind", "label": "Turi", "value": kind_labels.get(filters["kind"], "")},
+        {"param": "method", "label": "Usul", "value": method_labels.get(filters["method"], "")},
+        {"param": "currency", "label": "Valyuta",
+         "value": currency_labels.get(filters["currency"], "")},
+    ])
+
+
+def payment_list(request):
+    """Mijozlar to'lovlari — the money clients have handed over: every payment on a
+    sale, every debt repayment and every advance deposit.
+
+    Two ways to read the same set: `?korinish=mijoz` groups it by client (who paid
+    how much), anything else lists the payments themselves. Both share one filter
+    set, so a chosen client, method or period carries between them."""
+    payments, filters, has_filters = _filter_payments(request)
+    by_client = request.GET.get("korinish") == "mijoz"
+    # Carried in `filters` so the search box and the filter drawer (plain GET forms)
+    # keep the chosen view when they submit.
+    filters["korinish"] = "mijoz" if by_client else ""
+    totals = _payment_totals(payments)
+
+    clients = _visible_clients(request.user).order_by("name")
+    reps = (
+        User.objects.filter(is_active=True).order_by("first_name", "username")
+        if request.user.can_see_all_records
+        else None
+    )
+    active_filters = _payment_filter_chips(request, filters, clients, reps)
+    if by_client:
+        page = Paginator(_payment_client_rows(payments), 25).get_page(
+            request.GET.get("page")
+        )
+    else:
+        page = Paginator(payments, 25).get_page(request.GET.get("page"))
+        page.object_list = _payment_rows(page.object_list)
+    export_qs = request.GET.urlencode()
+    return render(request, "crm/payment_list.html", {
+        "page": page,
+        "by_client": by_client,
+        "totals": totals,
+        "filters": filters,
+        "clients": clients,
+        "reps": reps,
+        "rep_label": "Kim qabul qildi",
+        "payment_kinds": [
+            (str(k), _CLIENT_PAYMENT_LABELS[k][0]) for k in CLIENT_PAYMENT_KINDS
+        ],
+        # Which of the two readings to show. It lives in the filter drawer with
+        # everything else that shapes the page, rather than as its own control.
+        "view_options": [("", "To'lovlar"), ("mijoz", "Mijozlar bo'yicha")],
+        "active_filters": active_filters,
+        "filter_count": len(active_filters),
+        "has_filters": has_filters,
+        "filter_url": reverse("payment_list"),
+        "search_placeholder": "Mijoz ismi yoki telefoni bo'yicha qidirish…",
+        "export_url": reverse("payment_export") + (f"?{export_qs}" if export_qs else ""),
+        **_date_range_context(request),
+    })
+
+
+def payment_export(request):
+    """Excel (.xlsx) of the client payments for the current filters — two tabs: every
+    payment, and the same money totalled per client.
+
+    Money received and money drawn from an advance go in SEPARATE columns, so that
+    selecting the Summa column in Excel gives the same figure the page shows. Putting
+    both in one column would hand whoever opens the file a total the CRM never claims."""
+    payments, _, _ = _filter_payments(request)
+    detail_headers = [
+        "Sana", "Mijoz", "Turi", "Chek", "Usul", "Valyuta", "Asl summa", "Kurs",
+        "Summa (so'm)", "Avansdan (jamiga kirmaydi)", "Bank komissiyasi",
+        "Kim qabul qildi", "Izoh",
+    ]
+    detail_rows = [
+        [
+            r["date"].strftime("%d.%m.%Y"),
+            r["client"].name if r["client"] else "",
+            r["label"],
+            f"#{r['sale_pk']}" if r["sale_pk"] else "",
+            r["method"],
+            dict(Payment.Currency.choices).get(r["currency"], ""),
+            float(r["amount_original"]),
+            float(r["exchange_rate"]) if r["currency"] == Payment.Currency.USD else "",
+            float(r["amount"]) if r["counted"] else "",
+            "" if r["counted"] else float(r["amount"]),
+            float(r["commission"]),
+            str(r["created_by"]),
+            r["note"],
+        ]
+        for r in _payment_rows(payments)
+    ]
+    client_headers = [
+        "Mijoz", "Telefon", "To'lovlar soni", "Oxirgi to'lov",
+        "Naqd", "Karta", "O'tkazma", "Jami to'langan",
+        "Avansdan yopilgan (jamiga kirmaydi)",
+    ]
+    client_rows = [
+        [
+            r["client"].name,
+            r["client"].phone,
+            r["count"],
+            r["last"].strftime("%d.%m.%Y") if r["last"] else "",
+            float(r["cash"]),
+            float(r["card"]),
+            float(r["transfer"]),
+            float(r["total"]),
+            float(r["from_advance"]),
+        ]
+        for r in _payment_client_rows(payments)
+    ]
+    money = "#,##0.00"
+    return _xlsx_book_response("mijozlar-tolovlari.xlsx", [
+        ("To'lovlar", detail_headers, detail_rows,
+         {7: money, 9: money, 10: money, 11: money}),
+        ("Mijozlar bo'yicha", client_headers, client_rows,
+         {5: money, 6: money, 7: money, 8: money, 9: money}),
+    ])
+
+
 def audit_list(request):
     """The money-action audit trail. Admins/managers see every action; a seller
     sees only their own. The trail only grows, so it is filterable by who acted,
@@ -3801,6 +4140,43 @@ def _entry_payment(request, pk, fee_only=False):
     return context
 
 
+def _entry_advance_used(request, pk):
+    """An open receipt closed from credit the client was already holding.
+
+    Read-only on purpose, unlike every other kassa row. Nobody types this record: the
+    advance reconciliation writes it (`_apply_advance_to_open_sales`) and rewrites or
+    deletes it whenever the pool moves, so a figure edited by hand here would be
+    recalculated away behind the user's back. The two records that DO decide it — the
+    deposit and the receipt — are each one click from this panel."""
+    qs = Payment.objects.select_related("sale", "sale__client", "client", "created_by")
+    if not request.user.can_see_all_records:
+        qs = qs.filter(created_by=request.user)
+    p = get_object_or_404(qs, pk=pk, kind=Payment.Kind.ADVANCE_USED)
+    client = p.sale.client if p.sale else p.client
+    rows = [
+        ("Sana", p.date.strftime("%d.%m.%Y")),
+        ("Mijoz", client.name if client else "—"),
+        ("Turi", "Avansdan yechildi"),
+        ("Chekka o'tkazilgan summa", _money(p.amount)),
+        ("Mijoz qarzidan yechildi", _money(p.credited_amount)),
+        ("Kassaga kirim", "Yo'q — pul avans olingan kuni kirim bo'lgan"),
+        ("Kim qabul qilgan", str(p.created_by)),
+    ]
+    context = {
+        "title": "Avansdan yechildi",
+        "rows": rows,
+        "note": (
+            "Bu yozuv qo'lda kiritilmaydi va shu yerdan tahrirlanmaydi — mijozning "
+            "avansi ochiq chekka o'tganda tizim o'zi yozadi. Summa noto'g'ri bo'lsa "
+            "avansning o'zini yoki chekni tuzating: avans qaytadan taqsimlanadi."
+        ),
+    }
+    if client:
+        context["open_url"] = reverse("client_advance_moves", args=[client.pk])
+        context["open_label"] = "Mijoz avanslari"
+    return context
+
+
 def _entry_advance_out(request, pk):
     """A client's prepaid credit handed back to them in cash. The deposit it came out
     of is untouched — undoing this row is what puts the credit back, so that is the
@@ -3990,6 +4366,8 @@ def kassa_entry_detail(request, kind, pk):
     builders = {
         "payment": lambda: _entry_payment(request, pk),
         "advance": lambda: _entry_payment(request, pk),
+        # Read-only: the row is derived, so it gets its own panel with no buttons.
+        "advance_used": lambda: _entry_advance_used(request, pk),
         "commission": lambda: _entry_payment(request, pk, fee_only=True),
         "refund": lambda: _entry_refund(request, pk),
         "advance_out": lambda: _entry_advance_out(request, pk),

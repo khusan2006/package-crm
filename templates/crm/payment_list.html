@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% load crm_extras %}
+{% block title %}{% if user.can_see_all_records %}Mijozlar to'lovlari{% else %}Mening to'lovlarim{% endif %} · Paket CRM{% endblock %}
+{% block topbar_title %}{% if user.can_see_all_records %}Mijozlar to'lovlari{% else %}Mening to'lovlarim{% endif %}{% endblock %}
+{% block content %}
+
+<div class="kpi-grid">
+  <div class="kpi kpi--green">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg></span>
+      <span class="kpi-label">Jami to'langan</span>
+    </div>
+    <div class="kpi-value">{{ totals.total|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{{ totals.count }} ta to'lov · {{ totals.clients }} ta mijoz{% if totals.from_advance %}<br>avansdan yopilgan {{ totals.from_advance|floatformat:"0g" }} so'm — jamiga kirmaydi{% endif %}</div>
+  </div>
+
+  <div class="kpi kpi--blue">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><circle cx="12" cy="14" r="1.5"/></svg></span>
+      <span class="kpi-label">Naqd</span>
+    </div>
+    <div class="kpi-value">{{ totals.cash|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{{ totals.cash_pct|floatformat:1 }}% to'lovlarning</div>
+  </div>
+
+  <div class="kpi kpi--violet">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg></span>
+      <span class="kpi-label">Karta</span>
+    </div>
+    <div class="kpi-value">{{ totals.card|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{{ totals.card_pct|floatformat:1 }}% to'lovlarning</div>
+  </div>
+
+  <div class="kpi kpi--gold">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v6a8 8 0 0 1-16 0Z"/><path d="M8 20h8"/><path d="M12 14v6"/></svg></span>
+      <span class="kpi-label">Bank o'tkazmasi</span>
+    </div>
+    <div class="kpi-value">{{ totals.transfer|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{% if totals.commission %}komissiya {{ totals.commission|floatformat:"0g" }} so'm{% else %}{{ totals.transfer_pct|floatformat:1 }}% to'lovlarning{% endif %}</div>
+  </div>
+</div>
+
+{% include "crm/_filter_toolbar.html" with show_daterange_picker=True show_search=True %}
+
+{# Ikki xil o'qish — qaysi biri ochiqligi jadval ustidan ko'rinib tursin (tanlash filtrda). #}
+<p class="section-eyebrow">{% if by_client %}Mijozlar kesimida{% else %}Har bir to'lov{% endif %}</p>
+
+{% if by_client %}
+{% if page.object_list %}
+<div class="table-wrap">
+<table>
+  <tr>
+    <th class="sticky-col">Mijoz</th>
+    <th class="num">To'lovlar</th>
+    <th>Oxirgi to'lov</th>
+    <th class="num">Naqd</th>
+    <th class="num">Karta</th>
+    <th class="num">O'tkazma</th>
+    <th class="num">Jami to'langan</th>
+    <th class="num">Avansdan</th>
+    <th></th>
+  </tr>
+  {% for r in page %}
+  <tr>
+    <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=r.client.name %}<a href="{% url 'client_history' r.client.pk %}">{{ r.client.name }}</a></span></td>
+    <td class="num">{{ r.count }}</td>
+    <td>{% if r.last %}<span title="{{ r.last|date:'d.m.Y' }}">{{ r.last|timeago_uz }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td class="num">{% if r.cash %}{{ r.cash|floatformat:"0g" }}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td class="num">{% if r.card %}{{ r.card|floatformat:"0g" }}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td class="num">{% if r.transfer %}{{ r.transfer|floatformat:"0g" }}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td class="num amt-in"><strong>{{ r.total|floatformat:"0g" }}</strong> so'm</td>
+    {# Avansdan yopilgani — jamiga qo'shilmaydi, chunki u pul avans olingan kuni sanalgan. #}
+    <td class="num muted">{% if r.from_advance %}{{ r.from_advance|floatformat:"0g" }}{% else %}—{% endif %}</td>
+    <td><a class="btn btn-sm btn-ghost" href="{% url 'client_history' r.client.pk %}">Tarix</a></td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% else %}
+<p class="muted">Bu davrda to'lov qilgan mijoz yo'q.</p>
+{% endif %}
+
+{% else %}
+
+{% if page.object_list %}
+<div class="table-wrap">
+<table>
+  <tr>
+    <th>Sana</th>
+    <th class="sticky-col">Mijoz</th>
+    <th>Turi</th>
+    <th>Chek</th>
+    <th>Usul</th>
+    <th class="num">Summa</th>
+    <th>Kim qabul qildi</th>
+    <th></th>
+  </tr>
+  {% for r in page %}
+  <tr>
+    <td>{{ r.date|date:"d.m.Y" }}</td>
+    <td class="sticky-col">
+      {% if r.client %}
+      <span class="cell-user">{% include "crm/_avatar.html" with name=r.client.name %}<a href="{% url 'client_history' r.client.pk %}">{{ r.client.name }}</a></span>
+      {% else %}<span class="muted">—</span>{% endif %}
+    </td>
+    <td><span class="badge {{ r.badge }}">{{ r.label }}</span></td>
+    <td>{% if r.sale_pk %}<a href="{% url 'sale_detail' r.sale_pk %}">#{{ r.sale_pk }}</a>{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td>{% include "crm/_method_badge.html" with code=r.method_code label=r.method %}</td>
+    <td class="num">
+      {% if r.counted %}
+      <strong class="amt-in">{{ r.amount|floatformat:"0g" }}</strong> so'm
+      {% if r.currency == 'usd' %}<span class="cell-sub">${{ r.amount_original|floatformat:"2g" }} × {{ r.exchange_rate|floatformat:"0g" }}</span>{% endif %}
+      {% if r.commission %}<span class="cell-sub">bank komissiyasi −{{ r.commission|floatformat:"0g" }}</span>{% endif %}
+      {% else %}
+      {# Yangi pul emas: bu summa avans olingan kuni hisobga olingan. #}
+      <span class="muted">{{ r.amount|floatformat:"0g" }} so'm</span>
+      <span class="cell-sub">jamiga kirmaydi</span>
+      {% endif %}
+    </td>
+    <td>{{ r.created_by }}{% if r.note %}<span class="cell-sub">{{ r.note }}</span>{% endif %}</td>
+    <td class="row-actions">
+      {% if user.can_see_all_records or r.created_by == user %}
+      {# Avansdan yechilgan qator tizim yozgani uchun tahrirlanmaydi — faqat ochib ko'riladi. #}
+      {% if not r.counted %}
+        <a class="icon-action act-view" href="{% url 'kassa_entry_detail' 'advance_used' r.pk %}" data-modal title="Ochib ko'rish">{% include "crm/_ico_eye.html" %}</a>
+      {% endif %}
+      {% endif %}
+      {% if r.counted %}{% if user.can_see_all_records or r.created_by == user %}
+        {% if r.is_advance %}
+        <a class="icon-action act-edit" href="{% url 'advance_edit' r.pk %}" data-modal title="Avansni tahrirlash">{% include "crm/_ico_edit.html" %}</a>
+        <a class="icon-action act-view" href="{% url 'kassa_entry_detail' 'advance' r.pk %}" data-modal title="Ochib ko'rish">{% include "crm/_ico_eye.html" %}</a>
+        {% else %}
+        <a class="icon-action act-edit" href="{% url 'payment_edit' r.pk %}" data-modal title="To'lovni tahrirlash">{% include "crm/_ico_edit.html" %}</a>
+        <a class="icon-action act-view" href="{% url 'kassa_entry_detail' 'payment' r.pk %}" data-modal title="Ochib ko'rish">{% include "crm/_ico_eye.html" %}</a>
+        {% endif %}
+      {% endif %}{% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% else %}
+<p class="muted">Bu davrda to'lov yo'q.</p>
+{% endif %}
+
+{% endif %}
+
+{% include "crm/_pagination.html" %}
+
+<p class="field-hint" style="margin-top:12px;">
+  Jami summalar mijoz haqiqatan qo'ldan bergan puldan yig'iladi: sotuvda to'langan, qarz to'lovi va oldindan olingan avans.
+  <span class="badge badge-shipped">Avansdan yechildi</span> qatorlari qaysi chek avansdan yopilganini ko'rsatish uchun turadi,
+  lekin jamiga qo'shilmaydi — u pul avans olingan kuni allaqachon sanalgan.
+</p>
+
+{% include "crm/_filter_drawer.html" with show_method=True show_currency=True %}
+{% endblock %}

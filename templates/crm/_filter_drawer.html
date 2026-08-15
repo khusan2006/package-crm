@@ -10,6 +10,18 @@
     <input type="hidden" name="gacha" value="{{ filters.gacha }}">
     {% endif %}
     {% if filters.q %}<input type="hidden" name="q" value="{{ filters.q }}">{% endif %}
+    {% comment %}
+    Pages that show the same rows more than one way (to'lovlar) choose it here. Where
+    the choice isn't offered, the current one is carried through as a hidden field so
+    applying a filter doesn't silently throw the user back to the default view.
+    {% endcomment %}
+    {% if view_options %}
+    <label>Ko'rinish
+      <select name="korinish">
+        {% for code, label in view_options %}<option value="{{ code }}" {% if filters.korinish == code %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    {% elif filters.korinish %}<input type="hidden" name="korinish" value="{{ filters.korinish }}">{% endif %}
     {% if clients %}
     <label>Mijoz
       <select name="client" data-combobox>
@@ -72,6 +84,14 @@
         <option value="paid" {% if filters.status == 'paid' %}selected{% endif %}>To'langan</option>
         <option value="debt" {% if filters.status == 'debt' %}selected{% endif %}>Qarz</option>
         <option value="overdue" {% if filters.status == 'overdue' %}selected{% endif %}>Muddati o'tgan</option>
+      </select>
+    </label>
+    {% endif %}
+    {% if payment_kinds %}
+    <label>To'lov turi
+      <select name="kind">
+        <option value="">Barchasi</option>
+        {% for code, label in payment_kinds %}<option value="{{ code }}" {% if filters.kind == code %}selected{% endif %}>{{ label }}</option>{% endfor %}
       </select>
     </label>
     {% endif %}

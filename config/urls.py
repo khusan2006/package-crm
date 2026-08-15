@@ -82,6 +82,9 @@ urlpatterns = [
         name="debt_client_export",
     ),
     path("debts/<int:pk>/pay/", crm_views.client_debt_pay, name="client_debt_pay"),
+    # mijozlar to'lovlari (what clients have paid)
+    path("tolovlar/", crm_views.payment_list, name="payment_list"),
+    path("tolovlar/export/", crm_views.payment_export, name="payment_export"),
     path("payments/<int:pk>/edit/", crm_views.payment_edit, name="payment_edit"),
     path("payments/<int:pk>/delete/", crm_views.payment_delete, name="payment_delete"),
     path("audit/", crm_views.audit_list, name="audit_list"),

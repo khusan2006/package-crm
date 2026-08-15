@@ -48,6 +48,10 @@
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
           <span>{% if user.can_see_all_records %}Qarzlar{% else %}Mening qarzlarim{% endif %}</span>
         </a>
+        <a class="nav-item {% if 'payment' in url_name %}active{% endif %}" href="{% url 'payment_list' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg></span>
+          <span>{% if user.can_see_all_records %}Mijozlar to'lovlari{% else %}Mening to'lovlarim{% endif %}</span>
+        </a>
         <a class="nav-item {% if 'kassa' in url_name or 'expense' in url_name %}active{% endif %}" href="{% url 'kassa' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4"/><path d="M4 6v12a2 2 0 0 0 2 2h14v-4"/><path d="M18 12a2 2 0 0 0-2 2c0 1.1.9 2 2 2h4v-4Z"/></svg></span>
           <span>{% if user.can_see_all_records %}Kassa{% else %}Mening kassam{% endif %}</span>
@@ -1033,6 +1037,39 @@
     if (document.readyState !== 'loading') { enhance(); }
     else { document.addEventListener('DOMContentLoaded', function () { enhance(); }); }
     document.addEventListener('modal:loaded', function (e) { enhance(e.detail || document); });
+  })();
+
+  // Money inputs behave like a spreadsheet cell: entering one selects what is
+  // already in it, so typing REPLACES the figure instead of landing next to it.
+  // The sale form is where this bites — product prices arrive filled in, and every
+  // correction meant clearing "19 000" by hand first. A second click inside the
+  // same field places the caret as usual, for when only one digit is wrong.
+  (function () {
+    function fills(el) {
+      return el && el.matches && el.matches('input[data-money]') && el.value !== '';
+    }
+    document.addEventListener('focusin', function (e) {
+      if (!fills(e.target)) { return; }
+      e.target.dataset.pickAll = '1';
+      e.target.select();
+    });
+    // Browsers place the caret on the mouseup that follows the click, which would
+    // undo the selection made above — so that one mouseup is swallowed. The flag is
+    // cleared with it, leaving every later click in the field behaving normally.
+    document.addEventListener('mouseup', function (e) {
+      var el = e.target;
+      if (!el || !el.dataset || !el.dataset.pickAll) { return; }
+      delete el.dataset.pickAll;
+      e.preventDefault();
+    });
+    // Typing (or leaving) settles the field: from then on clicks work as normal,
+    // so someone who tabbed in and typed can still click to fix one digit.
+    document.addEventListener('keydown', function (e) {
+      if (e.target && e.target.dataset) { delete e.target.dataset.pickAll; }
+    });
+    document.addEventListener('focusout', function (e) {
+      if (e.target && e.target.dataset) { delete e.target.dataset.pickAll; }
+    });
   })();
 
   // Opening-balance form: show what the balance will BECOME while the sum is typed.
