@@ -1174,21 +1174,27 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
    an edit action (a refund whose return isn't the user's) would otherwise slide its
    eye into the first slot and leave a ragged edge down the column; pinning each icon
    to its own column keeps the gap where the missing action was.
-   Deleting is deliberately absent here: it lives inside the ko'rish panel, one step
-   away from a mis-click in a dense table. */
+   Deleting is deliberately absent from the kassa ledger: it lives inside the ko'rish
+   panel, one step away from a mis-click in a dense table.
+   The grid lives on the inner span, never on the <td> itself: a cell told to be a
+   grid stops being a table-cell, so it no longer stretches to the row's height and
+   its bottom border breaks away from the line the rest of the row draws. */
 .ledger-table .row-actions {
+  white-space: nowrap;
+}
+
+.ledger-table .ra-slots {
   display: grid;
   grid-template-columns: repeat(2, 28px);
   gap: 2px;
   justify-content: end;
-  white-space: nowrap;
 }
 
-.ledger-table .row-actions .act-edit {
+.ledger-table .ra-slots .act-edit {
   grid-column: 1;
 }
 
-.ledger-table .row-actions .act-view {
+.ledger-table .ra-slots .act-view {
   grid-column: 2;
 }
 
@@ -1396,6 +1402,13 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
 .daybadge.soon {
   color: var(--success);
   background: color-mix(in srgb, var(--success) 15%, transparent);
+}
+
+/* An advance's age, shown where a debt shows its deadline. Blue, not red or amber:
+   nobody is late — it only says how long the money has been lying there. */
+.daybadge.held {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 /* Sale form: multi-product line items */
@@ -2040,6 +2053,16 @@ tbody tr:hover td.sticky-col {
 
 .row-actions>*+* {
   margin-left: 6px;
+}
+
+/* Buttons and icons clustered at the right of an action cell. A wrapper, not the
+   <td>: a cell given display:flex is no longer a table-cell, and the row's bottom
+   border stops dead where that cell begins. */
+.ra-cluster {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
 }
 
 .icon-action {
@@ -3076,6 +3099,61 @@ ul.errorlist li::before {
   color: var(--accent);
 }
 
+/* Month picker (Xodimlar oyligi): ‹ [Avgust 2026 ▾] › — the date control's twin for a
+   page measured in whole months. Built from the same frame so the payroll toolbar and
+   every other toolbar in the app read as one control set. */
+.month-pick {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.month-pick .datebar-btn {
+  width: 32px;
+}
+
+.month-pick-form {
+  display: flex;
+  align-items: stretch;
+}
+
+.month-pick-select {
+  width: auto;
+  max-width: none;
+  min-width: 150px;
+  appearance: none;
+  padding: 8px 30px 8px 14px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  font-size: 13.5px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+}
+
+.month-pick-select:focus {
+  box-shadow: none;
+}
+
+/* The caret the stripped-down select no longer draws for itself. */
+.month-pick-form::after {
+  content: "";
+  align-self: center;
+  width: 0;
+  height: 0;
+  margin-left: -20px;
+  pointer-events: none;
+  border: 4px solid transparent;
+  border-top-color: var(--text-muted);
+  transform: translateY(2px);
+}
+
 /* Toolbar action buttons (Bugun / Filtrlash / Excel) share the segmented date
    control's look, so the whole toolbar row reads as one consistent set. */
 .table-toolbar .btn-ghost {
@@ -3327,6 +3405,58 @@ ul.errorlist li::before {
   flex-wrap: wrap;
 }
 
+/* Segmented page switch (Hammasi / Qarzdorlar / Avans) — wears the date control's
+   frame so the toolbar row stays one family. The selected button is filled rather
+   than merely outlined: it says which slice of the table you are looking at, which
+   has to be readable at a glance from across the row. */
+.seg {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 12px;
+  border-radius: var(--r);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text-muted);
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+}
+
+.seg-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.seg-btn.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.seg-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  background: var(--surface-2);
+  border-radius: var(--r-pill);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.seg-btn.is-active .seg-count {
+  background: var(--accent);
+  color: #fff;
+}
+
 /* Inline name-search box (Sotuvlar / Qarzlar / To'lovlar toolbars) */
 .toolbar-search {
   position: relative;
@@ -3434,6 +3564,17 @@ ul.errorlist li::before {
   .toolbar-search {
     flex: 1 1 auto;
     min-width: 0;
+  }
+
+  /* On a phone the switch takes the full row and splits it evenly. */
+  .seg {
+    width: 100%;
+  }
+
+  .seg-btn {
+    flex: 1 1 0;
+    justify-content: center;
+    padding: 6px 8px;
   }
 
   .toolbar-right {

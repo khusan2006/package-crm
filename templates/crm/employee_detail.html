@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% load crm_extras %}
+{% block title %}{{ employee.name }} — xodim tarixi · Paket CRM{% endblock %}
+{% block topbar_title %}Xodim — {{ employee.name }}{% endblock %}
+{% block topbar_back %}<a href="{% url 'employee_list' %}" class="icon-btn topbar-back" title="Orqaga" aria-label="Orqaga"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></a>{% endblock %}
+{% block fab %}
+{% if employee.is_active %}
+<a class="fab" href="{% url 'expense_create' %}?employee={{ employee.pk }}&next=xodim-{{ employee.pk }}{% if balance > 0 %}&summa={{ balance|floatformat:"0u" }}{% endif %}" data-modal>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/></svg>
+  Pul berish
+</a>
+{% endif %}
+{% endblock %}
+{% block content %}
+
+{% comment %}
+  Bitta xodimning butun tarixi: hozir qancha olishi kerakligi, uning ortidagi oylar,
+  olgan pullari va ish uchun qilgan rasxotlari. Oylik sahifasi “shu oyda kim nima
+  oladi” degan savolga javob beradi; bu sahifa undan keyingi savolga — “bu odam bilan
+  boshidan beri nima bo'lgan”.
+{% endcomment %}
+<div class="kpi-grid">
+  <div class="kpi{% if balance > 0 %} kpi--red{% elif balance < 0 %} kpi--gold{% else %} kpi--green{% endif %}">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/></svg></span>
+      <span class="kpi-label">{% if balance < 0 %}Oldindan olgan{% else %}Hozir olishi kerak{% endif %}</span>
+    </div>
+    <div class="kpi-value">{{ balance|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{% if balance > 0 %}to'lanmagan qoldiq{% elif balance < 0 %}kelasi oylikdan ushlanadi{% else %}hisob teng{% endif %}</div>
+  </div>
+
+  <div class="kpi kpi--blue">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></span>
+      <span class="kpi-label">Hozirgi oyligi</span>
+    </div>
+    <div class="kpi-value">{{ employee.salary|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">bir oyga{% if not employee.is_active %} · hisoblanmaydi{% endif %}</div>
+  </div>
+
+  <div class="kpi kpi--red">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7 7 7-7"/></svg></span>
+      <span class="kpi-label">Jami berilgan</span>
+    </div>
+    <div class="kpi-value">{{ payout_total|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{{ payouts|length }} ta to'lov — boshidan beri</div>
+  </div>
+
+  <div class="kpi kpi--gold">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h18v4H3z"/><path d="M5 7v13h14V7"/><line x1="10" y1="12" x2="14" y2="12"/></svg></span>
+      <span class="kpi-label">Ish uchun rasxot</span>
+    </div>
+    <div class="kpi-value">{{ errand_total|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">oyligiga tegmagan · {{ errands|length }} ta</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+    <h2 style="margin:0;">
+      <span class="cell-user">{% include "crm/_avatar.html" with name=employee.name %} {{ employee.name }}</span>
+    </h2>
+    <span style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      {% if employee.is_active %}<span class="badge badge-paid">Faol</span>{% else %}<span class="badge badge-cancelled">Faol emas</span>{% endif %}
+      <a class="btn btn-sm btn-ghost" href="{% url 'employee_edit' employee.pk %}" data-modal>Tahrirlash</a>
+    </span>
+  </div>
+  <div class="table-wrap">
+  <table>
+    <tr><td>Hisob boshlangan oy</td><td class="num">{{ employee.start_month|date:"m.Y" }}</td></tr>
+    {% if employee.opening_balance %}
+    <tr><td>Boshlang'ich qoldiq</td><td class="num">{{ employee.opening_balance|floatformat:"0g" }} so'm</td></tr>
+    {% endif %}
+    {% if employee.end_month %}
+    <tr><td>Oxirgi oy</td><td class="num">{{ employee.end_month|date:"m.Y" }}</td></tr>
+    {% endif %}
+    {% if this_month %}
+    <tr><td>Shu oy berilgan</td><td class="num">{{ this_month.paid|floatformat:"0g" }} so'm</td></tr>
+    {% endif %}
+    {% if employee.note %}
+    <tr><td>Izoh</td><td class="num">{{ employee.note }}</td></tr>
+    {% endif %}
+  </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><h2 style="margin:0;">Oylar bo'yicha</h2></div>
+  <p class="ledger-hint">Har oyning oyligi, o'sha oyda berilgan pul va shundan keyingi qoldiq — eng yangisi yuqorida.</p>
+  <div class="table-wrap">
+  <table class="table--blue-head">
+    <tr>
+      <th class="sticky-col">Oy</th>
+      <th class="num">Oyligi</th>
+      <th class="num">Berilgan</th>
+      <th class="num">Oy oxiridagi qoldiq</th>
+      <th></th>
+    </tr>
+    {% for m in months %}
+    <tr>
+      <td class="sticky-col">{{ m.label }}</td>
+      <td class="num">{% if m.accrues %}{{ m.salary|floatformat:"0g" }}{% else %}<span class="muted" title="Bu oyda oylik hisoblanmaydi">—</span>{% endif %}</td>
+      <td class="num">{% if m.paid %}<span class="amt-out">{{ m.paid|floatformat:"0g" }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+      {% comment %}Musbat — firma qarzdor, manfiy — xodim oldindan olgan.{% endcomment %}
+      <td class="num">
+        {% if m.balance > 0 %}<strong class="amt-debt">{{ m.balance|floatformat:"0g" }}</strong>
+        {% elif m.balance < 0 %}<strong class="amt-in">{{ m.balance|floatformat:"0g" }}</strong>
+        {% else %}<span class="badge badge-paid">To'liq berildi</span>{% endif %}
+      </td>
+      <td class="num">
+        <a class="btn btn-sm btn-ghost" href="{% url 'employee_list' %}?oy={{ m.value }}" title="Shu oyning to'liq hisobi">Oylik hisobi</a>
+      </td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="5" class="muted">Hisob hali boshlanmagan.</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <h2 style="margin:0;">Olgan pullari</h2>
+      <span class="ledger-total amt-out">−{{ payout_total|floatformat:"0g" }} so'm</span>
+    </div>
+    <p class="ledger-hint">Oylik va avans — oyligidan ushlanadi.</p>
+    <div class="table-wrap">
+    <table class="ledger-table ledger-out">
+      <tr><th>Sana</th><th>Turkum</th><th>Usul</th><th class="num">Summa</th><th>Izoh</th><th>Kim berdi</th><th></th></tr>
+      {% for e in payouts %}
+      <tr>
+        <td>{{ e.date|date:"d.m.Y" }}</td>
+        <td>{{ e.category }}</td>
+        <td>{% include "crm/_method_badge.html" with code=e.method label=e.get_method_display %}</td>
+        <td class="num amt-out">−{{ e.amount|floatformat:"0g" }}</td>
+        <td>{{ e.note|default:"—" }}</td>
+        <td>{{ e.created_by }}</td>
+        <td class="row-actions">
+          <span class="ra-slots">
+            <a class="icon-action act-edit" href="{% url 'expense_edit' e.pk %}?next=xodim-{{ employee.pk }}" data-modal title="Tahrirlash">{% include "crm/_ico_edit.html" %}</a>
+            <a class="icon-action danger" href="{% url 'expense_delete' e.pk %}?next=xodim-{{ employee.pk }}" data-modal title="O'chirish">{% include "crm/_ico_trash.html" %}</a>
+          </span>
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="muted">Hali pul berilmagan.</td></tr>
+      {% endfor %}
+    </table>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <h2 style="margin:0;">Qilgan rasxotlari</h2>
+      <span class="ledger-total amt-out">−{{ errand_total|floatformat:"0g" }} so'm</span>
+    </div>
+    <p class="ledger-hint">Ish uchun sarflagan pul — kassadan chiqqan, oyligiga tegmaydi.</p>
+    <div class="table-wrap">
+    <table class="ledger-table ledger-out">
+      <tr><th>Sana</th><th>Turkum</th><th>Usul</th><th class="num">Summa</th><th>Izoh</th><th>Kim yozdi</th><th></th></tr>
+      {% for e in errands %}
+      <tr>
+        <td>{{ e.date|date:"d.m.Y" }}</td>
+        <td><span class="badge badge-neutral">{{ e.category }}</span></td>
+        <td>{% include "crm/_method_badge.html" with code=e.method label=e.get_method_display %}</td>
+        <td class="num amt-out">−{{ e.amount|floatformat:"0g" }}</td>
+        <td>{{ e.note|default:"—" }}</td>
+        <td>{{ e.created_by }}</td>
+        <td class="row-actions">
+          <span class="ra-slots">
+            <a class="icon-action act-edit" href="{% url 'expense_edit' e.pk %}?next=xodim-{{ employee.pk }}" data-modal title="Tahrirlash">{% include "crm/_ico_edit.html" %}</a>
+            <a class="icon-action danger" href="{% url 'expense_delete' e.pk %}?next=xodim-{{ employee.pk }}" data-modal title="O'chirish">{% include "crm/_ico_trash.html" %}</a>
+          </span>
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="muted">Bu xodim ish uchun rasxot qilmagan.</td></tr>
+      {% endfor %}
+    </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

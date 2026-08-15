@@ -6,6 +6,8 @@
       <svg class="toolbar-search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       <input type="search" name="q" value="{{ filters.q }}" placeholder="{{ search_placeholder|default:"Ism yoki telefon bo'yicha qidirish…" }}" autocomplete="off" aria-label="Qidirish">
       {% if filters.korinish %}<input type="hidden" name="korinish" value="{{ filters.korinish }}">{% endif %}
+      {% comment %}Qidiruv tanlangan tugmani (Qarzdorlar / Avans) yo'qotmasin.{% endcomment %}
+      {% if filters.tur %}<input type="hidden" name="tur" value="{{ filters.tur }}">{% endif %}
       {% if filters.q %}<a href="{{ filter_url }}" class="toolbar-search-x" title="Qidiruvni tozalash" aria-label="Qidiruvni tozalash">&times;</a>{% endif %}
     </form>
     {% endif %}
@@ -26,6 +28,16 @@
     {% endif %}
   </div>
   <div class="toolbar-right">
+    {% comment %}A page-level switch (Hammasi / Qarzdorlar / Avans) — always on show,
+    with the row count each button leads to. It rides with the other view controls on
+    the right; the search box keeps the left of the row to itself.{% endcomment %}
+    {% if segments %}
+    <div class="seg" role="group" aria-label="Ko'rinish">
+      {% for s in segments %}
+      <a class="seg-btn{% if s.active %} is-active{% endif %}" href="{{ s.url }}"{% if s.active %} aria-current="true"{% endif %}>{{ s.label }}<span class="seg-count">{{ s.count }}</span></a>
+      {% endfor %}
+    </div>
+    {% endif %}
     {% comment %}
       Excel sits first, ahead of the date picker: it downloads what the page shows,
       so it reads as part of the view rather than as another filter.

@@ -47,6 +47,23 @@ def timeago_uz(value):
     return f"{days // 365} yil oldin"
 
 
+@register.filter
+def since_uz(value):
+    """How long something has been sitting, from a past date: "Bugundan beri",
+    "N kundan beri", "N oydan beri", "N yildan beri". The advance pool's answer to a
+    debt's deadline — money held with nobody chasing it."""
+    if not value:
+        return ""
+    days = (timezone.localdate() - value).days
+    if days <= 0:
+        return "Bugundan beri"
+    if days < 30:
+        return f"{days} kundan beri"
+    if days < 365:
+        return f"{days // 30} oydan beri"
+    return f"{days // 365} yildan beri"
+
+
 @register.inclusion_tag("crm/_deadline_badge.html")
 def deadline_badge(deadline):
     """Render a "X kun qoldi / X kun o'tgan / Bugun" chip for a debt deadline."""

@@ -23,6 +23,15 @@
     <div class="kpi-meta">{{ overdue_debtors }} ta mijoz</div>
   </div>
 
+  <div class="kpi kpi--green">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg></span>
+      <span class="kpi-label">Mijozlar avansi</span>
+    </div>
+    <div class="kpi-value">{{ total_advance|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{{ advance_clients }} ta mijozda avans bor</div>
+  </div>
+
   <div class="kpi kpi--gold">
     <div class="kpi-head">
       <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
@@ -33,7 +42,7 @@
   </div>
 </div>
 
-{% include "crm/_filter_toolbar.html" with show_search=True export_url=export_url %}
+{% include "crm/_filter_toolbar.html" with show_search=True export_url=export_url segments=segments %}
 
 {% if debtors %}
 <div class="table-wrap">
@@ -45,13 +54,18 @@
     <th>Oxirgi yuk</th>
     <th>Oxirgi to'lov</th>
     <th class="num">Qarz qoldig'i</th>
+    <th class="num">Avans</th>
     <th></th>
   </tr>
   {% for g in debtors %}
   <tr>
     <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=g.client.name %}<a href="{% url 'debt_client' g.client.pk %}">{{ g.client.name }}</a></span></td>
-    <td class="num">{{ g.count }}{% if g.overdue_count %} <span class="muted">({{ g.overdue_count }} o'tgan)</span>{% endif %}</td>
-    <td>{{ g.earliest|date:"d.m.Y" }} · {% deadline_badge g.earliest %}</td>
+    <td class="num">{% if g.count %}{{ g.count }}{% if g.overdue_count %} <span class="muted">({{ g.overdue_count }} o'tgan)</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
+    {% comment %}Qarzning muddati bor; avansning muddati yo'q — uning o'rniga puli
+    qachondan beri turgani ko'rsatiladi.{% endcomment %}
+    <td>{% if g.earliest %}{{ g.earliest|date:"d.m.Y" }} · {% deadline_badge g.earliest %}
+      {% elif g.advance_since %}{{ g.advance_since|date:"d.m.Y" }} · <span class="daybadge held">{{ g.advance_since|since_uz }}</span>
+      {% else %}<span class="muted">—</span>{% endif %}</td>
     <td>
       {% if g.last_sale %}<span title="{{ g.last_sale|date:'d.m.Y' }}">{{ g.last_sale|timeago_uz }}</span>
       {% else %}<span class="muted">—</span>{% endif %}
@@ -60,14 +74,21 @@
       {% if g.last_payment %}<span title="{{ g.last_payment|date:'d.m.Y' }}">{{ g.last_payment|timeago_uz }}</span>
       {% else %}<span class="muted">Hech qachon</span>{% endif %}
     </td>
-    <td class="num"><strong>{{ g.remaining|floatformat:"0g" }}</strong> so'm</td>
+    {% comment %}Qarz — qizil, avans — yashil: ikkalasi pul, lekin qarama-qarshi tomonda.{% endcomment %}
+    <td class="num">{% if g.remaining %}<strong style="color: var(--danger);">{{ g.remaining|floatformat:"0g" }}</strong> so'm{% else %}<span class="muted">—</span>{% endif %}</td>
+    {% comment %}Mijozlar sahifasidagi kabi — raqamning o'zi uni tuzatadigan oynani ochadi.{% endcomment %}
+    <td class="num">
+      {% if g.advance %}
+      <a href="{% url 'client_advance_moves' g.client.pk %}" data-modal title="Avansni ko'rish / tahrirlash"><strong style="color: var(--success);">{{ g.advance|floatformat:"0g" }}</strong></a>
+      {% else %}<span class="muted">—</span>{% endif %}
+    </td>
     <td><a class="btn btn-sm btn-ghost" href="{% url 'debt_client' g.client.pk %}">Ko'rish</a></td>
   </tr>
   {% endfor %}
 </table>
 </div>
 {% else %}
-<p class="muted">Qarzdor mijozlar yo'q. 🎉</p>
+<p class="muted">{% if filters.tur == 'avans' %}Avansi bor mijoz yo'q.{% else %}Qarzdor mijozlar yo'q. 🎉{% endif %}</p>
 {% endif %}
 
 {% include "crm/_filter_drawer.html" with show_overdue=True %}

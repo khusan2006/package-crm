@@ -35,6 +35,7 @@ from .models import (
     seller_production_debt,
     seller_withdrawable_profit,
 )
+from .utils import uz_month
 from .views import (
     XLSX_CONTENT_TYPE,
     _kassa_summary,
@@ -831,6 +832,140 @@ class DebtPageTests(BaseSetup):
         self.client.force_login(self.sales1)
         ctx = self.client.get(reverse("debt_list")).context
         self.assertEqual({g["client"] for g in ctx["debtors"]}, {self.client1})
+
+    def _advance(self, client, seller, amount):
+        return Payment.objects.create(
+            client=client, sale=None, amount=Decimal(amount),
+            method=Payment.Method.CASH, kind=Payment.Kind.ADVANCE_IN,
+            date=timezone.localdate(), created_by=seller,
+        )
+
+    def _advance_only_client(self, amount="150000", by=None):
+        """A client of sales1 who owes nothing and holds a deposit."""
+        client = Client.objects.create(name="Avansli mijoz", owner=self.sales1)
+        self._advance(client, by or self.sales1, amount)
+        return client
+
+    def test_advance_holder_listed_even_without_debt(self):
+        """The advance belongs on the qarz page: money taken for goods not yet given.
+        This client owes nothing, so only their advance puts them on the page."""
+        client = self._advance_only_client()
+        self.client.force_login(self.sales1)
+        ctx = self.client.get(reverse("debt_list")).context
+        rows = {g["client"]: g for g in ctx["debtors"]}
+        self.assertIn(client, rows)
+        self.assertEqual(rows[client]["advance"], Decimal("150000"))
+        self.assertEqual(rows[client]["remaining"], Decimal("0"))
+        self.assertEqual(rows[client]["count"], 0)
+        # …without being counted as a debtor
+        self.assertEqual(ctx["total_debtors"], 1)
+        self.assertEqual(ctx["total_advance"], Decimal("150000"))
+        self.assertEqual(ctx["advance_clients"], 1)
+
+    def test_debtor_row_carries_its_advance(self):
+        self._advance(self.client1, self.sales1, "90000")
+        self.client.force_login(self.sales1)
+        ctx = self.client.get(reverse("debt_list")).context
+        self.assertEqual(len(ctx["debtors"]), 1)
+        self.assertEqual(ctx["debtors"][0]["advance"], Decimal("90000"))
+        self.assertEqual(ctx["debtors"][0]["remaining"], Decimal("480000"))
+
+    def test_advance_headline_matches_the_rows_shown(self):
+        """Under the overdue filter an advance-only client has no row, so their money
+        is not in the headline either."""
+        client = self._advance_only_client()
+        self.client.force_login(self.sales1)
+        ctx = self.client.get(reverse("debt_list"), {"overdue": "1"}).context
+        self.assertNotIn(client, {g["client"] for g in ctx["debtors"]})
+        self.assertEqual(ctx["total_advance"], Decimal("0"))
+
+    def test_advance_scoped_to_the_seller(self):
+        """A seller sees their own till's advance; another rep's deposit is not theirs."""
+        client = self._advance_only_client(by=self.sales2)
+        self.client.force_login(self.sales1)
+        ctx = self.client.get(reverse("debt_list")).context
+        self.assertNotIn(client, {g["client"] for g in ctx["debtors"]})
+        self.assertEqual(ctx["total_advance"], Decimal("0"))
+        # …while an admin, who reads the client's total across every till, does see it
+        self.client.force_login(self.admin)
+        ctx = self.client.get(reverse("debt_list")).context
+        rows = {g["client"]: g for g in ctx["debtors"]}
+        self.assertEqual(rows[client]["advance"], Decimal("150000"))
+
+    def _advance_row(self, client):
+        self.client.force_login(self.sales1)
+        ctx = self.client.get(reverse("debt_list"), {"tur": "avans"}).context
+        return {g["client"]: g for g in ctx["debtors"]}[client]
+
+    def test_advance_dated_from_the_oldest_unspent_deposit(self):
+        """An advance has no deadline, so the page shows its age instead — counted
+        from the money that has been lying there longest, not the latest top-up."""
+        today = timezone.localdate()
+        client = Client.objects.create(name="Avansli mijoz", owner=self.sales1)
+        for days, amount in ((10, "50000"), (2, "30000")):
+            payment = self._advance(client, self.sales1, amount)
+            Payment.objects.filter(pk=payment.pk).update(date=today - timedelta(days=days))
+        self.assertEqual(
+            self._advance_row(client)["advance_since"], today - timedelta(days=10)
+        )
+
+    def test_advance_age_restarts_when_the_pool_empties(self):
+        """Money taken back does not leave its date behind: what is held now came in
+        with the new deposit."""
+        today = timezone.localdate()
+        client = Client.objects.create(name="Avansli mijoz", owner=self.sales1)
+        old = self._advance(client, self.sales1, "50000")
+        Payment.objects.filter(pk=old.pk).update(date=today - timedelta(days=10))
+        handed_back = Payment.objects.create(
+            client=client, sale=None, amount=Decimal("50000"),
+            method=Payment.Method.CASH, kind=Payment.Kind.ADVANCE_OUT,
+            date=today, created_by=self.sales1,
+        )
+        Payment.objects.filter(pk=handed_back.pk).update(date=today - timedelta(days=5))
+        fresh = self._advance(client, self.sales1, "30000")
+        Payment.objects.filter(pk=fresh.pk).update(date=today - timedelta(days=2))
+        row = self._advance_row(client)
+        self.assertEqual(row["advance"], Decimal("30000"))
+        self.assertEqual(row["advance_since"], today - timedelta(days=2))
+
+    def test_switch_narrows_to_advance_holders(self):
+        """The Avans button leaves only the clients holding one — the advance rows sit
+        at the bottom of the full list, so there has to be a way straight to them."""
+        client = self._advance_only_client()
+        self.client.force_login(self.sales1)
+        ctx = self.client.get(reverse("debt_list"), {"tur": "avans"}).context
+        self.assertEqual({g["client"] for g in ctx["debtors"]}, {client})
+        counts = {s["label"]: s["count"] for s in ctx["segments"]}
+        self.assertEqual(counts, {"Hammasi": 2, "Qarzdorlar": 1, "Avans": 1})
+        self.assertEqual(
+            [s["label"] for s in ctx["segments"] if s["active"]], ["Avans"]
+        )
+
+    def test_switch_narrows_to_debtors(self):
+        self._advance_only_client()
+        self.client.force_login(self.sales1)
+        ctx = self.client.get(reverse("debt_list"), {"tur": "qarz"}).context
+        self.assertEqual({g["client"] for g in ctx["debtors"]}, {self.client1})
+        # …and the headline follows the rows on screen
+        self.assertEqual(ctx["total_advance"], Decimal("0"))
+        self.assertEqual(ctx["total_debt"], Decimal("480000"))
+
+    def test_unknown_switch_value_falls_back_to_everything(self):
+        self._advance_only_client()
+        self.client.force_login(self.sales1)
+        ctx = self.client.get(reverse("debt_list"), {"tur": "xato"}).context
+        self.assertEqual(len(ctx["debtors"]), 2)
+        self.assertEqual([s["label"] for s in ctx["segments"] if s["active"]], ["Hammasi"])
+
+    def test_switch_survives_a_search(self):
+        """The buttons carry the rest of the query, and the search box carries the
+        chosen button back."""
+        self._advance_only_client()
+        self.client.force_login(self.sales1)
+        ctx = self.client.get(reverse("debt_list"), {"tur": "avans", "q": "Avansli"}).context
+        self.assertEqual(len(ctx["debtors"]), 1)
+        for segment in ctx["segments"]:
+            self.assertIn("q=Avansli", segment["url"])
 
     def test_client_debt_detail_lists_open_receipts(self):
         self.client.force_login(self.sales1)
@@ -3036,6 +3171,43 @@ class EmployeePayrollTests(BaseSetup):
         rows = {r["employee"].name: r for r in response.context["rows"]}
         self.assertEqual(rows["Косимов Рахматжон"]["paid"], Decimal("700000"))
 
+    def test_search_and_status_switch_narrow_the_page(self):
+        gone = Employee.objects.create(
+            name="Мансуров Шерзод", salary=Decimal("8000000"), is_active=False
+        )
+        self.client.force_login(self.admin)
+        names = lambda params: {
+            r["employee"].name
+            for r in self.client.get(reverse("employee_list"), params).context["rows"]
+        }
+        self.assertEqual(names({"q": "Мансур"}), {gone.name})
+        self.assertEqual(names({"holat": "faol"}), {self.worker.name})
+        self.assertEqual(names({"holat": "nofaol"}), {gone.name})
+        # The counts on the buttons cover the whole payroll, not the filtered rows
+        page = self.client.get(reverse("employee_list"), {"holat": "faol"})
+        self.assertEqual(
+            {s["label"]: s["count"] for s in page.context["segments"]},
+            {"Hammasi": 2, "Faol": 1, "Faol emas": 1},
+        )
+
+    def test_ledgers_follow_the_filter(self):
+        """A filtered page whose ledger still listed everybody would not add up to its
+        own KPI cards."""
+        other = Employee.objects.create(name="Мансуров Шерзод", salary=Decimal("8000000"))
+        self._pay("500000")
+        self._pay("300000", employee=other)
+        page = self.client.get(reverse("employee_list"), {"q": "Мансур"})
+        self.assertEqual([e.employee for e in page.context["payouts"]], [other])
+        self.assertEqual(page.context["payout_total"], Decimal("300000"))
+        self.assertEqual(page.context["totals"]["paid"], Decimal("300000"))
+
+    def test_export_holds_the_rows_on_screen(self):
+        Employee.objects.create(name="Мансуров Шерзод", salary=Decimal("8000000"))
+        self._pay("500000")
+        response = self.client.get(reverse("employee_export"), {"q": "Косимов"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("spreadsheet", response["Content-Type"])
+
     def test_junk_month_falls_back_to_this_one(self):
         self.client.force_login(self.admin)
         response = self.client.get(reverse("employee_list"), {"oy": "2026-77"})
@@ -3054,6 +3226,44 @@ class EmployeePayrollTests(BaseSetup):
         self.assertEqual(
             self.client.get(reverse("employee_edit", args=[self.worker.pk])).status_code,
             200,
+        )
+
+    def test_detail_page_tells_the_whole_history(self):
+        """Xodim tarixi: month by month, plus what they drew and what they spent for
+        the business — the two kept apart, as they are everywhere else."""
+        last_month = self.today.replace(day=1) - timedelta(days=1)
+        self.worker.start_month = last_month.replace(day=1)
+        self.worker.save(update_fields=["start_month"])
+        self._pay("700000", on=last_month)
+        self._pay("500000")
+        self._pay("120000", category="Benzin / transport", from_salary=False)
+        page = self.client.get(reverse("employee_detail", args=[self.worker.pk]))
+        months = {m["label"]: m for m in page.context["months"]}
+        self.assertEqual(len(months), 2)
+        earlier = months[uz_month(last_month.year, last_month.month)]
+        self.assertEqual(earlier["paid"], Decimal("700000"))
+        self.assertEqual(earlier["balance"], Decimal("1300000"))   # 2m − 700k
+        # …and the running balance is what the payroll page shows for this month
+        self.assertEqual(page.context["balance"], Decimal("2800000"))
+        payroll = self.client.get(reverse("employee_list")).context["rows"][0]
+        self.assertEqual(payroll["remaining"], page.context["balance"])
+        # Money drawn and money spent for the firm never land in the same list
+        self.assertEqual(page.context["payout_total"], Decimal("1200000"))
+        self.assertEqual(page.context["errand_total"], Decimal("120000"))
+
+    def test_expense_edited_from_a_worker_page_returns_there(self):
+        self._pay("500000")
+        expense = Expense.objects.get(employee=self.worker)
+        response = self.client.post(
+            f"{reverse('expense_edit', args=[expense.pk])}?next=xodim-{self.worker.pk}",
+            {
+                "date": self.today.isoformat(), "amount": "400000", "currency": "uzs",
+                "category": "Oylik / xodim", "method": "cash",
+                "employee": self.worker.pk, "counts_against_salary": "True",
+            },
+        )
+        self.assertRedirects(
+            response, reverse("employee_detail", args=[self.worker.pk])
         )
 
     def test_paid_worker_is_deactivated_not_deleted(self):

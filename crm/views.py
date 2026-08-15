@@ -125,6 +125,38 @@ def _advance_balance_map(client_pks, seller):
     }
 
 
+def _advance_since_map(client_pks, seller):
+    """{client_pk: the date the money now sitting in their advance came in} — the
+    oldest deposit that has not yet been eaten. Walked in date order with a running
+    balance, so a client who spent an old deposit down to nothing and then paid again
+    is dated from the new money, not from the deposit that is long gone. Same
+    seller-scoping as `_advance_balance_map`, so the date belongs to the balance
+    beside it."""
+    rows = Payment.objects.filter(
+        client__in=client_pks, kind__in=ADVANCE_DEPOSIT_KINDS + ADVANCE_SPENT_KINDS
+    )
+    if seller is not None:
+        rows = rows.filter(created_by=seller)
+    moves = (
+        rows.annotate(credit=PAYMENT_CREDIT)
+        .order_by("client", "date", "pk")
+        .values_list("client", "date", "kind", "credit")
+    )
+    since, balances = {}, {}
+    for client_pk, date, kind, credit in moves:
+        balance = balances.get(client_pk, Decimal("0"))
+        if kind in ADVANCE_DEPOSIT_KINDS:
+            if balance <= 0:
+                since[client_pk] = date
+            balance += credit
+        else:
+            balance -= credit
+            if balance <= 0:
+                since.pop(client_pk, None)
+        balances[client_pk] = balance
+    return since
+
+
 def _sale_totals(sales):
     """Revenue/cost/profit summed over the line items of the given sales."""
     return SaleItem.objects.filter(sale__in=sales.values("pk")).aggregate(
@@ -1596,6 +1628,25 @@ def _filter_chips(request, specs):
     ]
 
 
+def _segment(request, param, value, label, count, current):
+    """One button of a toolbar switch: the current query with `param` set to `value`
+    (or dropped, for the "everything" button). Unlike a chip it is always visible —
+    the choice is part of the page, not a filter you applied and can remove."""
+    qs = request.GET.copy()
+    if value:
+        qs[param] = value
+    else:
+        qs.pop(param, None)
+    qs.pop("page", None)
+    query = qs.urlencode()
+    return {
+        "label": label,
+        "count": count,
+        "url": f"{request.path}?{query}" if query else request.path,
+        "active": current == value,
+    }
+
+
 def _active_filter_chips(request, filters, clients, products, reps):
     """Sotuvlar filter chips (client/product/rep/status)."""
     status_labels = {"paid": "To'langan", "debt": "Qarz", "overdue": "Muddati o'tgan"}
@@ -1738,7 +1789,7 @@ def _debtor_rows(request):
         Sale.objects.visible_to(request.user).outstanding().select_related("client")
     )
 
-    filters = {key: request.GET.get(key, "") for key in ("client", "rep", "overdue")}
+    filters = {key: request.GET.get(key, "") for key in ("client", "rep", "overdue", "tur")}
     filters["q"] = request.GET.get("q", "").strip()
     if filters["q"]:
         open_sales = _client_search(open_sales, filters["q"], "client")
@@ -1750,11 +1801,8 @@ def _debtor_rows(request):
         open_sales = open_sales.filter(debt_deadline__lt=today)
 
     groups = {}
-    total_debt = Decimal("0")
-    overdue_total = Decimal("0")
     for sale in open_sales:
         remaining = sale.remaining
-        total_debt += remaining
         group = groups.get(sale.client_id)
         if group is None:
             group = groups[sale.client_id] = {
@@ -1763,6 +1811,9 @@ def _debtor_rows(request):
                 "count": 0,
                 "earliest": sale.debt_deadline,
                 "overdue_count": 0,
+                "overdue_amount": Decimal("0"),
+                "advance": Decimal("0"),
+                "advance_since": None,
             }
         group["remaining"] += remaining
         group["count"] += 1
@@ -1772,7 +1823,60 @@ def _debtor_rows(request):
             group["earliest"] = sale.debt_deadline
         if sale.debt_deadline and sale.debt_deadline < today:
             group["overdue_count"] += 1
-            overdue_total += remaining
+            group["overdue_amount"] += remaining
+
+    # The advance pool belongs on this page too — an advance is the same account read
+    # the other way round: money already taken for goods not yet handed over. Most
+    # clients holding one owe nothing, so they get a row of their own instead of only a
+    # column on the debtors; otherwise their money would sit in the headline figure with
+    # no line on the page to explain it. Seller-scoped like everywhere else, and an
+    # admin filtering by a seller sees that seller's till.
+    clients = _visible_clients(request.user)
+    if filters["q"]:
+        clients = _client_search(clients, filters["q"])
+    if filters["client"].isdigit():
+        clients = clients.filter(pk=filters["client"])
+    scope = None if request.user.can_see_all_records else request.user
+    if request.user.can_see_all_records and filters["rep"].isdigit():
+        scope = User.objects.filter(pk=filters["rep"]).first()
+    client_map = {c.pk: c for c in clients}
+    for pk, advance in _advance_balance_map(list(client_map), scope).items():
+        if advance <= 0:
+            continue
+        group = groups.get(pk)
+        if group is not None:
+            group["advance"] = advance
+        elif filters["overdue"] != "1":
+            # Nothing outstanding: no receipts, no deadline — just the balance held.
+            groups[pk] = {
+                "client": client_map[pk],
+                "remaining": Decimal("0"),
+                "count": 0,
+                "earliest": None,
+                "overdue_count": 0,
+                "overdue_amount": Decimal("0"),
+                "advance": advance,
+            }
+
+    # How long that money has been lying there — the advance's own "deadline": nobody
+    # is chasing it, so its age is the only thing that says it needs attention.
+    advance_pks = [pk for pk, g in groups.items() if g["advance"]]
+    for pk, when in _advance_since_map(advance_pks, scope).items():
+        groups[pk]["advance_since"] = when
+
+    # The Qarzdorlar / Avans switch. Counted before the switch is applied, so each
+    # button can carry how many rows it leads to — including the one you are not on.
+    counts = {
+        "": len(groups),
+        "qarz": sum(1 for g in groups.values() if g["remaining"]),
+        "avans": sum(1 for g in groups.values() if g["advance"]),
+    }
+    if filters["tur"] == "qarz":
+        groups = {pk: g for pk, g in groups.items() if g["remaining"]}
+    elif filters["tur"] == "avans":
+        groups = {pk: g for pk, g in groups.items() if g["advance"]}
+    else:
+        filters["tur"] = ""
 
     # When each debtor last took goods and last paid — the two dates you want in front
     # of you before ringing them up.
@@ -1783,17 +1887,28 @@ def _debtor_rows(request):
         group["last_sale"] = sale_map.get(pk)
         group["last_payment"] = pay_map.get(pk)
 
-    # Most urgent first: overdue (earliest deadlines) at the top
-    debtors = sorted(groups.values(), key=lambda g: g["earliest"] or today)
-    return debtors, filters, total_debt, overdue_total
+    # Most urgent first: overdue (earliest deadlines) at the top, and the advance-only
+    # rows — nobody chasing them — after everyone who owes.
+    debtors = sorted(
+        groups.values(), key=lambda g: (0 if g["remaining"] else 1, g["earliest"] or today)
+    )
+    # Headline figures over the rows actually on the page, so the KPI cards and the
+    # table can never tell two different stories.
+    totals = {
+        "debt": sum((g["remaining"] for g in debtors), Decimal("0")),
+        "overdue": sum((g["overdue_amount"] for g in debtors), Decimal("0")),
+        "advance": sum((g["advance"] for g in debtors), Decimal("0")),
+        "debtors": sum(1 for g in debtors if g["remaining"]),
+        "overdue_debtors": sum(1 for g in debtors if g["overdue_count"]),
+        "advance_clients": sum(1 for g in debtors if g["advance"]),
+        "counts": counts,
+    }
+    return debtors, filters, totals
 
 
 def debt_list(request):
     """One row per debtor client: total owed, open receipts, earliest deadline."""
-    today = timezone.localdate()
-    debtors, filters, total_debt, overdue_total = _debtor_rows(request)
-    overdue_debtors = sum(1 for g in debtors if g["overdue_count"])
-
+    debtors, filters, totals = _debtor_rows(request)
     clients = _visible_clients(request.user).order_by("name")
     reps = (
         User.objects.filter(is_active=True).order_by("first_name", "username")
@@ -1807,16 +1922,26 @@ def debt_list(request):
         {"param": "rep", "label": "Sotuvchi", "value": str(rep_obj) if rep_obj else ""},
         {"param": "overdue", "label": "Holat", "value": "Muddati o'tgan" if filters["overdue"] == "1" else ""},
     ])
+    # Qarzdorlar / Avans — a switch, not a chip: it sits in the toolbar as its own
+    # buttons, each carrying the number of rows behind it.
+    counts = totals["counts"]
+    segments = [
+        _segment(request, "tur", code, label, counts[code], filters["tur"])
+        for code, label in (("", "Hammasi"), ("qarz", "Qarzdorlar"), ("avans", "Avans"))
+    ]
 
     return render(
         request,
         "crm/debt_list.html",
         {
             "debtors": debtors,
-            "total_debt": total_debt,
-            "overdue_total": overdue_total,
-            "total_debtors": len(debtors),
-            "overdue_debtors": overdue_debtors,
+            "total_debt": totals["debt"],
+            "overdue_total": totals["overdue"],
+            "total_debtors": totals["debtors"],
+            "overdue_debtors": totals["overdue_debtors"],
+            "total_advance": totals["advance"],
+            "advance_clients": totals["advance_clients"],
+            "segments": segments,
             "filters": filters,
             "clients": clients,
             "reps": reps,
@@ -1833,12 +1958,13 @@ def debt_list(request):
 
 def debt_export(request):
     """Excel (.xlsx) of the debtor list for the current filters — one row per client."""
-    debtors, _, _, _ = _debtor_rows(request)
+    debtors, _, _ = _debtor_rows(request)
     today = timezone.localdate()
     headers = [
         "Mijoz", "Telefon", "Mas'ul xodim", "Ochiq cheklar",
         "Muddati o'tgan cheklar", "Eng yaqin muddat", "Holat",
-        "Oxirgi yuk olgan", "Oxirgi to'lov", "Qarz qoldig'i",
+        "Oxirgi yuk olgan", "Oxirgi to'lov", "Qarz qoldig'i", "Avans (so'm)",
+        "Avans qachondan",
     ]
     rows = []
     for g in debtors:
@@ -1850,12 +1976,20 @@ def debt_export(request):
             g["count"],
             g["overdue_count"],
             earliest.strftime("%d.%m.%Y") if earliest else "",
-            "Muddati o'tgan" if earliest and earliest < today else "Muddatida",
+            # A row that is here only for its advance owes nothing, so it is neither
+            # on time nor late.
+            "Avans" if not g["remaining"]
+            else "Muddati o'tgan" if earliest and earliest < today
+            else "Muddatida",
             g["last_sale"].strftime("%d.%m.%Y") if g["last_sale"] else "",
             g["last_payment"].strftime("%d.%m.%Y") if g["last_payment"] else "",
             float(g["remaining"]),
+            float(g["advance"]),
+            g["advance_since"].strftime("%d.%m.%Y") if g["advance_since"] else "",
         ])
-    return _xlsx_response("qarzlar.xlsx", "Qarzlar", headers, rows, {10: "#,##0.00"})
+    return _xlsx_response(
+        "qarzlar.xlsx", "Qarzlar", headers, rows, {10: "#,##0.00", 11: "#,##0.00"}
+    )
 
 
 def _open_receipts(request, client):
@@ -3491,7 +3625,7 @@ def _kassa_expenses(request):
     else:
         reps = None
         rep = request.user
-    expenses = Expense.objects.select_related("created_by").filter(
+    expenses = Expense.objects.select_related("created_by", "employee").filter(
         date__gte=dates["date_from"], date__lte=dates["date_to"]
     )
     if rep is not None:
@@ -3658,6 +3792,9 @@ def _kassa_transactions(expenses, dates, filters, rep):
             "amount_som": e.amount, "amount_original": e.original_amount,
             "exchange_rate": e.exchange_rate, "created_by": e.created_by,
             "pk": e.pk, "kind": "expense", "employee_pk": e.employee_id,
+            # Whose money it was: "Oylik / xodim" on its own leaves the one question
+            # the row is asked — who got it — unanswered.
+            "employee": e.employee.name if e.employee_id else "",
         })
     rows.sort(key=lambda r: (r["date"], r["created_at"]), reverse=True)
     return rows
@@ -3867,7 +4004,7 @@ def _outflow_sheet(outflow):
     """The Chiqim tab: rasxot, ishlab chiqarishga topshiruv, foyda topshiruvi, bank
     fees and cash refunded to clients — everything that left the till."""
     headers = [
-        "Sana", "Turi", "Tavsif", "Izoh", "Usul", "Valyuta",
+        "Sana", "Turi", "Tavsif", "Xodim", "Izoh", "Usul", "Valyuta",
         "Chiqim summa (so'm)", "Asl summa", "Kurs", "Kim kiritdi",
     ]
     rows = [
@@ -3875,6 +4012,7 @@ def _outflow_sheet(outflow):
             r["date"].strftime("%d.%m.%Y"),
             _OUTFLOW_LABELS.get(r["kind"], r["kind"]),
             r["title"],
+            r.get("employee", ""),
             r["subtitle"],
             r["method"],
             _currency_label(r),
@@ -3885,7 +4023,7 @@ def _outflow_sheet(outflow):
         ]
         for r in outflow
     ]
-    number_formats = {7: "#,##0.00", 8: "#,##0.00", 9: "#,##0.00"}
+    number_formats = {8: "#,##0.00", 9: "#,##0.00", 10: "#,##0.00"}
     return ("Chiqimlar", headers, rows, number_formats)
 
 
@@ -3981,6 +4119,21 @@ def _expense_response(request, form, title, invalid=False):
     )
 
 
+def _expense_back(request):
+    """Where an expense form returns to. The kassa by default; the payroll pages when
+    they are the ones that sent you here — a wage fixed from a worker's own page should
+    land back on that page, not somewhere else entirely. `next` arrives in the URL, so
+    only these known routes are honoured, never a raw address."""
+    target = request.GET.get("next", "")
+    if target == "xodimlar":
+        return reverse("employee_list")
+    if target.startswith("xodim-"):
+        pk = target[len("xodim-"):]
+        if pk.isdigit() and Employee.objects.filter(pk=pk).exists():
+            return reverse("employee_detail", args=[pk])
+    return reverse("kassa")
+
+
 def expense_create(request):
     """Record a payout from the till. Any logged-in user may add one — staff come to
     the cashier and the expense is written against the kassa (logged for audit).
@@ -4028,10 +4181,7 @@ def expense_create(request):
                 f"— {expense.amount:,.0f} so'm",
             )
             messages.success(request, f"Chiqim qo'shildi: {expense.amount:,.0f} so'm.")
-            # Only a known route may be returned to — `next` comes from the URL, so it
-            # is never trusted as a raw address.
-            back = "employee_list" if request.GET.get("next") == "xodimlar" else "kassa"
-            return form_success(request, reverse(back))
+            return form_success(request, _expense_back(request))
         return _expense_response(request, form, title, invalid=True)
     return _expense_response(request, form, title)
 
@@ -4052,7 +4202,7 @@ def expense_edit(request, pk):
                 f"{expense.category} chiqimi — {expense.amount:,.0f} so'm",
             )
             messages.success(request, "Chiqim yangilandi.")
-            return form_success(request, reverse("kassa"))
+            return form_success(request, _expense_back(request))
         return _expense_response(request, form, title, invalid=True)
     return _expense_response(request, form, title)
 
@@ -4069,7 +4219,7 @@ def expense_delete(request, pk):
         expense.delete()
         AuditLog.record(request.user, AuditLog.Action.DELETE, "Chiqim", pk, summary)
         messages.success(request, "Chiqim o'chirildi.")
-        return form_reload(request, reverse("kassa"))
+        return form_reload(request, _expense_back(request))
     return render_confirm(
         request,
         "Chiqimni o'chirish",
@@ -4534,6 +4684,24 @@ def _payroll_rows(employees, year, month):
     return rows
 
 
+def _payroll_employees(request):
+    """The workers the Xodimlar page is showing: the name search and the
+    Hammasi / Faol / Faol emas switch. Shared by the page and its Excel export so the
+    file always holds exactly the rows on screen."""
+    employees = Employee.objects.all()
+    q = request.GET.get("q", "").strip()
+    if q:
+        employees = employees.filter(Q(name__icontains=q) | Q(note__icontains=q))
+    status = request.GET.get("holat", "")
+    if status == "faol":
+        employees = employees.filter(is_active=True)
+    elif status == "nofaol":
+        employees = employees.filter(is_active=False)
+    else:
+        status = ""
+    return list(employees), q, status
+
+
 def employee_list(request):
     """Payroll (Xodimlar oyligi): everyone on the books, the wage in force this month,
     what rode in unpaid from earlier months, what the till has paid out, and what
@@ -4544,7 +4712,7 @@ def employee_list(request):
     that pays a wage was already theirs to do, so the figure it is measured against was
     the one thing they could not see."""
     year, month = _payroll_month(request)
-    employees = list(Employee.objects.all())
+    employees, q, status = _payroll_employees(request)
     rows = _payroll_rows(employees, year, month)
     # A worker whose account opens later has no figures for this month — only what the
     # till happened to pay them. They are left out of every total but the paid one.
@@ -4557,9 +4725,11 @@ def employee_list(request):
         "paid": sum((r["paid"] for r in rows), Decimal("0")),
         "remaining": sum((r["remaining"] for r in counted), Decimal("0")),
     }
+    # The two ledgers below follow the search and the switch as well: a filtered page
+    # whose ledgers still listed everybody would not add up to its own KPI cards.
     tagged = (
         Expense.objects.filter(
-            employee__isnull=False, date__year=year, date__month=month
+            employee__in=employees, date__year=year, date__month=month
         )
         .select_related("employee", "created_by")
         .order_by("-date", "-created_at")
@@ -4572,8 +4742,25 @@ def employee_list(request):
     today = timezone.localdate()
     prev_year, prev_month = _month_shift(year, month, -1)
     next_year, next_month = _month_shift(year, month, 1)
+    # Counted over the whole payroll, not the filtered rows, so the switch always says
+    # how many people each side holds — including the side you are not looking at.
+    everyone = Employee.objects.all()
+    active_count = sum(1 for e in everyone if e.is_active)
+    segments = [
+        _segment(request, "holat", code, label, count, status)
+        for code, label, count in (
+            ("", "Hammasi", len(everyone)),
+            ("faol", "Faol", active_count),
+            ("nofaol", "Faol emas", len(everyone) - active_count),
+        )
+    ]
+    export_qs = request.GET.urlencode()
     return render(request, "crm/employee_list.html", {
         "rows": rows,
+        "q": q,
+        "holat": status,
+        "segments": segments,
+        "export_url": reverse("employee_export") + (f"?{export_qs}" if export_qs else ""),
         "totals": totals,
         "payouts": payouts,
         "errands": errands,
@@ -4586,6 +4773,110 @@ def employee_list(request):
         "prev_month": f"{prev_year:04d}-{prev_month:02d}",
         "next_month": f"{next_year:04d}-{next_month:02d}",
         "is_current_month": (year, month) == (today.year, today.month),
+    })
+
+
+def employee_export(request):
+    """Excel (.xlsx) of the payroll month as filtered — one row per worker, the same
+    figures the page shows."""
+    year, month = _payroll_month(request)
+    employees, _, _ = _payroll_employees(request)
+    rows = _payroll_rows(employees, year, month)
+    headers = [
+        "Xodim", "Holat", "Hisob boshlangan", "Oyligi (so'm)", "O'tgan oydan (so'm)",
+        "Jami olishi kerak (so'm)", "Shu oy berilgan (so'm)", "Qolgan (so'm)", "Izoh",
+    ]
+    data = [
+        [
+            r["employee"].name,
+            "Faol" if r["employee"].is_active else "Faol emas",
+            r["employee"].start_month.strftime("%m.%Y"),
+            float(r["salary"] or 0),
+            float(r["carried"] or 0),
+            float(r["due"] or 0),
+            float(r["paid"]),
+            float(r["remaining"] or 0),
+            r["employee"].note,
+        ]
+        for r in rows
+    ]
+    number_formats = {i: "#,##0.00" for i in range(4, 9)}
+    return _xlsx_response(
+        f"xodimlar-{year:04d}-{month:02d}.xlsx",
+        uz_month(year, month), headers, data, number_formats,
+    )
+
+
+def _employee_history(employee, today):
+    """Month by month for one worker: the wage that month, what the till handed over,
+    and the balance rolling forward. The same accumulation `_payroll_rows` does across
+    the whole payroll, told for one person from their opening balance on — so the
+    bottom line here and the row on the payroll page can never disagree."""
+    drawn_rows = (
+        Expense.objects.filter(employee=employee, counts_against_salary=True)
+        .annotate(m=TruncMonth("date"))
+        .values("m")
+        .annotate(total=Sum("amount"))
+    )
+    drawn = {(r["m"].year, r["m"].month): r["total"] for r in drawn_rows}
+    rates = [
+        (rate.effective_from, rate.amount)
+        for rate in employee.rates.order_by("effective_from")
+    ]
+    # Runs to today, or further if money was handed over in a later month.
+    last = max([today.replace(day=1)] + [date(y, m, 1) for y, m in drawn])
+    months = []
+    balance = employee.opening_balance
+    for y, m in month_span(employee.start_month, last):
+        accrues = employee.accrues_in(y, m)
+        wage = _rate_at(rates, date(y, m, 1), employee.salary) if accrues else Decimal("0")
+        paid = drawn.get((y, m), Decimal("0"))
+        balance += wage - paid
+        months.append({
+            "value": f"{y:04d}-{m:02d}",
+            "label": uz_month(y, m),
+            "salary": wage,
+            "accrues": accrues,
+            "paid": paid,
+            "balance": balance,
+        })
+    months.reverse()                      # newest first, like every other ledger
+    return months, balance
+
+
+def employee_detail(request, pk):
+    """One worker's whole file: what they are owed now, the month-by-month history
+    behind that figure, every payout, and everything they spent for the business.
+
+    The payroll page answers "who gets what this month"; this one answers the question
+    that follows it — "and what has happened with this person all along" — which no
+    amount of stepping through months one at a time could show."""
+    employee = get_object_or_404(Employee, pk=pk)
+    today = timezone.localdate()
+    months, balance = _employee_history(employee, today)
+    payouts = (
+        employee.expenses.filter(counts_against_salary=True)
+        .select_related("created_by")
+        .order_by("-date", "-created_at")
+    )
+    errands = (
+        employee.expenses.filter(counts_against_salary=False)
+        .select_related("created_by")
+        .order_by("-date", "-created_at")
+    )
+    this_month = next(
+        (m for m in months if m["value"] == f"{today.year:04d}-{today.month:02d}"), None
+    )
+    return render(request, "crm/employee_detail.html", {
+        "employee": employee,
+        "months": months,
+        "balance": balance,
+        "this_month": this_month,
+        "payouts": payouts,
+        "errands": errands,
+        "payout_total": sum((e.amount for e in payouts), Decimal("0")),
+        "errand_total": sum((e.amount for e in errands), Decimal("0")),
+        "month_value": f"{today.year:04d}-{today.month:02d}",
     })
 
 

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load crm_extras %}
 {% block title %}Xodimlar oyligi · Paket CRM{% endblock %}
 {% block topbar_title %}Xodimlar oyligi{% endblock %}
 {% block fab %}<a class="fab" href="{% url 'employee_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi xodim</a>{% endblock %}
@@ -9,7 +10,51 @@
   Har oy o'zicha yopilmaydi: to'liq berilmagan oylik keyingi oyga o'tadi (“O'tgan
   oydan” ustuni), oldindan ortiqcha olingan pul esa minus bo'lib o'tadi.
 {% endcomment %}
-<div class="kpi-grid kpi-grid--compact">
+{% comment %}Oy tanlash sahifaning eng tepasida: u faqat jadvalni emas, kartalarni ham
+boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% endcomment %}
+<div class="table-toolbar">
+  <div class="toolbar-left">
+    <form method="get" class="toolbar-search{% if q %} is-active{% endif %}" role="search" data-live-search>
+      <svg class="toolbar-search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="search" name="q" value="{{ q }}" placeholder="Xodim ismi yoki izoh bo'yicha qidirish…" autocomplete="off" aria-label="Xodim qidirish">
+      <input type="hidden" name="oy" value="{{ month_value }}">
+      {% if holat %}<input type="hidden" name="holat" value="{{ holat }}">{% endif %}
+      {% if q %}<a href="{% qs_replace q='' %}" class="toolbar-search-x" title="Qidiruvni tozalash" aria-label="Qidiruvni tozalash">&times;</a>{% endif %}
+    </form>
+  </div>
+  <div class="toolbar-right">
+    <div class="seg" role="group" aria-label="Xodimlar">
+      {% for s in segments %}
+      <a class="seg-btn{% if s.active %} is-active{% endif %}" href="{{ s.url }}"{% if s.active %} aria-current="true"{% endif %}>{{ s.label }}<span class="seg-count">{{ s.count }}</span></a>
+      {% endfor %}
+    </div>
+    {% if not is_current_month %}<a class="btn btn-sm btn-ghost" href="{% qs_replace oy='' %}">Shu oy</a>{% endif %}
+    <div class="month-pick" role="group" aria-label="Oy tanlash">
+      <a class="datebar-btn" href="{% qs_replace oy=prev_month %}" title="Oldingi oy" aria-label="Oldingi oy">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </a>
+      <form method="get" class="month-pick-form">
+        {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
+        {% if holat %}<input type="hidden" name="holat" value="{{ holat }}">{% endif %}
+        <select name="oy" class="month-pick-select" aria-label="Oy" onchange="this.form.submit()">
+          {% for o in month_options %}<option value="{{ o.value }}"{% if o.value == month_value %} selected{% endif %}>{{ o.label }}</option>{% endfor %}
+        </select>
+        <noscript><button type="submit" class="btn btn-sm">Ko'rsat</button></noscript>
+      </form>
+      <a class="datebar-btn" href="{% qs_replace oy=next_month %}" title="Keyingi oy" aria-label="Keyingi oy">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </a>
+    </div>
+    <a class="btn btn-sm btn-excel" href="{{ export_url }}" title="Excel yuklab olish">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Excel
+    </a>
+  </div>
+</div>
+
+{% comment %}Oddiy kpi-grid: to'rtta karta qatorni to'liq egallaydi. Dashboarddagi
+--compact yetti ustunga bo'lingan, shu yerda o'ng tomoni bo'sh qolar edi.{% endcomment %}
+<div class="kpi-grid">
   <div class="kpi kpi--blue">
     <div class="kpi-head">
       <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></svg></span>
@@ -48,23 +93,8 @@
 </div>
 
 <div class="card">
-  <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+  <div class="card-head">
     <h2 style="margin:0;">Oylik hisobi · {{ month_label }}</h2>
-    <div class="month-bar">
-      {% if not is_current_month %}<a class="btn btn-sm btn-ghost" href="{% url 'employee_list' %}">Shu oy</a>{% endif %}
-      <form method="get" class="month-pick" role="group" aria-label="Oy tanlash">
-        <a class="datebar-btn" href="?oy={{ prev_month }}" title="Oldingi oy" aria-label="Oldingi oy">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-        </a>
-        <select id="oy" name="oy" class="month-pick-select" aria-label="Oy" onchange="this.form.submit()">
-          {% for o in month_options %}<option value="{{ o.value }}"{% if o.value == month_value %} selected{% endif %}>{{ o.label }}</option>{% endfor %}
-        </select>
-        <a class="datebar-btn" href="?oy={{ next_month }}" title="Keyingi oy" aria-label="Keyingi oy">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-        </a>
-        <noscript><button type="submit" class="btn btn-sm">Ko'rsat</button></noscript>
-      </form>
-    </div>
   </div>
 
   {% if rows %}
@@ -84,7 +114,8 @@
       <td class="sticky-col">
         <span class="cell-user">
           {% include "crm/_avatar.html" with name=r.employee.name %}
-          <span>{{ r.employee.name }}
+          {# Ism — xodimning to'liq tarixiga yo'l: oylari, olgan pullari, rasxotlari #}
+          <span><a href="{% url 'employee_detail' r.employee.pk %}" title="Xodim tarixi">{{ r.employee.name }}</a>
             {% if not r.employee.is_active %}<span class="badge badge-cancelled" style="margin-left:6px;">Faol emas</span>{% endif %}
             {% if r.employee.note %}<span class="cell-sub">{{ r.employee.note }}</span>{% endif %}
           </span>
@@ -109,12 +140,16 @@
       <td class="num amt-out">{{ r.paid|floatformat:"0g" }}</td>
       <td class="num"><span class="muted" title="Hisob {{ r.employee.start_month|date:'m.Y' }} dan boshlangan">hisob yuritilmagan</span></td>
       {% endif %}
-      <td class="num" style="display:flex;gap:4px;justify-content:flex-end;">
+      {% comment %}Amallar ichki o'ramda: katakning o'ziga display:flex berilsa u
+      table-cell bo'lishdan to'xtaydi va qator chizig'i shu joyda uziladi.{% endcomment %}
+      <td class="num row-actions">
+        <span class="ra-cluster">
         {% if r.employee.is_active %}
         <a class="btn btn-sm" href="{% url 'expense_create' %}?employee={{ r.employee.pk }}&next=xodimlar{% if r.remaining > 0 %}&summa={{ r.remaining|floatformat:"0u" }}{% endif %}" data-modal>Pul berish</a>
         {% endif %}
         <a class="icon-action" href="{% url 'employee_edit' r.employee.pk %}" data-modal title="Tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
         <a class="icon-action danger" href="{% url 'employee_delete' r.employee.pk %}" data-modal title="O'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
+        </span>
       </td>
     </tr>
     {% endfor %}
@@ -147,22 +182,42 @@
       <h2 style="margin:0;">Oylik berilgan</h2>
       <span class="ledger-total amt-out">−{{ payout_total|floatformat:"0g" }} so'm</span>
     </div>
-    <p class="ledger-hint">Xodimlarga berilgan oylik va avans — {{ month_label }}.</p>
+    <p class="ledger-hint">Xodimlarga berilgan oylik va avans — {{ month_label }}. Xatosi bo'lsa shu yerdan tuzatiladi.</p>
     <div class="table-wrap">
-    <table>
-      <tr><th>Sana</th><th>Xodim</th><th>Usul</th><th class="num">Summa</th><th>Izoh</th><th>Kim berdi</th></tr>
+    <table class="ledger-table ledger-out">
+      <tr><th>Sana</th><th>Xodim</th><th>Usul</th><th class="num">Summa</th><th>Izoh</th><th>Kim berdi</th><th></th></tr>
       {% for e in payouts %}
       <tr>
         <td>{{ e.date|date:"d.m.Y" }}</td>
-        <td>{{ e.employee.name }}</td>
+        <td>
+          <span class="cell-user">
+            {% include "crm/_avatar.html" with name=e.employee.name %}
+            <a href="{% url 'employee_detail' e.employee.pk %}" title="Xodim tarixi">{{ e.employee.name }}</a>
+          </span>
+        </td>
         <td>{% include "crm/_method_badge.html" with code=e.method label=e.get_method_display %}</td>
         <td class="num amt-out">−{{ e.amount|floatformat:"0g" }}</td>
         <td>{{ e.note|default:"—" }}</td>
         <td>{{ e.created_by }}</td>
+        {% comment %}Kassadagi qatorlar bilan bir xil amallar — yozuvni ko'rgan joydan
+        tuzatish mumkin bo'lsin, kassani qidirib yurmasdan.{% endcomment %}
+        <td class="row-actions">
+          <span class="ra-slots">
+            <a class="icon-action act-edit" href="{% url 'expense_edit' e.pk %}?next=xodimlar" data-modal title="Tahrirlash">{% include "crm/_ico_edit.html" %}</a>
+            <a class="icon-action danger" href="{% url 'expense_delete' e.pk %}?next=xodimlar" data-modal title="O'chirish">{% include "crm/_ico_trash.html" %}</a>
+          </span>
+        </td>
       </tr>
       {% empty %}
-      <tr><td colspan="6" class="muted">Bu oyda oylik berilmagan.</td></tr>
+      <tr><td colspan="7" class="muted">Bu oyda oylik berilmagan.</td></tr>
       {% endfor %}
+      {% if payouts %}
+      <tr>
+        <td colspan="3"><strong>Jami</strong> <span class="cell-sub">{{ payouts|length }} ta to'lov</span></td>
+        <td class="num amt-out"><strong>−{{ payout_total|floatformat:"0g" }}</strong></td>
+        <td colspan="3"></td>
+      </tr>
+      {% endif %}
     </table>
     </div>
   </div>
@@ -173,22 +228,40 @@
       <span class="ledger-total amt-out">−{{ errand_total|floatformat:"0g" }} so'm</span>
     </div>
     {# Oyligiga tegmaydigan pul: ish uchun sarflangan, kassadan chiqqan. #}
-    <p class="ledger-hint">Ish uchun sarflangan pul — oyligidan ushlanmaydi.</p>
+    <p class="ledger-hint">Ish uchun sarflangan pul — {{ month_label }}. Oyligidan ushlanmaydi.</p>
     <div class="table-wrap">
-    <table>
-      <tr><th>Sana</th><th>Xodim</th><th>Turkum</th><th class="num">Summa</th><th>Izoh</th><th>Kim yozdi</th></tr>
+    <table class="ledger-table ledger-out">
+      <tr><th>Sana</th><th>Xodim</th><th>Turkum</th><th class="num">Summa</th><th>Izoh</th><th>Kim yozdi</th><th></th></tr>
       {% for e in errands %}
       <tr>
         <td>{{ e.date|date:"d.m.Y" }}</td>
-        <td>{{ e.employee.name }}</td>
-        <td>{{ e.category }}</td>
+        <td>
+          <span class="cell-user">
+            {% include "crm/_avatar.html" with name=e.employee.name %}
+            <a href="{% url 'employee_detail' e.employee.pk %}" title="Xodim tarixi">{{ e.employee.name }}</a>
+          </span>
+        </td>
+        <td><span class="badge badge-neutral">{{ e.category }}</span></td>
         <td class="num amt-out">−{{ e.amount|floatformat:"0g" }}</td>
         <td>{{ e.note|default:"—" }}</td>
         <td>{{ e.created_by }}</td>
+        <td class="row-actions">
+          <span class="ra-slots">
+            <a class="icon-action act-edit" href="{% url 'expense_edit' e.pk %}?next=xodimlar" data-modal title="Tahrirlash">{% include "crm/_ico_edit.html" %}</a>
+            <a class="icon-action danger" href="{% url 'expense_delete' e.pk %}?next=xodimlar" data-modal title="O'chirish">{% include "crm/_ico_trash.html" %}</a>
+          </span>
+        </td>
       </tr>
       {% empty %}
-      <tr><td colspan="6" class="muted">Bu oyda xodimlar rasxot qilmagan.</td></tr>
+      <tr><td colspan="7" class="muted">Bu oyda xodimlar rasxot qilmagan.</td></tr>
       {% endfor %}
+      {% if errands %}
+      <tr>
+        <td colspan="3"><strong>Jami</strong> <span class="cell-sub">{{ errands|length }} ta yozuv</span></td>
+        <td class="num amt-out"><strong>−{{ errand_total|floatformat:"0g" }}</strong></td>
+        <td colspan="3"></td>
+      </tr>
+      {% endif %}
     </table>
     </div>
   </div>

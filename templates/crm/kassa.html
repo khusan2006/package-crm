@@ -120,7 +120,7 @@
       {% for t in outflow_rows %}
       <tr>
         <td>{{ t.date|date:"d.m.Y" }}</td>
-        <td>{% if t.kind == 'remittance' %}<span class="badge badge-remit">Topshirish</span> {% elif t.kind == 'remittance_back' %}<span class="badge badge-info">I.ch. qaytardi</span> {% elif t.kind == 'profit' %}<span class="badge badge-ok">Foyda</span> {% elif t.kind == 'refund' %}{% if t.is_adjust %}<span class="badge badge-neutral">Narx tuzatildi</span>{% else %}<span class="badge badge-neutral">Qaytarish</span>{% endif %} {% elif t.kind == 'advance_out' %}<span class="badge badge-info">Avans qaytdi</span> {% elif t.kind == 'commission' %}<span class="badge badge-danger">Komissiya</span> {% endif %}{{ t.title }}{% if t.kind == 'expense' or t.kind == 'advance_out' %}{% if t.subtitle %} <span class="cell-note">· {{ t.subtitle }}</span>{% endif %}{% endif %}</td>
+        <td>{% if t.kind == 'remittance' %}<span class="badge badge-remit">Topshirish</span> {% elif t.kind == 'remittance_back' %}<span class="badge badge-info">I.ch. qaytardi</span> {% elif t.kind == 'profit' %}<span class="badge badge-ok">Foyda</span> {% elif t.kind == 'refund' %}{% if t.is_adjust %}<span class="badge badge-neutral">Narx tuzatildi</span>{% else %}<span class="badge badge-neutral">Qaytarish</span>{% endif %} {% elif t.kind == 'advance_out' %}<span class="badge badge-info">Avans qaytdi</span> {% elif t.kind == 'commission' %}<span class="badge badge-danger">Komissiya</span> {% endif %}{{ t.title }}{% if t.employee %} · <strong>{{ t.employee }}</strong>{% endif %}{% if t.kind == 'expense' or t.kind == 'advance_out' %}{% if t.subtitle %} <span class="cell-note">· {{ t.subtitle }}</span>{% endif %}{% endif %}</td>
         <td>{% include "crm/_method_badge.html" with code=t.method_code label=t.method %}</td>
         <td class="num muted">{% if t.kind == 'commission' %}{{ t.commission_percent|floatformat:"-2g" }}%{% elif t.currency == 'usd' %}{{ t.exchange_rate|floatformat:"0g" }}{% else %}—{% endif %}</td>
         {# A return from production is money coming IN, so it prints as a plus. #}
@@ -207,7 +207,9 @@
       <td class="num amt-out">{{ r.expense_total|floatformat:"0g" }}</td>
       <td class="num amt-out">{{ r.commission|floatformat:"0g" }}</td>
       <td class="num"><strong>{{ r.net|floatformat:"0g" }}</strong></td>
-      <td class="num" style="display:flex;gap:4px;justify-content:flex-end;">
+      {# Tugmalar ichki o'ramda: katakning o'zi flex bo'lsa qator chizig'i uziladi. #}
+      <td class="num row-actions">
+        <span class="ra-cluster">
         <a class="btn btn-violet btn-sm" href="{% url 'remittance_create' %}?seller={{ r.uid }}" data-modal>Topshirish</a>
         <a class="btn btn-danger btn-sm" href="{% url 'remittance_refund_create' %}?seller={{ r.uid }}" data-modal>Qaytarish</a>
         <a class="btn btn-success btn-sm" href="{% url 'profit_payout_create' %}?seller={{ r.uid }}" data-modal>Foyda</a>
@@ -215,6 +217,7 @@
         {% if user.is_admin_role %}
         <a class="btn btn-ghost btn-sm" href="{% url 'production_adjust_create' %}?seller={{ r.uid }}" data-modal title="Qarzni tuzatish (pul harakatlanmaydi)">Tuzatish</a>
         {% endif %}
+        </span>
       </td>
     </tr>
     {% endfor %}

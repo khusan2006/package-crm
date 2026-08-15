@@ -10,6 +10,8 @@
     <input type="hidden" name="gacha" value="{{ filters.gacha }}">
     {% endif %}
     {% if filters.q %}<input type="hidden" name="q" value="{{ filters.q }}">{% endif %}
+    {% comment %}Toolbar tugmasi bilan tanlangan ko'rinish filtr qo'llanganda ham qoladi.{% endcomment %}
+    {% if filters.tur %}<input type="hidden" name="tur" value="{{ filters.tur }}">{% endif %}
     {% comment %}
     Pages that show the same rows more than one way (to'lovlar) choose it here. Where
     the choice isn't offered, the current one is carried through as a hidden field so
