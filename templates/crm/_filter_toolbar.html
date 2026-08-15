@@ -20,7 +20,8 @@
     </div>
     {% elif show_daterange_picker %}
     <div class="toolbar-label">
-      {% if is_today %}<span class="today-chip">Bugun</span>
+      {% if is_all %}Butun tarix
+      {% elif is_today %}<span class="today-chip">Bugun</span>
       {% elif is_single_day %}{{ date_from|date:"j-F, l" }}
       {% elif is_month %}{{ date_from|date:"F Y" }} oyi
       {% else %}{{ range_days }} kunlik oraliq{% endif %}
@@ -34,7 +35,7 @@
     {% if segments %}
     <div class="seg" role="group" aria-label="Ko'rinish">
       {% for s in segments %}
-      <a class="seg-btn{% if s.active %} is-active{% endif %}" href="{{ s.url }}"{% if s.active %} aria-current="true"{% endif %}>{{ s.label }}<span class="seg-count">{{ s.count }}</span></a>
+      <a class="seg-btn{% if s.active %} is-active{% endif %}" href="{{ s.url }}"{% if s.active %} aria-current="true"{% endif %}>{{ s.label }}{% if s.count is not None %}<span class="seg-count">{{ s.count }}</span>{% endif %}</a>
       {% endfor %}
     </div>
     {% endif %}
@@ -49,6 +50,9 @@
     </a>
     {% endif %}
     {% if show_daterange_picker and keep_daterange or show_daterange_picker and not has_filters %}
+    {% comment %}Butun tarixni ko'rsatadigan sahifada (amallar tarixi) oynani butunlay
+    olib tashlash kerak bo'ladi — “Bugun”ning aksi.{% endcomment %}
+    {% if allow_all_window and not is_all %}<a class="btn btn-sm btn-ghost" href="{% qs_replace dan='' gacha='' %}">Hammasi</a>{% endif %}
     {% if not is_today %}<a class="btn btn-sm btn-ghost" href="{% qs_replace dan=today_iso gacha=today_iso %}">Bugun</a>{% endif %}
     <div class="daterange" data-from="{{ filters.dan }}" data-to="{{ filters.gacha }}" data-today="{{ today_iso }}">
       <a class="datebar-btn" href="{% qs_replace dan=prev_from gacha=prev_to %}" title="Oldingi kun">
@@ -57,7 +61,7 @@
       <button type="button" class="daterange-trigger" aria-haspopup="dialog" aria-expanded="false">
         <svg class="cal-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
         <span class="daterange-text">
-          {% if is_today %}Bugun{% elif is_single_day %}{{ date_from|date:"j-F" }}{% elif is_month %}{{ date_from|date:"F" }}{% else %}{{ date_from|date:"j-F" }} – {{ date_to|date:"j-F" }}{% endif %}
+          {% if is_all %}Hammasi{% elif is_today %}Bugun{% elif is_single_day %}{{ date_from|date:"j-F" }}{% elif is_month %}{{ date_from|date:"F" }}{% else %}{{ date_from|date:"j-F" }} – {{ date_to|date:"j-F" }}{% endif %}
         </span>
       </button>
       <a class="datebar-btn" href="{% qs_replace dan=next_from gacha=next_to %}" title="Keyingi kun">

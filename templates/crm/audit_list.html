@@ -1,10 +1,18 @@
 {% extends "base.html" %}
 {% load crm_extras %}
-{% block title %}Hisobotlar · Paket CRM{% endblock %}
-{% block topbar_title %}Hisobotlar{% endblock %}
+{% block title %}Amallar tarixi · Paket CRM{% endblock %}
+{% block topbar_title %}Amallar tarixi{% endblock %}
 {% block content %}
 
-{% include "crm/_filter_toolbar.html" with show_search=True %}
+{% comment %}
+  Bu bo'lim — audit jurnali: tizimda qilingan har bir amal (sotuv, to'lov, chiqim,
+  qaytarish, topshiruv, mijoz/mahsulot/ombor/xodim/foydalanuvchi o'zgarishlari) kim
+  tomonidan va qachon qilingani bilan yoziladi. Yozuvlar o'chirilmaydi — faqat
+  qo'shiladi.
+{% endcomment %}
+{% comment %}Sana boshqaruvi kassadagining aynan o'zi — kalendar + ‹ › kunlik qadam.
+Farqi: bu sahifa butun tarixni ko'rsatgani uchun oyna bo'sh ham bo'la oladi.{% endcomment %}
+{% include "crm/_filter_toolbar.html" with show_search=True export_url=export_url %}
 
 {% if page.object_list %}
 <div class="table-wrap">
@@ -17,7 +25,13 @@
     <td class="muted">{{ log.created_at|date:"H:i" }}</td>
     <td>{{ log.user|default:"—" }}</td>
     <td><span class="badge badge-evt {{ ev.cls }}">{% include "crm/_event_icon.html" with icon=ev.icon %}{{ ev.label }}</span></td>
-    <td>{{ log.summary|without_money }}{% if log.target_id %} <span class="muted">#{{ log.target_id }}</span>{% endif %}</td>
+    {% comment %}Tafsilot — amal bo'lgan joyga havola. O'chirilgan (yoki bekor qilingan)
+    yozuvda boradigan joy yo'q: yozuv qoladi, obyekt qolmaydi — shuning uchun kulrang.{% endcomment %}
+    <td>
+      {% if log.link %}<a href="{{ log.link }}" title="Shu amal bo'lgan joyga o'tish">{{ log.summary|without_money }}</a>
+      {% else %}<span class="muted">{{ log.summary|without_money }}</span>{% endif %}
+      {% if log.target_id %}<span class="muted">#{{ log.target_id }}</span>{% endif %}
+    </td>
     <td class="num">
       {% if amount %}
         {% if ev.flow == 'in' %}<strong class="amt-in">+{{ amount }}</strong>
@@ -42,5 +56,7 @@
 <p class="muted">{% if has_filters or filters.q %}Filtr bo'yicha yozuv topilmadi.{% else %}Hozircha hisobot yozuvlari yo'q.{% endif %}</p>
 {% endif %}
 
-{% include "crm/_filter_drawer.html" with show_dates=True %}
+{% comment %}Sanalar endi toolbarda tanlanadi, shuning uchun oynada ular takrorlanmaydi —
+tanlangan oraliq yashirin maydonlar bilan olib o'tiladi.{% endcomment %}
+{% include "crm/_filter_drawer.html" with keep_daterange=True %}
 {% endblock %}

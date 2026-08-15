@@ -57,3 +57,35 @@ def render_confirm(request, title, message, confirm_label, confirm_class=""):
     }
     template = "_confirm_modal.html" if is_ajax(request) else "crm/confirm.html"
     return render(request, template, context)
+
+
+def _readable(field, value):
+    """One side of a change, as a person would read it: a choice's label rather than
+    its code, "ha"/"yo'q" for a checkbox, an em dash for nothing at all."""
+    if value is True:
+        return "ha"
+    if value is False:
+        return "yo'q"
+    if value in (None, "", []):
+        return "—"
+    choices = getattr(field, "choices", None)
+    if choices:
+        # Works for both plain choices and a ModelChoiceField, whose iterator keys
+        # compare equal to the raw pk that `initial` holds.
+        return str(dict(choices).get(value, value))
+    return str(value)
+
+
+def form_changes(form):
+    """What a bound form actually changed, as "Maydon: oldin → hozir, …".
+
+    An audit line that says only "yangilandi" answers none of the questions the trail
+    is kept for — which price moved, who the client was handed to, whose account was
+    switched off. Read from `changed_data`, so an untouched field is never listed."""
+    return ", ".join(
+        f"{form.fields[name].label or name}: "
+        f"{_readable(form.fields[name], form.initial.get(name))} → "
+        f"{_readable(form.fields[name], form.cleaned_data.get(name))}"
+        for name in form.changed_data
+        if name in form.fields
+    )

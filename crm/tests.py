@@ -4327,8 +4327,155 @@ class InnerPageBackTests(BaseSetup):
             self.assertIn("topbar-back", r.content.decode(), url)
 
 
+class AuditCoverageTests(BaseSetup):
+    """Amallar tarixi is meant to hold EVERY operation, not only the ones that move
+    money: a renamed client, a re-priced product, a stock correction and a new login
+    account all decide what the money does next."""
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+
+    def logged(self, target_type):
+        return [
+            log.summary for log in AuditLog.objects.filter(target_type=target_type)
+        ]
+
+    def test_client_create_edit_delete_are_recorded(self):
+        self.client.post(
+            reverse("client_create"), {"name": "Yangi mijoz", "owner": self.sales1.pk}
+        )
+        client = Client.objects.get(name="Yangi mijoz")
+        self.client.post(
+            reverse("client_edit", args=[client.pk]),
+            {"name": "Tuzatilgan mijoz", "owner": self.sales1.pk},
+        )
+        self.client.post(reverse("client_delete", args=[client.pk]))
+        actions = list(
+            AuditLog.objects.filter(target_type="Mijoz").values_list("action", flat=True)
+        )
+        self.assertEqual(
+            sorted(actions),
+            sorted([AuditLog.Action.CREATE, AuditLog.Action.UPDATE, AuditLog.Action.DELETE]),
+        )
+        # The edit says what changed, not merely that something did
+        edit = AuditLog.objects.get(target_type="Mijoz", action=AuditLog.Action.UPDATE)
+        self.assertIn("Tuzatilgan mijoz", edit.summary)
+
+    def test_product_price_change_is_recorded_with_both_figures(self):
+        self.client.post(
+            reverse("product_edit", args=[self.product.pk]),
+            {
+                "name": self.product.name, "sku": self.product.sku,
+                "price": "9000", "cost_price": self.product.cost_price,
+            },
+        )
+        summary = self.logged("Mahsulot")[0]
+        self.assertIn("narx", summary)
+        self.assertIn("9,000", summary.replace(" ", ","))
+
+    def test_stock_entry_and_correction_are_recorded(self):
+        self.client.post(
+            reverse("stock_entry_create", args=[self.product.pk]),
+            {
+                "date": timezone.localdate().isoformat(),
+                "quantity_kg": "25", "note": "Ishlab chiqarishdan",
+            },
+        )
+        self.client.post(
+            reverse("stock_adjust", args=[self.product.pk]), {"quantity": "10", "note": ""}
+        )
+        kinds = set(
+            AuditLog.objects.filter(target_type="Ombor").values_list("action", flat=True)
+        )
+        self.assertEqual(kinds, {AuditLog.Action.CREATE, AuditLog.Action.UPDATE})
+
+    def test_user_account_changes_are_recorded(self):
+        self.client.post(
+            reverse("user_create"),
+            {
+                "username": "yangi", "first_name": "Yangi", "last_name": "Xodim",
+                "role": "sales", "password1": "juda-uzun-parol-9", "password2": "juda-uzun-parol-9",
+            },
+        )
+        created = User.objects.get(username="yangi")
+        self.client.post(
+            reverse("user_edit", args=[created.pk]),
+            {
+                "username": "yangi", "first_name": "Yangi", "last_name": "Xodim",
+                "email": "", "phone": "", "role": "manager", "is_active": "on",
+            },
+        )
+        summaries = self.logged("Foydalanuvchi")
+        self.assertEqual(len(summaries), 2)
+        self.assertTrue(any("Menejer" in s for s in summaries))  # the role change
+
+    def rows(self):
+        return list(self.client.get(reverse("audit_list")).context["page"].object_list)
+
+    def test_line_links_to_where_the_action_happened(self):
+        AuditLog.record(
+            self.admin, AuditLog.Action.CREATE, "Sotuv", self.sale1.pk, "Sotuv yozildi"
+        )
+        AuditLog.record(
+            self.admin, AuditLog.Action.CREATE, "Mijoz", self.client1.pk,
+            f"{self.client1.name} qo'shildi",
+        )
+        links = {log.target_type: log.link for log in self.rows()}
+        self.assertEqual(links["Sotuv"], reverse("sale_detail", args=[self.sale1.pk]))
+        self.assertEqual(
+            links["Mijoz"], reverse("client_history", args=[self.client1.pk])
+        )
+        self.assertEqual(self.client.get(links["Sotuv"]).status_code, 200)
+
+    def test_deleted_records_have_nowhere_to_go(self):
+        """The line survives, the thing it happened to does not — so it stays plain."""
+        AuditLog.record(
+            self.admin, AuditLog.Action.DELETE, "Sotuv", self.sale1.pk, "Sotuv o'chirildi"
+        )
+        self.assertIsNone(self.rows()[0].link)
+
+    def test_payment_line_follows_the_name_in_its_own_text(self):
+        """A payment is filed under what the money was about — sometimes the client,
+        sometimes the sale. The id alone cannot say which, so the client named in the
+        line decides; an id that matches neither gets no link at all."""
+        AuditLog.record(
+            self.admin, AuditLog.Action.PAYMENT, "To'lov", self.client1.pk,
+            f"Mijoz {self.client1.name} qarz to'lovi — 100 000 so'm",
+        )
+        # An id that belongs to a sale and to no client, so only the sale can match
+        sale = self.sale1
+        while Client.objects.filter(pk=sale.pk).exists():
+            sale = make_sale(self.client1, self.sales1, self.product)
+        AuditLog.record(
+            self.admin, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
+            f"Mijoz {sale.client.name} to'lovi — 50 000 so'm",
+        )
+        # An id that belongs to somebody else entirely: better plain than wrong
+        AuditLog.record(
+            self.admin, AuditLog.Action.PAYMENT, "To'lov", self.client2.pk,
+            "Nomsiz to'lov — 10 000 so'm",
+        )
+        by_summary = {log.summary: log.link for log in self.rows()}
+        self.assertEqual(
+            by_summary[f"Mijoz {self.client1.name} qarz to'lovi — 100 000 so'm"],
+            reverse("client_history", args=[self.client1.pk]),
+        )
+        self.assertEqual(
+            by_summary[f"Mijoz {sale.client.name} to'lovi — 50 000 so'm"],
+            reverse("sale_detail", args=[sale.pk]),
+        )
+        self.assertIsNone(by_summary["Nomsiz to'lov — 10 000 so'm"])
+
+    def test_export_downloads_the_filtered_trail(self):
+        AuditLog.record(self.admin, AuditLog.Action.CREATE, "Sotuv", 1, "Test yozuvi")
+        response = self.client.get(reverse("audit_export"), {"q": "Test"})
+        rows = read_xlsx(response)
+        self.assertEqual(rows[0][0], "Sana")
+        self.assertEqual([r[6] for r in rows[1:]], ["Test yozuvi"])
+
+
 class AuditFilterTests(BaseSetup):
-    """Hisobotlar (audit) is filterable by who acted, which action and a date
+    """Amallar tarixi is filterable by who acted, which action and a date
     window — the trail only grows, so an entry must stay findable."""
 
     def test_filter_combinations_render(self):
@@ -4345,6 +4492,38 @@ class AuditFilterTests(BaseSetup):
         ]
         for url in urls:
             self.assertEqual(self.client.get(url).status_code, 200, url)
+
+    def test_page_opens_on_the_whole_history(self):
+        """The kassa's date control, but this page is a full history: it opens with no
+        window at all, or a day's slice would hide almost everything."""
+        old = AuditLog.record(self.admin, AuditLog.Action.CREATE, "Sotuv", 1, "Eski")
+        AuditLog.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timedelta(days=40)
+        )
+        AuditLog.record(self.admin, AuditLog.Action.CREATE, "Sotuv", 2, "Bugungi")
+        self.client.force_login(self.admin)
+        page = self.client.get(reverse("audit_list"))
+        self.assertTrue(page.context["is_all"])
+        self.assertIsNone(page.context["date_from"])
+        self.assertEqual(
+            {log.summary for log in page.context["page"].object_list},
+            {"Eski", "Bugungi"},
+        )
+
+    def test_picking_today_narrows_to_today(self):
+        old = AuditLog.record(self.admin, AuditLog.Action.CREATE, "Sotuv", 1, "Eski")
+        AuditLog.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timedelta(days=40)
+        )
+        AuditLog.record(self.admin, AuditLog.Action.CREATE, "Sotuv", 2, "Bugungi")
+        today = timezone.localdate().isoformat()
+        self.client.force_login(self.admin)
+        page = self.client.get(reverse("audit_list"), {"dan": today, "gacha": today})
+        self.assertFalse(page.context["is_all"])
+        self.assertTrue(page.context["is_today"])
+        self.assertEqual(
+            [log.summary for log in page.context["page"].object_list], ["Bugungi"]
+        )
 
     def test_action_filter_narrows_to_one_action(self):
         AuditLog.record(self.admin, AuditLog.Action.CREATE, "Sotuv", 1, "yaratildi")

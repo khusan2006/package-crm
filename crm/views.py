@@ -93,6 +93,7 @@ from .models import (
     seller_production_debt,
 )
 from .utils import (
+    form_changes,
     form_reload,
     form_response,
     form_success,
@@ -879,6 +880,10 @@ def client_create(request):
             if not client.owner_id:
                 client.owner = request.user
             client.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Mijoz", client.pk,
+                f"{client.name} qo'shildi (mas'ul: {client.owner})",
+            )
             messages.success(request, f"“{client.name}” mijozi qo'shildi.")
             return form_success(request, reverse("client_list"))
         return form_response(request, form, "Yangi mijoz", invalid=True)
@@ -909,6 +914,10 @@ def client_quick_create(request):
             )
     client = Client.objects.create(
         name=name, phone=request.POST.get("phone", "").strip(), owner=request.user
+    )
+    AuditLog.record(
+        request.user, AuditLog.Action.CREATE, "Mijoz", client.pk,
+        f"{client.name} (sotuv oynasidan tez qo'shildi)",
     )
     return JsonResponse({"id": client.pk, "text": client.name})
 
@@ -968,7 +977,16 @@ def client_edit(request, pk):
     title = f"Tahrirlash: {client.name}"
     if request.method == "POST":
         if form.is_valid():
+            # What actually changed, not just "yangilandi" — a renamed client or a
+            # client moved to another seller is the kind of edit a trail is kept for.
+            changes = form_changes(form)
             form.save()
+            summary = f"{client.name} yangilandi"
+            if changes:
+                summary += f" — {changes}"
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Mijoz", client.pk, summary[:255]
+            )
             messages.success(request, f"“{client.name}” mijozi yangilandi.")
             return form_reload(request, reverse("client_list"))
         return _render_client_edit(request, client, form, title, invalid=True)
@@ -995,6 +1013,10 @@ def client_delete(request, pk):
     if request.method == "POST":
         try:
             client.delete()
+            AuditLog.record(
+                request.user, AuditLog.Action.DELETE, "Mijoz", pk,
+                f"{client.name} o'chirildi",
+            )
             messages.success(request, f"“{client.name}” mijozi o'chirildi.")
         except ProtectedError:
             messages.error(
@@ -1426,6 +1448,11 @@ def product_create(request):
     if request.method == "POST":
         if form.is_valid():
             product = form.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Mahsulot", product.pk,
+                f"{product.name} qo'shildi — narx {product.price:,.0f} so'm, "
+                f"tannarx {product.cost_price:,.0f} so'm",
+            )
             messages.success(request, f"“{product.name}” mahsuloti qo'shildi.")
             return form_success(request, reverse("product_detail", args=[product.pk]))
         return form_response(request, form, "Yangi mahsulot", invalid=True)
@@ -1434,11 +1461,27 @@ def product_create(request):
 
 def product_edit(request, pk):
     product = get_object_or_404(Product, pk=pk)
+    # Read BEFORE the form is validated: a ModelForm writes the posted values onto its
+    # instance during `is_valid()`, so by then `product.price` is already the new one.
+    was_price, was_cost = product.price, product.cost_price
     form = ProductForm(request.POST or None, instance=product)
     title = f"Tahrirlash: {product.name}"
     if request.method == "POST":
         if form.is_valid():
+            # A price is the one field on this form that changes what money the next
+            # sale makes, so it is spelled out rather than left as "yangilandi".
             form.save()
+            moved = []
+            if product.price != was_price:
+                moved.append(f"narx {was_price:,.0f} → {product.price:,.0f} so'm")
+            if product.cost_price != was_cost:
+                moved.append(f"tannarx {was_cost:,.0f} → {product.cost_price:,.0f} so'm")
+            summary = f"{product.name} yangilandi"
+            if moved:
+                summary += " — " + ", ".join(moved)
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Mahsulot", product.pk, summary[:255]
+            )
             messages.success(request, f"“{product.name}” mahsuloti yangilandi.")
             return form_reload(request, reverse("product_detail", args=[product.pk]))
         return form_response(request, form, title, invalid=True)
@@ -1483,6 +1526,11 @@ def stock_entry_create(request, pk):
             entry.product = product
             entry.created_by = request.user
             entry.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Ombor", entry.pk,
+                f"{product.name} — {entry.quantity_kg:.3f} kg kirim"
+                + (f" ({entry.note})" if entry.note else ""),
+            )
             messages.success(
                 request, f"“{product.name}” omboriga {entry.quantity_kg} kg kirim qilindi."
             )
@@ -1504,8 +1552,13 @@ def stock_adjust(request, pk):
                 note = form.cleaned_data["note"] or (
                     f"Miqdor tuzatildi: {current:.3f} → {target:.3f} kg"
                 )
-                StockEntry.objects.create(
+                entry = StockEntry.objects.create(
                     product=product, quantity_kg=delta, note=note, created_by=request.user
+                )
+                AuditLog.record(
+                    request.user, AuditLog.Action.UPDATE, "Ombor", entry.pk,
+                    f"{product.name} — miqdor tuzatildi: {current:.3f} → {target:.3f} kg "
+                    f"({delta:+.3f})",
                 )
                 messages.success(
                     request, f"“{product.name}” ombori {target:.3f} kg qilib belgilandi."
@@ -1628,21 +1681,28 @@ def _filter_chips(request, specs):
     ]
 
 
+def _segment_url(request, **params):
+    """The current query with `params` set — an empty value drops its param, and the
+    page number always goes, since a narrower view has different pages."""
+    qs = request.GET.copy()
+    for key, value in params.items():
+        if value in ("", None):
+            qs.pop(key, None)
+        else:
+            qs[key] = value
+    qs.pop("page", None)
+    query = qs.urlencode()
+    return f"{request.path}?{query}" if query else request.path
+
+
 def _segment(request, param, value, label, count, current):
     """One button of a toolbar switch: the current query with `param` set to `value`
     (or dropped, for the "everything" button). Unlike a chip it is always visible —
     the choice is part of the page, not a filter you applied and can remove."""
-    qs = request.GET.copy()
-    if value:
-        qs[param] = value
-    else:
-        qs.pop(param, None)
-    qs.pop("page", None)
-    query = qs.urlencode()
     return {
         "label": label,
         "count": count,
-        "url": f"{request.path}?{query}" if query else request.path,
+        "url": _segment_url(request, **{param: value}),
         "active": current == value,
     }
 
@@ -1672,17 +1732,35 @@ def _date_range_context(request, default_window="today"):
     the shared toolbar's date-range picker needs.
 
     `default_window` picks what a page opens on when NEITHER date is given:
-    "today", or "month" for the whole current calendar month (what the ombor
-    report wants — it reads as a monthly sverka, and a single day's slice of one
-    is usually empty). Once either date is in the URL the old parsing stands
-    unchanged, so every existing link, filter and day-step arrow still means
-    exactly what it did.
+    "today", "month" for the whole current calendar month (what the ombor report
+    wants — it reads as a monthly sverka, and a single day's slice of one is usually
+    empty), or "all" for no window at all — what a full history like the audit trail
+    opens on, where cutting to one day by default would hide almost everything.
+    Once either date is in the URL the old parsing stands unchanged, so every
+    existing link, filter and day-step arrow still means exactly what it did.
 
     `is_month` tells the toolbar the window is one whole calendar month, so it can
     label it by name ("Avgust") instead of spelling out both end dates."""
     today = timezone.localdate()
     dan = _parse_date(request.GET.get("dan"))
     gacha = _parse_date(request.GET.get("gacha"))
+    if dan is None and gacha is None and default_window == "all":
+        # No window: the picker says "Hammasi" and its arrows step days from today,
+        # so the first click lands somewhere meaningful rather than in 1970.
+        return {
+            "date_from": None,
+            "date_to": None,
+            "range_days": 0,
+            "is_single_day": False,
+            "is_month": False,
+            "is_today": False,
+            "is_all": True,
+            "prev_from": (today - timedelta(days=1)).isoformat(),
+            "prev_to": (today - timedelta(days=1)).isoformat(),
+            "next_from": today.isoformat(),
+            "next_to": today.isoformat(),
+            "today_iso": today.isoformat(),
+        }
     if dan is None and gacha is None and default_window == "month":
         date_from = today.replace(day=1)
         date_to = _month_end(today)
@@ -1700,6 +1778,7 @@ def _date_range_context(request, default_window="today"):
         "is_single_day": date_from == date_to,
         "is_month": date_from.day == 1 and date_to == _month_end(date_from),
         "is_today": date_from == today and date_to == today,
+        "is_all": False,
         "prev_from": (date_from - timedelta(days=1)).isoformat(),
         "prev_to": (date_to - timedelta(days=1)).isoformat(),
         "next_from": (date_from + timedelta(days=1)).isoformat(),
@@ -3167,11 +3246,11 @@ def payment_export(request):
     ])
 
 
-def audit_list(request):
-    """The money-action audit trail. Admins/managers see every action; a seller
-    sees only their own. The trail only grows, so it is filterable by who acted,
-    which action, a date window and free text — otherwise a single entry becomes
-    unfindable past the first few pages."""
+def _audit_rows(request):
+    """The audit trail for the current filters. Admins/managers see every action; a
+    seller sees only their own. The trail only grows, so it is filterable by who
+    acted, which action, a date window and free text — otherwise a single entry
+    becomes unfindable past the first few pages. Shared by the page and its export."""
     logs = AuditLog.objects.select_related("user")
     if not request.user.can_see_all_records:
         logs = logs.filter(user=request.user)
@@ -3218,10 +3297,100 @@ def audit_list(request):
         {"param": "gacha", "label": "Sanagacha",
          "value": date_to.strftime("%d.%m.%Y") if date_to else ""},
     ])
+    return logs, filters, reps, actions, active_filters
 
+
+def _audit_links(logs):
+    """{log.pk: url} — where each trail line leads, for the lines that still have
+    somewhere to go.
+
+    Deleted and voided records are left out on purpose: the line survives, the thing it
+    happened to does not. Everything else is resolved in batches, one query per kind of
+    target on the page rather than one per row.
+
+    "To'lov" and "Qaytarish" are filed under what the money was ABOUT rather than the
+    payment row itself — and not always under the same thing: a debt payment carries its
+    client, a voided receipt payment carries its sale. Both are tried, and the one whose
+    client's name appears in the line's own text wins. A link that opens some unrelated
+    client's page would be worse than no link at all."""
+    dead = {AuditLog.Action.DELETE, AuditLog.Action.VOID}
+    live = [log for log in logs if log.action not in dead and log.target_id]
+
+    def pks(*types):
+        return {log.target_id for log in live if log.target_type in types}
+
+    sales = Sale.objects.select_related("client").in_bulk(pks("Sotuv", "To'lov", "Qaytarish"))
+    clients = Client.objects.in_bulk(pks("Mijoz", "To'lov"))
+    products = Product.objects.in_bulk(pks("Mahsulot"))
+    entries = StockEntry.objects.in_bulk(pks("Ombor"))
+    employees = Employee.objects.in_bulk(pks("Xodim"))
+
+    def existing(model, *types):
+        return set(model.objects.filter(pk__in=pks(*types)).values_list("pk", flat=True))
+
+    expenses = existing(Expense, "Chiqim")
+    remittances = existing(ProductionRemittance, "Topshiruv")
+    payouts = existing(ProfitPayout, "Foyda")
+    receipts = existing(ProductionReceipt, "Qabul", "Zakaz")
+    users = existing(User, "Foydalanuvchi")
+
+    links = {}
+    for log in live:
+        kind, pk, url = log.target_type, log.target_id, None
+        if kind == "Sotuv" and pk in sales:
+            url = reverse("sale_detail", args=[pk])
+        elif kind in ("To'lov", "Qaytarish"):
+            # The client is tried first: that is what almost every payment line is
+            # filed under, and where a debt payment spread over several receipts
+            # actually shows up. A sale id only wins when no client of that id is
+            # named in the line.
+            sale, client = sales.get(pk), clients.get(pk)
+            if client and client.name in log.summary:
+                url = reverse("client_history", args=[pk])
+            elif sale and sale.client.name in log.summary:
+                url = reverse("sale_detail", args=[pk])
+        elif kind == "Mijoz" and pk in clients:
+            url = reverse("client_history", args=[pk])
+        elif kind == "Mahsulot" and pk in products:
+            url = reverse("product_detail", args=[pk])
+        elif kind == "Ombor" and pk in entries:
+            # The entry itself has no screen; the product's page is where it shows up.
+            url = reverse("product_detail", args=[entries[pk].product_id])
+        elif kind == "Xodim" and pk in employees:
+            url = reverse("employee_detail", args=[pk])
+        elif kind == "Chiqim" and pk in expenses:
+            url = reverse("kassa_entry_detail", args=["expense", pk])
+        elif kind == "Topshiruv" and pk in remittances:
+            url = reverse("kassa_entry_detail", args=["remittance", pk])
+        elif kind == "Foyda" and pk in payouts:
+            url = reverse("kassa_entry_detail", args=["profit", pk])
+        elif kind in ("Qabul", "Zakaz") and pk in receipts:
+            url = reverse("receipt_edit", args=[pk])
+        elif kind == "Foydalanuvchi" and pk in users:
+            url = reverse("user_edit", args=[pk])
+        if url:
+            links[log.pk] = url
+    return links
+
+
+def audit_list(request):
+    """Amallar tarixi: who did what, and when — every recorded action, newest first."""
+    logs, filters, reps, actions, active_filters = _audit_rows(request)
+    export_qs = request.GET.urlencode()
     page = Paginator(logs, 50).get_page(request.GET.get("page"))
+    # Each line's own destination, hung on the row it belongs to. The queryset caches
+    # its rows, so these are the very objects the template will iterate.
+    links = _audit_links(list(page.object_list))
+    for log in page.object_list:
+        log.link = links.get(log.pk)
     return render(request, "crm/audit_list.html", {
         "page": page,
+        # The same date control the kassa carries, opening on the whole history:
+        # one calendar, one pair of arrows, in the place the eye already looks for it.
+        **_date_range_context(request, default_window="all"),
+        "show_daterange_picker": True,
+        "keep_daterange": True,
+        "allow_all_window": True,
         "filters": filters,
         "reps": reps,
         "rep_label": "Kim",
@@ -3230,8 +3399,29 @@ def audit_list(request):
         "filter_count": len(active_filters),
         "has_filters": bool(active_filters),
         "filter_url": reverse("audit_list"),
+        "export_url": reverse("audit_export") + (f"?{export_qs}" if export_qs else ""),
         "search_placeholder": "Tafsilot bo'yicha qidirish…",
     })
+
+
+def audit_export(request):
+    """Excel (.xlsx) of the trail as filtered — the rows on screen, all pages of them."""
+    logs, *_ = _audit_rows(request)
+    headers = ["Sana", "Soat", "Kim", "Amal", "Obyekt", "ID", "Tafsilot"]
+    rows = [
+        [
+            timezone.localtime(log.created_at).strftime("%d.%m.%Y"),
+            timezone.localtime(log.created_at).strftime("%H:%M"),
+            str(log.user) if log.user else "",
+            log.event["label"],
+            log.target_type,
+            log.target_id,
+            log.summary,
+        ]
+        # Capped: the trail grows without limit and an export is read, not archived.
+        for log in logs[:20000]
+    ]
+    return _xlsx_response("amallar-tarixi.xlsx", "Amallar tarixi", headers, rows)
 
 
 # --- Kassa (cash register) ----------------------------------------------------

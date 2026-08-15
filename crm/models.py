@@ -1640,6 +1640,34 @@ class AuditLog(models.Model):
             return e("Ombordan qabul qilindi", GREEN, "in")
         if t == "Zakaz":
             return e("Zakaz biriktirildi", "badge-info", "in")
+        # Records that move no money but decide what the money later does — who the
+        # client is, what a product costs, how much stock there is, who may log in.
+        if t == "Mijoz":
+            if a == self.Action.DELETE:
+                return e("Mijoz o'chirildi", RED, "trash")
+            if a == self.Action.UPDATE:
+                return e("Mijoz o'zgartirildi", AMBER, "edit")
+            return e("Mijoz qo'shildi", GREEN, "dot")
+        if t == "Mahsulot":
+            if a == self.Action.DELETE:
+                return e("Mahsulot o'chirildi", RED, "trash")
+            if a == self.Action.UPDATE:
+                return e("Mahsulot o'zgartirildi", AMBER, "edit")
+            return e("Mahsulot qo'shildi", GREEN, "dot")
+        if t == "Ombor":
+            if a == self.Action.UPDATE:
+                return e("Ombor miqdori tuzatildi", AMBER, "edit")
+            return e("Omborga kirim", GREEN, "in")
+        if t == "Xodim":
+            if a == self.Action.DELETE:
+                return e("Xodim o'chirildi", RED, "trash")
+            if a == self.Action.UPDATE:
+                return e("Xodim o'zgartirildi", AMBER, "edit")
+            return e("Xodim qo'shildi", GREEN, "dot")
+        if t == "Foydalanuvchi":
+            if a == self.Action.UPDATE:
+                return e("Foydalanuvchi o'zgartirildi", AMBER, "edit")
+            return e("Foydalanuvchi yaratildi", "badge-info", "dot")
         if a == self.Action.TRANSFER:
             return e("Sotuvchi o'zgardi", GREY, "transfer")
         return e(self.get_action_display(), GREY, "dot")
