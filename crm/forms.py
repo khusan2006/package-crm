@@ -1,5 +1,5 @@
 import re
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django import forms
@@ -7,6 +7,8 @@ from django.forms import inlineformset_factory
 from django.utils import timezone
 
 from accounts.models import User
+
+from .utils import UZ_MONTH_NAMES
 
 from .models import (
     Client,
@@ -546,12 +548,49 @@ class PaymentEditForm(forms.ModelForm):
         return cleaned
 
 
+def _month_choices(back=24, forward=1):
+    """(YYYY-MM, "Avgust 2026") pairs around today, newest first. Spelled out in Uzbek
+    rather than left to <input type="month">, which paints its own label in the
+    browser's locale — the one place the UI stopped being Uzbek."""
+    today = timezone.localdate()
+    index = today.year * 12 + (today.month - 1)
+    months = []
+    for step in range(forward, -back, -1):
+        year, month = divmod(index + step, 12)
+        months.append((f"{year:04d}-{month + 1:02d}", f"{UZ_MONTH_NAMES[month]} {year}"))
+    return months
+
+
+def _parse_month(value):
+    """"YYYY-MM" → the 1st of that month, or None if it is not a month."""
+    try:
+        year, month = (int(part) for part in str(value).split("-", 1))
+        return date(year, month, 1)
+    except (ValueError, TypeError):
+        return None
+
+
 class EmployeeForm(forms.ModelForm):
-    """A payroll worker and their monthly wage."""
+    """A payroll worker, their monthly wage, and where their account starts.
+
+    Two fields exist only because the balance now carries from month to month. The
+    opening pair (`start_month` + `opening_balance`) stops a worker hired years ago
+    from arriving with years of invented arrears; `salary_from` dates a raise, so
+    changing the wage today cannot re-price the months already settled."""
+
+    start_month = forms.ChoiceField(
+        label="Hisob boshlangan oy",
+        help_text="Shu oydan boshlab oylik hisoblanadi — undan oldingi oylarga tegilmaydi",
+    )
+    salary_from = forms.ChoiceField(
+        label="Yangi oylik qaysi oydan",
+        required=False,
+        help_text="Oylik o'zgartirilsa — shu oydan kuchga kiradi, oldingi oylar eski oylikda qoladi",
+    )
 
     class Meta:
         model = Employee
-        fields = ["name", "salary", "is_active", "note"]
+        fields = ["name", "salary", "start_month", "opening_balance", "is_active", "note"]
         widgets = {
             "name": forms.TextInput(attrs={"placeholder": "Masalan: Косимов Рахматжон"}),
             "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — lavozimi, izoh"}),
@@ -559,13 +598,53 @@ class EmployeeForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        _mark_money(self.fields["salary"])
+        months = _month_choices()
+        self.fields["start_month"].choices = months
+        self.fields["salary_from"].choices = months
+        this_month = timezone.localdate().replace(day=1)
+        self.fields["start_month"].initial = (
+            self.instance.start_month if self.instance.pk else this_month
+        ).strftime("%Y-%m")
+        # A raise defaults to "from this month": nobody edits a wage meaning to
+        # backdate it, and the months behind it are already paid against.
+        self.fields["salary_from"].initial = this_month.strftime("%Y-%m")
+        self.fields["opening_balance"].help_text = (
+            "Hisob boshlangan oyning boshiga xodimga qarzimiz. Aksincha, oldindan "
+            "pul olib qo'ygan bo'lsa — minus bilan yozing (masalan −500000). "
+            "Bilmasangiz 0 qoldiring."
+        )
+        if not self.instance.pk:
+            # Nothing to re-price yet, so the question isn't asked on a new worker.
+            del self.fields["salary_from"]
+        _mark_money(self.fields["salary"], self.fields["opening_balance"])
 
     def clean_salary(self):
         salary = self.cleaned_data.get("salary")
         if salary is not None and salary <= 0:
             raise forms.ValidationError("Oylik 0 dan katta bo'lishi kerak.")
         return salary
+
+    def clean_start_month(self):
+        month = _parse_month(self.cleaned_data.get("start_month"))
+        if month is None:
+            raise forms.ValidationError("Oyni tanlang.")
+        return month
+
+    def clean_salary_from(self):
+        return _parse_month(self.cleaned_data.get("salary_from"))
+
+    def clean(self):
+        cleaned = super().clean()
+        # A raise cannot start before the account does — there is no month there to
+        # apply it to, and the rate row would sort ahead of the opening figure.
+        start, rate_from = cleaned.get("start_month"), cleaned.get("salary_from")
+        if start and rate_from and rate_from < start:
+            self.add_error(
+                "salary_from",
+                "Hisob boshlangan oydan oldin bo'lishi mumkin emas "
+                f"({start.strftime('%m.%Y')}).",
+            )
+        return cleaned
 
     def clean_name(self):
         # Case-folded in Python rather than with `iexact`: the names here are Cyrillic

@@ -1,14 +1,52 @@
 {% extends "base.html" %}
-{% block title %}Xodimlar · Paket CRM{% endblock %}
-{% block topbar_title %}Xodimlar{% endblock %}
+{% block title %}Xodimlar oyligi · Paket CRM{% endblock %}
+{% block topbar_title %}Xodimlar oyligi{% endblock %}
 {% block fab %}<a class="fab" href="{% url 'employee_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi xodim</a>{% endblock %}
 {% block content %}
 
 {% comment %}
   Oylik — oylik raqam, shuning uchun sahifa kun filtriga emas, bitta oyga bog'langan.
-  Berilgan = shu oyda kassadan o'sha xodimga chiqim qilingan hamma pul (oyligi ham,
-  avans olgani ham). Qolgan = oylik − berilgan.
+  Har oy o'zicha yopilmaydi: to'liq berilmagan oylik keyingi oyga o'tadi (“O'tgan
+  oydan” ustuni), oldindan ortiqcha olingan pul esa minus bo'lib o'tadi.
 {% endcomment %}
+<div class="kpi-grid kpi-grid--compact">
+  <div class="kpi kpi--blue">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></svg></span>
+      <span class="kpi-label">Shu oy oylik fondi</span>
+    </div>
+    <div class="kpi-value">{{ totals.salary|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">faol xodimlar · {{ month_label }}</div>
+  </div>
+
+  <div class="kpi kpi--gold">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9"/><polyline points="3 3 3 8 8 8"/></svg></span>
+      <span class="kpi-label">O'tgan oylardan qolgan</span>
+    </div>
+    <div class="kpi-value">{{ totals.carried|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{{ prev_label }} va undan oldingi oylar</div>
+  </div>
+
+  <div class="kpi kpi--red">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7 7 7-7"/></svg></span>
+      <span class="kpi-label">Shu oy berilgan</span>
+    </div>
+    <div class="kpi-value">{{ totals.paid|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">oylik va avans — kassadan</div>
+  </div>
+
+  <div class="kpi kpi--green">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/></svg></span>
+      <span class="kpi-label">Berilishi kerak</span>
+    </div>
+    <div class="kpi-value">{{ totals.remaining|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">to'lanmasa kelasi oyga o'tadi</div>
+  </div>
+</div>
+
 <div class="card">
   <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
     <h2 style="margin:0;">Oylik hisobi · {{ month_label }}</h2>
@@ -33,15 +71,17 @@
   <div class="table-wrap">
   <table class="table--blue-head">
     <tr>
-      <th>Xodim</th>
+      <th class="sticky-col">Xodim</th>
       <th class="num">Oyligi</th>
+      <th class="num">O'tgan oydan</th>
+      <th class="num">Jami olishi kerak</th>
       <th class="num">Shu oy berilgan</th>
       <th class="num">Qolgan</th>
       <th></th>
     </tr>
     {% for r in rows %}
     <tr>
-      <td>
+      <td class="sticky-col">
         <span class="cell-user">
           {% include "crm/_avatar.html" with name=r.employee.name %}
           <span>{{ r.employee.name }}
@@ -50,13 +90,28 @@
           </span>
         </span>
       </td>
-      <td class="num">{{ r.employee.salary|floatformat:"0g" }}</td>
+      {# Hisob boshlanmagan (yoki ishdan ketgan) oyda oylik yozilmaydi #}
+      <td class="num">{% if r.accrues %}{{ r.salary|floatformat:"0g" }}{% else %}<span class="muted" title="Bu oyda oylik hisoblanmaydi">—</span>{% endif %}</td>
+      {% if r.tracked %}
+      {# Manfiy = oldindan ortiqcha olgan, ya'ni kelasi oy oyligidan ushlanadi #}
+      <td class="num">{% if r.carried > 0 %}<strong class="amt-debt">{{ r.carried|floatformat:"0g" }}</strong>{% elif r.carried < 0 %}<span class="amt-in">{{ r.carried|floatformat:"0g" }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td class="num">{{ r.due|floatformat:"0g" }}</td>
       <td class="num amt-out">{{ r.paid|floatformat:"0g" }}</td>
-      {# Manfiy qoldiq = oyligidan ortiq olgan (kelasi oy hisobiga avans) #}
-      <td class="num">{% if r.remaining < 0 %}<strong class="amt-debt">{{ r.remaining|floatformat:"0g" }}</strong>{% elif r.remaining == 0 %}<span class="badge badge-paid">To'liq berildi</span>{% else %}<strong>{{ r.remaining|floatformat:"0g" }}</strong>{% endif %}</td>
+      <td class="num">
+        {% if r.remaining > 0 %}<strong class="amt-debt">{{ r.remaining|floatformat:"0g" }}</strong><span class="cell-sub">kelasi oyga o'tadi</span>
+        {% elif r.remaining < 0 %}<strong class="amt-in">{{ r.remaining|floatformat:"0g" }}</strong><span class="cell-sub">oldindan olgan</span>
+        {% else %}<span class="badge badge-paid">To'liq berildi</span>{% endif %}
+      </td>
+      {% else %}
+      {# Hisob bu oydan keyin boshlangan: berilgan pul ko'rsatiladi, qoldiq yuritilmaydi #}
+      <td class="num"><span class="muted">—</span></td>
+      <td class="num"><span class="muted">—</span></td>
+      <td class="num amt-out">{{ r.paid|floatformat:"0g" }}</td>
+      <td class="num"><span class="muted" title="Hisob {{ r.employee.start_month|date:'m.Y' }} dan boshlangan">hisob yuritilmagan</span></td>
+      {% endif %}
       <td class="num" style="display:flex;gap:4px;justify-content:flex-end;">
         {% if r.employee.is_active %}
-        <a class="btn btn-sm" href="{% url 'expense_create' %}?employee={{ r.employee.pk }}&next=xodimlar" data-modal>Pul berish</a>
+        <a class="btn btn-sm" href="{% url 'expense_create' %}?employee={{ r.employee.pk }}&next=xodimlar{% if r.remaining > 0 %}&summa={{ r.remaining|floatformat:"0u" }}{% endif %}" data-modal>Pul berish</a>
         {% endif %}
         <a class="icon-action" href="{% url 'employee_edit' r.employee.pk %}" data-modal title="Tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
         <a class="icon-action danger" href="{% url 'employee_delete' r.employee.pk %}" data-modal title="O'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
@@ -64,40 +119,78 @@
     </tr>
     {% endfor %}
     <tr>
-      <td><strong>Jami</strong> <span class="cell-sub">faol xodimlar</span></td>
+      <td class="sticky-col"><strong>Jami</strong> <span class="cell-sub">oylik — faol xodimlar</span></td>
       <td class="num"><strong>{{ totals.salary|floatformat:"0g" }}</strong></td>
+      <td class="num"><strong>{{ totals.carried|floatformat:"0g" }}</strong></td>
+      <td class="num"><strong>{{ totals.due|floatformat:"0g" }}</strong></td>
       <td class="num amt-out"><strong>{{ totals.paid|floatformat:"0g" }}</strong></td>
       <td class="num"><strong>{{ totals.remaining|floatformat:"0g" }}</strong></td>
       <td></td>
     </tr>
   </table>
   </div>
-  <p class="field-hint" style="margin-top:10px;">“Pul berish” kassadan chiqim yozadi va shu oyning oyligidan ayiradi — oylik bo'lsa ham, avans bo'lsa ham. Xodim ish uchun sarflagan benzin, obed kabi xarajatlarda chiqim formasidagi “Oyligidan ushlansin” belgisini oling: kassadan minus bo'ladi, oyligiga tegmaydi. Chiqimni Kassa sahifasidan tahrirlash yoki o'chirish mumkin, qoldiq o'zi qayta hisoblanadi.</p>
+  <p class="field-hint" style="margin-top:10px;">
+    <strong>“Pul berish”</strong> kassadan chiqim yozadi va shu oy hisobidan ayiradi — oylik bo'lsa ham, avans bo'lsa ham.
+    To'liq berilmagan qismi <strong>kelasi oyga o'tadi</strong>, oldindan ortiqcha olingan pul esa minus bo'lib o'tadi va kelasi oy oyligidan ushlanadi.
+    Hisob har bir xodimning <strong>boshlang'ich oyi</strong>dan boshlanadi — undan oldingi davr uchun bir marta “boshlang'ich qoldiq” yoziladi (xodimni tahrirlashda).
+    Oylik o'zgartirilsa, o'tgan oylar eski oylikda qoladi.
+    Xodim ish uchun sarflagan benzin, obed kabi pullarda chiqim formasidagi <strong>“Oyligidan ushlanmasin”</strong>ni tanlang — kassadan chiqadi, oyligiga tegmaydi.
+  </p>
   {% else %}
   <p class="muted">Hali xodim qo'shilmagan. O'ng pastdagi “Yangi xodim” tugmasi bilan qo'shing.</p>
   {% endif %}
 </div>
 
-<div class="card">
-  <h2>Shu oyda berilgan pullar · {{ month_label }}</h2>
-  <div class="table-wrap">
-  <table>
-    <tr><th>Sana</th><th>Xodim</th><th>Turkum</th><th>Usul</th><th class="num">Summa</th><th>Izoh</th><th>Kim berdi</th></tr>
-    {% for e in payouts %}
-    <tr>
-      <td>{{ e.date|date:"d.m.Y" }}</td>
-      <td>{{ e.employee.name }}</td>
-      {# Tagged with the worker but not held back from their pay — an errand they paid for. #}
-      <td>{{ e.category }}{% if not e.counts_against_salary %} <span class="badge badge-info">Oyligidan emas</span>{% endif %}</td>
-      <td>{% include "crm/_method_badge.html" with code=e.method label=e.get_method_display %}</td>
-      <td class="num amt-out">−{{ e.amount|floatformat:"0g" }}</td>
-      <td>{{ e.note|default:"—" }}</td>
-      <td>{{ e.created_by }}</td>
-    </tr>
-    {% empty %}
-    <tr><td colspan="7" class="muted">Bu oyda xodimlarga pul berilmagan.</td></tr>
-    {% endfor %}
-  </table>
+<div class="grid-2">
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <h2 style="margin:0;">Oylik berilgan</h2>
+      <span class="ledger-total amt-out">−{{ payout_total|floatformat:"0g" }} so'm</span>
+    </div>
+    <p class="ledger-hint">Xodimlarga berilgan oylik va avans — {{ month_label }}.</p>
+    <div class="table-wrap">
+    <table>
+      <tr><th>Sana</th><th>Xodim</th><th>Usul</th><th class="num">Summa</th><th>Izoh</th><th>Kim berdi</th></tr>
+      {% for e in payouts %}
+      <tr>
+        <td>{{ e.date|date:"d.m.Y" }}</td>
+        <td>{{ e.employee.name }}</td>
+        <td>{% include "crm/_method_badge.html" with code=e.method label=e.get_method_display %}</td>
+        <td class="num amt-out">−{{ e.amount|floatformat:"0g" }}</td>
+        <td>{{ e.note|default:"—" }}</td>
+        <td>{{ e.created_by }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="6" class="muted">Bu oyda oylik berilmagan.</td></tr>
+      {% endfor %}
+    </table>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <h2 style="margin:0;">Xodimlar qilgan rasxot</h2>
+      <span class="ledger-total amt-out">−{{ errand_total|floatformat:"0g" }} so'm</span>
+    </div>
+    {# Oyligiga tegmaydigan pul: ish uchun sarflangan, kassadan chiqqan. #}
+    <p class="ledger-hint">Ish uchun sarflangan pul — oyligidan ushlanmaydi.</p>
+    <div class="table-wrap">
+    <table>
+      <tr><th>Sana</th><th>Xodim</th><th>Turkum</th><th class="num">Summa</th><th>Izoh</th><th>Kim yozdi</th></tr>
+      {% for e in errands %}
+      <tr>
+        <td>{{ e.date|date:"d.m.Y" }}</td>
+        <td>{{ e.employee.name }}</td>
+        <td>{{ e.category }}</td>
+        <td class="num amt-out">−{{ e.amount|floatformat:"0g" }}</td>
+        <td>{{ e.note|default:"—" }}</td>
+        <td>{{ e.created_by }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="6" class="muted">Bu oyda xodimlar rasxot qilmagan.</td></tr>
+      {% endfor %}
+    </table>
+    </div>
   </div>
 </div>
 {% endblock %}

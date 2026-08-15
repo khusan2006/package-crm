@@ -2947,8 +2947,12 @@ class EmployeePayrollTests(BaseSetup):
         row = {r["employee"].name: r for r in response.context["rows"]}["Косимов Рахматжон"]
         self.assertEqual(row["paid"], Decimal("500000"))
         self.assertEqual(row["remaining"], Decimal("1500000"))
-        # Both rows stay listed under the worker — the errand is visible, just not charged.
-        self.assertEqual(len(response.context["payouts"]), 2)
+        # Both rows stay listed under the worker, in the two tables that tell them
+        # apart: money paid TO them, and money they spent FOR the business.
+        self.assertEqual(len(response.context["payouts"]), 1)
+        self.assertEqual(len(response.context["errands"]), 1)
+        self.assertEqual(response.context["payout_total"], Decimal("500000"))
+        self.assertEqual(response.context["errand_total"], Decimal("400000"))
 
     def test_tagging_a_worker_forces_an_answer(self):
         # Neither option picked while somebody is named: the form refuses rather than
@@ -2983,15 +2987,17 @@ class EmployeePayrollTests(BaseSetup):
             self.worker.paid_in(self.today.year, self.today.month), Decimal("0")
         )
 
-    def test_salary_resets_each_month(self):
+    def test_a_settled_month_carries_nothing_forward(self):
         last_month = self.today.replace(day=1) - timedelta(days=1)
+        self.worker.start_month = last_month.replace(day=1)
+        self.worker.save(update_fields=["start_month"])
         self._pay("2000000", on=last_month)
         self.assertEqual(
             self.worker.remaining_in(last_month.year, last_month.month), Decimal("0")
         )
-        # A new month starts the wage over — last month's payout doesn't carry.
+        # Paid in full, so the new month opens on its own wage alone.
         self.assertEqual(
-            self.worker.remaining_in(self.today.year, self.today.month),
+            self.worker.balance_through(self.today.year, self.today.month),
             Decimal("2000000"),
         )
 
@@ -3021,6 +3027,8 @@ class EmployeePayrollTests(BaseSetup):
 
     def test_month_can_be_chosen(self):
         last_month = self.today.replace(day=1) - timedelta(days=1)
+        self.worker.start_month = last_month.replace(day=1)
+        self.worker.save(update_fields=["start_month"])
         self._pay("700000", on=last_month)
         response = self.client.get(
             reverse("employee_list"), {"oy": f"{last_month.year}-{last_month.month:02d}"}
@@ -3035,10 +3043,18 @@ class EmployeePayrollTests(BaseSetup):
             response.context["month_value"], f"{self.today.year}-{self.today.month:02d}"
         )
 
-    def test_seller_cannot_see_salaries(self):
+    def test_seller_can_see_and_manage_the_payroll(self):
+        # Payroll used to be admin-only. The sellers are the ones handing the cash
+        # over and being asked "how much of mine is left?", and filing the till
+        # outflow that pays a wage was already theirs to do — so the page they were
+        # kept out of was the one holding the figure it is all measured against.
         self.client.force_login(self.sales1)
-        self.assertEqual(self.client.get(reverse("employee_list")).status_code, 403)
-        self.assertEqual(self.client.get(reverse("employee_create")).status_code, 403)
+        self.assertEqual(self.client.get(reverse("employee_list")).status_code, 200)
+        self.assertEqual(self.client.get(reverse("employee_create")).status_code, 200)
+        self.assertEqual(
+            self.client.get(reverse("employee_edit", args=[self.worker.pk])).status_code,
+            200,
+        )
 
     def test_paid_worker_is_deactivated_not_deleted(self):
         self._pay("100000")

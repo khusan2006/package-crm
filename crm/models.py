@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
@@ -951,16 +952,55 @@ class Payment(models.Model):
         return f"{self.get_kind_display()}: {self.amount} so'm ({self.date})"
 
 
+def first_of_month():
+    """This month's first day — the default month a payroll account opens on."""
+    return timezone.localdate().replace(day=1)
+
+
+def month_span(start, end):
+    """Every (year, month) from `start` through `end`, inclusive. Both are dates; only
+    their year/month matter. Empty when `end` falls before `start`."""
+    months = []
+    year, month = start.year, start.month
+    while (year, month) <= (end.year, end.month):
+        months.append((year, month))
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return months
+
+
 class Employee(models.Model):
-    """A salaried worker (Xodim) and the monthly wage they are owed.
+    """A salaried worker (Xodim), the monthly wage they are owed, and what is left of
+    it once the till has paid out.
 
     Deliberately NOT a CRM login: these are the people on the payroll, most of whom
     never touch the system. Money reaches them as an ordinary till outflow tagged with
     `Expense.employee`, so a wage payment is a kassa chiqim like any other — what this
-    model adds is the monthly figure those payouts are measured against."""
+    model adds is the monthly figure those payouts are measured against.
+
+    A month does not settle itself. Whatever is left unpaid rides into the next month
+    (and an advance drawn beyond the wage rides in the other direction), so the balance
+    is cumulative from `start_month` — see `balance_through`. That accumulation is why
+    the account needs an explicit opening: without one, adding a worker who has been on
+    the job for a year would invent a year of unpaid wages on the spot."""
 
     name = models.CharField("Ismi", max_length=120)
+    # The CURRENT wage. Every month's own figure lives in `rates` (SalaryRate); this
+    # field is the latest of those, kept for the forms, the pickers and every existing
+    # caller that just wants "what do they earn now".
     salary = models.DecimalField("Oylik (so'm)", max_digits=18, decimal_places=2)
+    # The first month this account is accountable for. Nothing accrues before it, so a
+    # worker who has been here for years can still be entered today without the CRM
+    # claiming to know what happened before it was told.
+    start_month = models.DateField("Hisob boshlangan oy", default=first_of_month)
+    # What was already owed on the first day of `start_month`. Positive: the firm owes
+    # them. Negative: they had drawn ahead. Typed in by hand, exactly like a client's
+    # opening debt, because only the boss knows the figure the CRM never saw.
+    opening_balance = models.DecimalField(
+        "Boshlang'ich qoldiq (so'm)", max_digits=18, decimal_places=2, default=0
+    )
+    # The last month a wage accrues. Set when someone is taken off the payroll, so a
+    # worker who left in March does not keep earning through December.
+    end_month = models.DateField("Oxirgi oy", null=True, blank=True)
     is_active = models.BooleanField("Faol", default=True)
     note = models.CharField("Izoh", max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -985,14 +1025,92 @@ class Employee(models.Model):
             or Decimal("0")
         )
 
+    def salary_for(self, year, month):
+        """The wage in force in that month — the latest rate starting no later than it.
+
+        Falls back to `salary` for a worker with no rate rows at all, which is what
+        every record looked like before wages were dated."""
+        rate = (
+            self.rates.filter(effective_from__lte=date(year, month, 1))
+            .order_by("-effective_from")
+            .first()
+        )
+        return rate.amount if rate else self.salary
+
+    def accrues_in(self, year, month):
+        """Whether a wage is earned in that month: on or after the account opened, and
+        not after the month they left."""
+        first = date(year, month, 1)
+        if first < self.start_month.replace(day=1):
+            return False
+        if self.end_month and first > self.end_month.replace(day=1):
+            return False
+        return True
+
+    def accrued_in(self, year, month):
+        """The wage earned in that month — zero outside the months they are on."""
+        if not self.accrues_in(year, month):
+            return Decimal("0")
+        return self.salary_for(year, month)
+
     def remaining_in(self, year, month):
-        """Wage still owed for that month. Goes negative if they drew more than the
-        month's pay — a real state (an advance against next month), so it is shown
-        rather than clamped."""
-        return self.salary - self.paid_in(year, month)
+        """What that month ALONE left over: its wage less what was drawn against it.
+        Deliberately ignores earlier months — `balance_through` is the running figure."""
+        return self.accrued_in(year, month) - self.paid_in(year, month)
+
+    def balance_through(self, year, month):
+        """Everything owed minus everything drawn, from the opening balance through the
+        end of the given month. Positive: still owed to the worker — this is the sum
+        that rides into next month. Negative: they have drawn ahead of their wage.
+
+        Single-employee use (a detail page, a test). The payroll list computes the same
+        figure for everyone in a couple of queries — see `_payroll_rows`."""
+        total = self.opening_balance
+        for y, m in month_span(self.start_month, date(year, month, 1)):
+            total += self.accrued_in(y, m) - self.paid_in(y, m)
+        return total
 
     def __str__(self):
         return self.name
+
+
+class SalaryRate(models.Model):
+    """What a worker's monthly wage is, from one month onward.
+
+    A wage is not a fact about today — it is a fact about each month it was in force.
+    With only the current figure on `Employee`, a raise silently re-priced every month
+    behind it: last month's agreed balance would change because this month's pay went
+    up. Each row here says "from this month on, the wage is X"; any month reads the
+    latest row not after it (`Employee.salary_for`)."""
+
+    employee = models.ForeignKey(
+        Employee, on_delete=models.CASCADE, related_name="rates", verbose_name="Xodim"
+    )
+    # Always the 1st: a wage changes by the month, never mid-month.
+    effective_from = models.DateField("Qaysi oydan")
+    amount = models.DecimalField("Oylik (so'm)", max_digits=18, decimal_places=2)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="salary_rates",
+        verbose_name="Kim belgiladi",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-effective_from", "-pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["employee", "effective_from"], name="one_rate_per_month"
+            )
+        ]
+        verbose_name = "Oylik stavkasi"
+        verbose_name_plural = "Oylik stavkalari"
+
+    def __str__(self):
+        return f"{self.employee.name}: {self.amount} so'm ({self.effective_from:%m.%Y})"
 
 
 class Expense(models.Model):

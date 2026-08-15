@@ -5,7 +5,6 @@ from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.contrib import messages
-from django.core.exceptions import PermissionDenied
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import (
@@ -87,11 +86,20 @@ from .models import (
     Return,
     Sale,
     SaleItem,
+    SalaryRate,
     StockEntry,
+    month_span,
     seller_cash_on_hand,
     seller_production_debt,
 )
-from .utils import form_reload, form_response, form_success, is_ajax, render_confirm
+from .utils import (
+    form_reload,
+    form_response,
+    form_success,
+    is_ajax,
+    render_confirm,
+    uz_month,
+)
 
 
 def _visible_clients(user):
@@ -216,6 +224,15 @@ def _parse_date(value):
     try:
         return date.fromisoformat(value)
     except (TypeError, ValueError):
+        return None
+
+
+def _parse_amount(value):
+    """A so'm figure out of a URL, or None. Used only to PREFILL a form field, never
+    to move money — whatever comes back still goes through the form."""
+    try:
+        return Decimal(str(value))
+    except (TypeError, ValueError, ArithmeticError):
         return None
 
 
@@ -3969,7 +3986,8 @@ def expense_create(request):
     the cashier and the expense is written against the kassa (logged for audit).
 
     The Xodimlar page links in with ?employee=<pk>, which preselects the worker and
-    the wage category so paying someone is one click from their row."""
+    the wage category so paying someone is one click from their row; it may add
+    ?summa= to fill in what is still owed, for the common case of settling in full."""
     initial = {}
     employee_pk = request.GET.get("employee", "")
     if request.method == "GET" and employee_pk.isdigit():
@@ -3980,6 +3998,11 @@ def expense_create(request):
             # is preselected here and nowhere else: picking someone by hand on a
             # plain chiqim leaves it blank on purpose, and the form insists on one.
             initial["counts_against_salary"] = True
+            # Only ever a suggestion in the amount box — it is still typed over and
+            # still validated like any other; nothing is paid until the form is saved.
+            owed = _parse_amount(request.GET.get("summa"))
+            if owed and owed > 0:
+                initial["amount"] = owed
     form = ExpenseForm(request.POST or None, initial=initial)
     title = "Chiqim qo'shish"
     if request.method == "POST":
@@ -4394,19 +4417,6 @@ def kassa_entry_detail(request, kind, pk):
 SALARY_CATEGORY = "Oylik / xodim"
 
 
-# Full month names for the payroll picker. A native <input type="month"> paints its
-# own label in the browser's locale ("Август" on a Russian Windows), which was the one
-# place the Uzbek UI stopped being Uzbek — so the page spells the months out itself.
-UZ_MONTHS = [
-    "Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun",
-    "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr",
-]
-
-
-def _uz_month(year, month):
-    return f"{UZ_MONTHS[month - 1]} {year}"
-
-
 def _month_shift(year, month, step):
     """The month `step` places away, rolling the year over in either direction."""
     index = year * 12 + (month - 1) + step
@@ -4421,7 +4431,7 @@ def _month_options(year, month, today, back=12):
     if (year, month) not in months:
         months.append((year, month))
         months.sort(reverse=True)
-    return [{"value": f"{y:04d}-{m:02d}", "label": _uz_month(y, m)} for y, m in months]
+    return [{"value": f"{y:04d}-{m:02d}", "label": uz_month(y, m)} for y, m in months]
 
 
 def _payroll_month(request):
@@ -4438,38 +4448,127 @@ def _payroll_month(request):
     return year, month
 
 
-def employee_list(request):
-    """Payroll: everyone on the books, their monthly wage, what they have drawn from
-    the till this month and what is still owed.
+def _rate_at(rates, first_day, fallback):
+    """The wage in force on `first_day`, from a worker's (effective_from, amount) list
+    given oldest first. Falls back to their current wage for months before the first
+    rate row — which is exactly what a start month moved backwards leaves behind."""
+    amount = fallback
+    for effective_from, value in rates:
+        if effective_from > first_day:
+            break
+        amount = value
+    return amount
 
-    Wages are only visible to admins/managers — a seller has no business seeing what
-    the staff earn."""
-    if not request.user.can_see_all_records:
-        raise PermissionDenied
-    year, month = _payroll_month(request)
-    employees = Employee.objects.all()
+
+def _payroll_rows(employees, year, month):
+    """One row per worker for the chosen month: what rode in unpaid from earlier
+    months, what this month adds, what the till has paid against it, and what rides on.
+
+    A month does not close itself. An unpaid remainder is still owed in September, and
+    an advance drawn beyond the wage is still drawn — so the figure that matters is
+    cumulative: the opening balance, plus every month's wage, minus everything paid,
+    from `start_month` through the month on screen.
+
+    Two queries carry the whole payroll however deep the history runs: wage rates and
+    payouts are each fetched once and folded together in Python. Payouts dated BEFORE a
+    worker's start month are deliberately left out — that stretch is what the opening
+    balance already summarises, and counting it again would credit the firm twice for
+    money it settled before the CRM was watching."""
+    ids = [e.pk for e in employees]
+    target = date(year, month, 1)
+    next_year, next_month = _month_shift(year, month, 1)
+    drawn_rows = (
+        Expense.objects.filter(
+            employee_id__in=ids,
+            counts_against_salary=True,
+            date__lt=date(next_year, next_month, 1),
+        )
+        .annotate(m=TruncMonth("date"))
+        .values("employee_id", "m")
+        .annotate(total=Sum("amount"))
+    )
+    drawn = {
+        (r["employee_id"], r["m"].year, r["m"].month): r["total"] for r in drawn_rows
+    }
+    rates = {}
+    for rate in SalaryRate.objects.filter(employee_id__in=ids).order_by("effective_from"):
+        rates.setdefault(rate.employee_id, []).append((rate.effective_from, rate.amount))
+
     rows = []
     for e in employees:
-        paid = e.paid_in(year, month)
+        own_rates = rates.get(e.pk, [])
+        # What the till paid in the month on screen — read straight from the payouts,
+        # never from the accumulation. A month before the account opened still shows
+        # what was handed over in it, or the figure here would contradict the payout
+        # list printed directly underneath.
+        paid = drawn.get((e.pk, year, month), Decimal("0"))
+        tracked = target >= e.start_month.replace(day=1)
+        if not tracked:
+            rows.append({
+                "employee": e, "carried": None, "salary": None, "due": None,
+                "paid": paid, "remaining": None, "accrues": False, "tracked": False,
+            })
+            continue
+        carried = e.opening_balance
+        for y, m in month_span(e.start_month, target):
+            if (y, m) == (year, month):
+                continue                      # the month on screen is not "carried in"
+            first = date(y, m, 1)
+            wage = (
+                _rate_at(own_rates, first, e.salary)
+                if e.accrues_in(y, m) else Decimal("0")
+            )
+            carried += wage - drawn.get((e.pk, y, m), Decimal("0"))
+        accrues = e.accrues_in(year, month)
+        salary = _rate_at(own_rates, target, e.salary) if accrues else Decimal("0")
         rows.append({
             "employee": e,
-            "paid": paid,
-            "remaining": e.salary - paid,
+            "carried": carried,                     # o'tgan oylardan qolgan
+            "salary": salary,                       # shu oy oyligi
+            "due": carried + salary,                # jami olishi kerak
+            "paid": paid,                           # shu oy berilgan
+            "remaining": carried + salary - paid,   # kelasi oyga o'tadi
+            "accrues": accrues,
+            "tracked": True,
         })
+    return rows
+
+
+def employee_list(request):
+    """Payroll (Xodimlar oyligi): everyone on the books, the wage in force this month,
+    what rode in unpaid from earlier months, what the till has paid out, and what
+    carries on to the next month.
+
+    Open to every role. Wages were admin-only, but the sellers are the ones handing the
+    cash over and being asked "how much of mine is left?" — and filing the till outflow
+    that pays a wage was already theirs to do, so the figure it is measured against was
+    the one thing they could not see."""
+    year, month = _payroll_month(request)
+    employees = list(Employee.objects.all())
+    rows = _payroll_rows(employees, year, month)
+    # A worker whose account opens later has no figures for this month — only what the
+    # till happened to pay them. They are left out of every total but the paid one.
+    counted = [r for r in rows if r["tracked"]]
+    active = [r for r in counted if r["employee"].is_active]
     totals = {
-        "salary": sum((r["employee"].salary for r in rows if r["employee"].is_active), Decimal("0")),
+        "salary": sum((r["salary"] for r in active), Decimal("0")),
+        "carried": sum((r["carried"] for r in counted), Decimal("0")),
+        "due": sum((r["due"] for r in counted), Decimal("0")),
         "paid": sum((r["paid"] for r in rows), Decimal("0")),
-        "remaining": sum(
-            (r["remaining"] for r in rows if r["employee"].is_active), Decimal("0")
-        ),
+        "remaining": sum((r["remaining"] for r in counted), Decimal("0")),
     }
-    payouts = (
+    tagged = (
         Expense.objects.filter(
             employee__isnull=False, date__year=year, date__month=month
         )
         .select_related("employee", "created_by")
         .order_by("-date", "-created_at")
     )
+    # Two different things wear the same tag, so they get two tables: money paid TO a
+    # worker (wage or advance), and money a worker spent FOR the business. Mixed into
+    # one list, "kim qancha oldi" could not be read off the page at a glance.
+    payouts = [e for e in tagged if e.counts_against_salary]
+    errands = [e for e in tagged if not e.counts_against_salary]
     today = timezone.localdate()
     prev_year, prev_month = _month_shift(year, month, -1)
     next_year, next_month = _month_shift(year, month, 1)
@@ -4477,8 +4576,12 @@ def employee_list(request):
         "rows": rows,
         "totals": totals,
         "payouts": payouts,
+        "errands": errands,
+        "payout_total": sum((e.amount for e in payouts), Decimal("0")),
+        "errand_total": sum((e.amount for e in errands), Decimal("0")),
         "month_value": f"{year:04d}-{month:02d}",
-        "month_label": _uz_month(year, month),
+        "month_label": uz_month(year, month),
+        "prev_label": uz_month(prev_year, prev_month),
         "month_options": _month_options(year, month, today),
         "prev_month": f"{prev_year:04d}-{prev_month:02d}",
         "next_month": f"{next_year:04d}-{next_month:02d}",
@@ -4486,17 +4589,35 @@ def employee_list(request):
     })
 
 
+def _set_salary_rate(employee, amount, effective_from, user):
+    """Record what the wage is from `effective_from` on. Re-setting the wage for a
+    month that already has a rate overwrites it rather than adding a second one — the
+    month can only have had one wage, and a correction made minutes later is a fix, not
+    a raise."""
+    SalaryRate.objects.update_or_create(
+        employee=employee,
+        effective_from=effective_from.replace(day=1),
+        defaults={"amount": amount, "created_by": user},
+    )
+
+
+@transaction.atomic
 def employee_create(request):
-    if not request.user.can_see_all_records:
-        raise PermissionDenied
+    """Add someone to the payroll. Open to every role, like the rest of this page."""
     form = EmployeeForm(request.POST or None)
     title = "Yangi xodim"
     if request.method == "POST":
         if form.is_valid():
             employee = form.save()
+            # The opening wage runs from the month the account opens, so the very
+            # first month already has a dated rate to read.
+            _set_salary_rate(
+                employee, employee.salary, employee.start_month, request.user
+            )
             AuditLog.record(
                 request.user, AuditLog.Action.CREATE, "Xodim", employee.pk,
-                f"{employee.name} qo'shildi — oyligi {employee.salary:,.0f} so'm",
+                f"{employee.name} qo'shildi — oyligi {employee.salary:,.0f} so'm "
+                f"({uz_month(employee.start_month.year, employee.start_month.month)}dan)",
             )
             messages.success(request, f"“{employee.name}” qo'shildi.")
             return form_success(request, reverse("employee_list"))
@@ -4504,18 +4625,39 @@ def employee_create(request):
     return form_response(request, form, title)
 
 
+@transaction.atomic
 def employee_edit(request, pk):
-    if not request.user.can_see_all_records:
-        raise PermissionDenied
+    """Edit a payroll worker. A changed wage is dated rather than swapped in: it takes
+    effect from the month the form asks for (this month by default), leaving every
+    month already settled priced as it was agreed."""
     employee = get_object_or_404(Employee, pk=pk)
+    was = employee.salary
     form = EmployeeForm(request.POST or None, instance=employee)
     title = "Xodimni tahrirlash"
     if request.method == "POST":
         if form.is_valid():
             form.save()
+            # Back on the payroll: the leaving month goes, so the wage accrues again.
+            if employee.is_active and employee.end_month:
+                employee.end_month = None
+                employee.save(update_fields=["end_month"])
+            since = form.cleaned_data.get("salary_from") or employee.start_month
+            changed = employee.salary != was
+            if changed:
+                _set_salary_rate(employee, employee.salary, since, request.user)
+            elif not employee.rates.exists():
+                # Nothing changed, but an older record may carry no rate at all —
+                # give it one so its months stop falling back to today's figure.
+                _set_salary_rate(
+                    employee, employee.salary, employee.start_month, request.user
+                )
+            summary = f"{employee.name} yangilandi — oyligi {employee.salary:,.0f} so'm"
+            if changed:
+                summary += (
+                    f" (oldin {was:,.0f}; {uz_month(since.year, since.month)}dan)"
+                )
             AuditLog.record(
-                request.user, AuditLog.Action.UPDATE, "Xodim", employee.pk,
-                f"{employee.name} yangilandi — oyligi {employee.salary:,.0f} so'm",
+                request.user, AuditLog.Action.UPDATE, "Xodim", employee.pk, summary
             )
             messages.success(request, "Xodim yangilandi.")
             return form_success(request, reverse("employee_list"))
@@ -4527,14 +4669,16 @@ def employee_delete(request, pk):
     """Remove someone from the payroll. Refused once money has been paid to them —
     erasing the worker would orphan a real till outflow, so they are deactivated
     instead (they keep their history and stop appearing in the pickers)."""
-    if not request.user.can_see_all_records:
-        raise PermissionDenied
     employee = get_object_or_404(Employee, pk=pk)
     paid_ever = employee.expenses.exists()
     if request.method == "POST":
         if paid_ever:
             employee.is_active = False
-            employee.save(update_fields=["is_active"])
+            # Stop the wage accruing from next month on: someone who left in March
+            # must not keep earning through December. This month still counts — they
+            # worked it, and what is still owed for it stays owed.
+            employee.end_month = timezone.localdate().replace(day=1)
+            employee.save(update_fields=["is_active", "end_month"])
             AuditLog.record(
                 request.user, AuditLog.Action.UPDATE, "Xodim", employee.pk,
                 f"{employee.name} faol emas deb belgilandi",

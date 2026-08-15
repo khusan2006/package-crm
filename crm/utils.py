@@ -3,6 +3,18 @@
 from django.http import HttpResponse
 from django.shortcuts import redirect, render
 
+# Month names spelled out, because a native <input type="month"> paints its label in
+# the browser's locale ("Август" on a Russian Windows) — the one place the Uzbek UI
+# stopped being Uzbek. Lives here so the payroll page and its form share one list.
+UZ_MONTH_NAMES = [
+    "Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun",
+    "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr",
+]
+
+
+def uz_month(year, month):
+    return f"{UZ_MONTH_NAMES[month - 1]} {year}"
+
 
 def is_ajax(request):
     return request.headers.get("X-Requested-With") == "XMLHttpRequest"
