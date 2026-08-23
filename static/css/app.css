@@ -4192,6 +4192,71 @@ ul.errorlist li::before {
   flex: 0 0 auto;
 }
 
+/* Kassa opened on a day that has nothing on it. Deliberately loud: the seller who
+   sees an empty till usually concludes the entry did not save and types the whole
+   day in again, so this has to outrank the empty tables underneath it. */
+.kassa-empty {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 20px;
+  margin: 0 0 18px;
+  border-radius: var(--r);
+  background: var(--warning-soft);
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  border-left: 5px solid var(--warning);
+}
+
+.kassa-empty .ke-icon {
+  color: var(--warning);
+  flex: 0 0 auto;
+  display: grid;
+}
+
+.kassa-empty .ke-icon svg {
+  width: 30px;
+  height: 30px;
+}
+
+.kassa-empty .ke-text {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.kassa-empty .ke-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--warning);
+}
+
+.kassa-empty .ke-sub {
+  font-size: 13.5px;
+  color: var(--text-muted);
+}
+
+.kassa-empty .ke-sub strong {
+  color: var(--text);
+}
+
+.kassa-empty .ke-btn {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 640px) {
+  .kassa-empty {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .kassa-empty .ke-btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
 /* ============================================================
    Toasts
    ============================================================ */

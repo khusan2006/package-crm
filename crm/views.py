@@ -3990,6 +3990,24 @@ def _kassa_transactions(expenses, dates, filters, rep):
     return rows
 
 
+def _last_kassa_activity(rep):
+    """The most recent day that has anything on the kassa page, for the empty-day
+    notice. Rows are placed by the date written ON them, not the day they were typed,
+    and a seller normally enters yesterday's takings this morning — so a kassa that
+    opens on today reads as empty and the whole day gets keyed in a second time. The
+    notice points at the day the money is actually on."""
+    days = [
+        Payment.objects.till_income().filter(created_by=rep) if rep else
+        Payment.objects.till_income(),
+        Expense.objects.filter(created_by=rep) if rep else Expense.objects.all(),
+        ProductionRemittance.objects.filter(seller=rep) if rep else
+        ProductionRemittance.objects.all(),
+        ProfitPayout.objects.filter(seller=rep) if rep else ProfitPayout.objects.all(),
+    ]
+    found = [qs.aggregate(d=Max("date"))["d"] for qs in days]
+    return max([d for d in found if d], default=None)
+
+
 def kassa_view(request):
     """The cash register (Kassa): two till drawers (so'm + dollar) with income by
     method and running balance, per-employee kassa & performance, and the expense
@@ -4010,6 +4028,17 @@ def kassa_view(request):
     ]
     income_total = sum((t["amount_som"] for t in income_rows), Decimal("0"))
     outflow_total = sum((t["amount_som"] for t in outflow_rows), Decimal("0"))
+
+    # Nothing on the chosen day? Say where the money actually is, and offer one click
+    # to go there — see `_last_kassa_activity` for why this happens every morning.
+    empty_hint = None
+    if not income_rows and not outflow_rows:
+        last_day = _last_kassa_activity(rep)
+        in_window = last_day and date_from and date_from <= last_day <= date_to
+        if last_day and not in_window:
+            params = request.GET.copy()
+            params["dan"] = params["gacha"] = last_day.isoformat()
+            empty_hint = {"date": last_day, "url": f"?{params.urlencode()}"}
 
     method_labels = dict(Payment.Method.choices)
     currency_labels = dict(Payment.Currency.choices)
@@ -4048,6 +4077,7 @@ def kassa_view(request):
     export_qs = request.GET.urlencode()
     return render(request, "crm/kassa.html", {
         "summary": summary,
+        "empty_hint": empty_hint,
         "debt_adjustments": adjustments,
         "income_rows": income_rows,
         "outflow_rows": outflow_rows,

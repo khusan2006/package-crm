@@ -5533,3 +5533,55 @@ class AdvanceKassaChoiceTests(TestCase):
         self._remove(deposit, amount="500000")
         entry = AuditLog.objects.filter(action="payment").latest("pk")
         self.assertIn("kassadan chiqim", entry.summary)
+
+
+
+
+class KassaEmptyDayNoticeTests(BaseSetup):
+    """A kassa opened on a day with nothing on it says where the money actually is.
+
+    Rows land on the date written on them, not the day they were typed, and a seller
+    normally enters yesterday's takings this morning — so the till reads empty and the
+    day gets keyed in twice. The notice is the guard against that."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.empty_day = self.today - timedelta(days=5)
+        # A seller with nothing of their own: the notice must not hand them someone
+        # else's day.
+        self.newbie = User.objects.create_user(
+            "t_sales3", password="x", role=User.Role.SALES
+        )
+
+    def test_an_empty_day_points_at_the_last_day_with_money(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(
+            reverse("kassa"),
+            {"dan": self.empty_day.isoformat(), "gacha": self.empty_day.isoformat()},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["empty_hint"]["date"], self.today)
+        self.assertContains(response, "Bu sanada kassada yozuv yo'q")
+        self.assertIn(f"dan={self.today.isoformat()}", response.context["empty_hint"]["url"])
+
+    def test_a_day_that_has_rows_shows_no_notice(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"))
+        self.assertIsNone(response.context["empty_hint"])
+        self.assertNotContains(response, "kassa-empty")
+
+    def test_the_notice_stays_inside_the_seller_who_is_looking(self):
+        self.client.force_login(self.newbie)
+        response = self.client.get(reverse("kassa"))
+        self.assertIsNone(response.context["empty_hint"])
+
+    def test_the_notice_keeps_the_filters_that_are_already_on(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(
+            reverse("kassa"),
+            {"dan": self.empty_day.isoformat(), "gacha": self.empty_day.isoformat(),
+             "method": "cash"},
+        )
+        url = response.context["empty_hint"]["url"]
+        self.assertIn("method=cash", url)
+        self.assertIn(f"gacha={self.today.isoformat()}", url)
