@@ -15,6 +15,7 @@ from .forms import (
     AdvanceEditForm,
     AdvanceForm,
     AdvanceRemoveForm,
+    ExpenseForm,
     ProductionRemittanceForm,
     SaleForm,
 )
@@ -3093,6 +3094,9 @@ class EmployeePayrollTests(BaseSetup):
             "date": (on or self.today).isoformat(),
             "amount": amount, "currency": "uzs", "category": category,
             "method": "cash", "employee": (employee or self.worker).pk,
+            # These cases deliberately backdate; the warning that asks about that has
+            # its own tests, so answer it up front rather than posting twice.
+            "confirm_backdated": "1",
         }
         if from_salary is not None:
             data["counts_against_salary"] = "True" if from_salary else "False"
@@ -5830,3 +5834,60 @@ class RemittanceRemindersTests(BaseSetup):
         response = self.client.get(reverse("remittance_refund_create"))
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "remit-check")
+
+
+class BackdatedPayoutWarningTests(BaseSetup):
+    """A payout dated into a day the till could not carry warns before it saves.
+
+    The till check is otherwise date-blind — it asks "does the seller hold this much
+    today" — so a wage handed over in August but dated to July sailed through and put
+    six days in the red without a word."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.empty_day = self.today - timedelta(days=20)
+        # BaseSetup's paid sale puts 240 000 on today and nothing on the empty day.
+
+    def _expense(self, day, amount="50000", **extra):
+        return ExpenseForm(
+            data={
+                "date": day.isoformat(), "amount": amount, "category": "Boshqa",
+                "method": Payment.Method.CASH, "currency": Payment.Currency.UZS,
+                "counts_against_salary": "False", **extra,
+            },
+            user=self.sales1,
+        )
+
+    def test_a_payout_backdated_into_an_empty_day_warns(self):
+        form = self._expense(self.empty_day)
+        self.assertFalse(form.is_valid())
+        message = " ".join(form.errors["__all__"])
+        self.assertIn(self.empty_day.strftime("%d.%m.%Y"), message)
+        self.assertIn("Saqlashni yana bosing", message)
+
+    def test_the_second_press_goes_through(self):
+        # The refused form carries the flag back, so submitting again saves.
+        first = self._expense(self.empty_day)
+        self.assertFalse(first.is_valid())
+        self.assertEqual(first.data["confirm_backdated"], "1")
+        self.assertTrue(self._expense(self.empty_day, confirm_backdated="1").is_valid())
+
+    def test_a_day_that_can_carry_it_is_not_questioned(self):
+        self.assertTrue(self._expense(self.today).is_valid())
+
+    def test_todays_own_payout_is_never_questioned(self):
+        # Only backdating is in question; a payout dated today is checked by the
+        # ordinary "is there enough in the till" rule instead.
+        form = self._expense(self.today, amount="240000")
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_a_backdated_handover_warns_the_same_way(self):
+        form = ProductionRemittanceForm(
+            data={
+                "date": self.empty_day.isoformat(), "seller": self.sales1.pk,
+                "amount": "100000", "method": Payment.Method.CASH, "note": "",
+            },
+            user=self.sales1,
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("Saqlashni yana bosing", " ".join(form.errors["__all__"]))

@@ -35,6 +35,7 @@ page still knows where to send the user back to after saving.{% endcomment %}
       <span class="field-hint">{{ form.counts_against_salary.help_text }}</span></p>
   </div>
   <p>{{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}</p>
+  {{ form.confirm_backdated }}
   <div class="modal-actions">
     <button type="submit" class="btn">Saqlash</button>
     <button type="button" class="btn btn-ghost" data-modal-close>Bekor qilish</button>

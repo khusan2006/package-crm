@@ -4471,7 +4471,7 @@ def expense_create(request):
             owed = _parse_amount(request.GET.get("summa"))
             if owed and owed > 0:
                 initial["amount"] = owed
-    form = ExpenseForm(request.POST or None, initial=initial)
+    form = ExpenseForm(request.POST or None, initial=initial, user=request.user)
     title = "Chiqim qo'shish"
     if request.method == "POST":
         if form.is_valid():
@@ -4508,7 +4508,7 @@ def expense_edit(request, pk):
         else Expense.objects.filter(created_by=request.user)
     expense = get_object_or_404(qs, pk=pk)
     title = "Chiqimni tahrirlash"
-    form = ExpenseForm(request.POST or None, instance=expense)
+    form = ExpenseForm(request.POST or None, instance=expense, user=request.user)
     if request.method == "POST":
         if form.is_valid():
             form.save()

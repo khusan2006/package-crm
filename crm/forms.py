@@ -83,6 +83,42 @@ def _not_enough(amount, available, subject, label):
     )
 
 
+def _backdated_warning(seller, day, amount, **exclude):
+    """Warning text when a payout is dated into a day that cannot carry it, else None.
+
+    The till check is otherwise date-blind: it asks "does the seller hold this much
+    today", so a payout backdated into an empty day passes on the strength of money
+    collected since. The day itself goes negative and drags every later day with it,
+    silently. A wage handed over on 17.08 but dated 31.07 put six days in the red
+    exactly this way.
+
+    A warning rather than a block: entering yesterday's work this morning is normal,
+    and blocking would only teach the seller to shave the number down until the form
+    relents — the habit that put phantom shortfalls in the books to begin with. So it
+    names the day, the figure and the hole, and lets a second Saqlash through."""
+    if seller is None or not amount or not day or day >= timezone.localdate():
+        return None
+    held = seller_cash_on_hand(seller, through=day, **exclude)
+    after = _som(held) - _som(amount)
+    if after >= 0:
+        return None
+    return (
+        f"Diqqat: {day:%d.%m.%Y} kuni kassada {_som(held):,.0f} so'm bo'lgan. "
+        f"{_som(amount):,.0f} so'm o'sha kunni {after:,.0f} so'mga tushiradi va "
+        f"undan keyingi barcha kunlarni ham pastga suradi. Sana to'g'ri bo'lsa, "
+        f"Saqlashni yana bosing."
+    )
+
+
+def _needs_second_press(form, warning):
+    """Show `warning` once; the next submit carries the flag and goes through."""
+    if not warning or form.cleaned_data.get("confirm_backdated"):
+        return None
+    form.data = form.data.copy()
+    form.data["confirm_backdated"] = "1"
+    return warning
+
+
 def _searchable_select(field, placeholder=""):
     """Turn a model-choice field into a searchable combobox picker: drop Django's
     "---------" blank label so the box shows `placeholder` instead of a dashed
@@ -726,7 +762,11 @@ class ExpenseForm(forms.ModelForm):
             }),
         }
 
+    # Set once the seller has seen the backdating warning; the next submit passes.
+    confirm_backdated = forms.BooleanField(required=False, widget=forms.HiddenInput)
+
     def __init__(self, *args, **kwargs):
+        self.user = kwargs.pop("user", None)
         super().__init__(*args, **kwargs)
         self.fields["amount"].label = "Miqdor"
         self.fields["amount"].help_text = "Tanlangan valyutada — dollar tanlansa, dollardagi summa"
@@ -794,6 +834,14 @@ class ExpenseForm(forms.ModelForm):
                 "counts_against_salary",
                 "Tanlang: bu pul xodim oyligidan ushlansinmi yoki yo'q.",
             )
+        # A payout dated into a day the till could not carry — see _backdated_warning.
+        seller = self.instance.created_by_id and self.instance.created_by or self.user
+        warning = _needs_second_press(self, _backdated_warning(
+            seller, cleaned.get("date"), som,
+            exclude_expense_pk=self.instance.pk,
+        ))
+        if warning:
+            raise forms.ValidationError(warning)
         return cleaned
 
 
@@ -801,6 +849,9 @@ class ProductionRemittanceForm(forms.ModelForm):
     """A seller handing collected cash back to production. So'm only — the debt it
     repays is a so'm figure. A seller records only their own handovers, so for a
     non-privileged user the `seller` field is fixed to themselves and hidden."""
+
+    # Set once the seller has seen the backdating warning; the next submit passes.
+    confirm_backdated = forms.BooleanField(required=False, widget=forms.HiddenInput)
 
     class Meta:
         model = ProductionRemittance
@@ -852,6 +903,13 @@ class ProductionRemittanceForm(forms.ModelForm):
             )
             if problem:
                 raise forms.ValidationError(problem)
+            # The total is enough, but the DAY it is dated into may not be.
+            warning = _needs_second_press(self, _backdated_warning(
+                seller, cleaned.get("date"), amount,
+                exclude_remittance_pk=self.instance.pk,
+            ))
+            if warning:
+                raise forms.ValidationError(warning)
         return cleaned
 
 
