@@ -11,7 +11,13 @@ from openpyxl import load_workbook
 
 from accounts.models import User
 
-from .forms import AdvanceEditForm, AdvanceForm, AdvanceRemoveForm, SaleForm
+from .forms import (
+    AdvanceEditForm,
+    AdvanceForm,
+    AdvanceRemoveForm,
+    ProductionRemittanceForm,
+    SaleForm,
+)
 from .models import (
     ADVANCE_ADJUST_NOTE,
     COST,
@@ -5738,3 +5744,49 @@ class KassaSearchTests(BaseSetup):
         response = self.client.get(reverse("kassa"), {"q": "benzin", "method": "cash"})
         self.assertIn("method=cash", response.context["search_clear_url"])
         self.assertNotIn("q=", response.context["search_clear_url"])
+
+
+class TillCheckRoundingTests(BaseSetup):
+    """The "not enough in the till" guard compares whole so'm.
+
+    A 4% bank fee on a non-round payment leaves kopeks behind, so the ledger holds
+    28 239 066.99 while every screen prints 28 239 067. Comparing the raw Decimals
+    rejected the seller's own displayed balance — and taught them to keep shaving the
+    number down until the form gave in, which is how phantom shortfalls reach the books."""
+
+    def setUp(self):
+        # A transfer with a 4% fee: 1 000 001 − 40 000.04 leaves 960 000.96 in the till.
+        self.payment = Payment.objects.create(
+            sale=self.sale1, amount=Decimal("1000001"), commission=Decimal("40000.04"),
+            commission_percent=Decimal("4"), method=Payment.Method.TRANSFER,
+            kind=Payment.Kind.DEBT, date=timezone.localdate(), created_by=self.sales1,
+        )
+
+    def _form(self, amount):
+        return ProductionRemittanceForm(
+            data={
+                "date": timezone.localdate().isoformat(), "seller": self.sales1.pk,
+                "amount": amount, "method": Payment.Method.CASH, "note": "",
+            },
+            user=self.sales1,
+        )
+
+    def test_the_displayed_balance_can_be_handed_over(self):
+        on_hand = seller_cash_on_hand(self.sales1)
+        self.assertNotEqual(on_hand, on_hand.to_integral_value())  # kopeks are there
+        shown = f"{on_hand:,.0f}".replace(",", "")
+        self.assertTrue(self._form(shown).is_valid(), self._form(shown).errors)
+
+    def test_one_som_more_than_the_balance_is_still_refused(self):
+        on_hand = seller_cash_on_hand(self.sales1)
+        form = self._form(str(int(on_hand) + 2))
+        self.assertFalse(form.is_valid())
+
+    def test_the_error_names_the_gap(self):
+        on_hand = seller_cash_on_hand(self.sales1)
+        form = self._form(str(int(on_hand) + 1000))
+        self.assertFalse(form.is_valid())
+        message = " ".join(form.errors["__all__"])
+        self.assertIn("yetmaydi", message)
+        # Never self-contradictory: the two figures in the message must differ.
+        self.assertNotIn(f"{on_hand:,.0f} so'm. Siz {on_hand:,.0f}", message)

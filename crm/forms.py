@@ -57,6 +57,32 @@ def _reject_future(value):
     return value
 
 
+def _som(value):
+    """A money figure rounded to the whole so'm — the unit anything is ever paid in."""
+    return Decimal(value).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+
+def _not_enough(amount, available, subject, label):
+    """The "there isn't that much in the till" error, or None when there is.
+
+    Compared in WHOLE SO'M on purpose. The till carries kopeks — a 4% bank fee on a
+    non-round payment leaves 28 239 066.99 behind — while every screen prints the
+    figure rounded to 28 239 067. Comparing the raw Decimals then rejects the seller's
+    own displayed balance with "you have 28 239 067, you cannot hand over
+    28 239 067", which reads as nonsense and teaches them to type a smaller number
+    until the form gives in. That habit is how phantom shortfalls get into the books.
+
+    The message names the gap rather than leaving the seller to subtract two large
+    numbers under pressure — if it is short, it says by how much."""
+    if _som(amount) <= _som(available):
+        return None
+    return (
+        f"{subject} {label}: {_som(available):,.0f} so'm. "
+        f"Siz {_som(amount):,.0f} so'm kiritdingiz — "
+        f"{_som(amount) - _som(available):,.0f} so'm yetmaydi."
+    )
+
+
 def _searchable_select(field, placeholder=""):
     """Turn a model-choice field into a searchable combobox picker: drop Django's
     "---------" blank label so the box shows `placeholder` instead of a dashed
@@ -820,11 +846,12 @@ class ProductionRemittanceForm(forms.ModelForm):
         amount = cleaned.get("amount")
         if seller is not None and amount:
             available = seller_cash_on_hand(seller, exclude_remittance_pk=self.instance.pk)
-            if amount > available:
-                raise forms.ValidationError(
-                    f"Kassada yetarli pul yo'q. {seller} qo'lida hozir "
-                    f"{available:,.0f} so'm bor — {amount:,.0f} so'm topshirib bo'lmaydi."
-                )
+            problem = _not_enough(
+                amount, available, "Kassada yetarli pul yo'q.",
+                f"{seller} qo'lida hozir",
+            )
+            if problem:
+                raise forms.ValidationError(problem)
         return cleaned
 
 
@@ -922,11 +949,12 @@ class ProfitPayoutForm(forms.ModelForm):
         amount = cleaned.get("amount")
         if seller is not None and amount:
             available = seller_withdrawable_profit(seller, exclude_payout_pk=self.instance.pk)
-            if amount > available:
-                raise forms.ValidationError(
-                    f"Topshirish uchun yetarli foyda yo'q. {seller} kassasida hozir "
-                    f"{available:,.0f} so'm sof foyda bor — {amount:,.0f} so'm topshirib bo'lmaydi."
-                )
+            problem = _not_enough(
+                amount, available, "Topshirish uchun yetarli foyda yo'q.",
+                f"{seller} kassasida sof foyda",
+            )
+            if problem:
+                raise forms.ValidationError(problem)
         return cleaned
 
 
@@ -1268,10 +1296,11 @@ class ReturnForm(forms.ModelForm):
             and self.user is not None
         ):
             on_hand = seller_cash_on_hand(self.user)
-            if self.excess > on_hand:
+            if _som(self.excess) > _som(on_hand):
                 raise forms.ValidationError(
                     f"Naqd qaytarish uchun kassada pul yetarli emas: kerak "
-                    f"{self.excess:,.0f} so'm, kassada {on_hand:,.0f} so'm. "
+                    f"{_som(self.excess):,.0f} so'm, kassada {_som(on_hand):,.0f} so'm — "
+                    f"{_som(self.excess) - _som(on_hand):,.0f} so'm yetmaydi. "
                     f"Avans variantini tanlang yoki avval kassaga pul kiriting."
                 )
         return cleaned
