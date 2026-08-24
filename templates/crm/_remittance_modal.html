@@ -18,6 +18,7 @@
   {% include "crm/_remittance_checks.html" %}
   <p>{{ form.method.label_tag }}{{ form.method }}{{ form.method.errors }}</p>
   <p>{{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}</p>
+  {{ form.confirm_backdated }}
   <p class="field-hint">Saqlangach: sotuvchi kassasidan chiqadi va ishlab chiqarishga qarzi shu miqdorda kamayadi.</p>
   <div class="modal-actions">
     <button type="submit" class="btn">Saqlash</button>

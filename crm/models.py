@@ -1368,37 +1368,58 @@ class ProfitPayout(models.Model):
         return f"Foyda topshiruvi · {self.seller}: {self.amount:,.0f} so'm ({self.date})"
 
 
-def seller_cash_on_hand(seller, exclude_remittance_pk=None, exclude_payout_pk=None):
+def _through(queryset, day):
+    """Everything up to and including `day` — or the lot when no day is given."""
+    return queryset.filter(date__lte=day) if day else queryset
+
+
+def _excluding(queryset, pk):
+    return queryset.exclude(pk=pk) if pk else queryset
+
+
+def seller_cash_on_hand(
+    seller, exclude_remittance_pk=None, exclude_payout_pk=None,
+    through=None, exclude_expense_pk=None,
+):
     """Cash physically in a seller's till right now — the same figure the kassa page
     shows as "Kassadagi pul": net client payments they collected, minus cash refunded
     to clients, minus expenses they paid out, minus what they've handed to production,
     minus profit already handed to the boss. A new handover can't exceed this
     (otherwise the till would go negative). The `exclude_*_pk` args drop one existing
-    row from the tally so editing it checks against the delta, not itself."""
+    row from the tally so editing it checks against the delta, not itself.
+
+    `through` cuts the tally at a date — what the till held at the END of that day.
+    Without it the figure is date-blind, and a payout backdated into a day the seller
+    had nothing on sails through: the total is fat with money collected since, while
+    the day itself quietly goes negative and drags every later day down with it. That
+    is exactly how a wage handed over on 17.08 but dated 31.07 put six days in the
+    red without a single warning."""
     income = (
-        Payment.objects.filter(created_by=seller).till_income().aggregate(s=Sum(PAYMENT_NET))["s"]
+        _through(Payment.objects.filter(created_by=seller).till_income(), through)
+        .aggregate(s=Sum(PAYMENT_NET))["s"]
         or Decimal("0")
     )
     # Cash handed back to a client — on an over-returned or over-priced sale, or as
     # their advance returned to them. These are recorded without a bank fee, so the
     # full amount is what leaves the drawer.
     refunded = (
-        Payment.objects.filter(created_by=seller).till_outflow()
+        _through(Payment.objects.filter(created_by=seller).till_outflow(), through)
         .aggregate(s=Sum("amount"))["s"]
         or Decimal("0")
     )
     expense = (
-        Expense.objects.filter(created_by=seller).aggregate(s=Sum("amount"))["s"]
+        _through(_excluding(Expense.objects.filter(created_by=seller), exclude_expense_pk), through)
+        .aggregate(s=Sum("amount"))["s"]
         or Decimal("0")
     )
     remitted_qs = ProductionRemittance.objects.filter(seller=seller)
     if exclude_remittance_pk:
         remitted_qs = remitted_qs.exclude(pk=exclude_remittance_pk)
-    remitted = remitted_qs.aggregate(s=Sum("amount"))["s"] or Decimal("0")
+    remitted = _through(remitted_qs, through).aggregate(s=Sum("amount"))["s"] or Decimal("0")
     payout_qs = ProfitPayout.objects.filter(seller=seller)
     if exclude_payout_pk:
         payout_qs = payout_qs.exclude(pk=exclude_payout_pk)
-    paid_profit = payout_qs.aggregate(s=Sum("amount"))["s"] or Decimal("0")
+    paid_profit = _through(payout_qs, through).aggregate(s=Sum("amount"))["s"] or Decimal("0")
     return income - refunded - expense - remitted - paid_profit
 
 
