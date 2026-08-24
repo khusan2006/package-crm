@@ -3826,7 +3826,10 @@ def _kassa_expenses(request):
     (employee, turkum, usul, valyuta). Shared by the page and its CSV export.
     Returns (expenses, dates, filters, rep, reps)."""
     dates = _date_range_context(request)
-    filters = {key: request.GET.get(key, "") for key in ("method", "category", "currency", "rep")}
+    filters = {
+        key: request.GET.get(key, "")
+        for key in ("method", "category", "currency", "rep", "q")
+    }
     filters["dan"] = dates["date_from"].isoformat()
     filters["gacha"] = dates["date_to"].isoformat()
     # Admins/managers may filter by any employee; a seller is locked to their own
@@ -4009,7 +4012,64 @@ def _kassa_transactions(expenses, dates, filters, rep):
             "employee": e.employee.name if e.employee_id else "",
         })
     rows.sort(key=lambda r: (r["date"], r["created_at"]), reverse=True)
-    return rows
+    return _kassa_search(rows, filters.get("q", ""))
+
+
+def _url_without(request, url_name, *drop):
+    """The current URL with some query parameters removed — for a "clear this one"
+    link that leaves every other filter standing."""
+    params = request.GET.copy()
+    for key in drop:
+        params.pop(key, None)
+    base = reverse(url_name)
+    return f"{base}?{params.urlencode()}" if params else base
+
+
+# Every apostrophe an Uzbek keyboard or a paste from Word can produce, mapped to the
+# plain one the database happens to hold.
+_APOSTROPHES = str.maketrans({c: "'" for c in "`´‘’ʻʼ‛"})
+
+
+def _flatten_apostrophes(text):
+    return text.translate(_APOSTROPHES)
+
+
+def _kassa_search(rows, query):
+    """Free-text filter over the built ledger rows — one box for both drawers.
+
+    Deliberately NOT five database queries. The ledger is already one merged list of
+    payments, bank fees, handovers, profit payouts, refunds and expenses, and each
+    built row carries the words a person would actually type: the client or seller,
+    the category, the note, the method, who entered it. Matching the rows means the
+    same box searches every stream; matching per model would need five near-identical
+    clauses and would still miss the rows that have no text column at all.
+
+    Digits are matched separately so "39200", "39 200" and "39,200" all find the same
+    row — people read the amount off the screen and type it back with the spaces. An
+    amount matches from the START, never mid-number: typing 39200 must not drag in
+    10 639 200, because on a money page a wrong row that merely contains the digits
+    is worse than no row at all.
+
+    Apostrophes are flattened on both sides. "O'tkazma" is written with ' on one
+    keyboard, ’ or ` on the next, and a seller who types the wrong one would otherwise
+    get an empty page for a word that is plainly on screen."""
+    needle = _flatten_apostrophes((query or "").strip().lower())
+    if not needle:
+        return rows
+    digits = needle.replace(" ", "").replace(",", "").replace("'", "")
+    hits = []
+    for row in rows:
+        haystack = _flatten_apostrophes(" ".join(str(row.get(key) or "") for key in (
+            "title", "subtitle", "method", "employee", "created_by",
+        )).lower())
+        if needle in haystack:
+            hits.append(row)
+            continue
+        if digits.isdigit():
+            amount = f"{abs(row.get('amount_som') or 0):.0f}"
+            if amount.startswith(digits):
+                hits.append(row)
+    return hits
 
 
 def _last_kassa_activity(rep):
@@ -4115,6 +4175,19 @@ def kassa_view(request):
         "filter_count": len(active_filters),
         "has_filters": bool(active_filters),
         "filter_url": reverse("kassa"),
+        # One box over both drawers. The window and the drawer filters ride along as
+        # hidden inputs, so searching narrows what is already on screen instead of
+        # throwing the page back to today.
+        "show_search": True,
+        "search_placeholder": "Mijoz, turkum, izoh, summa…",
+        "search_keep": [
+            {"name": name, "value": value} for name, value in (
+                ("dan", filters["dan"]), ("gacha", filters["gacha"]),
+                ("method", filters["method"]), ("category", filters["category"]),
+                ("currency", filters["currency"]), ("rep", filters["rep"]),
+            )
+        ],
+        "search_clear_url": _url_without(request, "kassa", "q"),
         "rep_label": "Xodim",
         "show_daterange_picker": True,
         "keep_daterange": True,

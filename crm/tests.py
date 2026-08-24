@@ -5646,3 +5646,95 @@ class KassaEmptyDayNoticeTests(BaseSetup):
         url = response.context["empty_hint"]["url"]
         self.assertIn("method=cash", url)
         self.assertIn(f"gacha={self.today.isoformat()}", url)
+
+
+class KassaSearchTests(BaseSetup):
+    """One search box over both kassa drawers — kirim and chiqim at once.
+
+    The ledger is six different models merged into one list, so the box matches the
+    built rows rather than any single table: the client, the category, the note, the
+    method and the amount are all typed at it interchangeably."""
+
+    def setUp(self):
+        today = timezone.localdate()
+        Payment.objects.create(
+            sale=self.sale1, amount=Decimal("120000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=today, created_by=self.sales1,
+        )
+        Expense.objects.create(
+            amount=Decimal("39200"), category="Ovqat (obed)", note="tushlik",
+            method=Payment.Method.CASH, created_by=self.sales1, date=today,
+        )
+        Expense.objects.create(
+            amount=Decimal("10639200"), category="Benzin",
+            method=Payment.Method.CASH, created_by=self.sales1, date=today,
+        )
+
+    def _rows(self, **params):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"), params)
+        self.assertEqual(response.status_code, 200)
+        return response.context["income_rows"], response.context["outflow_rows"]
+
+    def test_no_query_leaves_both_drawers_whole(self):
+        # BaseSetup's paid sale already put one payment on today, and setUp adds a
+        # second — both belong to client1.
+        income, outflow = self._rows()
+        self.assertEqual(len(income), 2)
+        self.assertEqual(len(outflow), 2)
+
+    def test_a_client_name_narrows_the_income_drawer(self):
+        income, outflow = self._rows(q=self.client1.name)
+        self.assertEqual(len(income), 2)
+        self.assertEqual(len(outflow), 0)
+
+    def test_a_category_narrows_the_outflow_drawer(self):
+        income, outflow = self._rows(q="benzin")
+        self.assertEqual(len(income), 0)
+        self.assertEqual(len(outflow), 1)
+        self.assertEqual(outflow[0]["amount_som"], Decimal("10639200"))
+
+    def test_a_note_is_searchable_too(self):
+        _, outflow = self._rows(q="tushlik")
+        self.assertEqual(len(outflow), 1)
+        self.assertEqual(outflow[0]["amount_som"], Decimal("39200"))
+
+    def test_an_amount_matches_from_the_start_not_mid_number(self):
+        # 10 639 200 contains "39200"; on a money page that must not come back as a hit.
+        _, outflow = self._rows(q="39200")
+        self.assertEqual([r["amount_som"] for r in outflow], [Decimal("39200")])
+
+    def test_spaces_and_commas_in_an_amount_are_ignored(self):
+        for typed in ("10639200", "10 639 200", "10,639,200"):
+            _, outflow = self._rows(q=typed)
+            self.assertEqual(
+                [r["amount_som"] for r in outflow], [Decimal("10639200")], typed
+            )
+
+    def test_every_apostrophe_finds_the_same_rows(self):
+        # "Bank o'tkazmasi" is typed with ' on one keyboard and ’ or ` on the next.
+        Payment.objects.create(
+            sale=self.sale1, amount=Decimal("70000"), method=Payment.Method.TRANSFER,
+            kind=Payment.Kind.DEBT, date=timezone.localdate(), created_by=self.sales1,
+        )
+        counts = {
+            typed: len(self._rows(q=typed)[0])
+            for typed in ("o'tkazma", "o‘tkazma", "o`tkazma")
+        }
+        self.assertEqual(set(counts.values()), {1}, counts)  # only the transfer
+
+    def test_searching_keeps_the_day_the_page_is_on(self):
+        # The box posts the window back as hidden inputs; without them a search would
+        # throw the page to today and the seller would think the money vanished.
+        yesterday = (timezone.localdate() - timedelta(days=1)).isoformat()
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"), {"dan": yesterday, "gacha": yesterday})
+        body = response.content.decode()
+        self.assertIn(f'name="dan" value="{yesterday}"', body)
+        self.assertIn(f'name="gacha" value="{yesterday}"', body)
+
+    def test_clearing_the_search_keeps_the_other_filters(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"), {"q": "benzin", "method": "cash"})
+        self.assertIn("method=cash", response.context["search_clear_url"])
+        self.assertNotIn("q=", response.context["search_clear_url"])
