@@ -5322,6 +5322,11 @@ def _remit_summary(remit):
     )
 
 
+# The three questions shown above the Saqlash button on a handover — in its own file
+# so the modal and the full page carry the same warning.
+CHECKS = "crm/_remittance_checks.html"
+
+
 def remittance_create(request):
     """Record cash a seller hands back to production. A seller may only file their
     own; admins/managers may file on behalf of any seller (and can preselect one via
@@ -5347,8 +5352,14 @@ def remittance_create(request):
             )
             messages.success(request, f"Topshirildi: {remit.amount:,.0f} so'm.")
             return form_success(request, reverse("kassa"))
-        return form_response(request, form, title, invalid=True, modal_template="crm/_remittance_modal.html")
-    return form_response(request, form, title, modal_template="crm/_remittance_modal.html")
+        return form_response(
+            request, form, title, invalid=True,
+            modal_template="crm/_remittance_modal.html", checks_template=CHECKS,
+        )
+    return form_response(
+        request, form, title,
+        modal_template="crm/_remittance_modal.html", checks_template=CHECKS,
+    )
 
 
 def remittance_refund_create(request):
@@ -5409,8 +5420,14 @@ def remittance_edit(request, pk):
                 request, "Qaytarish yangilandi." if refund else "Topshiruv yangilandi."
             )
             return form_success(request, reverse("kassa"))
-        return form_response(request, form, title, invalid=True, modal_template=modal)
-    return form_response(request, form, title, modal_template=modal)
+        return form_response(
+            request, form, title, invalid=True, modal_template=modal,
+            checks_template=None if refund else CHECKS,
+        )
+    return form_response(
+        request, form, title, modal_template=modal,
+        checks_template=None if refund else CHECKS,
+    )
 
 
 def remittance_delete(request, pk):

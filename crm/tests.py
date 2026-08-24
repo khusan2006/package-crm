@@ -5790,3 +5790,43 @@ class TillCheckRoundingTests(BaseSetup):
         self.assertIn("yetmaydi", message)
         # Never self-contradictory: the two figures in the message must differ.
         self.assertNotIn(f"{on_hand:,.0f} so'm. Siz {on_hand:,.0f}", message)
+
+
+class RemittanceRemindersTests(BaseSetup):
+    """Three questions on the handover form, each from a real miscount.
+
+    Money that arrived by bank transfer shows in the till but never reaches the
+    seller's hand, and a client sometimes carries the cash to production themselves.
+    Both went unwritten and surfaced later as a hole in the kassa."""
+
+    PROMPTS = (
+        "Summani aniq hisobladingizmi",
+        "Bank o'tkazmasi bormi",
+        "to'g'ridan-to'g'ri bermadimi",
+    )
+
+    def test_the_handover_form_asks_all_three(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("remittance_create"))
+        self.assertEqual(response.status_code, 200)
+        for prompt in self.PROMPTS:
+            self.assertContains(response, prompt)
+
+    def test_the_modal_asks_them_too(self):
+        # The form renders twice — as a modal from the kassa and as a full page for
+        # anyone who opens the URL directly. A warning on only one of them is a hole.
+        self.client.force_login(self.sales1)
+        response = self.client.get(
+            reverse("remittance_create"), HTTP_X_REQUESTED_WITH="XMLHttpRequest"
+        )
+        self.assertEqual(response.status_code, 200)
+        for prompt in self.PROMPTS:
+            self.assertContains(response, prompt)
+
+    def test_the_refund_form_does_not_ask_them(self):
+        # Production handing cash BACK is the opposite movement — the questions would
+        # be noise there.
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("remittance_refund_create"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "remit-check")
