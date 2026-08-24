@@ -1152,8 +1152,13 @@ def _client_events(request, client):
             "items__product", "returns__product", "payments__created_by"
         )
     )
+    today = timezone.localdate()
     events = []
     for sale in sales:
+        # Only a receipt that is BOTH past its deadline and still unpaid is late; a
+        # settled one stopped counting the day it was paid. Payments and returns are
+        # movements, not obligations, so they never carry the figure.
+        deadline = sale.debt_deadline
         events.append({
             "date": sale.date,
             "sort": (sale.date, sale.created_at),
@@ -1161,6 +1166,11 @@ def _client_events(request, client):
             "cls": "badge-neutral" if sale.is_opening else "badge-info",
             "icon": "sale",
             "desc": sale.item_summary,
+            "overdue_days": (
+                (today - deadline).days
+                if deadline and deadline < today and sale.debt_remaining > 0
+                else None
+            ),
             # An opening carry-over has no line items: its debt is opening_amount alone.
             "amount": sale.total_price + sale.opening_amount,
             "delta": sale.total_price + sale.opening_amount,
@@ -1243,7 +1253,7 @@ def client_history_export(request, pk):
     events = _client_events(request, client)
     headers = [
         "Sana", "Amal", "Tafsilot", "Summa",
-        "Qarz o'zgarishi", "Qarz qoldig'i", "Usul", "Kim", "Izoh",
+        "Qarz o'zgarishi", "Qarz qoldig'i", "Kechikkan kun", "Usul", "Kim", "Izoh",
         "Oxirgi yuk olgan", "Oxirgi to'lov",
     ]
     # The last two are client-level, so they repeat down every row — the same pair the
@@ -1261,6 +1271,7 @@ def client_history_export(request, pk):
             float(e["amount"]),
             float(e["delta"]),
             float(e["balance"]),
+            e.get("overdue_days") if e.get("overdue_days") is not None else "",
             e["method_label"],
             str(e["user"]),
             e["note"],
@@ -2041,13 +2052,18 @@ def debt_export(request):
     today = timezone.localdate()
     headers = [
         "Mijoz", "Telefon", "Mas'ul xodim", "Ochiq cheklar",
-        "Muddati o'tgan cheklar", "Eng yaqin muddat", "Holat",
+        "Muddati o'tgan cheklar", "Eng yaqin muddat", "Kechikkan kun", "Holat",
         "Oxirgi yuk olgan", "Oxirgi to'lov", "Qarz qoldig'i", "Avans (so'm)",
         "Avans qachondan",
     ]
     rows = []
     for g in debtors:
         earliest = g["earliest"]
+        # Counted off the SOONEST deadline, so the figure is how long the oldest
+        # unpaid receipt has been sitting — the number people ask for. Left blank
+        # rather than zeroed when nothing is late, so sorting by it puts the worst
+        # debtors on top and everyone else out of the way.
+        overdue_days = (today - earliest).days if earliest and earliest < today else None
         rows.append([
             g["client"].name,
             g["client"].phone,
@@ -2055,6 +2071,7 @@ def debt_export(request):
             g["count"],
             g["overdue_count"],
             earliest.strftime("%d.%m.%Y") if earliest else "",
+            overdue_days if overdue_days is not None else "",
             # A row that is here only for its advance owes nothing, so it is neither
             # on time nor late.
             "Avans" if not g["remaining"]
@@ -2067,7 +2084,7 @@ def debt_export(request):
             g["advance_since"].strftime("%d.%m.%Y") if g["advance_since"] else "",
         ])
     return _xlsx_response(
-        "qarzlar.xlsx", "Qarzlar", headers, rows, {10: "#,##0.00", 11: "#,##0.00"}
+        "qarzlar.xlsx", "Qarzlar", headers, rows, {11: "#,##0.00", 12: "#,##0.00"}
     )
 
 
@@ -2113,7 +2130,8 @@ def debt_client_export(request, pk):
     today = timezone.localdate()
     headers = [
         "Sana", "Mahsulotlar", "Sotuvchi", "Umumiy", "To'langan",
-        "Qoldiq", "Muddat", "Holat", "Oxirgi yuk olgan", "Oxirgi to'lov",
+        "Qoldiq", "Muddat", "Kechikkan kun", "Holat",
+        "Oxirgi yuk olgan", "Oxirgi to'lov",
     ]
     # Client-level dates, so they repeat down every row: whoever opens the file reads
     # them off the first line instead of hunting for a summary block.
@@ -2130,7 +2148,11 @@ def debt_client_export(request, pk):
             float(sale.paid),
             float(sale.remaining),
             deadline.strftime("%d.%m.%Y") if deadline else "",
-            f"{(today - deadline).days} kun o'tgan" if overdue else "Muddatida",
+            # A number of its own rather than "12 kun o'tgan" buried in the status
+            # text: the debtor list exports it the same way, and a figure can be
+            # sorted and totalled where a sentence cannot.
+            (today - deadline).days if overdue else "",
+            "Muddati o'tgan" if overdue else "Muddatida",
             last_sale.strftime("%d.%m.%Y") if last_sale else "",
             last_payment.strftime("%d.%m.%Y") if last_payment else "",
         ])
