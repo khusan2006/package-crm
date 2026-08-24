@@ -14,7 +14,7 @@ the CRM went live. Each step below is checked against the three paper/Excel book
   2. Topshiruv #16 (02.08): 8 231 850 -> 10 211 850. The form refused the real figure
      ("kassada yetarli pul yo'q") because of cause 1, so a smaller number was typed.
      10 211 850 is what the audit log shows the row was created with, and it is exactly
-     that day's kirim - rasxod.
+     that day's kirim - rasxod. Stage 4 later puts it on the paper book's 10 213 000.
 
   3+4. ШОКИР АЛГОРИТИМ. Excel says he paid 3 050 000 on 24.07 and 1 065 000 on 20.08.
      The CRM has 3 030 400 (dated 10.08) and 1 084 600 — same total, wrong dates, and
@@ -38,6 +38,17 @@ still wrong in the same way:
 
   8. Topshiruv #35 (21.08): 13 962 208 -> 14 001 408. The form refused the real figure,
      so a smaller one was typed — the same reflex as cause 2.
+
+Two later stages take their figures from the books rather than from arithmetic — where a
+book states what production was handed, the book wins:
+
+  9. Production's OWN book gives 48 340 056 for 19–20.08 and 41 177 296 for 21.08; both
+     handovers are set to those. It has NO entry for the 14 001 408, which reads as
+     "never handed over" — but that is a claim about missing money, so the row is left
+     alone until the owner confirms, and 21.08 shows −22 033 in the meantime.
+
+ 10. Topshiruv #16 (02.08) goes to the paper book's 10 213 000, and the opening cash
+     rises with it to 1 981 150 — see the constants for why they move together.
 
 Each stage runs ONCE per its own version (an AuditLog marker records it), so this command
 is safe to run again: an applied stage is a no-op. Every step verifies the row is still
@@ -74,6 +85,14 @@ MARKER_TYPE = "KASSA_FIX"
 FIX_VERSION = "2026-08-23-minus-1"          # 1-bosqich: minus kunlar
 FIX_VERSION_2108 = "2026-08-23-2108-1"      # 2-bosqich: 21.08 tozalash
 FIX_VERSION_BOOK = "2026-08-23-prodbook-1"  # 3-bosqich: ishlab chiqarish daftari
+FIX_VERSION_0208 = "2026-08-23-daftar0208-1"  # 4-bosqich: 02.08 daftar raqami
+
+# 02.08 topshirug'i daftardagi raqamga keltiriladi. Boshlang'ich naqd qoldiq —
+# yagona kuzatilmagan, hisoblab topilgan kattalik: topshiruv 1 150 ga ko'p bo'lsa,
+# demak u kunni shuncha ko'p pul bilan boshlagan. Ikkisi birga o'zgaradi, aks holda
+# 02.08 dan 05.08 gacha kassa −1 150 ga tushadi.
+REMITTANCE_16_BOOK = (16, Decimal("10211850"), Decimal("10213000"))
+OPENING_CASH_BOOK = Decimal("1981150")
 
 # Ishlab chiqarishning O'Z daftaridagi raqamlar (2026-08-23 da tasdiqlangan). Ular
 # pulni qabul qilgan tomon, shuning uchun topshiruv summasida oxirgi so'z ularniki.
@@ -309,6 +328,85 @@ class Command(BaseCommand):
             f"\n3-bosqich qo'llandi: {len(rows)} ta topshiruv daftar raqamiga "
             f"keltirildi (+{_money(total)} so'm)."))
 
+    # ------------------------------------- 4-bosqich: 02.08 daftar raqami bo'yicha
+
+    def _stage_0208(self, seller, opt):
+        """Puts the 02.08 handover on the figure the paper book states.
+
+        The book is what production was handed; the seller keyed a smaller number
+        because the till would not carry the real one. Raising it by 1 150 also raises
+        the opening cash by 1 150 — that figure was never observed, it was solved for,
+        and a bigger handover on 02.08 means she started the month with that much more
+        in hand. Changed apart, the till runs 1 150 short from 02.08 to 05.08."""
+        summary = f"02.08 daftar raqami v{FIX_VERSION_0208}"
+        if not opt["force"] and AuditLog.objects.filter(
+            target_type=MARKER_TYPE, summary=summary
+        ).exists():
+            self.stdout.write(
+                f"\n4-bosqich (v{FIX_VERSION_0208}) allaqachon qo'llangan — "
+                "o'tkazib yuborildi."
+            )
+            return
+
+        problems = []
+        rem_pk, rem_old, rem_new = REMITTANCE_16_BOOK
+        remittance = ProductionRemittance.objects.filter(
+            pk=rem_pk, seller=seller
+        ).first()
+        if remittance is None:
+            problems.append(f"Topshiruv #{rem_pk} topilmadi")
+        else:
+            self._expect(problems, f"Topshiruv #{rem_pk} summasi",
+                         remittance.amount, rem_old)
+
+        # 1-bosqich yaratgan juftlik — pk emas, mazmuni bo'yicha topiladi.
+        opening = ProductionRemittance.objects.filter(
+            seller=seller, date=OPENING_DATE, amount=-OPENING_CASH
+        ).first()
+        adjustment = ProductionAdjustment.objects.filter(
+            seller=seller, date=OPENING_DATE, amount=-OPENING_CASH
+        ).first()
+        if opening is None:
+            problems.append(
+                f"Boshlang'ich naqd qatori topilmadi ({_money(-OPENING_CASH)})")
+        if adjustment is None:
+            problems.append(
+                f"Boshlang'ich naqd tuzatishi topilmadi ({_money(-OPENING_CASH)})")
+
+        if problems:
+            self.stdout.write(self.style.ERROR(
+                "\n4-bosqich: yozuvlar kutilgan holatda emas — tegilmadi:"))
+            for line in problems:
+                self.stdout.write(f"  - {line}")
+            raise CommandError("4-bosqich to'xtatildi.")
+
+        if opt["dry_run"]:
+            self.stdout.write(self.style.WARNING(
+                "\n4-bosqich --dry-run: tekshirildi, yozilmadi."))
+            return
+
+        with transaction.atomic():
+            remittance.amount = rem_new
+            remittance.save(update_fields=["amount"])
+            AuditLog.record(
+                seller, AuditLog.Action.UPDATE, "Topshiruv", remittance.pk,
+                f"Daftar raqami bo'yicha: {_money(rem_old)} -> {_money(rem_new)} "
+                f"so'm (02.08)",
+            )
+            for row, label in ((opening, "Topshiruv"), (adjustment, "Tuzatish")):
+                row.amount = -OPENING_CASH_BOOK
+                row.save(update_fields=["amount"])
+                AuditLog.record(
+                    seller, AuditLog.Action.UPDATE, label, row.pk,
+                    f"Boshlang'ich naqd qoldiq {_money(OPENING_CASH)} -> "
+                    f"{_money(OPENING_CASH_BOOK)} so'm (23.07)",
+                )
+            AuditLog.record(seller, AuditLog.Action.UPDATE, MARKER_TYPE, None, summary)
+
+        self.stdout.write(self.style.SUCCESS(
+            f"\n4-bosqich qo'llandi: 02.08 topshirug'i {_money(rem_new)} so'm, "
+            f"boshlang'ich naqd {_money(OPENING_CASH_BOOK)} so'm."))
+
     # ------------------------------------------------------------------- handle
 
     def handle(self, *args, **opt):
@@ -329,6 +427,7 @@ class Command(BaseCommand):
             )
             self._stage_2108(seller, opt)
             self._stage_prod_book(seller, opt)
+            self._stage_0208(seller, opt)
             self._report(seller, "KEYIN:")
             return
 
@@ -481,6 +580,7 @@ class Command(BaseCommand):
 
         self._stage_2108(seller, opt)
         self._stage_prod_book(seller, opt)
+        self._stage_0208(seller, opt)
         after = self._report(seller, "KEYIN:")
         self.stdout.write("")
         if after == 0:
