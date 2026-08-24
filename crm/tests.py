@@ -1565,6 +1565,25 @@ class ListExportTests(BaseSetup):
         rows = read_xlsx(self.client.get(reverse("debt_export"), {"overdue": "1"}))
         self.assertEqual(len(rows), 1)  # deadline is in the future — nothing overdue
 
+    def test_debt_export_counts_how_many_days_late(self):
+        # Off the soonest deadline, so the figure is the age of the oldest unpaid
+        # receipt — what a collector is actually chasing.
+        self.debt_sale.debt_deadline = timezone.localdate() - timedelta(days=12)
+        self.debt_sale.save(update_fields=["debt_deadline"])
+        self.client.force_login(self.admin)
+        rows = read_xlsx(self.client.get(reverse("debt_export")))
+        header = list(rows[0])
+        self.assertEqual(rows[1][header.index("Kechikkan kun")], 12)
+        self.assertEqual(rows[1][header.index("Holat")], "Muddati o'tgan")
+
+    def test_debt_export_leaves_the_day_count_empty_when_nothing_is_late(self):
+        # BaseSetup's deadline is a week out; a blank sorts out of the way in Excel.
+        self.client.force_login(self.admin)
+        rows = read_xlsx(self.client.get(reverse("debt_export")))
+        header = list(rows[0])
+        self.assertIn(rows[1][header.index("Kechikkan kun")], ("", None))
+        self.assertEqual(rows[1][header.index("Holat")], "Muddatida")
+
     def test_debt_client_export_lists_open_receipts(self):
         self.client.force_login(self.admin)
         response = self.client.get(
@@ -1572,10 +1591,23 @@ class ListExportTests(BaseSetup):
         )
         self.assertEqual(response.status_code, 200)
         rows = read_xlsx(response)
-        self.assertIn("Qoldiq", rows[0])
+        header = list(rows[0])
+        self.assertIn("Qoldiq", header)
         self.assertEqual(len(rows), 2)  # header + the single open receipt
-        self.assertEqual(rows[1][5], 240000.0)
-        self.assertEqual(rows[1][7], "Muddatida")
+        self.assertEqual(rows[1][header.index("Qoldiq")], 240000.0)
+        self.assertEqual(rows[1][header.index("Holat")], "Muddatida")
+        self.assertIn(rows[1][header.index("Kechikkan kun")], ("", None))
+
+    def test_debt_client_export_counts_how_many_days_late(self):
+        self.debt_sale.debt_deadline = timezone.localdate() - timedelta(days=9)
+        self.debt_sale.save(update_fields=["debt_deadline"])
+        self.client.force_login(self.admin)
+        rows = read_xlsx(
+            self.client.get(reverse("debt_client_export", args=[self.client1.pk]))
+        )
+        header = list(rows[0])
+        self.assertEqual(rows[1][header.index("Kechikkan kun")], 9)
+        self.assertEqual(rows[1][header.index("Holat")], "Muddati o'tgan")
 
     def test_debt_client_export_scoped_to_seller(self):
         self.client.force_login(self.sales1)
@@ -1747,10 +1779,39 @@ class ClientHistoryTests(BaseSetup):
         self.assertEqual(response["Content-Type"], XLSX_CONTENT_TYPE)
         self.assertIn("attachment", response["Content-Disposition"])
         rows = read_xlsx(response)
-        self.assertIn("Qarz qoldig'i", rows[0])
+        header = list(rows[0])
+        self.assertIn("Qarz qoldig'i", header)
         self.assertEqual(len(rows), 2)  # header + the one sale
         self.assertEqual(rows[1][1], "Sotuv")
-        self.assertEqual(rows[1][5], 240000)  # running balance column
+        self.assertEqual(rows[1][header.index("Qarz qoldig'i")], 240000)
+
+    def test_export_counts_how_many_days_an_unpaid_receipt_is_late(self):
+        self.sale.debt_deadline = timezone.localdate() - timedelta(days=15)
+        self.sale.save(update_fields=["debt_deadline"])
+        self.client.force_login(self.sales1)
+        rows = read_xlsx(self.client.get(
+            reverse("client_history_export", args=[self.client_h.pk])
+        ))
+        header = list(rows[0])
+        self.assertEqual(rows[1][header.index("Kechikkan kun")], 15)
+
+    def test_export_leaves_the_day_count_off_a_settled_receipt(self):
+        # Paid in full and long past its deadline — a settled receipt is not late.
+        self.sale.debt_deadline = timezone.localdate() - timedelta(days=15)
+        self.sale.save(update_fields=["debt_deadline"])
+        Payment.objects.create(
+            sale=self.sale, amount=Decimal("240000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=self.sale.date, created_by=self.sales1,
+        )
+        self.client.force_login(self.sales1)
+        rows = read_xlsx(self.client.get(
+            reverse("client_history_export", args=[self.client_h.pk])
+        ))
+        header = list(rows[0])
+        col = header.index("Kechikkan kun")
+        # Neither the sale row nor the payment row carries a figure.
+        for row in rows[1:]:
+            self.assertIn(row[col], ("", None))
 
 
 class AuditLogTests(BaseSetup):
