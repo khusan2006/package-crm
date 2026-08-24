@@ -43,12 +43,18 @@ Two later stages take their figures from the books rather than from arithmetic �
 book states what production was handed, the book wins:
 
   9. Production's OWN book gives 48 340 056 for 19–20.08 and 41 177 296 for 21.08; both
-     handovers are set to those. It has NO entry for the 14 001 408, which reads as
-     "never handed over" — but that is a claim about missing money, so the row is left
-     alone until the owner confirms, and 21.08 shows −22 033 in the meantime.
+     handovers are set to those. It has NO entry for the 14 001 408 — which turned out
+     to be ХОЖАКБАР's two bank transfers of 07.08, money that reached the company
+     without ever passing through the seller's hands, so the row rightly stays.
 
  10. Topshiruv #16 (02.08) goes to the paper book's 10 213 000, and the opening cash
      rises with it to 1 981 150 — see the constants for why they move together.
+
+ 11. Step 9 is then undone. Counting the physical cash showed those two book figures
+     are 61 233 higher than the two days can support, leaving 21.08 at −22 033: the
+     production book is hand-written and rounded like the others, while the CRM
+     figures come from that day's kirim less rasxod. With them restored the whole
+     month reconciles — no negative day is left.
 
 Each stage runs ONCE per its own version (an AuditLog marker records it), so this command
 is safe to run again: an applied stage is a no-op. Every step verifies the row is still
@@ -86,6 +92,17 @@ FIX_VERSION = "2026-08-23-minus-1"          # 1-bosqich: minus kunlar
 FIX_VERSION_2108 = "2026-08-23-2108-1"      # 2-bosqich: 21.08 tozalash
 FIX_VERSION_BOOK = "2026-08-23-prodbook-1"  # 3-bosqich: ishlab chiqarish daftari
 FIX_VERSION_0208 = "2026-08-23-daftar0208-1"  # 4-bosqich: 02.08 daftar raqami
+FIX_VERSION_UNBOOK = "2026-08-24-unbook-1"    # 5-bosqich: 3-bosqichni qaytarish
+
+# 3-bosqich qaytariladi. Naqd sanab ko'rilgach ma'lum bo'ldiki, ishlab chiqarish
+# daftaridagi bu ikki raqam kunning o'z hisobidan jami 61 233 ga ko'p — ular ham
+# qo'lda yozilgan va yaxlitlangan. Ustun qo'yilsa farq 21.08 ga to'planib kassani
+# −22 033 ga tushirardi; CRM raqamlari esa o'sha kunlarning kirim va rasxodidan
+# kelib chiqadi, shuning uchun ular tiklandi.
+REVERT_BOOK = (
+    (32, dt_date(2026, 8, 20), Decimal("48340056"), Decimal("48299313")),
+    (34, dt_date(2026, 8, 21), Decimal("41177296"), Decimal("41156806")),
+)
 
 # 02.08 topshirug'i daftardagi raqamga keltiriladi. Boshlang'ich naqd qoldiq —
 # yagona kuzatilmagan, hisoblab topilgan kattalik: topshiruv 1 150 ga ko'p bo'lsa,
@@ -407,6 +424,64 @@ class Command(BaseCommand):
             f"\n4-bosqich qo'llandi: 02.08 topshirug'i {_money(rem_new)} so'm, "
             f"boshlang'ich naqd {_money(OPENING_CASH_BOOK)} so'm."))
 
+    # ---------------------------------------- 5-bosqich: 3-bosqichni qaytarish
+
+    def _stage_unbook(self, seller, opt):
+        """Puts the two handovers back on the CRM's own arithmetic.
+
+        Stage 3 took production's book as the last word. Counting the physical cash
+        afterwards showed the pair is 61 233 higher than those two days can support:
+        the book is hand-written and rounded like every other, and forcing it left
+        21.08 at −22 033. The CRM figures come from that day's kirim less rasxod, so
+        they are the ones that reconcile."""
+        summary = f"daftar raqamlari qaytarildi v{FIX_VERSION_UNBOOK}"
+        if not opt["force"] and AuditLog.objects.filter(
+            target_type=MARKER_TYPE, summary=summary
+        ).exists():
+            self.stdout.write(
+                f"\n5-bosqich (v{FIX_VERSION_UNBOOK}) allaqachon qo'llangan — "
+                "o'tkazib yuborildi."
+            )
+            return
+
+        problems, rows = [], []
+        for pk, on_date, old, new in REVERT_BOOK:
+            row = ProductionRemittance.objects.filter(pk=pk, seller=seller).first()
+            if row is None:
+                problems.append(f"Topshiruv #{pk} topilmadi")
+                continue
+            self._expect(problems, f"Topshiruv #{pk} sanasi", row.date, on_date)
+            self._expect(problems, f"Topshiruv #{pk} summasi", row.amount, old)
+            rows.append((row, old, new))
+
+        if problems:
+            self.stdout.write(self.style.ERROR(
+                "\n5-bosqich: yozuvlar kutilgan holatda emas — tegilmadi:"))
+            for line in problems:
+                self.stdout.write(f"  - {line}")
+            raise CommandError("5-bosqich to'xtatildi.")
+
+        if opt["dry_run"]:
+            self.stdout.write(self.style.WARNING(
+                "\n5-bosqich --dry-run: tekshirildi, yozilmadi."))
+            return
+
+        with transaction.atomic():
+            for row, old, new in rows:
+                row.amount = new
+                row.save(update_fields=["amount"])
+                AuditLog.record(
+                    seller, AuditLog.Action.UPDATE, "Topshiruv", row.pk,
+                    f"CRM hisobiga qaytarildi: {_money(old)} -> {_money(new)} so'm "
+                    f"({row.date:%d.%m})",
+                )
+            AuditLog.record(seller, AuditLog.Action.UPDATE, MARKER_TYPE, None, summary)
+
+        total = sum(old - new for _, old, new in rows)
+        self.stdout.write(self.style.SUCCESS(
+            f"\n5-bosqich qo'llandi: {len(rows)} ta topshiruv CRM hisobiga "
+            f"qaytarildi (−{_money(total)} so'm)."))
+
     # ------------------------------------------------------------------- handle
 
     def handle(self, *args, **opt):
@@ -428,6 +503,7 @@ class Command(BaseCommand):
             self._stage_2108(seller, opt)
             self._stage_prod_book(seller, opt)
             self._stage_0208(seller, opt)
+            self._stage_unbook(seller, opt)
             self._report(seller, "KEYIN:")
             return
 
@@ -581,6 +657,7 @@ class Command(BaseCommand):
         self._stage_2108(seller, opt)
         self._stage_prod_book(seller, opt)
         self._stage_0208(seller, opt)
+        self._stage_unbook(seller, opt)
         after = self._report(seller, "KEYIN:")
         self.stdout.write("")
         if after == 0:
