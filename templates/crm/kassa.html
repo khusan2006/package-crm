@@ -28,6 +28,17 @@
 
 {% include "crm/_filter_toolbar.html" %}
 
+{% if empty_hint %}
+<div class="kassa-empty">
+  <span class="ke-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/><path d="M9 15h6"/></svg></span>
+  <div class="ke-text">
+    <span class="ke-title">Bu sanada kassada yozuv yo'q</span>
+    <span class="ke-sub">Oxirgi harakat — <strong>{{ empty_hint.date|date:"d.m.Y" }}</strong>. Yozuv qaysi kuni kiritilgani emas, unga qo'yilgan sana bo'yicha ko'rinadi.</span>
+  </div>
+  <a class="btn ke-btn" href="{{ empty_hint.url }}">{{ empty_hint.date|date:"d.m" }} ni ochish</a>
+</div>
+{% endif %}
+
 {# Shu davr — kunlik filtr bo'yicha #}
 <p class="section-eyebrow">Shu davr · tanlangan sana bo'yicha</p>
 <div class="kpi-grid kpi-grid--compact kpi-grid--period">
@@ -60,7 +71,7 @@
       <h2 style="margin:0;">Kirim</h2>
       <span class="ledger-total amt-in">+{{ income_total|floatformat:"0g" }} so'm</span>
     </div>
-    <p class="ledger-hint">Mijozlardan qabul qilingan to'lovlar — eng yangisi yuqorida.</p>
+    <p class="ledger-hint">{% if filters.q %}«{{ filters.q }}» bo'yicha {{ income_rows|length }} ta kirim — yuqoridagi summa shularniki.{% else %}Mijozlardan qabul qilingan to'lovlar — eng yangisi yuqorida.{% endif %}</p>
     <div class="table-wrap">
     <table class="ledger-table ledger-in">
       <tr>
@@ -95,7 +106,7 @@
           </span>
         </td>
       </tr>
-      {% empty %}<tr><td colspan="7" class="muted">Bu davrda kirim yo'q.</td></tr>{% endfor %}
+      {% empty %}<tr><td colspan="7" class="muted">{% if filters.q %}«{{ filters.q }}» bo'yicha kirim topilmadi.{% else %}Bu davrda kirim yo'q.{% endif %}</td></tr>{% endfor %}
     </table>
     </div>
   </div>
@@ -106,7 +117,7 @@
       <h2 style="margin:0;">Chiqim</h2>
       <span class="ledger-total amt-out">−{{ outflow_total|floatformat:"0g" }} so'm</span>
     </div>
-    <p class="ledger-hint">Rasxot, topshiruv va komissiyalar — eng yangisi yuqorida.</p>
+    <p class="ledger-hint">{% if filters.q %}«{{ filters.q }}» bo'yicha {{ outflow_rows|length }} ta chiqim — yuqoridagi summa shularniki.{% else %}Rasxot, topshiruv va komissiyalar — eng yangisi yuqorida.{% endif %}</p>
     <div class="table-wrap">
     <table class="ledger-table ledger-out">
       <tr>
@@ -150,7 +161,7 @@
           </span>
         </td>
       </tr>
-      {% empty %}<tr><td colspan="6" class="muted">Bu davrda chiqim yo'q.</td></tr>{% endfor %}
+      {% empty %}<tr><td colspan="6" class="muted">{% if filters.q %}«{{ filters.q }}» bo'yicha chiqim topilmadi.{% else %}Bu davrda chiqim yo'q.{% endif %}</td></tr>{% endfor %}
     </table>
     </div>
   </div>

@@ -3826,7 +3826,10 @@ def _kassa_expenses(request):
     (employee, turkum, usul, valyuta). Shared by the page and its CSV export.
     Returns (expenses, dates, filters, rep, reps)."""
     dates = _date_range_context(request)
-    filters = {key: request.GET.get(key, "") for key in ("method", "category", "currency", "rep")}
+    filters = {
+        key: request.GET.get(key, "")
+        for key in ("method", "category", "currency", "rep", "q")
+    }
     filters["dan"] = dates["date_from"].isoformat()
     filters["gacha"] = dates["date_to"].isoformat()
     # Admins/managers may filter by any employee; a seller is locked to their own
@@ -4009,7 +4012,82 @@ def _kassa_transactions(expenses, dates, filters, rep):
             "employee": e.employee.name if e.employee_id else "",
         })
     rows.sort(key=lambda r: (r["date"], r["created_at"]), reverse=True)
-    return rows
+    return _kassa_search(rows, filters.get("q", ""))
+
+
+def _url_without(request, url_name, *drop):
+    """The current URL with some query parameters removed — for a "clear this one"
+    link that leaves every other filter standing."""
+    params = request.GET.copy()
+    for key in drop:
+        params.pop(key, None)
+    base = reverse(url_name)
+    return f"{base}?{params.urlencode()}" if params else base
+
+
+# Every apostrophe an Uzbek keyboard or a paste from Word can produce, mapped to the
+# plain one the database happens to hold.
+_APOSTROPHES = str.maketrans({c: "'" for c in "`´‘’ʻʼ‛"})
+
+
+def _flatten_apostrophes(text):
+    return text.translate(_APOSTROPHES)
+
+
+def _kassa_search(rows, query):
+    """Free-text filter over the built ledger rows — one box for both drawers.
+
+    Deliberately NOT five database queries. The ledger is already one merged list of
+    payments, bank fees, handovers, profit payouts, refunds and expenses, and each
+    built row carries the words a person would actually type: the client or seller,
+    the category, the note, the method, who entered it. Matching the rows means the
+    same box searches every stream; matching per model would need five near-identical
+    clauses and would still miss the rows that have no text column at all.
+
+    Digits are matched separately so "39200", "39 200" and "39,200" all find the same
+    row — people read the amount off the screen and type it back with the spaces. An
+    amount matches from the START, never mid-number: typing 39200 must not drag in
+    10 639 200, because on a money page a wrong row that merely contains the digits
+    is worse than no row at all.
+
+    Apostrophes are flattened on both sides. "O'tkazma" is written with ' on one
+    keyboard, ’ or ` on the next, and a seller who types the wrong one would otherwise
+    get an empty page for a word that is plainly on screen."""
+    needle = _flatten_apostrophes((query or "").strip().lower())
+    if not needle:
+        return rows
+    digits = needle.replace(" ", "").replace(",", "").replace("'", "")
+    hits = []
+    for row in rows:
+        haystack = _flatten_apostrophes(" ".join(str(row.get(key) or "") for key in (
+            "title", "subtitle", "method", "employee", "created_by",
+        )).lower())
+        if needle in haystack:
+            hits.append(row)
+            continue
+        if digits.isdigit():
+            amount = f"{abs(row.get('amount_som') or 0):.0f}"
+            if amount.startswith(digits):
+                hits.append(row)
+    return hits
+
+
+def _last_kassa_activity(rep):
+    """The most recent day that has anything on the kassa page, for the empty-day
+    notice. Rows are placed by the date written ON them, not the day they were typed,
+    and a seller normally enters yesterday's takings this morning — so a kassa that
+    opens on today reads as empty and the whole day gets keyed in a second time. The
+    notice points at the day the money is actually on."""
+    days = [
+        Payment.objects.till_income().filter(created_by=rep) if rep else
+        Payment.objects.till_income(),
+        Expense.objects.filter(created_by=rep) if rep else Expense.objects.all(),
+        ProductionRemittance.objects.filter(seller=rep) if rep else
+        ProductionRemittance.objects.all(),
+        ProfitPayout.objects.filter(seller=rep) if rep else ProfitPayout.objects.all(),
+    ]
+    found = [qs.aggregate(d=Max("date"))["d"] for qs in days]
+    return max([d for d in found if d], default=None)
 
 
 def kassa_view(request):
@@ -4032,6 +4110,17 @@ def kassa_view(request):
     ]
     income_total = sum((t["amount_som"] for t in income_rows), Decimal("0"))
     outflow_total = sum((t["amount_som"] for t in outflow_rows), Decimal("0"))
+
+    # Nothing on the chosen day? Say where the money actually is, and offer one click
+    # to go there — see `_last_kassa_activity` for why this happens every morning.
+    empty_hint = None
+    if not income_rows and not outflow_rows:
+        last_day = _last_kassa_activity(rep)
+        in_window = last_day and date_from and date_from <= last_day <= date_to
+        if last_day and not in_window:
+            params = request.GET.copy()
+            params["dan"] = params["gacha"] = last_day.isoformat()
+            empty_hint = {"date": last_day, "url": f"?{params.urlencode()}"}
 
     method_labels = dict(Payment.Method.choices)
     currency_labels = dict(Payment.Currency.choices)
@@ -4070,6 +4159,7 @@ def kassa_view(request):
     export_qs = request.GET.urlencode()
     return render(request, "crm/kassa.html", {
         "summary": summary,
+        "empty_hint": empty_hint,
         "debt_adjustments": adjustments,
         "income_rows": income_rows,
         "outflow_rows": outflow_rows,
@@ -4085,6 +4175,19 @@ def kassa_view(request):
         "filter_count": len(active_filters),
         "has_filters": bool(active_filters),
         "filter_url": reverse("kassa"),
+        # One box over both drawers. The window and the drawer filters ride along as
+        # hidden inputs, so searching narrows what is already on screen instead of
+        # throwing the page back to today.
+        "show_search": True,
+        "search_placeholder": "Mijoz, turkum, izoh, summa…",
+        "search_keep": [
+            {"name": name, "value": value} for name, value in (
+                ("dan", filters["dan"]), ("gacha", filters["gacha"]),
+                ("method", filters["method"]), ("category", filters["category"]),
+                ("currency", filters["currency"]), ("rep", filters["rep"]),
+            )
+        ],
+        "search_clear_url": _url_without(request, "kassa", "q"),
         "rep_label": "Xodim",
         "show_daterange_picker": True,
         "keep_daterange": True,
@@ -5219,6 +5322,11 @@ def _remit_summary(remit):
     )
 
 
+# The three questions shown above the Saqlash button on a handover — in its own file
+# so the modal and the full page carry the same warning.
+CHECKS = "crm/_remittance_checks.html"
+
+
 def remittance_create(request):
     """Record cash a seller hands back to production. A seller may only file their
     own; admins/managers may file on behalf of any seller (and can preselect one via
@@ -5244,8 +5352,14 @@ def remittance_create(request):
             )
             messages.success(request, f"Topshirildi: {remit.amount:,.0f} so'm.")
             return form_success(request, reverse("kassa"))
-        return form_response(request, form, title, invalid=True, modal_template="crm/_remittance_modal.html")
-    return form_response(request, form, title, modal_template="crm/_remittance_modal.html")
+        return form_response(
+            request, form, title, invalid=True,
+            modal_template="crm/_remittance_modal.html", checks_template=CHECKS,
+        )
+    return form_response(
+        request, form, title,
+        modal_template="crm/_remittance_modal.html", checks_template=CHECKS,
+    )
 
 
 def remittance_refund_create(request):
@@ -5306,8 +5420,14 @@ def remittance_edit(request, pk):
                 request, "Qaytarish yangilandi." if refund else "Topshiruv yangilandi."
             )
             return form_success(request, reverse("kassa"))
-        return form_response(request, form, title, invalid=True, modal_template=modal)
-    return form_response(request, form, title, modal_template=modal)
+        return form_response(
+            request, form, title, invalid=True, modal_template=modal,
+            checks_template=None if refund else CHECKS,
+        )
+    return form_response(
+        request, form, title, modal_template=modal,
+        checks_template=None if refund else CHECKS,
+    )
 
 
 def remittance_delete(request, pk):

@@ -14,6 +14,8 @@
   <p>{{ form.date.label_tag }}{{ form.date }}{{ form.date.errors }}</p>
   <p>{{ form.seller.label_tag }}{{ form.seller }}{{ form.seller.errors }}</p>
   <p>{{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}</p>
+  {% comment %}Summa kiritilgan joyning ostida — qaror shu yerda qabul qilinadi.{% endcomment %}
+  {% include "crm/_remittance_checks.html" %}
   <p>{{ form.method.label_tag }}{{ form.method }}{{ form.method.errors }}</p>
   <p>{{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}</p>
   <p class="field-hint">Saqlangach: sotuvchi kassasidan chiqadi va ishlab chiqarishga qarzi shu miqdorda kamayadi.</p>

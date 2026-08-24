@@ -6,6 +6,9 @@
   <form method="post" class="stacked">
     {% csrf_token %}
     {{ form.as_p }}
+    {% comment %}Modal oynadagi ogohlantirish to'liq sahifada ham chiqsin — havolani
+    to'g'ridan-to'g'ri ochgan odam uni o'tkazib yubormasligi kerak.{% endcomment %}
+    {% if checks_template %}{% include checks_template %}{% endif %}
     <button type="submit" class="btn">Saqlash</button>
   </form>
 </div>

@@ -11,7 +11,13 @@ from openpyxl import load_workbook
 
 from accounts.models import User
 
-from .forms import AdvanceEditForm, AdvanceForm, AdvanceRemoveForm, SaleForm
+from .forms import (
+    AdvanceEditForm,
+    AdvanceForm,
+    AdvanceRemoveForm,
+    ProductionRemittanceForm,
+    SaleForm,
+)
 from .models import (
     ADVANCE_ADJUST_NOTE,
     COST,
@@ -5594,3 +5600,233 @@ class AdvanceKassaChoiceTests(TestCase):
         self._remove(deposit, amount="500000")
         entry = AuditLog.objects.filter(action="payment").latest("pk")
         self.assertIn("kassadan chiqim", entry.summary)
+
+
+
+
+class KassaEmptyDayNoticeTests(BaseSetup):
+    """A kassa opened on a day with nothing on it says where the money actually is.
+
+    Rows land on the date written on them, not the day they were typed, and a seller
+    normally enters yesterday's takings this morning — so the till reads empty and the
+    day gets keyed in twice. The notice is the guard against that."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.empty_day = self.today - timedelta(days=5)
+        # A seller with nothing of their own: the notice must not hand them someone
+        # else's day.
+        self.newbie = User.objects.create_user(
+            "t_sales3", password="x", role=User.Role.SALES
+        )
+
+    def test_an_empty_day_points_at_the_last_day_with_money(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(
+            reverse("kassa"),
+            {"dan": self.empty_day.isoformat(), "gacha": self.empty_day.isoformat()},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["empty_hint"]["date"], self.today)
+        self.assertContains(response, "Bu sanada kassada yozuv yo'q")
+        self.assertIn(f"dan={self.today.isoformat()}", response.context["empty_hint"]["url"])
+
+    def test_a_day_that_has_rows_shows_no_notice(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"))
+        self.assertIsNone(response.context["empty_hint"])
+        self.assertNotContains(response, "kassa-empty")
+
+    def test_the_notice_stays_inside_the_seller_who_is_looking(self):
+        self.client.force_login(self.newbie)
+        response = self.client.get(reverse("kassa"))
+        self.assertIsNone(response.context["empty_hint"])
+
+    def test_the_notice_keeps_the_filters_that_are_already_on(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(
+            reverse("kassa"),
+            {"dan": self.empty_day.isoformat(), "gacha": self.empty_day.isoformat(),
+             "method": "cash"},
+        )
+        url = response.context["empty_hint"]["url"]
+        self.assertIn("method=cash", url)
+        self.assertIn(f"gacha={self.today.isoformat()}", url)
+
+
+class KassaSearchTests(BaseSetup):
+    """One search box over both kassa drawers — kirim and chiqim at once.
+
+    The ledger is six different models merged into one list, so the box matches the
+    built rows rather than any single table: the client, the category, the note, the
+    method and the amount are all typed at it interchangeably."""
+
+    def setUp(self):
+        today = timezone.localdate()
+        Payment.objects.create(
+            sale=self.sale1, amount=Decimal("120000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=today, created_by=self.sales1,
+        )
+        Expense.objects.create(
+            amount=Decimal("39200"), category="Ovqat (obed)", note="tushlik",
+            method=Payment.Method.CASH, created_by=self.sales1, date=today,
+        )
+        Expense.objects.create(
+            amount=Decimal("10639200"), category="Benzin",
+            method=Payment.Method.CASH, created_by=self.sales1, date=today,
+        )
+
+    def _rows(self, **params):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"), params)
+        self.assertEqual(response.status_code, 200)
+        return response.context["income_rows"], response.context["outflow_rows"]
+
+    def test_no_query_leaves_both_drawers_whole(self):
+        # BaseSetup's paid sale already put one payment on today, and setUp adds a
+        # second — both belong to client1.
+        income, outflow = self._rows()
+        self.assertEqual(len(income), 2)
+        self.assertEqual(len(outflow), 2)
+
+    def test_a_client_name_narrows_the_income_drawer(self):
+        income, outflow = self._rows(q=self.client1.name)
+        self.assertEqual(len(income), 2)
+        self.assertEqual(len(outflow), 0)
+
+    def test_a_category_narrows_the_outflow_drawer(self):
+        income, outflow = self._rows(q="benzin")
+        self.assertEqual(len(income), 0)
+        self.assertEqual(len(outflow), 1)
+        self.assertEqual(outflow[0]["amount_som"], Decimal("10639200"))
+
+    def test_a_note_is_searchable_too(self):
+        _, outflow = self._rows(q="tushlik")
+        self.assertEqual(len(outflow), 1)
+        self.assertEqual(outflow[0]["amount_som"], Decimal("39200"))
+
+    def test_an_amount_matches_from_the_start_not_mid_number(self):
+        # 10 639 200 contains "39200"; on a money page that must not come back as a hit.
+        _, outflow = self._rows(q="39200")
+        self.assertEqual([r["amount_som"] for r in outflow], [Decimal("39200")])
+
+    def test_spaces_and_commas_in_an_amount_are_ignored(self):
+        for typed in ("10639200", "10 639 200", "10,639,200"):
+            _, outflow = self._rows(q=typed)
+            self.assertEqual(
+                [r["amount_som"] for r in outflow], [Decimal("10639200")], typed
+            )
+
+    def test_every_apostrophe_finds_the_same_rows(self):
+        # "Bank o'tkazmasi" is typed with ' on one keyboard and ’ or ` on the next.
+        Payment.objects.create(
+            sale=self.sale1, amount=Decimal("70000"), method=Payment.Method.TRANSFER,
+            kind=Payment.Kind.DEBT, date=timezone.localdate(), created_by=self.sales1,
+        )
+        counts = {
+            typed: len(self._rows(q=typed)[0])
+            for typed in ("o'tkazma", "o‘tkazma", "o`tkazma")
+        }
+        self.assertEqual(set(counts.values()), {1}, counts)  # only the transfer
+
+    def test_searching_keeps_the_day_the_page_is_on(self):
+        # The box posts the window back as hidden inputs; without them a search would
+        # throw the page to today and the seller would think the money vanished.
+        yesterday = (timezone.localdate() - timedelta(days=1)).isoformat()
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"), {"dan": yesterday, "gacha": yesterday})
+        body = response.content.decode()
+        self.assertIn(f'name="dan" value="{yesterday}"', body)
+        self.assertIn(f'name="gacha" value="{yesterday}"', body)
+
+    def test_clearing_the_search_keeps_the_other_filters(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"), {"q": "benzin", "method": "cash"})
+        self.assertIn("method=cash", response.context["search_clear_url"])
+        self.assertNotIn("q=", response.context["search_clear_url"])
+
+
+class TillCheckRoundingTests(BaseSetup):
+    """The "not enough in the till" guard compares whole so'm.
+
+    A 4% bank fee on a non-round payment leaves kopeks behind, so the ledger holds
+    28 239 066.99 while every screen prints 28 239 067. Comparing the raw Decimals
+    rejected the seller's own displayed balance — and taught them to keep shaving the
+    number down until the form gave in, which is how phantom shortfalls reach the books."""
+
+    def setUp(self):
+        # A transfer with a 4% fee: 1 000 001 − 40 000.04 leaves 960 000.96 in the till.
+        self.payment = Payment.objects.create(
+            sale=self.sale1, amount=Decimal("1000001"), commission=Decimal("40000.04"),
+            commission_percent=Decimal("4"), method=Payment.Method.TRANSFER,
+            kind=Payment.Kind.DEBT, date=timezone.localdate(), created_by=self.sales1,
+        )
+
+    def _form(self, amount):
+        return ProductionRemittanceForm(
+            data={
+                "date": timezone.localdate().isoformat(), "seller": self.sales1.pk,
+                "amount": amount, "method": Payment.Method.CASH, "note": "",
+            },
+            user=self.sales1,
+        )
+
+    def test_the_displayed_balance_can_be_handed_over(self):
+        on_hand = seller_cash_on_hand(self.sales1)
+        self.assertNotEqual(on_hand, on_hand.to_integral_value())  # kopeks are there
+        shown = f"{on_hand:,.0f}".replace(",", "")
+        self.assertTrue(self._form(shown).is_valid(), self._form(shown).errors)
+
+    def test_one_som_more_than_the_balance_is_still_refused(self):
+        on_hand = seller_cash_on_hand(self.sales1)
+        form = self._form(str(int(on_hand) + 2))
+        self.assertFalse(form.is_valid())
+
+    def test_the_error_names_the_gap(self):
+        on_hand = seller_cash_on_hand(self.sales1)
+        form = self._form(str(int(on_hand) + 1000))
+        self.assertFalse(form.is_valid())
+        message = " ".join(form.errors["__all__"])
+        self.assertIn("yetmaydi", message)
+        # Never self-contradictory: the two figures in the message must differ.
+        self.assertNotIn(f"{on_hand:,.0f} so'm. Siz {on_hand:,.0f}", message)
+
+
+class RemittanceRemindersTests(BaseSetup):
+    """Three questions on the handover form, each from a real miscount.
+
+    Money that arrived by bank transfer shows in the till but never reaches the
+    seller's hand, and a client sometimes carries the cash to production themselves.
+    Both went unwritten and surfaced later as a hole in the kassa."""
+
+    PROMPTS = (
+        "Summani aniq hisobladingizmi",
+        "Bank o'tkazmasi bormi",
+        "to'g'ridan-to'g'ri bermadimi",
+    )
+
+    def test_the_handover_form_asks_all_three(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("remittance_create"))
+        self.assertEqual(response.status_code, 200)
+        for prompt in self.PROMPTS:
+            self.assertContains(response, prompt)
+
+    def test_the_modal_asks_them_too(self):
+        # The form renders twice — as a modal from the kassa and as a full page for
+        # anyone who opens the URL directly. A warning on only one of them is a hole.
+        self.client.force_login(self.sales1)
+        response = self.client.get(
+            reverse("remittance_create"), HTTP_X_REQUESTED_WITH="XMLHttpRequest"
+        )
+        self.assertEqual(response.status_code, 200)
+        for prompt in self.PROMPTS:
+            self.assertContains(response, prompt)
+
+    def test_the_refund_form_does_not_ask_them(self):
+        # Production handing cash BACK is the opposite movement — the questions would
+        # be noise there.
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("remittance_refund_create"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "remit-check")

@@ -8,7 +8,11 @@
       {% if filters.korinish %}<input type="hidden" name="korinish" value="{{ filters.korinish }}">{% endif %}
       {% comment %}Qidiruv tanlangan tugmani (Qarzdorlar / Avans) yo'qotmasin.{% endcomment %}
       {% if filters.tur %}<input type="hidden" name="tur" value="{{ filters.tur }}">{% endif %}
-      {% if filters.q %}<a href="{{ filter_url }}" class="toolbar-search-x" title="Qidiruvni tozalash" aria-label="Qidiruvni tozalash">&times;</a>{% endif %}
+      {% comment %}Sana oynasi va boshqa filtrlari bo'lgan sahifa (kassa) shu ro'yxat
+      orqali ularni qidiruvga ilashtirib yuboradi — aks holda qidirish sanani bugunga
+      qaytarib tashlaydi.{% endcomment %}
+      {% for keep in search_keep %}{% if keep.value %}<input type="hidden" name="{{ keep.name }}" value="{{ keep.value }}">{% endif %}{% endfor %}
+      {% if filters.q %}<a href="{{ search_clear_url|default:filter_url }}" class="toolbar-search-x" title="Qidiruvni tozalash" aria-label="Qidiruvni tozalash">&times;</a>{% endif %}
     </form>
     {% endif %}
     {% if has_filters %}
