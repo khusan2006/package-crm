@@ -118,11 +118,13 @@
     {% endif %}
     {% if show_category %}
     <label>Turkum
-      {% comment %}Turkum is free text, so the options are whatever has been used.{% endcomment %}
-      <select name="category">
-        <option value="">Barchasi</option>
+      {% comment %}Turkum is free text, so the options are whatever has been used.
+      Several may be ticked at once — `data-multicheck` turns this native multiple
+      select into a tick-box list (see base.html); with no JS it stays a plain
+      multi-select, which submits the same repeated `category=` params.{% endcomment %}
+      <select name="category" multiple data-multicheck data-empty="Barchasi">
         {% for c in category_options %}
-        <option value="{{ c }}" {% if filters.category == c %}selected{% endif %}>{{ c }}</option>
+        <option value="{{ c }}" {% if c in filters.category %}selected{% endif %}>{{ c }}</option>
         {% endfor %}
       </select>
     </label>

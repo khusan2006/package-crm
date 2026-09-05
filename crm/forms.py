@@ -754,9 +754,13 @@ class ExpenseForm(forms.ModelForm):
             "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
             "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — nima uchun"}),
             # Free text with a <datalist> of what's been used before: pick an
-            # existing category or just type a new one.
+            # existing category or just type a new one. `data-multipick` turns that
+            # datalist into a tick-box list (see base.html), so an outflow that is
+            # two things at once — "Ovqat (obed), СУВ" — is picked rather than typed;
+            # without JS the plain datalist still works as before.
             "category": forms.TextInput(attrs={
                 "list": "expense-category-suggestions",
+                "data-multipick": "",
                 "autocomplete": "off",
                 "placeholder": "Masalan: Benzin / transport",
             }),

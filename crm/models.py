@@ -1146,8 +1146,10 @@ class Expense(models.Model):
         "Asl summa (valyutada)", max_digits=18, decimal_places=2, default=0
     )
     # Free text: whatever the bookkeeper actually calls this outflow. The form
-    # offers what's been used before as suggestions, but never restricts.
-    category = models.CharField("Turkum", max_length=40)
+    # offers what's been used before as suggestions, but never restricts. More than
+    # one may be ticked ("Ovqat (obed), СУВ") — they are joined with ", " into this
+    # one field, which is why it is wider than a single label needs.
+    category = models.CharField("Turkum", max_length=120)
     method = models.CharField(
         "To'lov usuli", max_length=8, choices=Payment.Method.choices,
         default=Payment.Method.CASH,

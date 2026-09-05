@@ -3828,8 +3828,12 @@ def _kassa_expenses(request):
     dates = _date_range_context(request)
     filters = {
         key: request.GET.get(key, "")
-        for key in ("method", "category", "currency", "rep", "q")
+        for key in ("method", "currency", "rep", "q")
     }
+    # Turkum is the one filter that takes more than one answer: the drawer offers a
+    # tick box per category, so it arrives as repeated `category=` params and is kept
+    # as a list. Blanks are dropped so an empty tick submits as "no filter".
+    filters["category"] = [c for c in request.GET.getlist("category") if c.strip()]
     filters["dan"] = dates["date_from"].isoformat()
     filters["gacha"] = dates["date_to"].isoformat()
     # Admins/managers may filter by any employee; a seller is locked to their own
@@ -3848,7 +3852,7 @@ def _kassa_expenses(request):
     if filters["method"] in dict(Payment.Method.choices):
         expenses = expenses.filter(method=filters["method"])
     if filters["category"]:
-        expenses = expenses.filter(category=filters["category"])
+        expenses = expenses.filter(category__in=filters["category"])
     if filters["currency"] in dict(Payment.Currency.choices):
         expenses = expenses.filter(currency=filters["currency"])
     return expenses.order_by("-date", "-created_at"), dates, filters, rep, reps
@@ -4128,7 +4132,7 @@ def kassa_view(request):
     rep_chip = str(rep) if (reps is not None and rep) else ""
     active_filters = _filter_chips(request, [
         {"param": "rep", "label": "Xodim", "value": rep_chip},
-        {"param": "category", "label": "Turkum", "value": filters["category"]},
+        {"param": "category", "label": "Turkum", "value": ", ".join(filters["category"])},
         {"param": "method", "label": "Usul", "value": method_labels.get(filters["method"], "")},
         {"param": "currency", "label": "Valyuta", "value": currency_labels.get(filters["currency"], "")},
     ])
@@ -4180,13 +4184,15 @@ def kassa_view(request):
         # throwing the page back to today.
         "show_search": True,
         "search_placeholder": "Mijoz, turkum, izoh, summa…",
+        # Turkum can hold several answers, so it contributes one hidden field per
+        # ticked category rather than a single value like the others.
         "search_keep": [
             {"name": name, "value": value} for name, value in (
                 ("dan", filters["dan"]), ("gacha", filters["gacha"]),
-                ("method", filters["method"]), ("category", filters["category"]),
+                ("method", filters["method"]),
                 ("currency", filters["currency"]), ("rep", filters["rep"]),
             )
-        ],
+        ] + [{"name": "category", "value": c} for c in filters["category"]],
         "search_clear_url": _url_without(request, "kassa", "q"),
         "rep_label": "Xodim",
         "show_daterange_picker": True,

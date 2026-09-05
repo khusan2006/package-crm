@@ -3711,6 +3711,10 @@ ul.errorlist li::before {
 .drawer-body {
   padding: 20px 22px;
   overflow-y: auto;
+  /* Fill the drawer rather than stopping at the last field: `overflow-y` clips
+     whatever hangs below this box, and a dropdown on one of the lower fields is
+     exactly what hangs below it. */
+  flex: 1;
 }
 
 .drawer-body label {
@@ -4748,6 +4752,54 @@ ul.errorlist li::before {
 .combobox-option[aria-selected="true"] .combobox-sub {
   color: var(--text-faint);
   font-weight: 400;
+}
+
+/* Tick-box picker — the same shell and popup as the combobox above, but every row
+   carries a checkbox so several answers can stand at once (kassa Turkum: the filter
+   and the expense form). A long category wraps rather than being cut off: with two
+   or three of them joined into one line, the tail is the part that identifies it. */
+.multipick-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  white-space: normal;
+}
+
+.multipick-option input[type="checkbox"] {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+  pointer-events: none;   /* the whole row is the target; the popup handles the click */
+}
+
+.multipick-option > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.multipick-option[aria-selected="true"] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* The summary of what is ticked can outgrow one line ("Ovqat (obed), СУВ, МОЙКА").
+   It stays a single-line box — the popup below is where the full list is read. */
+.multipick .combobox-input {
+  text-overflow: ellipsis;
+}
+
+/* Unlike the combobox — one click and gone — this list is worked through: several
+   ticks, sometimes a search in between. So it takes its own room in the flow and
+   pushes what follows down (in the drawer, the Qo'llash/Tozalash buttons) instead of
+   floating over it. That also puts it out of reach of the scroll boxes it lives in:
+   an overlay hanging past the drawer's or the dialog's edge is simply cut off. */
+.multipick .combobox-pop {
+  position: static;
+  margin-top: 4px;
+  max-height: 280px;
+  box-shadow: none;
 }
 
 /* ============================================================
