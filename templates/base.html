@@ -1624,6 +1624,227 @@
     else { document.addEventListener('DOMContentLoaded', function () { enhanceComboboxes(); }); }
     document.addEventListener('modal:loaded', function (e) { enhanceComboboxes(e.detail || document); });
   })();
+
+  // Tick-box picker: the combobox popup with a checkbox on every row, for the two
+  // places where one answer is not enough — the kassa Turkum filter and the Turkum
+  // field on the expense form. Two shapes share one popup:
+  //   <select multiple data-multicheck>  the filter. The native select stays in the
+  //     DOM (hidden, kept in sync) so the form submits its repeated params as usual.
+  //   <input data-multipick list="...">  the expense form's free-text Turkum. The
+  //     ticks are joined into the input's own value with ", ", and anything can still
+  //     be typed by hand — the datalist supplies the rows and is then unhooked so the
+  //     browser's own dropdown doesn't fight ours.
+  (function () {
+    var SEP = ', ';
+
+    // Every typed word must appear somewhere in the row, as in the combobox.
+    function matches(text, filter) {
+      var hay = text.toLowerCase();
+      return (filter || '').toLowerCase().split(/\s+/).filter(Boolean).every(function (t) {
+        return hay.indexOf(t) !== -1;
+      });
+    }
+
+    function makeRow(value, label, checked) {
+      var item = document.createElement('div');
+      item.className = 'combobox-option multipick-option';
+      item.setAttribute('role', 'option');
+      item.setAttribute('aria-selected', checked ? 'true' : 'false');
+      item.dataset.value = value;
+      var box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = checked;
+      box.tabIndex = -1;            // the row is driven from the popup's mousedown
+      var text = document.createElement('span');
+      text.textContent = label;
+      item.appendChild(box);
+      item.appendChild(text);
+      return item;
+    }
+
+    function emptyRow(pop) {
+      var empty = document.createElement('div');
+      empty.className = 'combobox-empty';
+      empty.textContent = 'Topilmadi';
+      pop.appendChild(empty);
+    }
+
+    // Wrap the control in the combobox shell and hang an empty popup off it.
+    function mount(control) {
+      var wrap = document.createElement('div');
+      wrap.className = 'combobox multipick';
+      control.parentNode.insertBefore(wrap, control);
+      wrap.appendChild(control);
+      var pop = document.createElement('div');
+      pop.className = 'combobox-pop';
+      pop.setAttribute('role', 'listbox');
+      pop.setAttribute('aria-multiselectable', 'true');
+      pop.hidden = true;
+      wrap.appendChild(pop);
+      return pop;
+    }
+
+    // Opening, closing and clicking, shared by both shapes. `build(filter)` fills the
+    // popup, `toggle(value)` applies a click, `rest()` puts the box back to its
+    // resting text once the popup shuts. `sweep` selects the text on opening — right
+    // where it is only a summary of the ticks, wrong where it is the answer itself.
+    function wire(input, pop, build, toggle, rest, sweep) {
+      function open() {
+        build('');
+        pop.hidden = false;
+        input.setAttribute('aria-expanded', 'true');
+        if (sweep) { input.select(); }
+        // The list takes room in the flow, so opening one near the bottom of the
+        // drawer or the dialog leaves it below the fold — scroll just far enough.
+        pop.scrollIntoView({ block: 'nearest' });
+      }
+      function close() {
+        pop.hidden = true;
+        input.setAttribute('aria-expanded', 'false');
+        rest();
+      }
+      input.addEventListener('focus', function () { if (pop.hidden) { open(); } });
+      input.addEventListener('click', function () { if (pop.hidden) { open(); } });
+      input.addEventListener('input', function () {
+        pop.hidden = false;
+        input.setAttribute('aria-expanded', 'true');
+        build(input.value);
+      });
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && !pop.hidden) { e.preventDefault(); close(); }
+        else if (e.key === 'ArrowDown' && pop.hidden) { e.preventDefault(); open(); }
+      });
+      input.addEventListener('blur', function () { setTimeout(close, 120); });
+      // Ticking must not take focus off the box, or the popup would blur shut after
+      // the first pick — and picking several is the whole point.
+      pop.addEventListener('mousedown', function (e) {
+        var row = e.target.closest('.multipick-option');
+        if (!row) { return; }
+        e.preventDefault();
+        toggle(row.dataset.value);
+      });
+    }
+
+    // ---- the filter drawer: a native <select multiple> behind the tick list ----
+    function enhanceSelect(select) {
+      if (select.dataset.multicheckReady) { return; }
+      select.dataset.multicheckReady = '1';
+      var placeholder = select.dataset.empty || 'Barchasi';
+
+      var pop = mount(select);
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'combobox-input';
+      input.autocomplete = 'off';
+      input.setAttribute('role', 'combobox');
+      input.setAttribute('aria-autocomplete', 'list');
+      input.setAttribute('aria-expanded', 'false');
+      pop.parentNode.insertBefore(input, pop);
+      select.classList.add('combobox-native');
+
+      function options() { return Array.prototype.slice.call(select.options); }
+      function rest() {
+        var picked = options().filter(function (o) { return o.selected; });
+        input.value = picked.length
+          ? picked.map(function (o) { return o.textContent.trim(); }).join(SEP)
+          : placeholder;
+      }
+      function build(filter) {
+        pop.innerHTML = '';
+        var shown = 0;
+        options().forEach(function (opt) {
+          var text = opt.textContent.trim();
+          if (!opt.value && !text) { return; }
+          if (!matches(text, filter)) { return; }
+          pop.appendChild(makeRow(opt.value, text, opt.selected));
+          shown++;
+        });
+        if (!shown) { emptyRow(pop); }
+      }
+      function toggle(value) {
+        var opt = options().filter(function (o) { return o.value === value; })[0];
+        if (!opt) { return; }
+        opt.selected = !opt.selected;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        // Repaint the one row rather than the list: rebuilding would wipe the words
+        // just typed to find it, and the next pick is usually in the same search.
+        pop.querySelectorAll('.multipick-option').forEach(function (row) {
+          if (row.dataset.value !== value) { return; }
+          row.querySelector('input').checked = opt.selected;
+          row.setAttribute('aria-selected', opt.selected ? 'true' : 'false');
+        });
+      }
+
+      wire(input, pop, build, toggle, rest, true);
+      rest();
+    }
+
+    // ---- the expense form: free text, with the ticks joined into its own value ----
+    function enhanceInput(input) {
+      if (input.dataset.multipickReady) { return; }
+      input.dataset.multipickReady = '1';
+      var list = input.list;                 // resolve before the attribute goes
+      var options = list ? Array.prototype.map.call(list.options, function (o) {
+        return o.value;
+      }) : [];
+      if (!options.length) { return; }       // nothing to tick — leave it a plain box
+      input.removeAttribute('list');
+
+      var pop = mount(input);
+
+      function parts() {
+        return input.value.split(',').map(function (p) { return p.trim(); }).filter(Boolean);
+      }
+      function known(value) {
+        return options.indexOf(value) !== -1;
+      }
+      // What is being typed right now: the text after the last comma — unless that is
+      // already a finished category, in which case nothing is being searched for and
+      // the whole list stays on show so the next one can be found.
+      function needle() {
+        var at = input.value.lastIndexOf(',');
+        var tail = (at === -1 ? input.value : input.value.slice(at + 1)).trim();
+        return known(tail) ? '' : tail;
+      }
+      function build() {
+        var picked = parts();
+        var filter = needle();
+        pop.innerHTML = '';
+        var shown = 0;
+        options.forEach(function (value) {
+          if (!matches(value, filter)) { return; }
+          pop.appendChild(makeRow(value, value, picked.indexOf(value) !== -1));
+          shown++;
+        });
+        if (!shown) { emptyRow(pop); }
+      }
+      function toggle(value) {
+        var picked = parts();
+        // A row is only on screen because the half-typed word matched it, so the tick
+        // completes that fragment rather than leaving it standing as a category of
+        // its own: "Ben" + Benzin / transport becomes "Benzin / transport", not both.
+        if (needle()) { picked.pop(); }
+        var at = picked.indexOf(value);
+        if (at === -1) { picked.push(value); } else { picked.splice(at, 1); }
+        input.value = picked.join(SEP);
+        build();
+      }
+
+      // Nothing to restore on close, and nothing to sweep: this box holds the answer.
+      wire(input, pop, function () { build(); }, toggle, function () {}, false);
+    }
+
+    function enhanceMultipicks(root) {
+      var scope = root || document;
+      scope.querySelectorAll('select[data-multicheck]').forEach(enhanceSelect);
+      scope.querySelectorAll('input[data-multipick]').forEach(enhanceInput);
+    }
+    window.enhanceMultipicks = enhanceMultipicks;
+
+    if (document.readyState !== 'loading') { enhanceMultipicks(); }
+    else { document.addEventListener('DOMContentLoaded', function () { enhanceMultipicks(); }); }
+    document.addEventListener('modal:loaded', function (e) { enhanceMultipicks(e.detail || document); });
+  })();
 </script>
 </body>
 </html>

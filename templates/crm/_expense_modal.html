@@ -21,7 +21,7 @@ page still knows where to send the user back to after saving.{% endcomment %}
     <div class="pay-breakdown" data-usd hidden></div>
   </div>
   <p>{{ form.category.label_tag }}{{ form.category }}{{ form.category.errors }}
-    <span class="field-hint">Ro'yxatdan tanlang yoki o'zingiz yozing.</span></p>
+    <span class="field-hint">Ro'yxatdan bir yoki bir nechtasini belgilang, yoki o'zingiz yozing.</span></p>
   <datalist id="expense-category-suggestions">
     {% for c in category_suggestions %}<option value="{{ c }}"></option>{% endfor %}
   </datalist>
