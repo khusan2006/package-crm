@@ -1448,13 +1448,15 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
   flex: 1 1 100%;
 }
 
-/* The remaining inputs share one grid that grows to fill the row; whether the
-   product shows Razmer/Mikron (film) or not (qop), the cells stretch to full width
-   and the remove button stays pinned to the right of them. */
+/* The remaining inputs sit two to a line, deliberately and at every width: Birlik
+   with Og'irligi, then Narxi with Tannarx. Auto-fitting them left the count to the
+   container, so the same four boxes came out 3 + 1 in the modal and 4 across on the
+   page — and the pair that belongs together got split. The remove button stays
+   pinned to the right of the whole grid. */
 .item-fields .item-subfields {
   flex: 1 1 auto;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  grid-template-columns: repeat(2, minmax(110px, 1fr));
   gap: 10px;
   align-items: end;
 }
@@ -1466,12 +1468,6 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
   font-size: 10.5px;
   color: var(--text-muted);
   font-weight: 600;
-}
-
-/* `display:flex` above would otherwise beat the [hidden] attribute — restore it so
-   the Razmer/Mikron dropdowns actually hide for products that don't carry them. */
-.item-fields .if[hidden] {
-  display: none;
 }
 
 .item-fields .if input,
@@ -1507,12 +1503,6 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
   font-size: 14px;
   font-weight: 800;
   color: var(--success);
-}
-
-@media (max-width: 560px) {
-  .item-fields .item-subfields {
-    grid-template-columns: 1fr 1fr;
-  }
 }
 
 /* ============================================================

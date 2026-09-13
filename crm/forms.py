@@ -1,5 +1,5 @@
 import re
-from datetime import date, timedelta
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
 from django import forms
@@ -11,6 +11,7 @@ from accounts.models import User
 from .utils import UZ_MONTH_NAMES
 
 from .models import (
+    DEFAULT_DEBT_DAYS,
     Client,
     Employee,
     Expense,
@@ -29,8 +30,6 @@ from .models import (
     seller_remitted_total,
     seller_withdrawable_profit,
 )
-
-DEFAULT_DEBT_DAYS = 7
 
 # Marks an amount field so the frontend groups it as "1 000 000" while typing.
 # The raw numeric value is restored before submit, so nothing changes server-side.
@@ -1117,15 +1116,19 @@ class ClientSelect(forms.Select):
 
 
 class SaleForm(forms.ModelForm):
-    """The sale receipt header. Every sale is a receivable. The deadline is
-    entered as a number of days from the sale date (the model stores the
-    resulting `debt_deadline`); blank falls back to DEFAULT_DEBT_DAYS."""
+    """The sale receipt header. Every sale is a receivable. The credit window is
+    entered as a number of days (`debt_term_days` on the model, with the resulting
+    `debt_deadline` derived from it); blank falls back to DEFAULT_DEBT_DAYS."""
 
     debt_days = forms.IntegerField(
         label="Qarz muddati (kun)",
         required=False,
         min_value=0,
-        help_text=f"Necha kundan keyin qaytariladi — bo'sh qolsa {DEFAULT_DEBT_DAYS} kun",
+        help_text=(
+            f"Necha kundan keyin qaytariladi — bo'sh qolsa {DEFAULT_DEBT_DAYS} kun. "
+            "Mijoz qarzdan to'lasa, muddat noldan sanaladi — ertasidan yana "
+            "«kun o'tgan» bo'lib ko'rinadi."
+        ),
         widget=forms.NumberInput(
             attrs={"min": "0", "inputmode": "numeric", "data-debt-days": ""}
         ),
@@ -1144,12 +1147,12 @@ class SaleForm(forms.ModelForm):
         if user is not None and not user.can_see_all_records:
             self.fields["client"].queryset = Client.objects.filter(owner=user)
         _searchable_select(self.fields["client"], "Mijozni qidiring yoki tanlang")
-        # Pre-fill the days input: on edit, derive it from the stored deadline;
-        # on create, seed with the default so the preview shows a date up front.
-        if self.instance.pk and self.instance.debt_deadline and self.instance.date:
-            self.fields["debt_days"].initial = max(
-                (self.instance.debt_deadline - self.instance.date).days, 0
-            )
+        # Pre-fill the days input: on edit, show the receipt's agreed term; on create,
+        # seed with the default so the preview shows a date up front. Deliberately the
+        # term and not (deadline - date): once a payment has restarted the clock those
+        # two differ, and it is the term the seller agreed to that belongs in the box.
+        if self.instance.pk:
+            self.fields["debt_days"].initial = self.instance.term_days
         else:
             self.fields["debt_days"].initial = DEFAULT_DEBT_DAYS
 
@@ -1159,35 +1162,33 @@ class SaleForm(forms.ModelForm):
         days = cleaned.get("debt_days")
         if days is None:
             days = DEFAULT_DEBT_DAYS
-        self.instance.debt_deadline = base_date + timedelta(days=days)
+        # The deadline is derived rather than typed: on a receipt the client has
+        # already repaid into, it sits on the day of that repayment, so editing the
+        # sale must not hand the term back out from the sale date.
+        self.instance.date = base_date
+        self.instance.debt_term_days = days
+        self.instance.recompute_debt_deadline(commit=False)
         cleaned["debt_deadline"] = self.instance.debt_deadline
         return cleaned
 
 
 class SaleItemForm(forms.ModelForm):
+    """One product line on the receipt.
+
+    Razmer / mikron are deliberately NOT asked for here. They used to be two extra
+    boxes on every line, and they slowed the seller down for nothing: the catalogue
+    now carries the thickness in the product itself, so picking the product already
+    says which one it is. The columns stay on `SaleItem` because old receipts were
+    written with them and their labels still show in the ombor report."""
+
     class Meta:
         model = SaleItem
-        fields = ["product", "size", "micron", "dimension", "weight", "price", "cost_price"]
+        fields = ["product", "dimension", "weight", "price", "cost_price"]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["product"].queryset = Product.objects.filter(is_active=True)
         _searchable_select(self.fields["product"], "Mahsulotni tanlang")
-        # Razmer / mikron are optional free-text fields, only shown for products
-        # that carry them (the JS reads has_size/has_micron and hides them
-        # otherwise). They render as text inputs backed by a <datalist> so the
-        # seller gets SIZE_CHOICES / MICRON_CHOICES as suggestions but can also
-        # type any custom value.
-        self.fields["size"].required = False
-        self.fields["micron"].required = False
-        self.fields["size"].widget.attrs.update(
-            {"data-variant": "size", "list": "size-suggestions",
-             "autocomplete": "off", "placeholder": "Razmer"}
-        )
-        self.fields["micron"].widget.attrs.update(
-            {"data-variant": "micron", "list": "micron-suggestions",
-             "autocomplete": "off", "placeholder": "Mikron"}
-        )
         self.fields["cost_price"].required = False
         self.fields["cost_price"].widget.attrs["placeholder"] = "Bo'sh qolsa — mahsulot tannarxi"
         _mark_money(self.fields["price"], self.fields["cost_price"])
@@ -1211,12 +1212,6 @@ class SaleItemForm(forms.ModelForm):
         # Empty cost price falls back to the product's cost, converted to the sale unit
         if product and dimension and not cleaned.get("cost_price"):
             cleaned["cost_price"] = product.cost_price_for(dimension)
-        # A product that doesn't carry razmer/mikron never keeps one, even if a stale
-        # value slipped through from a previously-picked product on the same row.
-        if product and not product.has_size:
-            cleaned["size"] = ""
-        if product and not product.has_micron:
-            cleaned["micron"] = ""
         return cleaned
 
 

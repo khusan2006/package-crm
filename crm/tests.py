@@ -205,6 +205,128 @@ class DebtTests(BaseSetup):
         self.assertFalse(not_due.is_overdue)
 
 
+class DebtTermRestartTests(BaseSetup):
+    """A repayment puts the receipt's counter back to zero.
+
+    Nobody is 89 days late on a debt they paid down yesterday: the remainder is due
+    as of the day the money came in, and the days start piling up again from there."""
+
+    def _overdue_sale(self, days_ago=89, term=7):
+        """A 240 000 so'm debt written `days_ago` ago on a `term`-day agreement."""
+        opened = timezone.localdate() - timedelta(days=days_ago)
+        sale = make_sale(
+            self.client1, self.sales1, self.product, is_debt=True,
+            date=opened, debt_deadline=opened + timedelta(days=term),
+        )
+        return sale
+
+    def test_partial_payment_zeroes_the_counter(self):
+        sale = self._overdue_sale()
+        self.assertTrue(sale.is_overdue)
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("sale_pay", args=[sale.pk]), {"amount": "200000", "method": "cash"})
+        sale.refresh_from_db()
+        self.assertEqual(sale.debt_remaining, Decimal("40000"))
+        # Due today — the badge reads "Bugun", not "89 kun o'tgan"
+        self.assertEqual(sale.debt_deadline, timezone.localdate())
+        self.assertFalse(sale.is_overdue)
+
+    def test_counter_starts_climbing_again_the_next_day(self):
+        sale = self._overdue_sale()
+        self.client.force_login(self.sales1)
+        paid_on = timezone.localdate() - timedelta(days=1)
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]),
+            {"amount": "50000", "method": "cash", "date": paid_on.isoformat()},
+        )
+        sale.refresh_from_db()
+        self.assertEqual(sale.debt_deadline, paid_on)
+        self.assertTrue(sale.is_overdue)  # one day on: 1 kun o'tgan, not 89
+
+    def test_second_payment_zeroes_it_again(self):
+        sale = self._overdue_sale()
+        self.client.force_login(self.sales1)
+        for _ in range(2):
+            self.client.post(
+                reverse("sale_pay", args=[sale.pk]), {"amount": "50000", "method": "cash"}
+            )
+        sale.refresh_from_db()
+        self.assertEqual(sale.debt_deadline, timezone.localdate())
+
+    def test_backdated_payment_counts_from_its_own_date(self):
+        sale = self._overdue_sale()
+        paid_on = timezone.localdate() - timedelta(days=30)
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]),
+            {"amount": "100000", "method": "cash", "date": paid_on.isoformat()},
+        )
+        sale.refresh_from_db()
+        self.assertEqual(sale.debt_deadline, paid_on)
+        self.assertTrue(sale.is_overdue)  # 30 days late now, not 89
+
+    def test_money_taken_at_the_counter_leaves_the_term_alone(self):
+        # A down payment on the day of the sale is part of the sale, not a repayment:
+        # the client still has the full agreed term for what is left.
+        opened = timezone.localdate() - timedelta(days=2)
+        sale = make_sale(
+            self.client1, self.sales1, self.product, is_debt=True,
+            date=opened, debt_deadline=opened + timedelta(days=14),
+        )
+        Payment.objects.create(
+            sale=sale, amount=Decimal("100000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.SALE, date=opened, created_by=self.sales1,
+        )
+        self.assertEqual(
+            sale.recompute_debt_deadline(), opened + timedelta(days=14)
+        )
+
+    def test_voiding_the_payment_restores_the_old_deadline(self):
+        sale = self._overdue_sale()
+        opened = sale.date
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("sale_pay", args=[sale.pk]), {"amount": "100000", "method": "cash"})
+        payment = sale.payments.get()
+        self.client.post(reverse("payment_delete", args=[payment.pk]))
+        sale.refresh_from_db()
+        self.assertEqual(sale.debt_deadline, opened + timedelta(days=7))
+        self.assertTrue(sale.is_overdue)
+
+    def test_lump_client_payment_restarts_every_receipt_it_touches(self):
+        older = self._overdue_sale(days_ago=89)
+        newer = self._overdue_sale(days_ago=40)
+        self.client.force_login(self.sales1)
+        # 240 000 clears the older receipt and leaves the newer one part-paid.
+        self.client.post(
+            reverse("client_debt_pay", args=[self.client1.pk]),
+            {"amount": "300000", "method": "cash"},
+        )
+        newer.refresh_from_db()
+        self.assertEqual(newer.debt_remaining, Decimal("180000"))
+        self.assertEqual(newer.debt_deadline, timezone.localdate())
+        older.refresh_from_db()
+        self.assertTrue(older.is_paid)
+
+    def test_editing_the_sale_keeps_the_zeroed_counter(self):
+        sale = self._overdue_sale()
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("sale_pay", args=[sale.pk]), {"amount": "100000", "method": "cash"})
+        data = sale_post(
+            self.client1.pk, [one_item(self.product, weight="10")], date=sale.date.isoformat()
+        )
+        data["items-INITIAL_FORMS"] = "1"
+        data["items-0-id"] = str(sale.items.get().pk)
+        self.client.post(reverse("sale_edit", args=[sale.pk]), data)
+        sale.refresh_from_db()
+        self.assertEqual(sale.debt_term_days, 7)  # the agreement itself is untouched
+        self.assertEqual(sale.debt_deadline, timezone.localdate())
+
+    def test_untouched_debt_keeps_counting_from_the_sale_date(self):
+        sale = self._overdue_sale(days_ago=89, term=7)
+        self.assertEqual(sale.debt_deadline, sale.date + timedelta(days=7))
+        self.assertEqual(sale.recompute_debt_deadline(), sale.date + timedelta(days=7))
+
+
 class CostFallbackTests(BaseSetup):
     def test_empty_cost_price_uses_product_cost(self):
         self.client.force_login(self.sales1)
