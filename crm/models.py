@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
@@ -9,6 +9,7 @@ from django.db.models import (
     DecimalField,
     ExpressionWrapper,
     F,
+    Max,
     OuterRef,
     Subquery,
     Sum,
@@ -22,14 +23,10 @@ MONEY = DecimalField(max_digits=18, decimal_places=2)
 QTY = DecimalField(max_digits=18, decimal_places=3)
 ZERO_QTY = Value(Decimal("0"), output_field=QTY)
 
-# Product variants captured on a sale line. Razmer (roll width) and mikron
-# (thickness) are picked at sale time, not baked into the product — the client sells
-# 7 named products, and the film ones come in these widths/thicknesses while the
-# ҚОП (bag) ones have neither. Both are optional on a line; the stored value IS the
-# label the client uses. These are datalist *suggestions* only — the sale line's
-# size/micron are free text, so a seller can type a value outside this list.
-SIZE_CHOICES = [("1,5м", "1,5м"), ("2м", "2м"), ("6м", "6м")]
-MICRON_CHOICES = [(m, m) for m in ("015", "01", "08", "06", "05", "04", "03", "02")]
+# How long a receipt is given to be paid when nobody says otherwise. It lives here
+# rather than in forms.py because the Sale model itself needs it: a receipt written
+# by an import or a fixture still has to carry a term.
+DEFAULT_DEBT_DAYS = 7
 
 # Reusable money aggregates for SaleItem querysets
 REVENUE = ExpressionWrapper(F("weight") * F("price"), output_field=MONEY)
@@ -444,7 +441,14 @@ class Sale(models.Model):
         verbose_name="Sotuvchi",
     )
     # Every sale is a receivable with a deadline; "paid" is derived from payments.
+    # The deadline is not a fixed date: it is the agreed term from the sale date until
+    # the client repays something, and the day of that repayment from then on — see
+    # `recompute_debt_deadline`. The term is stored separately because once the
+    # deadline has been reset it no longer says what was agreed.
     debt_deadline = models.DateField("To'lov muddati", null=True, blank=True)
+    debt_term_days = models.PositiveIntegerField(
+        "Qarz muddati (kun)", null=True, blank=True
+    )
     # An opening balance carried over from before go-live: a client's old debt that
     # was never a CRM sale. Such a "sale" has NO line items — the debt is this amount
     # alone, and it flows into `debt_remaining`/`remaining` only. Because it has no
@@ -545,6 +549,57 @@ class Sale(models.Model):
         )
 
     @property
+    def term_days(self):
+        """The agreed credit window in days. Receipts written before the term was
+        stored fall back to the gap their own dates were created with."""
+        if self.debt_term_days is not None:
+            return self.debt_term_days
+        if self.debt_deadline and self.date:
+            return max((self.debt_deadline - self.date).days, 0)
+        return DEFAULT_DEBT_DAYS
+
+    @property
+    def repaid_on(self):
+        """The day money last came in AGAINST this debt, or None if none has.
+
+        Payments dated the day of the sale itself are not repayments — they are the
+        part the client handed over at the counter, and the agreed term is exactly
+        what they were given for the rest. Only money arriving later counts."""
+        if not self.pk:
+            return None
+        last = self.payments.filter(kind__in=PAYING_KINDS).aggregate(d=Max("date"))["d"]
+        return last if last and last > self.date else None
+
+    def recompute_debt_deadline(self, commit=True):
+        """Restart the counter at zero on every repayment.
+
+        A client who owed 20 258 500 for 89 days and has just handed over 20 000 000 is
+        not 89 days late on the 258 500 that is left. That remainder is due now: the
+        badge reads "Bugun" on the day they paid and starts counting up again the next
+        morning, so what the page shows is how long it has been since they last paid.
+
+        Until the first repayment the deadline is the agreed term from the sale date,
+        exactly as it always was. Nothing is nudged — the date is derived every time —
+        so voiding or re-dating a payment puts the old overdue days back by itself.
+
+        Returns the deadline. `commit=False` leaves the row unsaved for a caller that
+        is about to save it anyway."""
+        fields = []
+        if self.debt_term_days is None:
+            # Pin the term down before the clock first moves, or a later edit would
+            # read it back out of dates that no longer describe the agreement.
+            self.debt_term_days = self.term_days
+            fields.append("debt_term_days")
+        repaid_on = self.repaid_on
+        deadline = repaid_on or (self.date + timedelta(days=self.debt_term_days))
+        if deadline != self.debt_deadline:
+            self.debt_deadline = deadline
+            fields.append("debt_deadline")
+        if fields and commit and self.pk:
+            self.save(update_fields=fields)
+        return self.debt_deadline
+
+    @property
     def is_paid(self):
         return self.debt_remaining <= 0
 
@@ -582,11 +637,12 @@ class SaleItem(models.Model):
     cost_price = models.DecimalField(
         "Tannarxi (1 birlik, so'm)", max_digits=14, decimal_places=2
     )
-    # Product variant chosen for this line — optional, and only offered when the
-    # product supports it (see Product.has_size / has_micron). Descriptive only:
-    # they do not change the price, which comes from the product. Free text: the
-    # form offers SIZE_CHOICES / MICRON_CHOICES as datalist suggestions, but the
-    # seller may type any value.
+    # Razmer (roll width) and mikron (thickness) as they were written on the older
+    # receipts, back when the sale form asked for them line by line. It no longer
+    # does — the catalogue carries the thickness in the product itself, so picking
+    # the product already says which one it is, and two boxes per line were slowing
+    # the seller down for nothing. Kept because the receipts that have them are real
+    # and the ombor report still shows their labels; new lines leave them empty.
     size = models.CharField("Razmer", max_length=20, blank=True)
     micron = models.CharField("Mikron", max_length=20, blank=True)
     # Order fulfilment. `fulfilled_kg` is how much of the line has been backed by

@@ -62,7 +62,6 @@ from .models import (
     ADVANCE_SPENT_KINDS,
     COST,
     ITEM_WEIGHT_KG,
-    MICRON_CHOICES,
     PAYING_KINDS,
     PAYMENT_CREDIT,
     PAYMENT_NET,
@@ -71,7 +70,6 @@ from .models import (
     RETURN_AMOUNT,
     RETURN_COST,
     REVENUE,
-    SIZE_CHOICES,
     AuditLog,
     Client,
     Employee,
@@ -2266,6 +2264,10 @@ def _distribute_debt_payment(
             if chunk <= 0:
                 continue
             _create(chunk, sale=sale, kind=Payment.Kind.DEBT)
+            # Money came in on this receipt, so its counter goes back to zero (see
+            # `Sale.recompute_debt_deadline`): whatever is left is due as of the day
+            # they paid, not a debt that has been late since the day it was written.
+            sale.recompute_debt_deadline()
             left -= chunk
             touched += 1
         surplus = Decimal("0")
@@ -2318,6 +2320,7 @@ def _apply_advance_to_open_sales(client, seller, on_date=None):
                 date=max(on_date, sale.date),
                 created_by=seller,
             )
+            sale.recompute_debt_deadline()
             balance -= use
             applied += use
     return applied
@@ -2400,6 +2403,8 @@ def client_debt_pay(request, pk):
                 f"— {form.cleaned_data['amount']:,.0f} so'm",
             )
             msg = f"{form.cleaned_data['amount']:,.0f} so'm {touched} ta chekka taqsimlandi."
+            if touched:
+                msg += " To'langan cheklarning muddati noldan sanaladi."
             if surplus > 0:
                 msg += f" Ortiqcha {surplus:,.0f} so'm avans balansiga qo'shildi."
             messages.success(request, msg)
@@ -2876,8 +2881,12 @@ def payment_delete(request, pk):
         return form_reload(request, reverse("kassa"))
     if request.method == "POST":
         sale_pk = payment.sale_id
+        sale = payment.sale
         summary = f"{payment.sale.client.name} — {payment.amount:,.0f} so'm ({payment.get_method_display()})"
         payment.delete()
+        # The deadline was counted from this payment; with it gone the clock falls back
+        # to whatever money is still on the receipt — restoring the old overdue days.
+        sale.recompute_debt_deadline()
         AuditLog.record(request.user, AuditLog.Action.VOID, "To'lov", sale_pk, summary)
         messages.success(request, "To'lov o'chirildi — qarz qayta tiklandi.")
         return form_reload(request, reverse("sale_detail", args=[sale_pk]))
@@ -2912,6 +2921,7 @@ def payment_edit(request, pk):
     if request.method == "POST":
         if form.is_valid():
             form.save()
+            payment.sale.recompute_debt_deadline()
             AuditLog.record(
                 request.user, AuditLog.Action.UPDATE, "To'lov", payment.sale_id,
                 f"Mijoz {payment.sale.client.name} to'lovi "
@@ -6038,8 +6048,6 @@ def _render_sale_form(
         "client_advance_json": _client_advance_map(request.user),
         "zakaz_shortfall": zakaz_shortfall,
         "overpay": overpay,
-        "size_suggestions": [c[0] for c in SIZE_CHOICES],
-        "micron_suggestions": [c[0] for c in MICRON_CHOICES],
     }
     keep_open = invalid or bool(zakaz_shortfall) or bool(overpay)
     if is_ajax(request):
@@ -6076,16 +6084,9 @@ def _client_advance_map(user):
 
 
 def _product_price_map():
-    """Per-kg price/cost for each active product, so the form can auto-fill a row —
-    plus whether the product offers the Razmer / Mikron dropdowns, so the JS can show
-    or hide them when the product is picked."""
+    """Per-kg price/cost for each active product, so the form can auto-fill a row."""
     return {
-        str(p.pk): {
-            "price": str(p.price),
-            "cost": str(p.cost_price),
-            "has_size": p.has_size,
-            "has_micron": p.has_micron,
-        }
+        str(p.pk): {"price": str(p.price), "cost": str(p.cost_price)}
         for p in Product.objects.filter(is_active=True)
     }
 
@@ -6394,7 +6395,12 @@ def sale_pay(request, pk):
             if sale.debt_remaining <= 0:
                 msg = "Qarz to'liq to'landi."
             else:
-                msg = f"To'lov qabul qilindi. Qoldiq: {sale.debt_remaining:,.0f} so'm."
+                # The counter has just gone back to zero; say so, otherwise the seller
+                # hangs up still thinking the client is 89 days late.
+                msg = (
+                    f"To'lov qabul qilindi. Qoldiq: {sale.debt_remaining:,.0f} so'm. "
+                    f"Muddat noldan sanaladi — {sale.debt_deadline.strftime('%d.%m.%Y')}."
+                )
             if surplus > 0:
                 msg += f" Ortiqcha {surplus:,.0f} so'm avansga o'tdi."
                 if applied > 0:
