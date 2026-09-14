@@ -1,0 +1,33 @@
+{% load crm_extras %}
+{% comment %}One client's money movements as a table — sales, payments and returns with
+the running debt balance after each. Shared by the full tarix page and the sverka card
+on the qarz page, so a movement never reads two different ways; `show_user` adds the
+"Kim" column, which only the internal tarix view wants.{% endcomment %}
+  <div class="table-wrap">
+  <table>
+    <tr>
+      <th>Sana</th><th>Amal</th><th>Tafsilot</th>
+      <th class="num">Summa</th><th class="num">Qarz o'zgarishi</th><th class="num">Qarz qoldig'i</th>
+      {% if show_user %}<th>Kim</th>{% endif %}
+    </tr>
+    {% for e in events %}
+    <tr>
+      <td>{{ e.date|date:"d.m.Y" }}</td>
+      <td><span class="badge badge-evt {{ e.cls }}">{% include "crm/_event_icon.html" with icon=e.icon %}{{ e.label }}</span></td>
+      <td>
+        {% if e.url %}<a href="{{ e.url }}">{{ e.desc }}</a>{% else %}{{ e.desc }}{% endif %}
+        {% if e.method_label %} · <span class="muted">{{ e.method_label }}</span>{% endif %}
+        {% if e.note %}<br><span class="muted">{{ e.note }}</span>{% endif %}
+      </td>
+      <td class="num">{{ e.amount|floatformat:"0g" }}</td>
+      <td class="num">
+        {% if e.delta > 0 %}<span class="amt-sale">+{{ e.delta|floatformat:"0g" }}</span>
+        {% elif e.delta < 0 %}<span class="amt-in">{{ e.delta|floatformat:"0g" }}</span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td class="num"><strong>{{ e.balance|floatformat:"0g" }}</strong></td>
+      {% if show_user %}<td>{{ e.user }}</td>{% endif %}
+    </tr>
+    {% endfor %}
+  </table>
+  </div>

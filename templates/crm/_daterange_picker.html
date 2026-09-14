@@ -1,0 +1,24 @@
+{% load crm_extras %}
+{% comment %}The date window control: "Hammasi"/"Bugun" shortcuts, a day-step arrow on
+each side, and the calendar popup (base.html drives it off the .daterange element's
+data-* attributes). Lives in its own file because two very different places show it —
+the list pages' filter toolbar, and a single client's qarz card, which has no toolbar
+at all. Needs `filters.dan`/`filters.gacha` plus the vars `_date_range_context` returns;
+`allow_all_window` adds the button that puts the window away again.{% endcomment %}
+{% if allow_all_window and not is_all %}<a class="btn btn-sm btn-ghost" href="{% qs_replace dan='' gacha='' %}">Hammasi</a>{% endif %}
+{% if not is_today %}<a class="btn btn-sm btn-ghost" href="{% qs_replace dan=today_iso gacha=today_iso %}">Bugun</a>{% endif %}
+<div class="daterange" data-from="{{ filters.dan }}" data-to="{{ filters.gacha }}" data-today="{{ today_iso }}">
+  <a class="datebar-btn" href="{% qs_replace dan=prev_from gacha=prev_to %}" title="Oldingi kun">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+  </a>
+  <button type="button" class="daterange-trigger" aria-haspopup="dialog" aria-expanded="false">
+    <svg class="cal-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+    <span class="daterange-text">
+      {% if is_all %}Hammasi{% elif is_today %}Bugun{% elif is_single_day %}{{ date_from|date:"j-F" }}{% elif is_month %}{{ date_from|date:"F" }}{% else %}{{ date_from|date:"j-F" }} – {{ date_to|date:"j-F" }}{% endif %}
+    </span>
+  </button>
+  <a class="datebar-btn" href="{% qs_replace dan=next_from gacha=next_to %}" title="Keyingi kun">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+  </a>
+  <div class="daterange-pop" role="dialog" aria-label="Sana tanlash" hidden></div>
+</div>

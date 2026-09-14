@@ -34,6 +34,67 @@
 
 {% include "crm/_last_activity_table.html" %}
 
+{% comment %}Oraliq sverka — "14-dan 14-gacha shu mijoz qancha yuk oldi, qancha pul
+berdi". Sana tanlagich qarzlar ro'yxatidagi bilan bir xil (bir include), shuning uchun
+ikki sahifa bir xil oynani bir xil tushunadi.{% endcomment %}
+<div class="card">
+  <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+    <h2 style="margin:0;">Oraliq sverka</h2>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      {% include "crm/_daterange_picker.html" %}
+    </div>
+  </div>
+  {% if period_window %}
+  <div class="table-wrap">
+  <table>
+    <tr><th>{{ date_from|date:"d.m.Y" }} – {{ date_to|date:"d.m.Y" }}</th><th class="num">Summa</th><th>Izoh</th></tr>
+    <tr>
+      <td>Olgan yuk</td>
+      <td class="num"><strong>{{ period.net_taken|floatformat:"0g" }}</strong> so'm</td>
+      <td class="muted">{{ period.net_taken_kg|floatformat:"-3g" }} kg{% if period.returned %} · qaytargani ayrilgan{% endif %}</td>
+    </tr>
+    {% if period.returned %}
+    <tr>
+      <td>Shundan qaytargan</td>
+      <td class="num">{{ period.returned|floatformat:"0g" }} so'm</td>
+      <td class="muted">{{ period.returned_kg|floatformat:"-3g" }} kg tovar qaytib keldi</td>
+    </tr>
+    {% endif %}
+    <tr>
+      <td>To'lagan pul</td>
+      <td class="num"><strong style="color: var(--success);">{{ period.paid|floatformat:"0g" }}</strong> so'm</td>
+      <td class="muted">{{ period.pay_count }} ta to'lov{% if period.pay_count %} · avansdan yechilgani kirmaydi{% endif %}</td>
+    </tr>
+    {% comment %}Sverkaning javobi: oldi − to'ladi. Musbat bo'lsa shu oraliqda qarz
+    shuncha ko'paygan, manfiy bo'lsa shuncha kamaygan.{% endcomment %}
+    <tr class="row-total">
+      <td><strong>Qarz o'zgarishi</strong></td>
+      <td class="num">
+        {% if period.net_change > 0 %}<strong style="color: var(--danger);">+{{ period.net_change|floatformat:"0g" }}</strong> so'm
+        {% elif period.net_change < 0 %}<strong style="color: var(--success);">{{ period.net_change|floatformat:"0g" }}</strong> so'm
+        {% else %}<span class="muted">0</span>{% endif %}
+      </td>
+      <td class="muted">{% if period.net_change > 0 %}shu oraliqda qarz shuncha ko'paydi{% elif period.net_change < 0 %}shu oraliqda qarz shuncha kamaydi{% else %}oldi va to'ladi — teng{% endif %}</td>
+    </tr>
+  </table>
+  </div>
+  {% if movements %}
+  <h3 style="margin:18px 0 0;">Shu oraliqdagi harakatlar</h3>
+  {% include "crm/_client_events_table.html" with events=movements %}
+  <p class="field-hint" style="margin-top:12px;">
+    “Qarz qoldig'i” — shu amaldan keyingi holat, boshidan hisoblanadi (oraliqdan oldingi
+    savdolar ham ichida). Avans olingani qarzni o'zgartirmaydi: u keyin sotuvga
+    “avansdan yechildi” bo'lib tushadi. To'liq tarix:
+    <a href="{% url 'client_history' client.pk %}">mijoz tarixi →</a>
+  </p>
+  {% else %}
+  <p class="muted" style="margin-top:12px;">Bu oraliqda hech qanday harakat bo'lmagan.</p>
+  {% endif %}
+  {% else %}
+  <p class="muted">Sana oralig'ini tanlang — masalan 14-dan 14-gacha — shu kunlarda mijoz qancha yuk olgani va qancha pul bergani chiqadi.</p>
+  {% endif %}
+</div>
+
 {% if advance_moves %}
 <div class="card">
   <h2>Avans harakatlari</h2>
@@ -46,7 +107,7 @@
     <h2 style="margin:0;">Ochiq cheklar</h2>
     <a class="btn btn-sm btn-ghost" href="{% url 'client_opening_debt' client.pk %}" data-modal title="CRM'gacha bo'lgan eski qarzni kiritish yoki tuzatish">Boshlang'ich qarz</a>
     {% if sales %}
-    <a class="btn btn-sm btn-excel" href="{% url 'debt_client_export' client.pk %}" title="Excel yuklab olish">
+    <a class="btn btn-sm btn-excel" href="{{ export_url }}" title="Excel yuklab olish{% if period_window %} (ochiq cheklar + oraliq sverka){% endif %}">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       Excel
     </a>
