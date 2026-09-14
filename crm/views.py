@@ -69,6 +69,7 @@ from .models import (
     REFUND_KINDS,
     RETURN_AMOUNT,
     RETURN_COST,
+    RETURN_WEIGHT_KG,
     REVENUE,
     AuditLog,
     Client,
@@ -1869,16 +1870,130 @@ def sale_list(request):
     )
 
 
+def _zero_activity():
+    """An empty sverka entry. A client who did nothing in the window still gets a full
+    set of zeros rather than a gap, so every figure on the page and in the file is a
+    figure that can be added up."""
+    return {
+        "taken": Decimal("0"), "taken_kg": Decimal("0"),
+        "returned": Decimal("0"), "returned_kg": Decimal("0"),
+        "paid": Decimal("0"), "pay_count": 0,
+        "net_taken": Decimal("0"), "net_taken_kg": Decimal("0"),
+        "net_change": Decimal("0"),
+    }
+
+
+def _period_activity(scope, date_from, date_to, clients=None):
+    """{client_pk: what they took and what they paid} inside a date window — the
+    "14-dan 14-gacha" sverka the Qarzlar page shows beside the balance.
+
+    `clients` narrows the aggregate to the given pks; one client's own page passes
+    its own, so it never pays for every client who traded that month.
+
+    `scope` is a single seller to read it for, or None for every seller's combined
+    figures; it is the same scope the page's advance pool uses, so one row never mixes
+    one seller's goods with another's money.
+
+    Goods come off the sale LINES, and opening carry-overs are skipped outright: such
+    a receipt has no lines at all and its date is the client's last pre-CRM shipment,
+    not a sale made in this window. Returned goods are counted on the day they came
+    back (every movement on its own date, as the kassa reads them) and netted off what
+    was taken, with the returned figure kept alongside so the netting is never silent.
+
+    The money side is exactly what the Mijozlar to'lovlari page calls "the client paid
+    us" — cash actually handed over (sotuvda to'langan / qarz to'lovi / avans), gross
+    of the bank's cut, with advance credit being SPENT left out because those so'm
+    already arrived on the deposit's own date. The two pages must never report
+    different figures for the same month, so the kind list is shared, not rewritten.
+    """
+    # The window, for the two models that carry their own date. A sale LINE reaches
+    # the date through its receipt, so it spells the lookup out itself.
+    window = {"date__gte": date_from, "date__lte": date_to}
+    activity = {}
+
+    def row(pk):
+        return activity.setdefault(pk, _zero_activity())
+
+    items = SaleItem.objects.filter(
+        sale__is_opening=False,
+        sale__date__gte=date_from,
+        sale__date__lte=date_to,
+    )
+    if scope is not None:
+        items = items.filter(sale__sales_rep=scope)
+    if clients is not None:
+        items = items.filter(sale__client__in=clients)
+    for r in items.values("sale__client").annotate(
+        som=Sum(REVENUE), kg=Sum(ITEM_WEIGHT_KG)
+    ):
+        entry = row(r["sale__client"])
+        entry["taken"] = r["som"] or Decimal("0")
+        entry["taken_kg"] = r["kg"] or Decimal("0")
+
+    returns = Return.objects.filter(**window)
+    if scope is not None:
+        returns = returns.filter(sale__sales_rep=scope)
+    if clients is not None:
+        returns = returns.filter(sale__client__in=clients)
+    for r in returns.values("sale__client").annotate(
+        som=Sum(RETURN_AMOUNT), kg=Sum(RETURN_WEIGHT_KG)
+    ):
+        entry = row(r["sale__client"])
+        entry["returned"] = r["som"] or Decimal("0")
+        entry["returned_kg"] = r["kg"] or Decimal("0")
+
+    payments = Payment.objects.filter(
+        kind__in=RECEIVED_PAYMENT_KINDS, is_opening=False, **window
+    ).annotate(client_pk=Coalesce("sale__client", "client"))
+    if scope is not None:
+        payments = payments.filter(
+            Q(sale__sales_rep=scope) | Q(sale__isnull=True, created_by=scope)
+        )
+    if clients is not None:
+        payments = payments.filter(client_pk__in=clients)
+    for r in payments.order_by().values("client_pk").annotate(
+        som=Sum("amount"), n=Count("pk")
+    ):
+        entry = row(r["client_pk"])
+        entry["paid"] = r["som"] or Decimal("0")
+        entry["pay_count"] = r["n"]
+
+    # Net is what the row shows and what the totals add up: goods that came back are
+    # goods the client did not keep. Both sides stay on the entry so the returned
+    # figure can be named beside the net one instead of vanishing into it.
+    for entry in activity.values():
+        entry["net_taken"] = entry["taken"] - entry["returned"]
+        entry["net_taken_kg"] = entry["taken_kg"] - entry["returned_kg"]
+        # Took minus paid: how much the client's debt GREW over the window (negative
+        # means they paid off more than they took). The one line of a sverka the two
+        # sides argue about, so it is computed once here rather than in a template.
+        entry["net_change"] = entry["net_taken"] - entry["paid"]
+    return activity
+
+
 def _debtor_rows(request):
     """One row per debtor client for the current filters: total owed, open receipts,
-    earliest deadline. Shared by the Qarzlar page and its Excel export."""
+    earliest deadline. Shared by the Qarzlar page and its Excel export.
+
+    With a date window in the URL (?dan/?gacha) each row also carries what that client
+    took and paid INSIDE the window — the monthly sverka: "from the 14th to the 14th,
+    this is the goods they took, this is the money they handed over, and this is what
+    is still open". Without one the page is the plain debtors list it has always been.
+
+    Returns (debtors, filters, totals, dates)."""
     today = timezone.localdate()
     open_sales = (
         Sale.objects.visible_to(request.user).outstanding().select_related("client")
     )
 
-    filters = {key: request.GET.get(key, "") for key in ("client", "rep", "overdue", "tur")}
+    filters = {
+        key: request.GET.get(key, "")
+        for key in ("client", "rep", "overdue", "tur", "dan", "gacha")
+    }
     filters["q"] = request.GET.get("q", "").strip()
+    # No window by default: a debtors list is about balances, which have no period —
+    # the dates are picked when somebody wants the sverka.
+    dates = _date_range_context(request, default_window="all")
     if filters["q"]:
         open_sales = _client_search(open_sales, filters["q"], "client")
     if filters["client"].isdigit():
@@ -1952,6 +2067,34 @@ def _debtor_rows(request):
     for pk, when in _advance_since_map(advance_pks, scope).items():
         groups[pk]["advance_since"] = when
 
+    # The sverka columns. A client who traded in the window and settled up owes
+    # nothing and holds no advance, so no line above put them on the page — yet they
+    # are exactly the client a period report must not lose. They join here, with the
+    # zeroed balance they really have. Counted before the switch below, so "Hammasi"
+    # says how many rows it leads to; "Qarzdorlar"/"Avans" filter them straight back
+    # out, which is right — they are neither.
+    period = {}
+    if not dates["is_all"]:
+        period = _period_activity(scope, dates["date_from"], dates["date_to"])
+    for pk, activity in period.items():
+        group = groups.get(pk)
+        if group is None:
+            if pk not in client_map or filters["overdue"] == "1":
+                continue
+            group = groups[pk] = {
+                "client": client_map[pk],
+                "remaining": Decimal("0"),
+                "count": 0,
+                "earliest": None,
+                "overdue_count": 0,
+                "overdue_amount": Decimal("0"),
+                "advance": Decimal("0"),
+                "advance_since": None,
+            }
+        group["period"] = activity
+    for group in groups.values():
+        group.setdefault("period", None)
+
     # The Qarzdorlar / Avans switch. Counted before the switch is applied, so each
     # button can carry how many rows it leads to — including the one you are not on.
     counts = {
@@ -1990,13 +2133,19 @@ def _debtor_rows(request):
         "overdue_debtors": sum(1 for g in debtors if g["overdue_count"]),
         "advance_clients": sum(1 for g in debtors if g["advance"]),
         "counts": counts,
+        # The window's own figures, over the rows actually on the page — the bottom
+        # line of the sverka.
+        "taken": sum((g["period"]["net_taken"] for g in debtors if g["period"]), Decimal("0")),
+        "taken_kg": sum((g["period"]["net_taken_kg"] for g in debtors if g["period"]), Decimal("0")),
+        "returned": sum((g["period"]["returned"] for g in debtors if g["period"]), Decimal("0")),
+        "paid": sum((g["period"]["paid"] for g in debtors if g["period"]), Decimal("0")),
     }
-    return debtors, filters, totals
+    return debtors, filters, totals, dates
 
 
 def debt_list(request):
     """One row per debtor client: total owed, open receipts, earliest deadline."""
-    debtors, filters, totals = _debtor_rows(request)
+    debtors, filters, totals, dates = _debtor_rows(request)
     clients = _visible_clients(request.user).order_by("name")
     reps = (
         User.objects.filter(is_active=True).order_by("first_name", "username")
@@ -2040,20 +2189,57 @@ def debt_list(request):
             "export_url": reverse("debt_export") + (
                 f"?{request.GET.urlencode()}" if request.GET.urlencode() else ""
             ),
+            # The date window sits beside the Excel button: pick "14-dan 14-gacha" and
+            # the two sverka columns appear, both on the page and in the download.
+            "show_daterange_picker": True,
+            "keep_daterange": True,
+            # A debtors list has no natural period, so it must be possible to put the
+            # window away again and be back on the plain balance list.
+            "allow_all_window": True,
+            "period_window": not dates["is_all"],
+            # Searching must narrow the chosen window rather than throw it away.
+            "search_keep": [
+                {"name": "dan", "value": filters["dan"]},
+                {"name": "gacha", "value": filters["gacha"]},
+            ],
+            "totals": totals,
+            **dates,
         },
     )
 
 
 def debt_export(request):
-    """Excel (.xlsx) of the debtor list for the current filters — one row per client."""
-    debtors, _, _ = _debtor_rows(request)
+    """Excel (.xlsx) of the debtor list for the current filters — one row per client.
+
+    With a date window chosen the sverka columns come too, and each one carries the
+    period in its own header: the file is handed around on its own, so a column of
+    figures that does not say which month it belongs to is worse than no column."""
+    debtors, _, _, dates = _debtor_rows(request)
     today = timezone.localdate()
+    money, qty = "#,##0.00", "#,##0.000"
     headers = [
         "Mijoz", "Telefon", "Mas'ul xodim", "Ochiq cheklar",
         "Muddati o'tgan cheklar", "Eng yaqin muddat", "Kechikkan kun", "Holat",
         "Oxirgi yuk olgan", "Oxirgi to'lov", "Qarz qoldig'i", "Avans (so'm)",
         "Avans qachondan",
     ]
+    number_cols = {"Qarz qoldig'i": money, "Avans (so'm)": money}
+    period_on = not dates["is_all"]
+    if period_on:
+        span = (
+            f" ({dates['date_from'].strftime('%d.%m.%Y')}"
+            f"–{dates['date_to'].strftime('%d.%m.%Y')})"
+        )
+        period_headers = [
+            (f"Olgan yuk, so'm{span}", money),
+            (f"Olgan yuk, kg{span}", qty),
+            (f"Qaytargan, so'm{span}", money),
+            (f"To'lagan pul{span}", money),
+        ]
+        # Between the two "last seen" dates and the balance: took, paid, still owes —
+        # the order the sverka is read in.
+        headers[10:10] = [h for h, _ in period_headers]
+        number_cols.update(period_headers)
     rows = []
     for g in debtors:
         earliest = g["earliest"]
@@ -2062,7 +2248,7 @@ def debt_export(request):
         # rather than zeroed when nothing is late, so sorting by it puts the worst
         # debtors on top and everyone else out of the way.
         overdue_days = (today - earliest).days if earliest and earliest < today else None
-        rows.append([
+        row = [
             g["client"].name,
             g["client"].phone,
             str(g["client"].owner) if g["client"].owner else "",
@@ -2077,13 +2263,25 @@ def debt_export(request):
             else "Muddatida",
             g["last_sale"].strftime("%d.%m.%Y") if g["last_sale"] else "",
             g["last_payment"].strftime("%d.%m.%Y") if g["last_payment"] else "",
+        ]
+        if period_on:
+            # Zeroed, not blanked, when the client did nothing in the window: a sverka
+            # column is added up, and "took nothing" is a figure, not a gap.
+            act = g["period"]
+            row += [
+                float(act["net_taken"]) if act else 0,
+                float(act["net_taken_kg"]) if act else 0,
+                float(act["returned"]) if act else 0,
+                float(act["paid"]) if act else 0,
+            ]
+        row += [
             float(g["remaining"]),
             float(g["advance"]),
             g["advance_since"].strftime("%d.%m.%Y") if g["advance_since"] else "",
-        ])
-    return _xlsx_response(
-        "qarzlar.xlsx", "Qarzlar", headers, rows, {11: "#,##0.00", 12: "#,##0.00"}
-    )
+        ]
+        rows.append(row)
+    formats = {headers.index(h) + 1: fmt for h, fmt in number_cols.items()}
+    return _xlsx_response("qarzlar.xlsx", "Qarzlar", headers, rows, formats)
 
 
 def _open_receipts(request, client):
@@ -2098,11 +2296,42 @@ def _open_receipts(request, client):
     )
 
 
+def _client_period(request, client):
+    """One client's sverka for the ?dan/?gacha window: (dates, figures, movements).
+
+    The figures come from the same `_period_activity` the Qarzlar list is built on, so
+    a client's own page and their row in the list can never disagree. The movements are
+    their history timeline cut to the window — every sale, payment and return that
+    happened inside it, with the running debt balance the tarix page shows — because a
+    total nobody can check line by line is a total nobody trusts.
+
+    `figures` is None and `movements` empty when no window is picked: the page is then
+    the open-receipts card it has always been, and the heavy history query is skipped.
+
+    Shared by the page and its Excel so the file can never disagree with the screen."""
+    dates = _date_range_context(request, default_window="all")
+    if dates["is_all"]:
+        return dates, None, []
+    scope = None if request.user.can_see_all_records else request.user
+    figures = _period_activity(
+        scope, dates["date_from"], dates["date_to"], [client.pk]
+    ).get(client.pk) or _zero_activity()
+    movements = [
+        event for event in _client_events(request, client)
+        if dates["date_from"] <= event["date"] <= dates["date_to"]
+    ]
+    return dates, figures, movements
+
+
 def debt_client(request, pk):
-    """A single debtor's open receipts, with per-receipt balance and deadline."""
+    """A single debtor's open receipts, with per-receipt balance and deadline.
+
+    With a date window (?dan/?gacha) the page also carries that client's sverka for
+    the period — what they took, what they paid, and the movements behind both."""
     client = get_object_or_404(_visible_clients(request.user), pk=pk)
     sales = _open_receipts(request, client)
     total = sum((s.remaining for s in sales), Decimal("0"))
+    dates, period, movements = _client_period(request, client)
     # Every movement on this client's advance pool — deposits and money handed back —
     # each editable/voidable right here. The kassa ledger is not enough on its own: a
     # deposit taken in outside the till, or a return that never touched it, appears
@@ -2117,13 +2346,36 @@ def debt_client(request, pk):
             "total": total,
             "last_sale": last_sale,
             "last_payment": last_payment,
+            # The window rides in the page's own card head rather than a filter
+            # toolbar: this page has no filters, only a period to read it over.
+            "period": period,
+            "period_window": not dates["is_all"],
+            "movements": movements,
+            # The picker reads the window it is showing off these two, exactly as the
+            # list pages' toolbar does.
+            "filters": {
+                "dan": request.GET.get("dan", ""),
+                "gacha": request.GET.get("gacha", ""),
+            },
+            "allow_all_window": True,
+            # The download follows the screen: with a window picked the file gains the
+            # sverka sheet, so the link has to carry the dates.
+            "export_url": reverse("debt_client_export", args=[client.pk]) + (
+                f"?{request.GET.urlencode()}" if request.GET.urlencode() else ""
+            ),
+            **dates,
             **_client_advance_context(request, client),
         },
     )
 
 
 def debt_client_export(request, pk):
-    """Excel (.xlsx) of one debtor's open receipts — the rows of their qarz page."""
+    """Excel (.xlsx) of one debtor's open receipts — the rows of their qarz page.
+
+    With a date window picked the file gains a second sheet: that period's sverka —
+    the figures and the movements behind them. Two sheets rather than two files,
+    because they are one conversation with the client: "this is what is still open,
+    and this is how the month got there"."""
     client = get_object_or_404(_visible_clients(request.user), pk=pk)
     today = timezone.localdate()
     headers = [
@@ -2155,9 +2407,54 @@ def debt_client_export(request, pk):
             last_payment.strftime("%d.%m.%Y") if last_payment else "",
         ])
     number_formats = {4: "#,##0.00", 5: "#,##0.00", 6: "#,##0.00"}
-    return _xlsx_response(
-        f"qarz-mijoz-{client.pk}.xlsx", "Ochiq cheklar", headers, rows, number_formats
+    filename = f"qarz-mijoz-{client.pk}.xlsx"
+    dates, period, movements = _client_period(request, client)
+    if period is None:
+        return _xlsx_response(filename, "Ochiq cheklar", headers, rows, number_formats)
+    return _xlsx_book_response(filename, [
+        ("Ochiq cheklar", headers, rows, number_formats),
+        _client_period_sheet(dates, period, movements),
+    ])
+
+
+def _client_period_sheet(dates, period, movements):
+    """The sverka sheet: the window's four figures, then every movement behind them.
+
+    Both live on one sheet, summary first, because that is the order the two sides read
+    it in — the totals get argued about, then checked line by line. The period is
+    written into the sheet itself, not just the title, so a printed page still says
+    which days it covers."""
+    span = (
+        f"{dates['date_from'].strftime('%d.%m.%Y')}"
+        f"–{dates['date_to'].strftime('%d.%m.%Y')}"
     )
+    money = "#,##0.00"
+    headers = ["Sana", "Amal", "Tafsilot", "Summa", "Qarz o'zgarishi", "Qarz qoldig'i"]
+    rows = [
+        [span, "Olgan yuk", f"{period['net_taken_kg']:,.3f} kg".replace(",", " "),
+         float(period["net_taken"]), "", ""],
+        [span, "Shundan qaytargan", "", float(period["returned"]), "", ""],
+        [span, "To'lagan pul", f"{period['pay_count']} ta to'lov",
+         float(period["paid"]), "", ""],
+        [span, "Qarz o'zgarishi", "olgan yuk − to'lagan pul",
+         float(period["net_change"]), "", ""],
+        # A full-width blank, not an empty list: the sheet writer measures every
+        # column of every row to size them.
+        ["", "", "", "", "", ""],
+        ["Harakatlar", "", "", "", "", ""],
+    ]
+    rows += [
+        [
+            event["date"].strftime("%d.%m.%Y"),
+            event["label"],
+            " · ".join(p for p in (event["desc"], event["method_label"], event["note"]) if p),
+            float(event["amount"]),
+            float(event["delta"]),
+            float(event["balance"]),
+        ]
+        for event in movements
+    ]
+    return (f"Oraliq {span}", headers, rows, {4: money, 5: money, 6: money})
 
 
 def _client_outstanding_fifo(request, client):

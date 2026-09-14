@@ -53,6 +53,12 @@
     <th>Eng yaqin muddat</th>
     <th>Oxirgi yuk</th>
     <th>Oxirgi to'lov</th>
+    {% comment %}Sverka ustunlari — faqat sana oralig'i tanlanganda. O'qilish tartibi:
+    oldi → to'ladi → qoldi.{% endcomment %}
+    {% if period_window %}
+    <th class="num">Oraliqda olgan yuk<span class="cell-sub">{{ date_from|date:"d.m.Y" }} – {{ date_to|date:"d.m.Y" }}</span></th>
+    <th class="num">Oraliqda to'lagan<span class="cell-sub">{{ date_from|date:"d.m.Y" }} – {{ date_to|date:"d.m.Y" }}</span></th>
+    {% endif %}
     <th class="num">Qarz qoldig'i</th>
     <th class="num">Avans</th>
     <th></th>
@@ -74,6 +80,20 @@
       {% if g.last_payment %}<span title="{{ g.last_payment|date:'d.m.Y' }}">{{ g.last_payment|timeago_uz }}</span>
       {% else %}<span class="muted">Hech qachon</span>{% endif %}
     </td>
+    {% if period_window %}
+    {% comment %}Qaytargan tovar summadan ayrilgan; ayrilgani jim qolmasligi uchun
+    yonida aytiladi.{% endcomment %}
+    <td class="num">
+      {% if g.period.net_taken %}<strong>{{ g.period.net_taken|floatformat:"0g" }}</strong> so'm
+        <span class="cell-sub">{{ g.period.net_taken_kg|floatformat:"-3g" }} kg{% if g.period.returned %} · {{ g.period.returned|floatformat:"0g" }} so'm qaytardi{% endif %}</span>
+      {% else %}<span class="muted">—</span>{% endif %}
+    </td>
+    <td class="num">
+      {% if g.period.paid %}<strong style="color: var(--success);">{{ g.period.paid|floatformat:"0g" }}</strong> so'm
+        <span class="cell-sub">{{ g.period.pay_count }} ta to'lov</span>
+      {% else %}<span class="muted">—</span>{% endif %}
+    </td>
+    {% endif %}
     {% comment %}Qarz — qizil, avans — yashil: ikkalasi pul, lekin qarama-qarshi tomonda.{% endcomment %}
     <td class="num">{% if g.remaining %}<strong style="color: var(--danger);">{{ g.remaining|floatformat:"0g" }}</strong> so'm{% else %}<span class="muted">—</span>{% endif %}</td>
     {% comment %}Mijozlar sahifasidagi kabi — raqamning o'zi uni tuzatadigan oynani ochadi.{% endcomment %}
@@ -85,11 +105,32 @@
     <td><a class="btn btn-sm btn-ghost" href="{% url 'debt_client' g.client.pk %}">Ko'rish</a></td>
   </tr>
   {% endfor %}
+  {% comment %}Sverkaning yakuni — sahifadagi qatorlar bo'yicha.{% endcomment %}
+  {% if period_window %}
+  <tr class="row-total">
+    <td class="sticky-col"><strong>Jami</strong> <span class="cell-sub">{{ debtors|length }} ta mijoz · {{ date_from|date:"d.m.Y" }} – {{ date_to|date:"d.m.Y" }}</span></td>
+    <td></td><td></td><td></td><td></td>
+    <td class="num"><strong>{{ totals.taken|floatformat:"0g" }}</strong> so'm<span class="cell-sub">{{ totals.taken_kg|floatformat:"-3g" }} kg{% if totals.returned %} · {{ totals.returned|floatformat:"0g" }} so'm qaytardi{% endif %}</span></td>
+    <td class="num"><strong style="color: var(--success);">{{ totals.paid|floatformat:"0g" }}</strong> so'm</td>
+    <td class="num"><strong style="color: var(--danger);">{{ total_debt|floatformat:"0g" }}</strong> so'm</td>
+    <td class="num"><strong style="color: var(--success);">{{ total_advance|default:0|floatformat:"0g" }}</strong></td>
+    <td></td>
+  </tr>
+  {% endif %}
 </table>
 </div>
+{% if period_window %}
+<p class="field-hint" style="margin-top:12px;">
+  <strong>Oraliqda olgan yuk</strong> — shu kunlar orasidagi cheklardagi tovar summasi (qaytargani ayrilgan);
+  ochilish qarzi bunga kirmaydi, u savdo emas.
+  <strong>Oraliqda to'lagan</strong> — mijoz shu kunlarda qo'ldan bergan pul: sotuvda to'langan, qarz to'lovi va avans
+  (avansdan yechilgani qo'shilmaydi — u pul avans olingan kuni sanalgan). <strong>Qarz qoldig'i</strong> va
+  <strong>Avans</strong> esa bugungi holat, sanaga bog'liq emas.
+</p>
+{% endif %}
 {% else %}
-<p class="muted">{% if filters.tur == 'avans' %}Avansi bor mijoz yo'q.{% else %}Qarzdor mijozlar yo'q. 🎉{% endif %}</p>
+<p class="muted">{% if period_window %}Bu oraliqda harakat qilgan qarzdor mijoz yo'q.{% elif filters.tur == 'avans' %}Avansi bor mijoz yo'q.{% else %}Qarzdor mijozlar yo'q. 🎉{% endif %}</p>
 {% endif %}
 
-{% include "crm/_filter_drawer.html" with show_overdue=True %}
+{% include "crm/_filter_drawer.html" with show_overdue=True keep_daterange=True %}
 {% endblock %}
