@@ -1,3 +1,4 @@
+from bisect import bisect_right
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -9,7 +10,6 @@ from django.db.models import (
     DecimalField,
     ExpressionWrapper,
     F,
-    Max,
     OuterRef,
     Subquery,
     Sum,
@@ -443,8 +443,8 @@ class Sale(models.Model):
     # Every sale is a receivable with a deadline; "paid" is derived from payments.
     # The deadline is not a fixed date: it is the agreed term from the sale date until
     # the client repays something, and the day of that repayment from then on — see
-    # `recompute_debt_deadline`. The term is stored separately because once the
-    # deadline has been reset it no longer says what was agreed.
+    # `recompute_client_debt_deadlines`. The term is stored separately because once
+    # the deadline has been reset it no longer says what was agreed.
     debt_deadline = models.DateField("To'lov muddati", null=True, blank=True)
     debt_term_days = models.PositiveIntegerField(
         "Qarz muddati (kun)", null=True, blank=True
@@ -560,27 +560,36 @@ class Sale(models.Model):
 
     @property
     def repaid_on(self):
-        """The day money last came in AGAINST this debt, or None if none has.
+        """The day the client last paid money in against their debt after this receipt
+        was written, or None if they have not.
 
-        Payments dated the day of the sale itself are not repayments — they are the
-        part the client handed over at the counter, and the agreed term is exactly
-        what they were given for the rest. Only money arriving later counts."""
-        if not self.pk:
+        It is the CLIENT's repayment, not this receipt's: payments go to the oldest
+        receipt first, so a client who owes on five receipts and hands over 20 000 000
+        usually leaves the rest on receipts the money never touched. What they still
+        owe is due from the day they paid all the same — see `client_repayment_dates`
+        for which payments count."""
+        if not self.client_id or not self.date:
             return None
-        last = self.payments.filter(kind__in=PAYING_KINDS).aggregate(d=Max("date"))["d"]
-        return last if last and last > self.date else None
+        return last_repayment_after(client_repayment_dates(self.client_id), self.date)
 
-    def recompute_debt_deadline(self, commit=True):
+    def recompute_debt_deadline(self, commit=True, repayments=None):
         """Restart the counter at zero on every repayment.
 
-        A client who owed 20 258 500 for 89 days and has just handed over 20 000 000 is
-        not 89 days late on the 258 500 that is left. That remainder is due now: the
+        A client who owed 20 500 000 for 80 days and has just handed over 20 000 000 is
+        not 80 days late on the 500 000 that is left. That remainder is due now: the
         badge reads "Bugun" on the day they paid and starts counting up again the next
         morning, so what the page shows is how long it has been since they last paid.
 
         Until the first repayment the deadline is the agreed term from the sale date,
-        exactly as it always was. Nothing is nudged — the date is derived every time —
+        exactly as it always was. A repayment made while that term is still running
+        does not pull the deadline in: paying part early must never make the client
+        late sooner than agreed. Nothing is nudged — the date is derived every time —
         so voiding or re-dating a payment puts the old overdue days back by itself.
+
+        One repayment moves every receipt of the client, so after money changes call
+        `recompute_client_debt_deadlines`; this method alone is for a receipt whose own
+        date or term changed. `repayments` is the client's `client_repayment_dates`,
+        passed in by that loop so it is read once rather than once per receipt.
 
         Returns the deadline. `commit=False` leaves the row unsaved for a caller that
         is about to save it anyway."""
@@ -590,8 +599,12 @@ class Sale(models.Model):
             # read it back out of dates that no longer describe the agreement.
             self.debt_term_days = self.term_days
             fields.append("debt_term_days")
-        repaid_on = self.repaid_on
-        deadline = repaid_on or (self.date + timedelta(days=self.debt_term_days))
+        agreed = self.date + timedelta(days=self.debt_term_days)
+        if repayments is None:
+            repaid_on = self.repaid_on
+        else:
+            repaid_on = last_repayment_after(repayments, self.date)
+        deadline = max(agreed, repaid_on) if repaid_on else agreed
         if deadline != self.debt_deadline:
             self.debt_deadline = deadline
             fields.append("debt_deadline")
@@ -618,6 +631,46 @@ class Sale(models.Model):
 
     def __str__(self):
         return f"{self.date} · {self.client}"
+
+
+def client_repayment_dates(client_id):
+    """Every day the client paid money in against a debt, oldest first.
+
+    A payment counts when it was made after the day of the receipt it went to. Money
+    handed over on the day of a sale — at the counter, or drawn from their advance —
+    is part of that sale, not a repayment of anything older, so it restarts nobody's
+    counter."""
+    return list(
+        Payment.objects.filter(
+            sale__client_id=client_id, kind__in=PAYING_KINDS, date__gt=F("sale__date")
+        )
+        .order_by("date")
+        .values_list("date", flat=True)
+        .distinct()
+    )
+
+
+def last_repayment_after(repayments, day):
+    """The latest of `repayments` (sorted, as `client_repayment_dates` returns them)
+    that falls after `day`, or None."""
+    return repayments[-1] if bisect_right(repayments, day) < len(repayments) else None
+
+
+def recompute_client_debt_deadlines(client_id):
+    """Re-derive the deadline on every receipt of one client.
+
+    Call it after anything that adds, removes or re-dates a client's payment, or moves
+    one of their receipts' dates: one repayment restarts the counter on all of their
+    older receipts, not only the one the money was booked to. Paid receipts are
+    included so a receipt that opens up again (a voided payment, a deleted return)
+    already carries the right date."""
+    if not client_id:
+        return
+    repayments = client_repayment_dates(client_id)
+    for sale in Sale.objects.filter(client_id=client_id).only(
+        "pk", "client_id", "date", "debt_deadline", "debt_term_days"
+    ):
+        sale.recompute_debt_deadline(repayments=repayments)
 
 
 class SaleItem(models.Model):
