@@ -281,6 +281,20 @@ class DebtTermRestartTests(BaseSetup):
             sale.recompute_debt_deadline(), opened + timedelta(days=14)
         )
 
+    def test_paying_part_early_keeps_the_agreed_deadline(self):
+        # Two days into a 14-day term the client hands over part of it. They are not
+        # "due today" — the rest is still owed by the date they were given.
+        opened = timezone.localdate() - timedelta(days=2)
+        sale = make_sale(
+            self.client1, self.sales1, self.product, is_debt=True,
+            date=opened, debt_deadline=opened + timedelta(days=14),
+        )
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("sale_pay", args=[sale.pk]), {"amount": "100000", "method": "cash"})
+        sale.refresh_from_db()
+        self.assertEqual(sale.debt_deadline, opened + timedelta(days=14))
+        self.assertFalse(sale.is_overdue)
+
     def test_voiding_the_payment_restores_the_old_deadline(self):
         sale = self._overdue_sale()
         opened = sale.date

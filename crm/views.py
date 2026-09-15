@@ -77,6 +77,7 @@ from .models import (
     Expense,
     Payment,
     client_advance_balance,
+    recompute_client_debt_deadlines,
     Product,
     ProductionReceipt,
     ProductionAdjustment,
@@ -1346,15 +1347,19 @@ def client_opening_debt(request, pk):
                 )
                 action = AuditLog.Action.CREATE
             else:
-                # Carry the deadline with the date rather than recomputing it: these
-                # debts are imported with their own terms, and silently resetting the
-                # window would restate how overdue the client is.
-                if sale.debt_deadline:
-                    sale.debt_deadline += on_date - sale.date
+                # Keep the balance's own term and let the deadline follow the new date —
+                # or the client's last repayment, if they have paid since. Shifting the
+                # stored date by hand would throw away a zeroed counter. The term is
+                # pinned before the date moves, while it can still be read off the old
+                # dates.
+                sale.debt_term_days = sale.term_days
                 sale.date = on_date
                 sale.opening_amount = amount
-                sale.save(update_fields=["opening_amount", "date", "debt_deadline"])
+                sale.save(update_fields=["opening_amount", "date", "debt_term_days"])
                 action = AuditLog.Action.UPDATE
+            # The balance's date decides which of the client's payments came after it,
+            # so every receipt of theirs is re-derived, this one included.
+            recompute_client_debt_deadlines(client.pk)
             # A raised balance is a fresh open receipt any credit the client holds
             # should settle onto; a lowered one may free credit that was already spent.
             _reconcile_client_advance(client, sale.sales_rep)
@@ -2561,16 +2566,18 @@ def _distribute_debt_payment(
             if chunk <= 0:
                 continue
             _create(chunk, sale=sale, kind=Payment.Kind.DEBT)
-            # Money came in on this receipt, so its counter goes back to zero (see
-            # `Sale.recompute_debt_deadline`): whatever is left is due as of the day
-            # they paid, not a debt that has been late since the day it was written.
-            sale.recompute_debt_deadline()
             left -= chunk
             touched += 1
         surplus = Decimal("0")
         if left > 0 and client is not None:
             surplus = left
             _create(left, sale=None, client=client, kind=Payment.Kind.ADVANCE_IN)
+        # The client paid, so the counter goes back to zero on everything they still
+        # owe — the receipts this money never reached included (see
+        # `recompute_client_debt_deadlines`): what is left is due as of the day they
+        # paid, not a debt that has been late since the day it was written.
+        for client_id in {sale.client_id for sale in sales}:
+            recompute_client_debt_deadlines(client_id)
     return touched, surplus
 
 
@@ -2617,9 +2624,10 @@ def _apply_advance_to_open_sales(client, seller, on_date=None):
                 date=max(on_date, sale.date),
                 created_by=seller,
             )
-            sale.recompute_debt_deadline()
             balance -= use
             applied += use
+        if applied:
+            recompute_client_debt_deadlines(client.pk)
     return applied
 
 
@@ -2883,6 +2891,8 @@ def _reconcile_client_advance(client, seller):
                     break
                 balance += u.credited_amount  # freeing this returns it to the pool
                 u.delete()               # ...and the sale it covered owes again
+            # A peeled-back allocation may have been the repayment a deadline ran from.
+            recompute_client_debt_deadlines(client.pk)
         _apply_advance_to_open_sales(client, seller)
 
 
@@ -3181,9 +3191,9 @@ def payment_delete(request, pk):
         sale = payment.sale
         summary = f"{payment.sale.client.name} — {payment.amount:,.0f} so'm ({payment.get_method_display()})"
         payment.delete()
-        # The deadline was counted from this payment; with it gone the clock falls back
-        # to whatever money is still on the receipt — restoring the old overdue days.
-        sale.recompute_debt_deadline()
+        # The client's deadlines may have been counted from this payment; with it gone
+        # the clock falls back to their previous repayment — restoring the old days.
+        recompute_client_debt_deadlines(sale.client_id)
         AuditLog.record(request.user, AuditLog.Action.VOID, "To'lov", sale_pk, summary)
         messages.success(request, "To'lov o'chirildi — qarz qayta tiklandi.")
         return form_reload(request, reverse("sale_detail", args=[sale_pk]))
@@ -3218,7 +3228,7 @@ def payment_edit(request, pk):
     if request.method == "POST":
         if form.is_valid():
             form.save()
-            payment.sale.recompute_debt_deadline()
+            recompute_client_debt_deadlines(payment.sale.client_id)
             AuditLog.record(
                 request.user, AuditLog.Action.UPDATE, "To'lov", payment.sale_id,
                 f"Mijoz {payment.sale.client.name} to'lovi "
@@ -6403,6 +6413,8 @@ def sale_create(request):
             # If the client has prepaid this seller, spend that advance on the new
             # receipt (oldest first) — the sale opens already part/fully paid.
             applied = _apply_advance_to_open_sales(sale.client, request.user)
+            # A backdated receipt may predate a repayment the client has already made.
+            recompute_client_debt_deadlines(sale.client_id)
             AuditLog.record(
                 request.user, AuditLog.Action.CREATE, "Sotuv", sale.pk,
                 f"Mijoz {sale.client.name}, {sale.items.count()} ta mahsulot "
@@ -6556,6 +6568,8 @@ def sale_edit(request, pk):
     The old hard block survives as the thing that makes the question unskippable — a
     receipt must never be left sitting at a negative balance."""
     sale = get_object_or_404(Sale.objects.visible_to(request.user), pk=pk)
+    # Read before the form binds: validation writes the new client onto the instance.
+    was_client_id = sale.client_id
     form = SaleForm(request.POST or None, instance=sale, user=request.user)
     formset = SaleItemFormSet(request.POST or None, instance=sale, prefix="items")
     title = "Sotuvni tahrirlash"
@@ -6602,6 +6616,10 @@ def sale_edit(request, pk):
     _mark_fulfilment(sale, [], only_unset=True)
     if overpay > 0:
         _settle_overpay(sale, overpay, refunded, request.user)
+    # A new date or client changes whose repayments this receipt's money counts as,
+    # and which repayments count for it — so both clients' deadlines are re-derived.
+    for client_id in {was_client_id, sale.client_id}:
+        recompute_client_debt_deadlines(client_id)
     summary = (
         f"Mijoz {sale.client.name}, {sale.items.count()} ta mahsulot "
         f"— {sale.total_price:,.0f} so'm"
@@ -6627,6 +6645,7 @@ def sale_mark_paid(request, pk):
                 method=Payment.Method.CASH,
                 kind=Payment.Kind.SALE, date=timezone.localdate(), created_by=request.user,
             )
+            recompute_client_debt_deadlines(sale.client_id)
             AuditLog.record(
                 request.user, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
                 f"Mijoz {sale.client.name} to'liq to'ladi (Naqd) — {remaining:,.0f} so'm",
@@ -6692,6 +6711,8 @@ def sale_pay(request, pk):
             if sale.debt_remaining <= 0:
                 msg = "Qarz to'liq to'landi."
             else:
+                # Re-derived on fresh rows of the client's receipts, not on this one.
+                sale.refresh_from_db(fields=["debt_deadline"])
                 # The counter has just gone back to zero; say so, otherwise the seller
                 # hangs up still thinking the client is 89 days late.
                 msg = (
@@ -6954,6 +6975,9 @@ def sale_delete(request, pk):
             sale.delete()  # items, payments and returns cascade with it
             # Freed or now-orphaned advance allocations settle back into balance.
             _reconcile_client_advance(client, seller)
+            # Its payments went with it, and the client's other deadlines may have
+            # been counted from one of them.
+            recompute_client_debt_deadlines(client.pk)
         AuditLog.record(request.user, AuditLog.Action.DELETE, "Sotuv", sale_pk, summary)
         messages.success(request, "Sotuv o'chirildi.")
         return form_reload(request, reverse("sale_list"))
