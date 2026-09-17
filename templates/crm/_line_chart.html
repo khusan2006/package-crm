@@ -1,0 +1,33 @@
+{% load l10n crm_extras %}
+{% comment %}Ikki chiziqli grafik. `a` — to'ldirilgan chiziq (savdo), `b` — ustidagi
+oddiy chiziq (foyda yoki tushgan pul). Har bir ustun bosiladi: o'sha oraliqqa filtrlaydi.
+Kerakli o'zgaruvchilar: chart, a_label, b_label, grad_id, empty_text.{% endcomment %}
+{% if chart.empty %}
+<p class="muted">{{ empty_text|default:"Bu davrda ma'lumot yo'q." }}</p>
+{% else %}
+<div class="line-chart">
+  <svg class="line-svg" viewBox="{{ chart.viewbox }}" preserveAspectRatio="none" aria-hidden="true">
+    <defs>
+      <linearGradient id="{{ grad_id }}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.22"/>
+        <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    <polygon class="line-area" points="{{ chart.a_area|unlocalize }}" fill="url(#{{ grad_id }})"/>
+    <polyline class="line-path line-revenue" points="{{ chart.a_line|unlocalize }}"/>
+    <polyline class="line-path line-profit" points="{{ chart.b_line|unlocalize }}"/>
+    {% for m in chart.rows %}
+    <circle class="line-dot line-dot--revenue" cx="{{ m.x|unlocalize }}" cy="{{ m.y_a|unlocalize }}" r="4">
+      <title>{{ m.label }} — {{ a_label }}: {{ m.a|floatformat:'0g' }} so'm · {{ b_label }}: {{ m.b|floatformat:'0g' }} so'm</title>
+    </circle>
+    <circle class="line-dot line-dot--profit" cx="{{ m.x|unlocalize }}" cy="{{ m.y_b|unlocalize }}" r="4">
+      <title>{{ m.label }} — {{ b_label }}: {{ m.b|floatformat:'0g' }} so'm</title>
+    </circle>
+    {% endfor %}
+    {% for m in chart.rows %}<a href="{% qs_replace dan=m.dan gacha=m.gacha %}"><rect class="line-hit" x="{{ m.hit_x|unlocalize }}" y="0" width="{{ m.hit_w|unlocalize }}" height="{{ chart.vb_h|unlocalize }}"><title>{{ m.label }} ni ochish</title></rect></a>{% endfor %}
+  </svg>
+  <div class="line-labels">
+    {% for m in chart.rows %}{% if m.tick %}<a class="line-label" href="{% qs_replace dan=m.dan gacha=m.gacha %}" title="{{ m.label }} ni ochish">{{ m.label }}</a>{% endif %}{% endfor %}
+  </div>
+</div>
+{% endif %}
