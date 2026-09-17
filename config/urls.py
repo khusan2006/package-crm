@@ -74,6 +74,8 @@ urlpatterns = [
     path("sales/", crm_views.sale_list, name="sale_list"),
     path("sales/export/", crm_views.sale_export, name="sale_export"),
     path("debts/", crm_views.debt_list, name="debt_list"),
+    # Before the <int:pk> routes: a named path, not a client id.
+    path("debts/qarzdor-qoshish/", crm_views.debtor_add, name="debtor_add"),
     path("debts/export/", crm_views.debt_export, name="debt_export"),
     path("debts/<int:pk>/", crm_views.debt_client, name="debt_client"),
     path(

@@ -1455,6 +1455,97 @@ class OpeningDebtForm(forms.Form):
         return cleaned
 
 
+def _opening_balances(clients):
+    """{client_pk: the opening balance they already carry} for the given clients.
+
+    Mirrors the view's `_opening_sale`: at most one row per client, the oldest winning
+    if an old import ever left two behind."""
+    balances = {}
+    rows = (
+        Sale.objects.filter(is_opening=True, client__in=clients)
+        .order_by("pk")
+        .values_list("client_id", "opening_amount")
+    )
+    for client_id, amount in rows:
+        balances.setdefault(client_id, amount)
+    return balances
+
+
+class OpeningClientSelect(ClientSelect):
+    """A client picker that also carries what each client already owes from before the
+    CRM (``data-opening``), so the debtor form can say so before a sum is typed."""
+
+    openings = {}
+
+    def create_option(self, name, value, label, selected, index, subindex=None, attrs=None):
+        option = super().create_option(
+            name, value, label, selected, index, subindex=subindex, attrs=attrs
+        )
+        client = getattr(value, "instance", None)
+        existing = self.openings.get(client.pk) if client is not None else None
+        if existing:
+            option["attrs"]["data-opening"] = f"{existing:.2f}"
+        return option
+
+
+class DebtorAddForm(forms.Form):
+    """Put a client on the debtors list in one step: who, how much, and since when.
+
+    The debt behind it predates the CRM (or was handed over without a receipt), so the
+    goods are unknown — often there is no paper left at all. That is why it is stored
+    as an opening balance and not as a sale: an opening balance carries no line items,
+    so it never invents kilograms for the revenue, profit and stock reports; it moves
+    the receivable and nothing else.
+
+    `OpeningDebtForm` already moves such a balance, but only from a client's own card
+    and as a delta against a figure they usually do not have yet. The Qarzlar page is
+    where the gap is noticed ("this one owes us too, and he is not on the list"), so
+    the whole entry is done there — including a brand-new client, through the same
+    quick-add the sale form uses.
+
+    The sum here is what the client owes, not a delta. For a client who already carries
+    an opening balance it is added on top (the picker warns as soon as they are chosen),
+    since a second old debt is a second old debt — but never silently: the message says
+    what the figure was before."""
+
+    client = forms.ModelChoiceField(
+        label="Mijoz",
+        queryset=Client.objects.none(),
+        widget=OpeningClientSelect,
+    )
+    amount = forms.DecimalField(
+        label="Qarz summasi (so'm)",
+        max_digits=18,
+        decimal_places=2,
+        min_value=Decimal("0.01"),
+        help_text="Mijoz hozir qancha qarzdor — tovarsiz, eski qarz",
+    )
+    date = forms.DateField(
+        label="Qarz sanasi",
+        widget=forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+        help_text="Qarz qachondan hisoblanadi — kechikish shu sanadan o'lchanadi",
+        validators=[_reject_future],
+    )
+    debt_days = forms.IntegerField(
+        label="Qarz muddati (kun)",
+        required=False,
+        min_value=0,
+        initial=DEFAULT_DEBT_DAYS,
+        help_text=f"Necha kundan keyin qaytariladi — bo'sh qolsa {DEFAULT_DEBT_DAYS} kun",
+        widget=forms.NumberInput(attrs={"min": "0", "inputmode": "numeric"}),
+    )
+
+    def __init__(self, *args, clients=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Whose clients this seller may put on the list — the view's visibility rule,
+        # handed in so the form itself refuses another seller's client.
+        qs = Client.objects.all() if clients is None else clients
+        self.fields["client"].queryset = qs.order_by("name")
+        self.fields["client"].widget.openings = _opening_balances(qs)
+        _searchable_select(self.fields["client"], "Mijozni qidiring yoki tanlang")
+        _mark_money(self.fields["amount"])
+
+
 class ProductionAdjustForm(forms.ModelForm):
     """An admin moving a seller's production debt up or down without money changing
     hands.
