@@ -11,7 +11,7 @@ and carries no ids that would clash between the two copies.
   <div class="nak-date">«<span class="nak-slot s-day">{{ sale.date|date:"d" }}</span>» <span class="nak-slot s-month">{{ sale.date|date:"m" }}</span> 20<span class="nak-slot s-year">{{ sale.date|date:"y" }}</span> г.</div>
   <div class="nak-title">YUK XATI/НАКЛАДНАЯ №<span class="nak-no">&nbsp;</span></div>
   <div class="nak-field"><span class="nak-lbl">Kimdan/От кого</span><span class="nak-line">{{ sale.sales_rep }}</span></div>
-  <div class="nak-field"><span class="nak-lbl">Kimga/Кому</span><span class="nak-line">{{ sale.client.name }}</span></div>
+  <div class="nak-field"><span class="nak-lbl">Kimga/Кому</span><span class="nak-line">{{ sale.client.name|title }}</span></div>
 
   <table class="nak-tbl">
     <thead>

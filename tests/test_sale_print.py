@@ -22,7 +22,7 @@ def test_print_page_carries_the_receipt(client, admin_user, sample_data):
     assert resp.status_code == 200
     body = resp.content.decode()
     assert "YUK XATI/НАКЛАДНАЯ" in body
-    assert "Test mijoz" in body       # Kimga — who the goods go to
+    assert "Test Mijoz" in body       # Kimga — title-cased, client names are stored SHOUTING
     assert "Sel Ler" in body           # Kimdan — the seller who released them
     assert "Test paket" in body
     # 10 kg × 15 000 = 150 000, space-grouped the way every screen prints money.
