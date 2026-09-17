@@ -4,6 +4,7 @@
 {% block topbar_title %}Sotuv — {{ sale.client.name }}{% endblock %}
 {% block topbar_back %}<a href="{% url 'sale_list' %}" class="icon-btn topbar-back" title="Orqaga" aria-label="Orqaga"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></a>{% endblock %}
 {% block fab %}
+{% if not sale.is_opening %}<a class="fab fab--muted" href="{% url 'sale_print' sale.pk %}" target="_blank" rel="noopener">Yuk xati</a>{% endif %}
 <a class="fab fab--muted" href="{% url 'sale_edit' sale.pk %}" data-modal>Tahrirlash</a>
 <a class="fab fab--muted" href="{% url 'sale_return' sale.pk %}" data-modal>Qaytarish</a>
 {% endblock %}

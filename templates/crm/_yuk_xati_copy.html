@@ -1,0 +1,63 @@
+{% comment %}
+One half of the printed sheet. Rendered twice side by side — the seller keeps one,
+the other is cut off and travels with the goods — so everything here is layout-only
+and carries no ids that would clash between the two copies.
+{% endcomment %}
+<div class="nak">
+  {% comment %}
+  The form's own blanks, kept as ruled lines with the sale's date written on them.
+  Slot widths are the template's underscore runs: 4, 19 and 4.
+  {% endcomment %}
+  <div class="nak-date">«<span class="nak-slot s-day">{{ sale.date|date:"d" }}</span>» <span class="nak-slot s-month">{{ sale.date|date:"m" }}</span> 20<span class="nak-slot s-year">{{ sale.date|date:"y" }}</span> г.</div>
+  <div class="nak-title">YUK XATI/НАКЛАДНАЯ №<span class="nak-no">&nbsp;</span></div>
+  <div class="nak-field"><span class="nak-lbl">Kimdan/От кого</span><span class="nak-line">&nbsp;</span></div>
+  <div class="nak-field"><span class="nak-lbl">Kimga/Кому</span><span class="nak-line">{{ sale.client.name }}</span></div>
+
+  <table class="nak-tbl">
+    <thead>
+      <tr>
+        <th class="c-no">№</th>
+        <th class="c-name">Nomi<br>Наименование</th>
+        <th class="c-unit">Ulch.bir<br>Ед.изм.</th>
+        <th class="c-qty">Soni<br>Кол-во</th>
+        <th class="c-price">Narxi<br>Цена</th>
+        <th class="c-sum">Summasi<br>Сумма</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      <tr>
+        <td class="c-no">{{ forloop.counter }}</td>
+        <td class="c-name">{{ item.product.name }}{% if item.variant_label %} · {{ item.variant_label }}{% endif %}</td>
+        <td class="c-unit">{{ item.dimension }}</td>
+        <td class="c-qty">{{ item.weight|floatformat:"-3g" }}</td>
+        <td class="c-price">{{ item.price|floatformat:"0g" }}</td>
+        <td class="c-sum">{{ item.total_price|floatformat:"0g" }}</td>
+      </tr>
+      {% endfor %}
+      <tr class="nak-total">
+        <td class="c-no"></td>
+        <td class="c-name">Jami / Итого</td>
+        <td class="c-unit"></td>
+        <td class="c-qty"></td>
+        <td class="c-price"></td>
+        <td class="c-sum">{{ sale.total_price|floatformat:"0g" }}</td>
+      </tr>
+      {% for n in blank_rows %}
+      <tr>
+        <td class="c-no">{{ n }}</td>
+        <td class="c-name"></td>
+        <td class="c-unit"></td>
+        <td class="c-qty"></td>
+        <td class="c-price"></td>
+        <td class="c-sum"></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="nak-sign">
+    <span>Berdim/Отпустил ______________</span>
+    <span>Oldim/Получил________________</span>
+  </div>
+</div>

@@ -6422,6 +6422,41 @@ def sale_detail(request, pk):
     )
 
 
+# Ruled lines on the printed yuk xati, as on the pre-printed pad it replaces.
+FORM_ROWS = 21
+
+
+def sale_print(request, pk):
+    """The sale as the paper "YUK XATI / НАКЛАДНАЯ" the drivers hand over.
+
+    Landscape A4 with the same form printed twice side by side, exactly like the
+    pre-printed pad it replaces: one half stays with the seller, the other is cut
+    off and goes with the goods. The table keeps its 21 ruled lines whatever the
+    receipt holds, so a short sale still looks like the form people know; a receipt
+    with more lines than that simply grows.
+    """
+    sale = get_object_or_404(
+        Sale.objects.visible_to(request.user)
+        .select_related("client", "sales_rep")
+        .prefetch_related("items__product"),
+        pk=pk,
+    )
+    # An opening-balance carry-over is a debt figure, not goods — there is nothing
+    # to hand over and so nothing to print.
+    if sale.is_opening:
+        raise Http404("Ochilish qoldig'i uchun yuk xati chiqarilmaydi.")
+    items = list(sale.items.all())
+    return render(
+        request,
+        "crm/sale_print.html",
+        {
+            "sale": sale,
+            "items": items,
+            "blank_rows": range(len(items) + 1, FORM_ROWS + 1),
+        },
+    )
+
+
 def _render_sale_form(
     request, form, formset, title, invalid=False, zakaz_shortfall=None, overpay=None
 ):
