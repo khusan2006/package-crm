@@ -478,6 +478,83 @@ class AuthTests(BaseSetup):
         self.assertContains(response, "overdue-banner")
 
 
+class DashboardNetProfitTests(BaseSetup):
+    """The dashboard's Sof foyda KPI.
+
+    Deliberately the KASSA page's figure, not the dashboard's own: profit counted as
+    the money arrives (a sale's takings cover its tannarx first), less the period's
+    expenses. The "Foyda" KPI beside it stays the other reading — what the goods sold
+    in the window earned, paid for or not — so the two are only equal when everything
+    has been collected and nothing was spent."""
+
+    def _spend(self, who, amount, **kwargs):
+        return Expense.objects.create(
+            amount=Decimal(amount), category="Boshqa", method=Payment.Method.CASH,
+            created_by=who, **kwargs,
+        )
+
+    def _dash(self, user, **params):
+        self.client.force_login(user)
+        return self.client.get(reverse("dashboard"), params).context
+
+    def test_it_is_the_profit_collected_less_the_periods_expenses(self):
+        # BaseSetup's sale1 is paid in full: 240 000 taken, 180 000 tannarx.
+        self._spend(self.sales1, "20000")
+        ctx = self._dash(self.sales1)
+        self.assertEqual(ctx["realized_profit"], Decimal("60000"))
+        self.assertEqual(ctx["period_expenses"], Decimal("20000"))
+        self.assertEqual(ctx["net_profit"], Decimal("40000"))
+
+    def test_an_unpaid_sale_lifts_foyda_but_not_sof_foyda(self):
+        make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        ctx = self._dash(self.sales1)
+        # The goods are sold, so the gross KPI counts them …
+        self.assertEqual(ctx["period_profit"], Decimal("120000"))
+        # … but nobody has paid for them, so nothing is realized yet.
+        self.assertEqual(ctx["net_profit"], Decimal("60000"))
+
+    def test_it_matches_the_kassa_page_for_the_same_window(self):
+        self._spend(self.sales1, "35000")
+        make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        today = timezone.localdate()
+        ctx = self._dash(self.sales1)
+        kassa = _kassa_summary(today.replace(day=1), today, rep=self.sales1)
+        self.assertEqual(ctx["net_profit"], kassa["net_profit"])
+        self.assertEqual(ctx["period_expenses"], kassa["expense_total"])
+
+    def test_a_seller_sees_only_their_own(self):
+        self._spend(self.sales2, "90000")          # another seller's outgoing
+        ctx = self._dash(self.sales1)
+        self.assertEqual(ctx["net_profit"], Decimal("60000"))   # sale2 and its cost stay out
+        self.assertEqual(ctx["period_expenses"], Decimal("0"))
+
+    def test_an_admin_sees_every_seller_and_can_narrow_to_one(self):
+        self._spend(self.sales1, "10000")
+        self._spend(self.sales2, "25000")
+        # Both sellers' paid sales (60 000 each), less both outgoings.
+        self.assertEqual(self._dash(self.admin)["net_profit"], Decimal("85000"))
+        scoped = self._dash(self.admin, rep=self.sales1.pk)
+        self.assertEqual(scoped["net_profit"], Decimal("50000"))
+
+    def test_the_card_says_so_when_a_cross_filter_cannot_reach_it(self):
+        # An expense belongs to no client, so a client filter cannot narrow the net
+        # figure — the card admits that rather than showing an unfiltered sum silently.
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("dashboard"), {"client": self.client1.pk})
+        self.assertTrue(response.context["net_profit_unfiltered"])
+        self.assertContains(response, "filtrsiz")
+        plain = self.client.get(reverse("dashboard"))
+        self.assertFalse(plain.context["net_profit_unfiltered"])
+
+    def test_the_kpi_is_on_the_page(self):
+        self._spend(self.sales1, "20000")
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("dashboard"))
+        self.assertContains(response, "Sof foyda")
+        # Rendered grouped, with the non-breaking space the uz locale uses.
+        self.assertContains(response, "40 000")
+
+
 class DayViewTests(BaseSetup):
     def test_defaults_to_today(self):
         old = make_sale(

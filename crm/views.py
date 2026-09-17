@@ -652,6 +652,21 @@ def dashboard(request):
     )
     client_obj = clients.filter(pk=client_id).first() if client_id else None
     rep_obj = reps.filter(pk=rep_id).first() if reps and rep_id else None
+
+    # Sof foyda — deliberately the KASSA page's figure and not this page's own: profit
+    # recognised as the money is collected (a sale's takings cover its tannarx first),
+    # less the period's expenses. The "Foyda" KPI beside it is the other reading — what
+    # the goods sold in the window earned, paid for or not — and the two are meant to be
+    # read together: what was earned, and what is left after the till's outgoings.
+    # Same scope rule as the kassa page: a seller sees their own, an admin sees everyone
+    # unless they pick a rep. Neither the client nor the payment-method cross-filter
+    # reaches it — an expense belongs to nobody's client — so the card says so when one
+    # of those is on rather than quietly showing an unfiltered figure.
+    net_rep = rep_obj or (None if request.user.can_see_all_records else request.user)
+    realized_profit, period_expenses, net_profit = _kassa_net_profit(
+        date_from, date_to, net_rep
+    )
+
     method_labels = dict(Payment.Method.choices)
     aging_labels = {
         "current": "Muddati kelmagan", "d1_7": "1–7 kun kechikkan",
@@ -676,6 +691,11 @@ def dashboard(request):
         "recent_sales": recent_sales,
         "period_revenue": period_revenue,
         "period_profit": period_totals["profit"] or 0,
+        "net_profit": net_profit,
+        "realized_profit": realized_profit,
+        "period_expenses": period_expenses,
+        # The client / method cross-filters do not narrow the net figure.
+        "net_profit_unfiltered": bool(client_id or method),
         "period_count": period_count,
         "period_margin": _margin(period_totals),
         "avg_check": avg_check,
@@ -3982,6 +4002,23 @@ def _kassa_profit(date_from, date_to, rep=None):
     )
 
 
+def _kassa_net_profit(date_from, date_to, rep=None):
+    """Sof foyda for the window: realized profit less every expense booked in it.
+
+    The two halves are returned with it because both pages show them beside the net
+    figure. Expenses are taken in both currencies at their so'm value — the same
+    figure the per-seller rows sum, so the Jami row equals the sum of its columns.
+
+    One formula, two callers: the kassa page and the dashboard KPI. They are read
+    side by side, so the day they disagree is the day both stop being believed."""
+    profit = _kassa_profit(date_from, date_to, rep)
+    expenses = Expense.objects.filter(date__gte=date_from, date__lte=date_to)
+    if rep is not None:
+        expenses = expenses.filter(created_by=rep)
+    spent = expenses.aggregate(s=Sum("amount"))["s"] or Decimal("0")
+    return profit, spent, profit - spent
+
+
 def _kassa_summary(date_from, date_to, rep=None):
     """Two side-by-side till drawers — so'm and dollar — each with its income by
     method, expense and running balance, plus the period's supplier cost. Also the
@@ -4007,13 +4044,7 @@ def _kassa_summary(date_from, date_to, rep=None):
     cost = _kassa_supplier_cost(date_from, date_to, rep)          # period flow
     remitted = _kassa_remitted(date_from, date_to, rep)           # period flow
     paid_profit = _kassa_paid_profit(date_from, date_to, rep)     # period flow
-    profit = _kassa_profit(date_from, date_to, rep)
-    # Every expense's so'm value, both currencies — the same figure the per-seller
-    # rows sum, so the Jami row equals the sum of its columns.
-    expense_total = (
-        expenses.filter(date__gte=date_from, date__lte=date_to)
-        .aggregate(s=Sum("amount"))["s"] or Decimal("0")
-    )
+    profit, expense_total, net_profit = _kassa_net_profit(date_from, date_to, rep)
     # Standing balances (as of date_to). Cash on hand and production debt don't reset
     # with the day filter — they carry every movement up to the window's end, the way
     # the till's closing balance already does. Only date_to bounds them.
@@ -4070,7 +4101,7 @@ def _kassa_summary(date_from, date_to, rep=None):
         "profit": profit,
         "expense_total": expense_total,
         "refunded": refunded,
-        "net_profit": profit - expense_total,
+        "net_profit": net_profit,
     }
 
 

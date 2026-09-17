@@ -38,6 +38,21 @@
     {% if sparks.profit %}<svg class="kpi-spark" viewBox="0 0 118 30" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ sparks.profit }}" fill="none" stroke="var(--kpi)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
   </div>
 
+  {% comment %}Sof foyda — kassadagi ayni raqam: qo'lga tushgan foyda minus chiqim.
+  Yonidagi "Foyda" esa sotilgan tovarning foydasi (to'lansin-to'lanmasin).{% endcomment %}
+  <div class="kpi kpi--green">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/></svg></span>
+      <span class="kpi-label">Sof foyda</span>
+    </div>
+    <div class="kpi-value">{{ net_profit|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    {% if net_profit_unfiltered %}
+    <div class="kpi-meta muted">foyda − chiqim · filtrsiz, butun davr</div>
+    {% else %}
+    <div class="kpi-meta muted">foyda − chiqim ({{ period_expenses|default:0|floatformat:"0g" }})</div>
+    {% endif %}
+  </div>
+
   <div class="kpi kpi--blue">
     <div class="kpi-head">
       <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>
