@@ -2,6 +2,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from io import BytesIO, StringIO
 
+from django.contrib.messages import get_messages
 from django.core.management import call_command
 from django.db.models import Sum
 from django.test import TestCase, override_settings
@@ -22,6 +23,7 @@ from .forms import (
 from .models import (
     ADVANCE_ADJUST_NOTE,
     COST,
+    DEFAULT_DEBT_DAYS,
     AuditLog,
     Client,
     Employee,
@@ -5166,6 +5168,184 @@ class OpeningDebtEditTests(BaseSetup):
         self.assertContains(
             response, reverse("client_opening_debt", args=[self.client1.pk]), count=2
         )
+
+
+class DebtorAddTests(BaseSetup):
+    """Putting a client on the debtors list from the Qarzlar page.
+
+    The debt predates the CRM — or the goods went out with no receipt kept — so WHAT
+    was taken is unknown. There is nothing to write a sale from, and the sum is stored
+    as an opening balance: a receipt with no line items, which lifts the receivable
+    without inventing kilograms for the revenue and profit reports."""
+
+    def _post(self, client, amount, date=None, days=None):
+        data = {
+            "client": client.pk,
+            "amount": amount,
+            "date": (date or timezone.localdate()).isoformat(),
+        }
+        if days is not None:
+            data["debt_days"] = days
+        return self.client.post(reverse("debtor_add"), data)
+
+    def _opening(self, client):
+        return Sale.objects.filter(client=client, is_opening=True).order_by("pk").first()
+
+    def _remaining(self, sale):
+        return Sale.objects.filter(pk=sale.pk).with_balance()[0].remaining
+
+    def test_the_sum_lands_as_an_opening_balance_with_no_goods_behind_it(self):
+        self.client.force_login(self.sales1)
+        response = self._post(self.client1, "1500000")
+        self.assertEqual(response.status_code, 302)
+        opening = self._opening(self.client1)
+        self.assertEqual(opening.opening_amount, Decimal("1500000"))
+        self.assertEqual(self._remaining(opening), Decimal("1500000"))
+        # No line items: the goods behind an old debt are exactly what nobody knows.
+        self.assertEqual(opening.items.count(), 0)
+        self.assertEqual(opening.sales_rep, self.client1.owner)
+
+    def test_the_client_shows_up_on_the_debt_list(self):
+        self.client.force_login(self.sales1)
+        self._post(self.client1, "800000")
+        ctx = self.client.get(reverse("debt_list")).context
+        rows = {g["client"]: g for g in ctx["debtors"]}
+        self.assertIn(self.client1, rows)
+        self.assertEqual(rows[self.client1]["remaining"], Decimal("800000"))
+
+    def test_it_never_touches_revenue_or_profit(self):
+        self.client.force_login(self.sales1)
+        before = Sale.objects.with_totals().aggregate(s=Sum("total"))["s"]
+        self._post(self.client1, "5000000")
+        after = Sale.objects.with_totals().aggregate(s=Sum("total"))["s"]
+        self.assertEqual(after, before)
+
+    def test_a_client_who_already_owes_from_before_is_topped_up_not_overwritten(self):
+        self.client.force_login(self.sales1)
+        self._post(self.client1, "1000000")
+        self._post(self.client1, "250000")
+        # One balance per client, carrying both entries.
+        self.assertEqual(
+            Sale.objects.filter(client=self.client1, is_opening=True).count(), 1
+        )
+        self.assertEqual(self._opening(self.client1).opening_amount, Decimal("1250000"))
+
+    def test_topping_up_says_what_the_figure_was_before(self):
+        self.client.force_login(self.sales1)
+        self._post(self.client1, "1000000")
+        response = self._post(self.client1, "250000")
+        messages = [str(m) for m in get_messages(response.wsgi_request)]
+        self.assertTrue(any("1,000,000" in m and "1,250,000" in m for m in messages))
+
+    def test_the_term_decides_the_deadline(self):
+        self.client.force_login(self.sales1)
+        day = timezone.localdate() - timedelta(days=40)
+        self._post(self.client1, "600000", date=day, days=30)
+        opening = self._opening(self.client1)
+        self.assertEqual(opening.date, day)
+        self.assertEqual(opening.debt_deadline, day + timedelta(days=30))
+
+    def test_a_blank_term_falls_back_to_the_default(self):
+        self.client.force_login(self.sales1)
+        day = timezone.localdate() - timedelta(days=5)
+        self._post(self.client1, "600000", date=day)
+        opening = self._opening(self.client1)
+        self.assertEqual(
+            opening.debt_deadline, day + timedelta(days=DEFAULT_DEBT_DAYS)
+        )
+
+    def test_a_future_date_is_refused(self):
+        self.client.force_login(self.sales1)
+        response = self._post(
+            self.client1, "200000", date=timezone.localdate() + timedelta(days=3)
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "kelajakda")
+        self.assertIsNone(self._opening(self.client1))
+
+    def test_a_sum_of_zero_is_refused(self):
+        self.client.force_login(self.sales1)
+        response = self._post(self.client1, "0")
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(self._opening(self.client1))
+
+    def test_a_seller_cannot_put_another_sellers_client_on_the_list(self):
+        self.client.force_login(self.sales1)
+        response = self._post(self.client2, "9000000")
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(self._opening(self.client2))
+
+    def test_the_picker_offers_only_the_sellers_own_clients(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("debtor_add"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, self.client1.name)
+        self.assertNotContains(response, self.client2.name)
+
+    def test_an_admin_can_pick_any_sellers_client(self):
+        self.client.force_login(self.admin)
+        response = self._post(self.client2, "700000")
+        self.assertEqual(response.status_code, 302)
+        opening = self._opening(self.client2)
+        self.assertEqual(opening.opening_amount, Decimal("700000"))
+        # The debt stays with the seller who owns the client, not the admin typing it.
+        self.assertEqual(opening.sales_rep, self.sales2)
+
+    def test_the_picker_carries_the_balance_a_client_already_has(self):
+        self.client.force_login(self.sales1)
+        self._post(self.client1, "1000000")
+        response = self.client.get(reverse("debtor_add"))
+        # The warning in the form is driven by this attribute: entering the same old
+        # debt twice should be visible before it is saved, not after.
+        self.assertContains(response, 'data-opening="1000000.00"')
+
+    def test_held_credit_settles_onto_the_new_debt(self):
+        self.client.force_login(self.sales1)
+        Payment.objects.create(
+            client=self.client1, amount=Decimal("300000"),
+            method=Payment.Method.CASH, kind=Payment.Kind.ADVANCE_IN,
+            date=timezone.localdate(), created_by=self.sales1,
+        )
+        self._post(self.client1, "1000000")
+        self.assertEqual(self._remaining(self._opening(self.client1)), Decimal("700000"))
+        self.assertEqual(
+            client_advance_balance(self.client1, self.sales1), Decimal("0")
+        )
+
+    def test_the_entry_is_audited(self):
+        self.client.force_login(self.sales1)
+        self._post(self.client1, "1500000")
+        entry = AuditLog.objects.filter(action="create", target_type="Sotuv").latest("pk")
+        self.assertIn(self.client1.name, entry.summary)
+        self.assertIn("1,500,000", entry.summary)
+
+    def test_the_debt_page_links_to_the_form(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("debt_list"))
+        self.assertContains(response, reverse("debtor_add"))
+
+    def test_it_opens_as_a_modal_and_can_add_the_client_too(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(
+            reverse("debtor_add"), headers={"x-requested-with": "XMLHttpRequest"}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "crm/_debtor_add_modal.html")
+        # A debtor who is not in the CRM at all is added inside the same dialog,
+        # through the quick-add the sale form already uses.
+        self.assertContains(response, reverse("client_quick_create"))
+
+    def test_an_invalid_modal_comes_back_with_the_errors(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("debtor_add"),
+            {"client": self.client1.pk, "amount": "0",
+             "date": timezone.localdate().isoformat()},
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+        # 422 keeps the dialog open with the message in it instead of reloading.
+        self.assertEqual(response.status_code, 422)
+        self.assertIsNone(self._opening(self.client1))
 
 
 class ProductionDebtAdjustTests(BaseSetup):

@@ -1,0 +1,42 @@
+{% csrf_token %}
+{% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
+
+{% comment %}Mijoz ro'yxatda bo'lmasa — sotuv oynasidagi kabi shu yerning o'zida
+qo'shiladi ("+" tugmasi). Tanlangan mijozda allaqachon boshlang'ich qarz bo'lsa,
+pastdagi ogohlantirish chiqadi — bir qarz ikki marta kiritilmasin.{% endcomment %}
+<p class="qa-container" data-debtor-form>
+  {{ form.client.label_tag }}
+  <span class="field-with-add">
+    {{ form.client }}
+    <button type="button" class="btn btn-sm quick-add-toggle"
+            data-quick-url="{% url 'client_quick_create' %}"
+            data-target="{{ form.client.id_for_label }}" title="Yangi mijoz">+</button>
+  </span>
+  <span class="quick-add-panel" hidden>
+    <input type="text" class="qa-name" placeholder="Mijoz ismi">
+    <input type="tel" class="qa-phone" data-phone placeholder="Telefon (ixtiyoriy)">
+    <button type="button" class="btn btn-sm qa-save">Qo'shish</button>
+    <span class="qa-error"></span>
+  </span>
+  {{ form.client.errors }}
+  <span class="flash flash-warn" data-debtor-existing hidden
+        style="display:none;margin-top:6px;padding:6px 10px;"></span>
+</p>
+<p>
+  {{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}
+  <span class="helptext">{{ form.amount.help_text }}</span>
+</p>
+<p>
+  {{ form.date.label_tag }}{{ form.date }}{{ form.date.errors }}
+  <span class="helptext">{{ form.date.help_text }}</span>
+</p>
+<p>
+  {{ form.debt_days.label_tag }}{{ form.debt_days }}{{ form.debt_days.errors }}
+  <span class="helptext">{{ form.debt_days.help_text }}</span>
+</p>
+<p class="field-hint">
+  Bu qarz <strong>boshlang'ich qarz</strong> bo'lib yoziladi — mijozning CRM'gacha
+  bo'lgan eski qarzi. Unda tovar yo'q (qaysi mahsulot olingani noma'lum), shuning uchun
+  savdo, foyda va sotilgan kg hisobotlariga ta'sir qilmaydi — faqat mijozning qarzi
+  ortadi va u qarzdorlar ro'yxatiga tushadi.
+</p>

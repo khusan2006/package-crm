@@ -39,6 +39,7 @@ from .forms import (
     ClientForm,
     ClientTransferForm,
     DebtPaymentForm,
+    DebtorAddForm,
     EmployeeForm,
     ExpenseForm,
     OpeningDebtForm,
@@ -1294,6 +1295,51 @@ def _opening_sale(client):
     return Sale.objects.filter(client=client, is_opening=True).order_by("pk").first()
 
 
+def _store_opening_debt(user, client, sale, new_total, on_date, term_days=None):
+    """Write a client's opening balance and settle everything that hangs off it.
+
+    Shared by the two ways in: correcting one client's figure from their own card, and
+    putting a whole new debtor on the list from the Qarzlar page. Each caller words its
+    own message, so what is returned is the row itself."""
+    was = sale.opening_amount if sale else Decimal("0")
+    if sale is None:
+        days = DEFAULT_DEBT_DAYS if term_days is None else term_days
+        sale = Sale.objects.create(
+            client=client,
+            sales_rep=client.owner or user,
+            date=on_date,
+            debt_deadline=on_date + timedelta(days=days),
+            # Left unset when nobody named a term, exactly as before: the balance then
+            # falls back to the default through `Sale.term_days`.
+            debt_term_days=term_days,
+            is_opening=True,
+            opening_amount=new_total,
+        )
+        action = AuditLog.Action.CREATE
+    else:
+        # Keep the balance's own term and let the deadline follow the new date — or the
+        # client's last repayment, if they have paid since. Shifting the stored date by
+        # hand would throw away a zeroed counter. The term is pinned before the date
+        # moves, while it can still be read off the old dates.
+        sale.debt_term_days = sale.term_days
+        sale.date = on_date
+        sale.opening_amount = new_total
+        sale.save(update_fields=["opening_amount", "date", "debt_term_days"])
+        action = AuditLog.Action.UPDATE
+    # The balance's date decides which of the client's payments came after it, so every
+    # receipt of theirs is re-derived, this one included.
+    recompute_client_debt_deadlines(client.pk)
+    # A raised balance is a fresh open receipt any credit the client holds should settle
+    # onto; a lowered one may free credit that was already spent.
+    _reconcile_client_advance(client, sale.sales_rep)
+    AuditLog.record(
+        user, action, "Sotuv", sale.pk,
+        f"Mijoz {client.name} boshlang'ich qarzi "
+        f"{was:,.0f} → {new_total:,.0f} so'm",
+    )
+    return sale
+
+
 def _render_opening_debt(request, client, sale, form, invalid=False):
     context = {
         "form": form,
@@ -1336,38 +1382,7 @@ def client_opening_debt(request, pk):
         form = OpeningDebtForm(request.POST, current=was, paid=paid)
         if form.is_valid():
             amount, on_date = form.new_total, form.cleaned_data["date"]
-            if sale is None:
-                sale = Sale.objects.create(
-                    client=client,
-                    sales_rep=client.owner or request.user,
-                    date=on_date,
-                    debt_deadline=on_date + timedelta(days=DEFAULT_DEBT_DAYS),
-                    is_opening=True,
-                    opening_amount=amount,
-                )
-                action = AuditLog.Action.CREATE
-            else:
-                # Keep the balance's own term and let the deadline follow the new date —
-                # or the client's last repayment, if they have paid since. Shifting the
-                # stored date by hand would throw away a zeroed counter. The term is
-                # pinned before the date moves, while it can still be read off the old
-                # dates.
-                sale.debt_term_days = sale.term_days
-                sale.date = on_date
-                sale.opening_amount = amount
-                sale.save(update_fields=["opening_amount", "date", "debt_term_days"])
-                action = AuditLog.Action.UPDATE
-            # The balance's date decides which of the client's payments came after it,
-            # so every receipt of theirs is re-derived, this one included.
-            recompute_client_debt_deadlines(client.pk)
-            # A raised balance is a fresh open receipt any credit the client holds
-            # should settle onto; a lowered one may free credit that was already spent.
-            _reconcile_client_advance(client, sale.sales_rep)
-            AuditLog.record(
-                request.user, action, "Sotuv", sale.pk,
-                f"Mijoz {client.name} boshlang'ich qarzi "
-                f"{was:,.0f} → {amount:,.0f} so'm",
-            )
+            _store_opening_debt(request.user, client, sale, amount, on_date)
             messages.success(
                 request,
                 f"Boshlang'ich qarz saqlandi: {amount:,.0f} so'm "
@@ -2211,6 +2226,69 @@ def debt_list(request):
             **dates,
         },
     )
+
+
+def _render_debtor_add(request, form, invalid=False):
+    context = {"form": form, "title": "Qarzdor qo'shish"}
+    if is_ajax(request):
+        return render(
+            request, "crm/_debtor_add_modal.html", context,
+            status=422 if invalid else 200,
+        )
+    return render(request, "crm/_debtor_add_page.html", context)
+
+
+@transaction.atomic
+def debtor_add(request):
+    """Put a client straight onto the debtors list from the Qarzlar page.
+
+    The case this exists for: an old client who owes money from before the CRM (or took
+    goods without a receipt), where WHAT they took is no longer known. There is nothing
+    to write a sale from — no products, no kilograms, no prices — so the sum is stored
+    as an opening balance, which carries no line items and therefore leaves revenue,
+    profit and sold kg alone while lifting the receivable.
+
+    Such a client used to take two trips: open their card and then "correct" an opening
+    balance that was not there yet. Here it is one form, and a client who is not in the
+    CRM at all can be added inside it through the same quick-add the sale form uses.
+
+    A client who already carries an opening balance is topped up rather than
+    overwritten — the picker warns as soon as they are chosen and the message names the
+    old figure, so the same debt entered twice shows up instead of hiding. There is one
+    balance row per client, so it also takes the date typed here: both old debts then
+    run from the same day, which is the day the seller says the total is owed from.
+
+    Deliberately not admin-only, like `client_opening_debt`: the seller who owns the
+    client is the one who knows their old ledger. Visibility is the existing rule (a
+    seller can only pick their own clients) and every entry lands in the audit log."""
+    clients = _visible_clients(request.user)
+    if request.method == "POST":
+        form = DebtorAddForm(request.POST, clients=clients)
+        if form.is_valid():
+            cd = form.cleaned_data
+            client, amount = cd["client"], cd["amount"]
+            sale = _opening_sale(client)
+            existing = sale.opening_amount if sale else Decimal("0")
+            _store_opening_debt(
+                request.user, client, sale, existing + amount, cd["date"],
+                term_days=cd["debt_days"],
+            )
+            if existing:
+                messages.success(
+                    request,
+                    f"{client.name} qarziga {amount:,.0f} so'm qo'shildi — "
+                    f"boshlang'ich qarz {existing:,.0f} → {existing + amount:,.0f} so'm.",
+                )
+            else:
+                messages.success(
+                    request,
+                    f"{client.name} qarzdorlar ro'yxatiga qo'shildi: "
+                    f"{amount:,.0f} so'm boshlang'ich qarz.",
+                )
+            return form_reload(request, reverse("debt_list"))
+        return _render_debtor_add(request, form, invalid=True)
+    form = DebtorAddForm(clients=clients, initial={"date": timezone.localdate()})
+    return _render_debtor_add(request, form)
 
 
 def debt_export(request):
