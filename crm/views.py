@@ -4337,6 +4337,19 @@ def _kassa_summary(date_from, date_to, rep=None):
         refunds.filter(date__gte=date_from, date__lte=date_to)
         .aggregate(s=Sum("amount"))["s"] or Decimal("0")
     )
+    # Bank o'tkazmasida ushlab qolingan foiz. U kassaga hech qachon yetib
+    # kelmaydi — bank yo'lda ushlab qoladi — shuning uchun kirim raqamining ichida
+    # ko'rinmaydi va alohida ko'rsatilmasa umuman ko'zga tashlanmaydi.
+    # `commission_payer` bo'yicha ajratiladi: sotuvchi ko'targani foydadan tushadi,
+    # mijoz ko'targani esa uning qarzini shu foiz qadar yopilmay qoldiradi.
+    fees = payments.filter(
+        date__gte=date_from, date__lte=date_to, commission__gt=0
+    )
+    fee_total = fees.aggregate(s=Sum("commission"))["s"] or Decimal("0")
+    fee_seller = (
+        fees.filter(commission_payer=Payment.Payer.SELLER)
+        .aggregate(s=Sum("commission"))["s"] or Decimal("0")
+    )
     cash_on_hand = income_all_cum - refund_cum - expense_cum - remitted_cum - paid_profit_cum
     return {
         "som": som,
@@ -4358,6 +4371,9 @@ def _kassa_summary(date_from, date_to, rep=None):
         "profit": profit,
         "expense_total": expense_total,
         "refunded": refunded,
+        "commission": fee_total,
+        "commission_seller": fee_seller,
+        "commission_client": fee_total - fee_seller,
         "net_profit": net_profit,
     }
 

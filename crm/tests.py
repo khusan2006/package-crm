@@ -2818,6 +2818,49 @@ class KassaCurrencyTests(BaseSetup):
         self.assertEqual(summary["usd"]["expense"], Decimal("4.00"))
         self.assertEqual(summary["usd"]["closing"], Decimal("6.00"))
 
+    def test_kassa_summary_splits_bank_commission_by_payer(self):
+        # Bank ushlagan foiz kassaga yetib kelmaydi, shuning uchun Kirim raqamida
+        # ko'rinmaydi — KPI uni alohida ko'rsatadi. Kim ko'targani ham ajratiladi:
+        # sotuvchi ko'targani foydadan tushadi, mijoz ko'targani esa uning qarzida
+        # qolaveradi, ya'ni biznes uchun yo'qotish emas.
+        sale = self._debt_sale()
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]),
+            {"amount": "100000", "method": "transfer",
+             "commission_percent": "1.5", "commission_payer": "seller"},
+        )
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]),
+            {"amount": "50000", "method": "transfer",
+             "commission_percent": "4", "commission_payer": "client"},
+        )
+        today = timezone.localdate()
+        summary = _kassa_summary(today, today)
+        self.assertEqual(summary["commission_seller"], Decimal("1500.00"))
+        self.assertEqual(summary["commission_client"], Decimal("2000.00"))
+        self.assertEqual(summary["commission"], Decimal("3500.00"))
+        # Sahifaga ham yetib borsin — KPI shu kontekstdan o'qiydi.
+        page = self.client.get(reverse("kassa"))
+        self.assertEqual(page.context["summary"]["commission"], Decimal("3500.00"))
+
+    def test_kassa_commission_kpi_is_bounded_by_the_date_window(self):
+        # KPI "Shu davr" blokida turadi, shuning uchun jadvaldagi kumulyativ
+        # komissiyadan farqli o'laroq sana oralig'iga bo'ysunishi shart.
+        sale = self._debt_sale()
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]),
+            {"amount": "100000", "method": "transfer",
+             "commission_percent": "1.5", "commission_payer": "seller"},
+        )
+        today = timezone.localdate()
+        yesterday = today - timedelta(days=1)
+        self.assertEqual(_kassa_summary(today, today)["commission"], Decimal("1500.00"))
+        self.assertEqual(
+            _kassa_summary(yesterday, yesterday)["commission"], Decimal("0")
+        )
+
     def test_dollar_expense_edit_prefills_dollars_and_recomputes(self):
         self.client.force_login(self.admin)
         self.client.post(
