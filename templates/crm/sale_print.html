@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yuk xati №{{ sale.pk }} · {{ sale.client.name }}</title>
+<style>
+  /* Landscape A4 with the two copies side by side, the same way the pre-printed
+     pad is laid out: print, then cut down the middle. */
+  @page { size: A4 landscape; margin: 7mm 8mm; }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #f1f3f6;
+    font-family: "Times New Roman", Times, serif;
+    color: #000;
+  }
+
+  .sheet {
+    display: flex;
+    gap: 8mm;
+    width: 281mm;
+    margin: 0 auto;
+    padding: 7mm 8mm;
+    background: #fff;
+  }
+  .sheet > * { flex: 1 1 0; min-width: 0; }
+
+  .nak { font-size: 8pt; line-height: 1.25; }
+  /* Right-aligned, as the paragraph is in the source document. */
+  .nak-date { text-align: right; font-size: 8pt; }
+  .nak-slot {
+    display: inline-block; border-bottom: 1px solid #000;
+    text-align: center; line-height: 1.15;
+  }
+  .s-day   { min-width: 4ch; }
+  .s-month { min-width: 19ch; }
+  .s-year  { min-width: 4ch; }
+  .nak-title { text-align: center; font-weight: 700; font-size: 11pt; margin: 1mm 0 2mm; }
+
+  .nak-field { display: flex; align-items: flex-end; gap: 1.5mm; margin-bottom: 1.5mm; }
+  .nak-lbl { white-space: nowrap; }
+  .nak-line { flex: 1; border-bottom: 1px solid #000; min-height: 4mm; font-weight: 700; }
+
+  .nak-tbl { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  .nak-tbl th, .nak-tbl td {
+    border: 1px solid #000;
+    padding: 0.6mm 1mm;
+    height: 5.2mm;
+    overflow: hidden;
+  }
+  .nak-tbl th { font-weight: 400; text-align: center; font-size: 7pt; line-height: 1.1; }
+  .nak-tbl td { font-size: 8pt; }
+
+  /* Column widths are the source form's own twips (454 / 2608 / 1020 / 1134 ×3
+     out of 7484) turned into percentages, so the ruling lands where it does on
+     the pre-printed pad. */
+  .c-no    { width: 6.07%;  text-align: center; }
+  .c-name  { width: 34.85%; }
+  .c-unit  { width: 13.63%; text-align: center; }
+  .c-qty   { width: 15.15%; text-align: right; }
+  .c-price { width: 15.15%; text-align: right; }
+  .c-sum   { width: 15.15%; text-align: right; }
+
+  /* The consignment number is written in by hand, as on the pad. */
+  .nak-no { display: inline-block; min-width: 7ch; border-bottom: 1px solid #000; }
+
+  .nak-total td { font-weight: 700; }
+
+  .nak-sign { display: flex; justify-content: space-between; gap: 2mm; margin-top: 4mm; }
+
+  /* Screen-only toolbar; the paper never sees it. */
+  .bar {
+    display: flex; justify-content: center; gap: 10px;
+    padding: 14px; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .bar a, .bar button {
+    font: inherit; font-size: 14px; padding: 8px 18px; border-radius: 8px;
+    border: 1px solid #c8cdd6; background: #fff; color: #1a1d23;
+    cursor: pointer; text-decoration: none;
+  }
+  .bar button { background: #2563eb; border-color: #2563eb; color: #fff; }
+
+  @media print {
+    body { background: #fff; }
+    .bar { display: none; }
+    .sheet { width: auto; margin: 0; padding: 0; gap: 10mm; }
+  }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <button type="button" onclick="window.print()">Chop etish</button>
+  <a href="{% url 'sale_detail' sale.pk %}">Orqaga</a>
+</div>
+
+<div class="sheet">
+  {% include "crm/_yuk_xati_copy.html" %}
+  {% include "crm/_yuk_xati_copy.html" %}
+</div>
+
+<script>
+  // Opened straight from the sales list to print — put the dialog up at once, but
+  // leave the page behind it so a second copy needs no round trip.
+  window.addEventListener('load', function () { window.print(); });
+</script>
+</body>
+</html>
