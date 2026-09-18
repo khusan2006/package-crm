@@ -39,6 +39,7 @@ from .forms import (
     ClientForm,
     ClientTransferForm,
     DebtPaymentForm,
+    DebtorClientForm,
     EmployeeForm,
     ExpenseForm,
     OpeningDebtForm,
@@ -2210,6 +2211,70 @@ def debt_list(request):
             "totals": totals,
             **dates,
         },
+    )
+
+
+@transaction.atomic
+def debtor_create(request):
+    """Enter a client who is already a debtor — the client and their old balance at once.
+
+    A debtor used to be able to reach this list in only two ways: through a sale, or
+    through one of the import commands. Everyone else — the client who has owed since
+    before the CRM, whose goods and dates nobody can reconstruct — had to be created on
+    the clients page first and then given an opening balance on a second screen. This is
+    that pair of screens as one form, opened from the debts list itself, so the seller
+    can enter the rest of their notebook without leaving the page it belongs on.
+
+    What gets written is an opening balance (`Sale.is_opening`): a receipt with no line
+    items, so it moves the receivable and nothing else — revenue, profit and sold kg are
+    untouched, exactly as for `client_opening_debt`. Sellers enter their own debtors;
+    admins and managers pick whose the client is, as on the client form."""
+    form = DebtorClientForm(request.POST or None, user=request.user)
+    if request.method == "POST":
+        if form.is_valid():
+            client = form.save(commit=False)
+            # Sellers' clients are always their own; admins/managers chose on the form.
+            if not client.owner_id:
+                client.owner = request.user
+            client.save()
+            days = form.cleaned_data.get("debt_days")
+            sale = Sale(
+                client=client,
+                sales_rep=client.owner,
+                date=form.cleaned_data["date"],
+                debt_term_days=DEFAULT_DEBT_DAYS if days is None else days,
+                is_opening=True,
+                opening_amount=form.cleaned_data["amount"],
+            )
+            # The deadline is derived, never typed — a brand-new client has no
+            # repayments, so this is the agreed term from the debt's own date.
+            sale.recompute_debt_deadline(commit=False)
+            sale.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Sotuv", sale.pk,
+                f"Qarzdor mijoz {client.name} kiritildi — boshlang'ich qarz "
+                f"{sale.opening_amount:,.0f} so'm (mas'ul: {client.owner})",
+            )
+            messages.success(
+                request,
+                f"“{client.name}” qarzdor mijoz sifatida qo'shildi: "
+                f"{sale.opening_amount:,.0f} so'm.",
+            )
+            return form_success(request, reverse("debt_list"))
+        return _render_debtor_create(request, form, invalid=True)
+    return _render_debtor_create(request, form)
+
+
+def _render_debtor_create(request, form, invalid=False):
+    return form_response(
+        request,
+        form,
+        "Qarzdor mijoz kiritish",
+        invalid=invalid,
+        modal_template="crm/_debtor_create_modal.html",
+        # To'liq sahifada ham izoh ko'rinsin — havolani to'g'ridan-to'g'ri ochgan
+        # odam modaldagi tushuntirishni o'tkazib yubormasligi kerak.
+        checks_template="crm/_debtor_create_hint.html",
     )
 
 

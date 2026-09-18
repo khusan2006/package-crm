@@ -178,6 +178,62 @@ class ClientForm(forms.ModelForm):
         return cleaned
 
 
+class DebtorClientForm(ClientForm):
+    """A new debtor in one step: the client card, plus the old debt they walked in with.
+
+    Until now the debts list could only grow out of a sale or an import command, so a
+    client whose entire history is "he has owed since before" had to be created on the
+    clients page and then given an opening balance on a second screen — two screens for
+    something the seller knows in one sentence. What they actually have is a name, a
+    phone number and a sum; which goods were taken, and when, nobody remembers. That is
+    precisely an opening balance (`Sale.is_opening`): it carries no line items, so
+    revenue, profit and sold kg never see it — it only makes the client a debtor.
+
+    Name, phone, owner and the duplicate guard come from `ClientForm`: entering the same
+    debtor twice under one name is the mistake this screen invites most.
+    """
+
+    amount = forms.DecimalField(
+        label="Qarz summasi (so'm)",
+        max_digits=18,
+        decimal_places=2,
+        min_value=Decimal("0.01"),
+        help_text="Mijoz hozir qancha qarzdor — tovari noma'lum, eski qoldiq",
+    )
+    date = forms.DateField(
+        label="Qarz sanasi",
+        widget=forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+        help_text="Qarz qachondan qolgan — kechikish shu sanadan o'lchanadi",
+        validators=[_reject_future],
+    )
+    debt_days = forms.IntegerField(
+        label="Qarz muddati (kun)",
+        required=False,
+        min_value=0,
+        help_text=(
+            f"Necha kunda qaytariladi — bo'sh qolsa {DEFAULT_DEBT_DAYS} kun. "
+            "Eski qarzda bu muddat allaqachon o'tgan bo'ladi."
+        ),
+        widget=forms.NumberInput(attrs={"min": "0", "inputmode": "numeric"}),
+    )
+
+    class Meta(ClientForm.Meta):
+        # Kompaniya/manzil/izoh — mijoz kartochkasining ishi; qarzdor esa daftardan
+        # shoshib kiritiladi: ism, raqam va summa.
+        fields = ["name", "owner", "phone"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _mark_money(self.fields["amount"])
+        self.fields["date"].initial = timezone.localdate()
+        self.fields["debt_days"].initial = DEFAULT_DEBT_DAYS
+        # "Baribir qo'shilsin" katakchasi oxirida tursin — u odatdagi maydon emas,
+        # faqat bir xil nomli mijoz chiqqanda kerak bo'ladi.
+        self.order_fields(
+            ["name", "owner", "phone", "amount", "date", "debt_days", "allow_duplicate"]
+        )
+
+
 class ProductForm(forms.ModelForm):
     """The product catalog form — a plain reference list (nomi, narx, tannarx). No
     stock/qoldiq: goods aren't received into a warehouse anymore, they're just sold."""
