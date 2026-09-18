@@ -39,7 +39,7 @@ from .forms import (
     ClientForm,
     ClientTransferForm,
     DebtPaymentForm,
-    DebtorClientForm,
+    DebtorAddForm,
     EmployeeForm,
     ExpenseForm,
     OpeningDebtForm,
@@ -160,10 +160,43 @@ def _advance_since_map(client_pks, seller):
 
 
 def _sale_totals(sales):
-    """Revenue/cost/profit summed over the line items of the given sales."""
-    return SaleItem.objects.filter(sale__in=sales.values("pk")).aggregate(
-        revenue=Sum(REVENUE), cost=Sum(COST), profit=Sum(PROFIT)
+    """Revenue / cost / profit / sold kg over the given sales, AFTER returns.
+
+    Goods that came back are goods that were not sold, so they leave the figures the
+    same way they leave each receipt's own `net_total` — anything else has the page's
+    own rows adding up to something its header denies. Only a RESTOCKED return gives
+    its tannarx back: goods written off were still consumed, so the cost stands and the
+    profit absorbs it as a loss (`Sale.profit` reasons the same way).
+
+    The gross figures and what was returned ride along for any caller that wants to
+    show the deduction rather than only its result."""
+    items = SaleItem.objects.filter(sale__in=sales.values("pk")).aggregate(
+        revenue=Sum(REVENUE), cost=Sum(COST), profit=Sum(PROFIT), kg=Sum(ITEM_WEIGHT_KG)
     )
+    # Returns follow their receipt, not their own date: the sale is what the window
+    # selected, so its correction belongs to the same window however late it came.
+    backs = Return.objects.filter(sale__in=sales.values("pk")).aggregate(
+        amount=Sum(RETURN_AMOUNT),
+        kg=Sum(RETURN_WEIGHT_KG),
+        cost=Sum(RETURN_COST, filter=Q(restock=True)),
+    )
+    zero = Decimal("0")
+    gross_revenue = items["revenue"] or zero
+    gross_cost = items["cost"] or zero
+    gross_profit = items["profit"] or zero
+    gross_kg = items["kg"] or zero
+    returned = backs["amount"] or zero
+    returned_cost = backs["cost"] or zero
+    returned_kg = backs["kg"] or zero
+    return {
+        "revenue": gross_revenue - returned,
+        "cost": gross_cost - returned_cost,
+        "profit": gross_profit - returned + returned_cost,
+        "kg": gross_kg - returned_kg,
+        "gross_revenue": gross_revenue,
+        "returned": returned,
+        "returned_kg": returned_kg,
+    }
 
 
 def _warn_if_negative_stock(request, product):
@@ -275,9 +308,83 @@ def _parse_amount(value):
 UZ_MONTHS_SHORT = ["Yan", "Fev", "Mar", "Apr", "May", "Iyn", "Iyl", "Avg", "Sen", "Okt", "Noy", "Dek"]
 
 
+def _line_chart(rows):
+    """Two-series line-chart geometry over `rows` (oldest first), scaled to a fixed
+    viewBox.
+
+    Every row carries the two values (`a` drawn with the filled area, `b` as a plain
+    line), its label, and the window it stands for (`dan`/`gacha`) so a click drills
+    into exactly that slice. Both dashboard charts — the six-month trend and the
+    selected period day by day — are drawn from this, so they scale and click alike.
+
+    The scale takes the taller of the two series, not `a`: on the period chart `b` is
+    money collected, which on a good day of debt repayment beats the day's own selling
+    and would otherwise be drawn clean off the top of the card."""
+    vb_w, vb_h = 720.0, 240.0
+    pad_l, pad_r, pad_t, pad_b = 16.0, 16.0, 18.0, 30.0
+    inner_w = vb_w - pad_l - pad_r
+    inner_h = vb_h - pad_t - pad_b
+    baseline = pad_t + inner_h
+    n = len(rows)
+    peak = max(
+        (max(r["a"], r["b"]) for r in rows), default=Decimal("0")
+    ) or Decimal("1")
+
+    def _y(value):
+        return round(baseline - float(Decimal(value) / peak) * inner_h, 2)
+
+    band = inner_w / (n - 1) if n > 1 else inner_w
+    # A two-month window is 60 columns wide; printing 60 dates under it turns the axis
+    # into a grey smear, so only every Nth column keeps its label. Every column stays
+    # clickable either way.
+    every = 1 if n <= 12 else math.ceil(n / 12)
+    for i, r in enumerate(rows):
+        r["x"] = round(pad_l + (inner_w * i / (n - 1) if n > 1 else inner_w / 2), 2)
+        r["y_a"] = _y(r["a"])
+        r["y_b"] = _y(r["b"])
+        r["tick"] = i % every == 0 or i == n - 1
+        # Full-height transparent hit band so a click anywhere in the column drills
+        # into it — not just on the tiny label/point.
+        left = max(r["x"] - band / 2, 0.0)
+        right = min(r["x"] + band / 2, vb_w)
+        r["hit_x"] = round(left, 2)
+        r["hit_w"] = round(right - left, 2)
+
+    a_line = " ".join(f"{r['x']},{r['y_a']}" for r in rows)
+    b_line = " ".join(f"{r['x']},{r['y_b']}" for r in rows)
+    first_x = rows[0]["x"] if rows else pad_l
+    last_x = rows[-1]["x"] if rows else vb_w - pad_r
+    return {
+        "rows": rows,
+        "a_line": a_line,
+        "b_line": b_line,
+        "a_area": f"{a_line} {last_x},{baseline} {first_x},{baseline}",
+        "vb_h": vb_h,
+        "viewbox": f"0 0 {vb_w:g} {vb_h:g}",
+        "empty": peak <= 1,
+    }
+
+
+def _returns_by(sales, key, start=None):
+    """{bucket: (returned so'm, returned tannarx of RESTOCKED goods)} for the given
+    sales, keyed by `key` (a values() lookup on Return).
+
+    Returns follow their RECEIPT's date, not their own: the window picked the sale, so
+    its correction belongs to the same column however late the goods came back — which
+    is also how each receipt's own net_total reads."""
+    qs = Return.objects.filter(sale__in=sales)
+    if start is not None:
+        qs = qs.filter(sale__date__gte=start)
+    rows = qs.values(key).annotate(
+        amount=Sum(RETURN_AMOUNT), cost=Sum(RETURN_COST, filter=Q(restock=True))
+    )
+    return {
+        r[key]: (r["amount"] or Decimal("0"), r["cost"] or Decimal("0")) for r in rows
+    }
+
+
 def _monthly_series(sales, months=6):
-    """Revenue / profit for the last `months` months (oldest first) as SVG line
-    points scaled to a fixed viewBox, ready for a line chart."""
+    """Savdo va foyda — oxirgi `months` oy, qaytarilgan tovar ayrilgan holda."""
     today = timezone.localdate()
     buckets = []
     y, m = today.year, today.month
@@ -292,60 +399,88 @@ def _monthly_series(sales, months=6):
         SaleItem.objects.filter(sale__in=sales, sale__date__gte=start)
         .annotate(mon=TruncMonth("sale__date"))
         .values("mon")
-        .annotate(revenue=Sum(REVENUE), cost=Sum(COST), profit=Sum(PROFIT))
+        .annotate(revenue=Sum(REVENUE), profit=Sum(PROFIT))
     )
     by_month = {(r["mon"].year, r["mon"].month): r for r in rows}
+    back_rows = (
+        Return.objects.filter(sale__in=sales, sale__date__gte=start)
+        .annotate(mon=TruncMonth("sale__date"))
+        .values("mon")
+        .annotate(amount=Sum(RETURN_AMOUNT), cost=Sum(RETURN_COST, filter=Q(restock=True)))
+    )
+    back_by = {
+        (r["mon"].year, r["mon"].month): (r["amount"] or Decimal("0"), r["cost"] or Decimal("0"))
+        for r in back_rows
+    }
     data = []
     for yy, mm in buckets:
         row = by_month.get((yy, mm)) or {}
+        returned, returned_cost = back_by.get((yy, mm), (Decimal("0"), Decimal("0")))
         last_day = (date(yy + (mm == 12), (mm % 12) + 1, 1) - timedelta(days=1)).day
         data.append({
             "label": UZ_MONTHS_SHORT[mm - 1],
-            "revenue": row.get("revenue") or Decimal("0"),
-            "cost": row.get("cost") or Decimal("0"),
-            "profit": row.get("profit") or Decimal("0"),
+            "a": (row.get("revenue") or Decimal("0")) - returned,
+            "b": (row.get("profit") or Decimal("0")) - returned + returned_cost,
             "dan": date(yy, mm, 1).isoformat(),
             "gacha": date(yy, mm, last_day).isoformat(),
         })
+    return _line_chart(data)
 
-    # --- line-chart geometry (fixed viewBox, scaled to the tallest revenue) ---
-    vb_w, vb_h = 720.0, 240.0
-    pad_l, pad_r, pad_t, pad_b = 16.0, 16.0, 18.0, 30.0
-    inner_w = vb_w - pad_l - pad_r
-    inner_h = vb_h - pad_t - pad_b
-    baseline = pad_t + inner_h
-    n = len(data)
-    peak = max((d["revenue"] for d in data), default=Decimal("0")) or Decimal("1")
 
-    def _y(value):
-        return round(baseline - float(value / peak) * inner_h, 2)
+def _period_series(sales, payments, date_from, date_to, max_points=62):
+    """Savdo va tushgan pul — tanlangan davr ichida, kun bo'yicha.
 
-    band = inner_w / (n - 1) if n > 1 else inner_w
-    for i, d in enumerate(data):
-        d["x"] = round(pad_l + (inner_w * i / (n - 1) if n > 1 else inner_w / 2), 2)
-        d["y_rev"] = _y(d["revenue"])
-        d["y_profit"] = _y(d["profit"])
-        # Full-height transparent hit band so a click anywhere in the month's
-        # column drills into it — not just on the tiny label/point.
-        left = max(d["x"] - band / 2, 0.0)
-        right = min(d["x"] + band / 2, vb_w)
-        d["hit_x"] = round(left, 2)
-        d["hit_w"] = round(right - left, 2)
+    The six-month trend answers "how is the year going"; this one answers "how did THIS
+    week go", which is the question the date picker is actually asking. Selling and
+    collecting are drawn together on purpose: on credit terms they are different days,
+    and the gap between the two lines is the business's whole problem.
 
-    rev_line = " ".join(f"{d['x']},{d['y_rev']}" for d in data)
-    profit_line = " ".join(f"{d['x']},{d['y_profit']}" for d in data)
-    first_x = data[0]["x"] if data else pad_l
-    last_x = data[-1]["x"] if data else vb_w - pad_r
-    rev_area = f"{rev_line} {last_x},{baseline} {first_x},{baseline}"
+    A long window is bucketed (a year of daily points is a smear, not a chart), so the
+    x axis never carries more than `max_points` columns."""
+    span = (date_to - date_from).days + 1
+    step = 1 if span <= max_points else math.ceil(span / max_points)
+    real = sales.real()
+    item_rows = (
+        SaleItem.objects.filter(
+            sale__in=real, sale__date__gte=date_from, sale__date__lte=date_to
+        )
+        .values("sale__date")
+        .annotate(revenue=Sum(REVENUE))
+    )
+    rev_by = {r["sale__date"]: r["revenue"] or Decimal("0") for r in item_rows}
+    back_rows = (
+        Return.objects.filter(
+            sale__in=real, sale__date__gte=date_from, sale__date__lte=date_to
+        )
+        .values("sale__date")
+        .annotate(amount=Sum(RETURN_AMOUNT))
+    )
+    back_by = {r["sale__date"]: r["amount"] or Decimal("0") for r in back_rows}
+    pay_rows = (
+        payments.filter(date__gte=date_from, date__lte=date_to)
+        .values("date")
+        .annotate(s=Sum(PAYMENT_NET))
+    )
+    paid_by = {r["date"]: r["s"] or Decimal("0") for r in pay_rows}
 
-    return {
-        "rows": data,
-        "rev_line": rev_line,
-        "profit_line": profit_line,
-        "rev_area": rev_area,
-        "vb_h": vb_h,
-        "viewbox": f"0 0 {vb_w:g} {vb_h:g}",
-    }
+    data = []
+    cursor = date_from
+    while cursor <= date_to:
+        end = min(cursor + timedelta(days=step - 1), date_to)
+        days = [cursor + timedelta(days=i) for i in range((end - cursor).days + 1)]
+        sold = sum((rev_by.get(d, Decimal("0")) for d in days), Decimal("0"))
+        back = sum((back_by.get(d, Decimal("0")) for d in days), Decimal("0"))
+        data.append({
+            "label": f"{cursor.day}.{cursor.month:02d}",
+            "a": sold - back,
+            "b": sum((paid_by.get(d, Decimal("0")) for d in days), Decimal("0")),
+            "dan": cursor.isoformat(),
+            "gacha": end.isoformat(),
+        })
+        cursor = end + timedelta(days=1)
+    chart = _line_chart(data)
+    chart["step"] = step
+    return chart
 
 
 def _spark_points(values, width=118.0, height=30.0, pad=3.0):
@@ -405,12 +540,13 @@ def _kpi_sparklines(flow, scoped, clients_q, months=6):
     )
     cli_by = {(r["mon"].year, r["mon"].month): r["c"] for r in cli_rows}
 
-    debt_rows = (
-        scoped.outstanding().filter(date__gte=start)
-        .annotate(mon=TruncMonth("date"))
-        .values("mon").annotate(c=Count("pk"))
-    )
-    debt_by = {(r["mon"].year, r["mon"].month): r["c"] for r in debt_rows}
+    # In so'm, like the KPI above it. It used to plot the COUNT of open receipts under
+    # a figure written in money, so a month of many small debts towered over a month of
+    # one huge one.
+    debt_by = {}
+    for row in scoped.outstanding().filter(date__gte=start).values("date", "remaining"):
+        key = (row["date"].year, row["date"].month)
+        debt_by[key] = debt_by.get(key, Decimal("0")) + (row["remaining"] or Decimal("0"))
 
     revenue, profit, avg, clients, debt = [], [], [], [], []
     for yy, mm in buckets:
@@ -420,7 +556,7 @@ def _kpi_sparklines(flow, scoped, clients_q, months=6):
         profit.append(float(prof_by.get((yy, mm), 0)))
         avg.append(rev / cnt if cnt else 0)
         clients.append(cli_by.get((yy, mm), 0))
-        debt.append(debt_by.get((yy, mm), 0))
+        debt.append(float(debt_by.get((yy, mm), 0)))
 
     return {
         "revenue": _spark_points(revenue),
@@ -474,16 +610,22 @@ def _donut(items):
     }
 
 
-def _payment_donut(sales):
-    """Payment totals split by method, as donut-ready arc segments."""
-    rows = Payment.objects.filter(sale__in=sales).values("method").annotate(total=Sum("amount"))
-    totals = {r["method"]: r["total"] or Decimal("0") for r in rows}
+def _payment_donut(till):
+    """How the money that came in during the window was taken, from the kassa page's
+    own till figures (`_currency_till`), so both pages split the same sum.
+
+    It used to be built from the payments attached to the window's SALES, which is a
+    different thing entirely and quietly wrong three ways over: a debt paid this month
+    against last month's receipt fell outside it, an advance the client deposited was
+    missing (it hangs off no sale), and the same advance was then counted again when it
+    was spent. On one August in the live data that read 905 mln against the 1 282 mln
+    the till actually took."""
     palette = [
-        ("cash", "Naqd", "var(--accent)"),
-        ("card", "Karta", "var(--success)"),
-        ("transfer", "Bank o'tkazmasi", "var(--warning)"),
+        ("cash", "Naqd", till["cash"], "var(--accent)"),
+        ("card", "Karta", till["card"], "var(--success)"),
+        ("transfer", "Bank o'tkazmasi", till["bank"], "var(--warning)"),
     ]
-    return _donut([(key, label, totals.get(key, Decimal("0")), color) for key, label, color in palette])
+    return _donut(palette)
 
 
 def _debt_overview(sales, aging_filter=None, top=5):
@@ -566,19 +708,108 @@ def _debt_overview(sales, aging_filter=None, top=5):
 
 
 def _top_clients(sales, limit=5):
-    """Top clients by revenue within the given (already-scoped) sales."""
+    """Top clients by revenue within the given (already-scoped) sales, after returns.
+
+    The netting is not cosmetic here: a client who takes a lorry-load and sends half of
+    it back is not the biggest buyer of the month, and ranking them as one sends the
+    seller chasing the wrong door."""
     rows = list(
         SaleItem.objects.filter(sale__in=sales.values("pk"))
         .values("sale__client_id", "sale__client__name")
         .annotate(total=Sum(REVENUE))
-        .order_by("-total")[:limit]
     )
-    peak = max((r["total"] or Decimal("0") for r in rows), default=Decimal("1")) or Decimal("1")
+    backs = _returns_by(sales, "sale__client_id")
+    for row in rows:
+        returned, _ = backs.get(row["sale__client_id"], (Decimal("0"), Decimal("0")))
+        row["total"] = (row["total"] or Decimal("0")) - returned
+    # Ranked only after the deduction, so a heavily returned sale cannot hold a place
+    # it no longer earns.
+    rows.sort(key=lambda r: r["total"], reverse=True)
+    rows = [r for r in rows[:limit] if r["total"] > 0]
+    peak = max((r["total"] for r in rows), default=Decimal("1")) or Decimal("1")
     for row in rows:
         row["name"] = row["sale__client__name"]
         row["client_id"] = row["sale__client_id"]
-        row["pct"] = round(float((row["total"] or Decimal("0")) / peak * 100), 2)
+        row["pct"] = round(float(row["total"] / peak * 100), 2)
     return rows
+
+
+def _whole_som(value):
+    """A so'm figure rounded to the unit the card actually prints it in.
+
+    Percentage bank fees leave hundredths behind, so a drawer that is to all purposes
+    empty can hold −0.01 — which the page then renders as “-0”, a minus sign in front
+    of nothing. Rounding here shows the number the card would print anyway, with its
+    sign telling the truth. The kassa page keeps the unrounded figure: that is where
+    the till is reconciled to the tiyin."""
+    rounded = Decimal(value or 0).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return rounded + Decimal("0")          # Decimal("-0") → Decimal("0")
+
+
+def _seller_scoreboard(date_from, date_to):
+    """One row per seller for the selected window: what they sold, what they collected,
+    what they spent, what they earned, and what is still owed to them.
+
+    The kassa page's table answers "where does each seller stand right now" — every
+    column there is a standing total. This one answers "how did they do in THIS window",
+    which is the question the date picker asks and the dashboard could not answer at
+    all. Debt is the one column that stays a snapshot: a receivable is owed today
+    whatever dates are on screen, so pretending otherwise would invent a figure."""
+    real = Sale.objects.real().filter(date__gte=date_from, date__lte=date_to)
+    window = {"date__gte": date_from, "date__lte": date_to}
+    rows = {}
+
+    def row(uid):
+        return rows.setdefault(uid, {
+            "uid": uid, "revenue": Decimal("0"), "kg": Decimal("0"),
+            "received": Decimal("0"), "received_usd": Decimal("0"),
+            "expenses": Decimal("0"), "profit": Decimal("0"), "debt": Decimal("0"),
+        })
+
+    for r in SaleItem.objects.filter(sale__in=real).values("sale__sales_rep").annotate(
+        som=Sum(REVENUE), kg=Sum(ITEM_WEIGHT_KG)
+    ):
+        entry = row(r["sale__sales_rep"])
+        entry["revenue"] += r["som"] or Decimal("0")
+        entry["kg"] += r["kg"] or Decimal("0")
+    for r in Return.objects.filter(sale__in=real).values("sale__sales_rep").annotate(
+        som=Sum(RETURN_AMOUNT), kg=Sum(RETURN_WEIGHT_KG)
+    ):
+        entry = row(r["sale__sales_rep"])
+        entry["revenue"] -= r["som"] or Decimal("0")
+        entry["kg"] -= r["kg"] or Decimal("0")
+    # So'm drawer only, exactly like the "Tushgan pul" KPI and the kassa page's kirim:
+    # a dollar payment is money in another drawer, and adding its so'm value here would
+    # make the table's column disagree with the card above it. Dollars get their own
+    # sub-line instead.
+    received = Payment.objects.till_income().filter(**window)
+    for r in received.filter(currency=Payment.Currency.UZS).values("created_by").annotate(
+        s=Sum(PAYMENT_NET)
+    ):
+        row(r["created_by"])["received"] += r["s"] or Decimal("0")
+    for r in received.filter(currency=Payment.Currency.USD).values("created_by").annotate(
+        s=Sum("amount_original")
+    ):
+        row(r["created_by"])["received_usd"] = r["s"] or Decimal("0")
+    for r in Expense.objects.filter(**window).values("created_by").annotate(s=Sum("amount")):
+        row(r["created_by"])["expenses"] += r["s"] or Decimal("0")
+    for uid, earned in _realized_profit_by_seller(date_from, date_to).items():
+        row(uid)["profit"] += earned
+    # Snapshot, deliberately unbounded by the window (see the docstring).
+    for r in Sale.objects.outstanding().values("sales_rep", "remaining"):
+        row(r["sales_rep"])["debt"] += r["remaining"] or Decimal("0")
+
+    names = User.objects.in_bulk(rows.keys())
+    result = []
+    for uid, r in rows.items():
+        user = names.get(uid)
+        if user is None:
+            continue
+        r["name"] = str(user)
+        r["net"] = r["profit"] - r["expenses"]
+        result.append(r)
+    result.sort(key=lambda r: (r["revenue"], r["received"]), reverse=True)
+    return result
 
 
 def dashboard(request):
@@ -652,6 +883,34 @@ def dashboard(request):
     )
     client_obj = clients.filter(pk=client_id).first() if client_id else None
     rep_obj = reps.filter(pk=rep_id).first() if reps and rep_id else None
+
+    # Sof foyda — deliberately the KASSA page's figure and not this page's own: profit
+    # recognised as the money is collected (a sale's takings cover its tannarx first),
+    # less the period's expenses. The "Foyda" KPI beside it is the other reading — what
+    # the goods sold in the window earned, paid for or not — and the two are meant to be
+    # read together: what was earned, and what is left after the till's outgoings.
+    # Same scope rule as the kassa page: a seller sees their own, an admin sees everyone
+    # unless they pick a rep. Neither the client nor the payment-method cross-filter
+    # reaches it — an expense belongs to nobody's client — so the card says so when one
+    # of those is on rather than quietly showing an unfiltered figure.
+    net_rep = rep_obj or (None if request.user.can_see_all_records else request.user)
+    # One call carries every money figure the page shows outside the sales flow —
+    # collected, spent, in the drawer, owed to production — all from the kassa page's
+    # own helper, so the two pages cannot drift apart.
+    till = _kassa_summary(date_from, date_to, rep=net_rep)
+    realized_profit, period_expenses, net_profit = _kassa_net_profit(
+        date_from, date_to, net_rep
+    )
+    # Payments as the till counts them: what actually arrived in the window, in the
+    # seller's own scope. Feeds both the day-by-day chart and the method donut.
+    till_payments = Payment.objects.till_income().filter(currency=Payment.Currency.UZS)
+    if net_rep is not None:
+        till_payments = till_payments.filter(created_by=net_rep)
+    if client_id:
+        till_payments = till_payments.filter(
+            Q(client_id=client_id) | Q(sale__client_id=client_id)
+        )
+
     method_labels = dict(Payment.Method.choices)
     aging_labels = {
         "current": "Muddati kelmagan", "d1_7": "1–7 kun kechikkan",
@@ -669,13 +928,31 @@ def dashboard(request):
 
     context = {
         "monthly": _monthly_series(flow),
+        "daily": _period_series(flow, till_payments, date_from, date_to),
         "sparks": _kpi_sparklines(flow, scoped, new_clients_q),
-        "donut": _payment_donut(period),
+        "donut": _payment_donut(till["som"]),
         "debt": _debt_overview(scoped, aging_filter=aging),
         "top_clients": _top_clients(period),
+        # Admins and managers get the per-seller comparison; a seller has only their
+        # own row, which the KPIs above already are.
+        "scoreboard": (
+            _seller_scoreboard(date_from, date_to)
+            if request.user.can_see_all_records and not rep_id else None
+        ),
         "recent_sales": recent_sales,
         "period_revenue": period_revenue,
         "period_profit": period_totals["profit"] or 0,
+        "period_returned": period_totals["returned"],
+        "period_kg": period_totals["kg"],
+        "received": till["som"]["income"],
+        "received_usd": till["usd"]["income"],
+        "cash_on_hand": _whole_som(till["cash"]),
+        "production_debt": _whole_som(till["production_debt"]),
+        "net_profit": net_profit,
+        "realized_profit": realized_profit,
+        "period_expenses": period_expenses,
+        # The client / method cross-filters do not narrow the till-based figures.
+        "net_profit_unfiltered": bool(client_id or method),
         "period_count": period_count,
         "period_margin": _margin(period_totals),
         "avg_check": avg_check,
@@ -1295,6 +1572,51 @@ def _opening_sale(client):
     return Sale.objects.filter(client=client, is_opening=True).order_by("pk").first()
 
 
+def _store_opening_debt(user, client, sale, new_total, on_date, term_days=None):
+    """Write a client's opening balance and settle everything that hangs off it.
+
+    Shared by the two ways in: correcting one client's figure from their own card, and
+    putting a whole new debtor on the list from the Qarzlar page. Each caller words its
+    own message, so what is returned is the row itself."""
+    was = sale.opening_amount if sale else Decimal("0")
+    if sale is None:
+        days = DEFAULT_DEBT_DAYS if term_days is None else term_days
+        sale = Sale.objects.create(
+            client=client,
+            sales_rep=client.owner or user,
+            date=on_date,
+            debt_deadline=on_date + timedelta(days=days),
+            # Left unset when nobody named a term, exactly as before: the balance then
+            # falls back to the default through `Sale.term_days`.
+            debt_term_days=term_days,
+            is_opening=True,
+            opening_amount=new_total,
+        )
+        action = AuditLog.Action.CREATE
+    else:
+        # Keep the balance's own term and let the deadline follow the new date — or the
+        # client's last repayment, if they have paid since. Shifting the stored date by
+        # hand would throw away a zeroed counter. The term is pinned before the date
+        # moves, while it can still be read off the old dates.
+        sale.debt_term_days = sale.term_days
+        sale.date = on_date
+        sale.opening_amount = new_total
+        sale.save(update_fields=["opening_amount", "date", "debt_term_days"])
+        action = AuditLog.Action.UPDATE
+    # The balance's date decides which of the client's payments came after it, so every
+    # receipt of theirs is re-derived, this one included.
+    recompute_client_debt_deadlines(client.pk)
+    # A raised balance is a fresh open receipt any credit the client holds should settle
+    # onto; a lowered one may free credit that was already spent.
+    _reconcile_client_advance(client, sale.sales_rep)
+    AuditLog.record(
+        user, action, "Sotuv", sale.pk,
+        f"Mijoz {client.name} boshlang'ich qarzi "
+        f"{was:,.0f} → {new_total:,.0f} so'm",
+    )
+    return sale
+
+
 def _render_opening_debt(request, client, sale, form, invalid=False):
     context = {
         "form": form,
@@ -1337,38 +1659,7 @@ def client_opening_debt(request, pk):
         form = OpeningDebtForm(request.POST, current=was, paid=paid)
         if form.is_valid():
             amount, on_date = form.new_total, form.cleaned_data["date"]
-            if sale is None:
-                sale = Sale.objects.create(
-                    client=client,
-                    sales_rep=client.owner or request.user,
-                    date=on_date,
-                    debt_deadline=on_date + timedelta(days=DEFAULT_DEBT_DAYS),
-                    is_opening=True,
-                    opening_amount=amount,
-                )
-                action = AuditLog.Action.CREATE
-            else:
-                # Keep the balance's own term and let the deadline follow the new date —
-                # or the client's last repayment, if they have paid since. Shifting the
-                # stored date by hand would throw away a zeroed counter. The term is
-                # pinned before the date moves, while it can still be read off the old
-                # dates.
-                sale.debt_term_days = sale.term_days
-                sale.date = on_date
-                sale.opening_amount = amount
-                sale.save(update_fields=["opening_amount", "date", "debt_term_days"])
-                action = AuditLog.Action.UPDATE
-            # The balance's date decides which of the client's payments came after it,
-            # so every receipt of theirs is re-derived, this one included.
-            recompute_client_debt_deadlines(client.pk)
-            # A raised balance is a fresh open receipt any credit the client holds
-            # should settle onto; a lowered one may free credit that was already spent.
-            _reconcile_client_advance(client, sale.sales_rep)
-            AuditLog.record(
-                request.user, action, "Sotuv", sale.pk,
-                f"Mijoz {client.name} boshlang'ich qarzi "
-                f"{was:,.0f} → {amount:,.0f} so'm",
-            )
+            _store_opening_debt(request.user, client, sale, amount, on_date)
             messages.success(
                 request,
                 f"Boshlang'ich qarz saqlandi: {amount:,.0f} so'm "
@@ -2214,68 +2505,67 @@ def debt_list(request):
     )
 
 
+def _render_debtor_add(request, form, invalid=False):
+    context = {"form": form, "title": "Qarzdor qo'shish"}
+    if is_ajax(request):
+        return render(
+            request, "crm/_debtor_add_modal.html", context,
+            status=422 if invalid else 200,
+        )
+    return render(request, "crm/_debtor_add_page.html", context)
+
+
 @transaction.atomic
-def debtor_create(request):
-    """Enter a client who is already a debtor — the client and their old balance at once.
+def debtor_add(request):
+    """Put a client straight onto the debtors list from the Qarzlar page.
 
-    A debtor used to be able to reach this list in only two ways: through a sale, or
-    through one of the import commands. Everyone else — the client who has owed since
-    before the CRM, whose goods and dates nobody can reconstruct — had to be created on
-    the clients page first and then given an opening balance on a second screen. This is
-    that pair of screens as one form, opened from the debts list itself, so the seller
-    can enter the rest of their notebook without leaving the page it belongs on.
+    The case this exists for: an old client who owes money from before the CRM (or took
+    goods without a receipt), where WHAT they took is no longer known. There is nothing
+    to write a sale from — no products, no kilograms, no prices — so the sum is stored
+    as an opening balance, which carries no line items and therefore leaves revenue,
+    profit and sold kg alone while lifting the receivable.
 
-    What gets written is an opening balance (`Sale.is_opening`): a receipt with no line
-    items, so it moves the receivable and nothing else — revenue, profit and sold kg are
-    untouched, exactly as for `client_opening_debt`. Sellers enter their own debtors;
-    admins and managers pick whose the client is, as on the client form."""
-    form = DebtorClientForm(request.POST or None, user=request.user)
+    Such a client used to take two trips: open their card and then "correct" an opening
+    balance that was not there yet. Here it is one form, and a client who is not in the
+    CRM at all can be added inside it through the same quick-add the sale form uses.
+
+    A client who already carries an opening balance is topped up rather than
+    overwritten — the picker warns as soon as they are chosen and the message names the
+    old figure, so the same debt entered twice shows up instead of hiding. There is one
+    balance row per client, so it also takes the date typed here: both old debts then
+    run from the same day, which is the day the seller says the total is owed from.
+
+    Deliberately not admin-only, like `client_opening_debt`: the seller who owns the
+    client is the one who knows their old ledger. Visibility is the existing rule (a
+    seller can only pick their own clients) and every entry lands in the audit log."""
+    clients = _visible_clients(request.user)
     if request.method == "POST":
+        form = DebtorAddForm(request.POST, clients=clients)
         if form.is_valid():
-            client = form.save(commit=False)
-            # Sellers' clients are always their own; admins/managers chose on the form.
-            if not client.owner_id:
-                client.owner = request.user
-            client.save()
-            days = form.cleaned_data.get("debt_days")
-            sale = Sale(
-                client=client,
-                sales_rep=client.owner,
-                date=form.cleaned_data["date"],
-                debt_term_days=DEFAULT_DEBT_DAYS if days is None else days,
-                is_opening=True,
-                opening_amount=form.cleaned_data["amount"],
+            cd = form.cleaned_data
+            client, amount = cd["client"], cd["amount"]
+            sale = _opening_sale(client)
+            existing = sale.opening_amount if sale else Decimal("0")
+            _store_opening_debt(
+                request.user, client, sale, existing + amount, cd["date"],
+                term_days=cd["debt_days"],
             )
-            # The deadline is derived, never typed — a brand-new client has no
-            # repayments, so this is the agreed term from the debt's own date.
-            sale.recompute_debt_deadline(commit=False)
-            sale.save()
-            AuditLog.record(
-                request.user, AuditLog.Action.CREATE, "Sotuv", sale.pk,
-                f"Qarzdor mijoz {client.name} kiritildi — boshlang'ich qarz "
-                f"{sale.opening_amount:,.0f} so'm (mas'ul: {client.owner})",
-            )
-            messages.success(
-                request,
-                f"“{client.name}” qarzdor mijoz sifatida qo'shildi: "
-                f"{sale.opening_amount:,.0f} so'm.",
-            )
-            return form_success(request, reverse("debt_list"))
-        return _render_debtor_create(request, form, invalid=True)
-    return _render_debtor_create(request, form)
-
-
-def _render_debtor_create(request, form, invalid=False):
-    return form_response(
-        request,
-        form,
-        "Qarzdor mijoz kiritish",
-        invalid=invalid,
-        modal_template="crm/_debtor_create_modal.html",
-        # To'liq sahifada ham izoh ko'rinsin — havolani to'g'ridan-to'g'ri ochgan
-        # odam modaldagi tushuntirishni o'tkazib yubormasligi kerak.
-        checks_template="crm/_debtor_create_hint.html",
-    )
+            if existing:
+                messages.success(
+                    request,
+                    f"{client.name} qarziga {amount:,.0f} so'm qo'shildi — "
+                    f"boshlang'ich qarz {existing:,.0f} → {existing + amount:,.0f} so'm.",
+                )
+            else:
+                messages.success(
+                    request,
+                    f"{client.name} qarzdorlar ro'yxatiga qo'shildi: "
+                    f"{amount:,.0f} so'm boshlang'ich qarz.",
+                )
+            return form_reload(request, reverse("debt_list"))
+        return _render_debtor_add(request, form, invalid=True)
+    form = DebtorAddForm(clients=clients, initial={"date": timezone.localdate()})
+    return _render_debtor_add(request, form)
 
 
 def debt_export(request):
@@ -3969,6 +4259,23 @@ def _kassa_profit(date_from, date_to, rep=None):
     )
 
 
+def _kassa_net_profit(date_from, date_to, rep=None):
+    """Sof foyda for the window: realized profit less every expense booked in it.
+
+    The two halves are returned with it because both pages show them beside the net
+    figure. Expenses are taken in both currencies at their so'm value — the same
+    figure the per-seller rows sum, so the Jami row equals the sum of its columns.
+
+    One formula, two callers: the kassa page and the dashboard KPI. They are read
+    side by side, so the day they disagree is the day both stop being believed."""
+    profit = _kassa_profit(date_from, date_to, rep)
+    expenses = Expense.objects.filter(date__gte=date_from, date__lte=date_to)
+    if rep is not None:
+        expenses = expenses.filter(created_by=rep)
+    spent = expenses.aggregate(s=Sum("amount"))["s"] or Decimal("0")
+    return profit, spent, profit - spent
+
+
 def _kassa_summary(date_from, date_to, rep=None):
     """Two side-by-side till drawers — so'm and dollar — each with its income by
     method, expense and running balance, plus the period's supplier cost. Also the
@@ -3994,13 +4301,7 @@ def _kassa_summary(date_from, date_to, rep=None):
     cost = _kassa_supplier_cost(date_from, date_to, rep)          # period flow
     remitted = _kassa_remitted(date_from, date_to, rep)           # period flow
     paid_profit = _kassa_paid_profit(date_from, date_to, rep)     # period flow
-    profit = _kassa_profit(date_from, date_to, rep)
-    # Every expense's so'm value, both currencies — the same figure the per-seller
-    # rows sum, so the Jami row equals the sum of its columns.
-    expense_total = (
-        expenses.filter(date__gte=date_from, date__lte=date_to)
-        .aggregate(s=Sum("amount"))["s"] or Decimal("0")
-    )
+    profit, expense_total, net_profit = _kassa_net_profit(date_from, date_to, rep)
     # Standing balances (as of date_to). Cash on hand and production debt don't reset
     # with the day filter — they carry every movement up to the window's end, the way
     # the till's closing balance already does. Only date_to bounds them.
@@ -4057,7 +4358,7 @@ def _kassa_summary(date_from, date_to, rep=None):
         "profit": profit,
         "expense_total": expense_total,
         "refunded": refunded,
-        "net_profit": profit - expense_total,
+        "net_profit": net_profit,
     }
 
 

@@ -17,15 +17,31 @@
 
 {% include "crm/_filter_toolbar.html" with show_daterange_picker=True keep_daterange=True %}
 
-<div class="kpi-grid">
+{% comment %}Ikki guruh: yuqorida tanlangan davr raqamlari, pastda bugungi holat.
+Ilgari qarz (sanaga bog'liq bo'lmagan raqam) davr raqamlari orasida turar edi — sanani
+o'zgartirsangiz u o'zgarmasdi va nega o'zgarmagani hech joyda aytilmasdi.{% endcomment %}
+<p class="section-eyebrow">Bu davrda · {{ date_from|date:"d.m.Y" }} – {{ date_to|date:"d.m.Y" }}</p>
+<div class="kpi-grid kpi-grid--compact">
   <div class="kpi kpi--blue">
     <div class="kpi-head">
       <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></span>
       <span class="kpi-label">Savdo</span>
     </div>
     <div class="kpi-value">{{ period_revenue|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta muted">{{ period_count }} ta sotuv</div>
+    <div class="kpi-meta muted">{{ period_count }} ta sotuv{% if period_returned %} · {{ period_returned|floatformat:"0g" }} qaytdi{% endif %}</div>
     {% if sparks.revenue %}<svg class="kpi-spark" viewBox="0 0 118 30" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ sparks.revenue }}" fill="none" stroke="var(--kpi)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
+  </div>
+
+  {% comment %}Tushgan pul — kassaga haqiqatda kirgan pul (Kassa sahifasidagi kirim).
+  Savdodan farq qiladi: qarzga berilgan yuk bugun pul emas, eski qarzning to'lovi esa
+  bugungi pul.{% endcomment %}
+  <div class="kpi kpi--green">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v14"/><path d="M19 10l-7 7-7-7"/><path d="M4 21h16"/></svg></span>
+      <span class="kpi-label">Tushgan pul</span>
+    </div>
+    <div class="kpi-value">{{ received|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">mijozlardan olingan{% if received_usd %} · {{ received_usd|floatformat:"0g" }} $ {% endif %}</div>
   </div>
 
   <div class="kpi kpi--green">
@@ -34,8 +50,32 @@
       <span class="kpi-label">Foyda</span>
     </div>
     <div class="kpi-value">{{ period_profit|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta">▲ {{ period_margin|floatformat:1 }}% foyda ulushi</div>
+    <div class="kpi-meta muted">{{ period_margin|floatformat:1 }}% foyda ulushi</div>
     {% if sparks.profit %}<svg class="kpi-spark" viewBox="0 0 118 30" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ sparks.profit }}" fill="none" stroke="var(--kpi)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
+  </div>
+
+  {% comment %}Sof foyda — Kassa sahifasidagi ayni raqam: qo'lga tushgan foyda minus
+  chiqim. Yonidagi "Foyda" esa sotilgan tovarning foydasi.{% endcomment %}
+  <div class="kpi kpi--green">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/></svg></span>
+      <span class="kpi-label">Sof foyda</span>
+    </div>
+    <div class="kpi-value">{{ net_profit|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    {% if net_profit_unfiltered %}
+    <div class="kpi-meta muted">foyda − chiqim · filtrsiz</div>
+    {% else %}
+    <div class="kpi-meta muted">foyda − chiqim ({{ period_expenses|default:0|floatformat:"0g" }})</div>
+    {% endif %}
+  </div>
+
+  <div class="kpi kpi--blue">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg></span>
+      <span class="kpi-label">Sotilgan</span>
+    </div>
+    <div class="kpi-value">{{ period_kg|default:0|floatformat:"-3g" }}<span class="unit">kg</span></div>
+    <div class="kpi-meta muted">qaytarilgani ayrilgan</div>
   </div>
 
   <div class="kpi kpi--blue">
@@ -48,16 +88,6 @@
     {% if sparks.avg %}<svg class="kpi-spark" viewBox="0 0 118 30" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ sparks.avg }}" fill="none" stroke="var(--kpi)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
   </div>
 
-  <div class="kpi kpi--red">
-    <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
-      <span class="kpi-label">Qarzlar</span>
-    </div>
-    <div class="kpi-value">{{ debt_total|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    {% if overdue_count %}<div class="kpi-meta">{{ overdue_count }} ta muddati o'tgan</div>{% else %}<div class="kpi-meta muted">Muddati o'tgan yo'q</div>{% endif %}
-    {% if sparks.debt %}<svg class="kpi-spark" viewBox="0 0 118 30" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ sparks.debt }}" fill="none" stroke="var(--kpi)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
-  </div>
-
   <div class="kpi kpi--gold">
     <div class="kpi-head">
       <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg></span>
@@ -66,6 +96,39 @@
     <div class="kpi-value">{{ new_clients }}</div>
     <div class="kpi-meta muted">Tanlangan davrda</div>
     {% if sparks.clients %}<svg class="kpi-spark" viewBox="0 0 118 30" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ sparks.clients }}" fill="none" stroke="var(--kpi)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
+  </div>
+</div>
+
+{% comment %}Bu uchtasi sanaga bog'liq emas — bugungi holat, Kassa sahifasidagi
+kabi.{% endcomment %}
+<p class="section-eyebrow">Bugungi holat</p>
+<div class="kpi-grid">
+  <div class="kpi kpi--red">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
+      <span class="kpi-label">Mijozlar qarzi</span>
+    </div>
+    <div class="kpi-value">{{ debt_total|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    {% if overdue_count %}<div class="kpi-meta">{{ overdue_count }} ta muddati o'tgan</div>{% else %}<div class="kpi-meta muted">Muddati o'tgan yo'q</div>{% endif %}
+    {% if sparks.debt %}<svg class="kpi-spark" viewBox="0 0 118 30" preserveAspectRatio="none" aria-hidden="true"><polyline points="{{ sparks.debt }}" fill="none" stroke="var(--kpi)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
+  </div>
+
+  <div class="kpi kpi--green">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><circle cx="12" cy="14" r="1.5"/></svg></span>
+      <span class="kpi-label">Kassadagi pul</span>
+    </div>
+    <div class="kpi-value">{{ cash_on_hand|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{% if user.can_see_all_records %}sotuvchilar qo'lidagi naqd{% else %}mening qo'limdagi naqd{% endif %}</div>
+  </div>
+
+  <div class="kpi kpi--gold">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20h20"/><path d="M4 20V8l8-5 8 5v12"/></svg></span>
+      <span class="kpi-label">Ishlab chiq. qarz</span>
+    </div>
+    <div class="kpi-value">{{ production_debt|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">ishlab chiqarishga qolgan</div>
   </div>
 </div>
 
@@ -119,44 +182,27 @@
   </div>
 </div>
 
+{% comment %}Tanlangan davr ichidagi harakat: sotilgan tovar va o'sha kunlarda
+kassaga tushgan pul yonma-yon. Qarzga savdo qilinganda bu ikkisi boshqa-boshqa kun
+bo'ladi — orasidagi masofa aynan qarzning o'zi.{% endcomment %}
 <div class="chart-grid chart-grid--split">
   <div class="card chart-card">
     <div class="card-head">
-      <h2>Oylik savdo</h2>
+      <h2>Kunlik savdo</h2>
       <div class="legend">
         <span class="legend-item"><i class="dot dot-revenue"></i>Savdo</span>
-        <span class="legend-item"><i class="dot dot-profit"></i>Foyda</span>
+        <span class="legend-item"><i class="dot dot-profit"></i>Tushgan pul</span>
       </div>
     </div>
-    <div class="line-chart">
-      <svg class="line-svg" viewBox="{{ monthly.viewbox }}" preserveAspectRatio="none" aria-hidden="true">
-        <defs>
-          <linearGradient id="revFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.22"/>
-            <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
-          </linearGradient>
-        </defs>
-        <polygon class="line-area" points="{{ monthly.rev_area|unlocalize }}" fill="url(#revFill)"/>
-        <polyline class="line-path line-revenue" points="{{ monthly.rev_line|unlocalize }}"/>
-        <polyline class="line-path line-profit" points="{{ monthly.profit_line|unlocalize }}"/>
-        {% for m in monthly.rows %}
-        <circle class="line-dot line-dot--revenue" cx="{{ m.x|unlocalize }}" cy="{{ m.y_rev|unlocalize }}" r="4">
-          <title>{{ m.label }} — savdo: {{ m.revenue|floatformat:'0g' }} so'm · foyda: {{ m.profit|floatformat:'0g' }} so'm</title>
-        </circle>
-        <circle class="line-dot line-dot--profit" cx="{{ m.x|unlocalize }}" cy="{{ m.y_profit|unlocalize }}" r="4">
-          <title>{{ m.label }} — foyda: {{ m.profit|floatformat:'0g' }} so'm</title>
-        </circle>
-        {% endfor %}
-        {% for m in monthly.rows %}<a href="{% qs_replace dan=m.dan gacha=m.gacha %}"><rect class="line-hit" x="{{ m.hit_x|unlocalize }}" y="0" width="{{ m.hit_w|unlocalize }}" height="{{ monthly.vb_h|unlocalize }}"><title>{{ m.label }} oyini ko'rish</title></rect></a>{% endfor %}
-      </svg>
-      <div class="line-labels">
-        {% for m in monthly.rows %}<a class="line-label" href="{% qs_replace dan=m.dan gacha=m.gacha %}" title="{{ m.label }} oyini ko'rish">{{ m.label }}</a>{% endfor %}
-      </div>
-    </div>
+    {% include "crm/_line_chart.html" with chart=daily a_label="savdo" b_label="tushgan pul" grad_id="dailyFill" empty_text="Bu davrda savdo ham, to'lov ham bo'lmagan." %}
+    {% if daily.step > 1 %}<p class="field-hint" style="margin-top:8px;">Oraliq uzun bo'lgani uchun har bir nuqta {{ daily.step }} kunni ko'rsatadi.</p>{% endif %}
   </div>
 
   <div class="card chart-card">
-    <div class="card-head"><h2>To'lov usullari</h2></div>
+    <div class="card-head">
+      <h2>To'lov usullari</h2>
+      <span class="head-note">davrda tushgan pul</span>
+    </div>
     {% if donut.grand %}
     <div class="donut-block">
       <div class="donut-wrap">
@@ -175,9 +221,64 @@
         {% endfor %}
       </div>
     </div>
-    {% else %}<p class="muted">Hozircha to'lovlar yo'q.</p>{% endif %}
+    {% else %}<p class="muted">Bu davrda to'lov bo'lmagan.</p>{% endif %}
   </div>
 </div>
+
+<div class="card chart-card" style="margin-bottom:20px;">
+  <div class="card-head">
+    <h2>Oylik savdo</h2>
+    <div class="legend">
+      <span class="head-note">oxirgi 6 oy · tanlangan sanaga bog'liq emas</span>
+      <span class="legend-item"><i class="dot dot-revenue"></i>Savdo</span>
+      <span class="legend-item"><i class="dot dot-profit"></i>Foyda</span>
+    </div>
+  </div>
+  {% include "crm/_line_chart.html" with chart=monthly a_label="savdo" b_label="foyda" grad_id="monthlyFill" empty_text="Oxirgi 6 oyda savdo yo'q." %}
+</div>
+
+{% comment %}Sotuvchilar — faqat admin/menejerga va faqat sotuvchi filtri
+tanlanmaganda. Qarz ustuni bugungi holat, qolgani tanlangan davr.{% endcomment %}
+{% if scoreboard %}
+<div class="card">
+  <div class="card-head">
+    <h2>Sotuvchilar</h2>
+    <span class="head-note">{{ date_from|date:"d.m.Y" }} – {{ date_to|date:"d.m.Y" }} · qarz ustuni bugungi holat</span>
+  </div>
+  <div class="table-wrap">
+  <table>
+    <tr>
+      <th>Sotuvchi</th>
+      <th class="num">Savdo</th>
+      <th class="num">Sotilgan</th>
+      <th class="num">Tushgan pul</th>
+      <th class="num">Chiqim</th>
+      <th class="num">Sof foyda</th>
+      <th class="num">Mijozlar qarzi</th>
+      <th></th>
+    </tr>
+    {% for r in scoreboard %}
+    <tr>
+      <td><span class="cell-user">{% include "crm/_avatar.html" with name=r.name %}{{ r.name }}</span></td>
+      <td class="num">{{ r.revenue|floatformat:"0g" }}</td>
+      <td class="num">{{ r.kg|floatformat:"-3g" }} kg</td>
+      <td class="num" style="color: var(--success);">{{ r.received|floatformat:"0g" }}{% if r.received_usd %}<span class="cell-sub">+ {{ r.received_usd|floatformat:"0g" }} $</span>{% endif %}</td>
+      <td class="num amt-out">{{ r.expenses|floatformat:"0g" }}</td>
+      <td class="num"><strong>{{ r.net|floatformat:"0g" }}</strong></td>
+      <td class="num" style="color: var(--danger);">{{ r.debt|floatformat:"0g" }}</td>
+      <td class="num"><a class="btn btn-sm btn-ghost" href="{% qs_replace rep=r.uid %}">Ko'rish</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  <p class="field-hint" style="margin-top:10px;">
+    <strong>Savdo</strong> — shu kunlarda sotilgan tovar (qaytarilgani ayrilgan).
+    <strong>Tushgan pul</strong> — shu kunlarda kassaga kirgan pul, qaysi chek uchun
+    bo'lishidan qat'i nazar. <strong>Sof foyda</strong> — qo'lga tushgan foyda minus
+    chiqim, Kassa sahifasidagi kabi.
+  </p>
+</div>
+{% endif %}
 
 <div class="card">
   <div class="card-head"><h2>Top mijozlar</h2></div>

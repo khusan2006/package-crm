@@ -74,9 +74,8 @@ urlpatterns = [
     path("sales/", crm_views.sale_list, name="sale_list"),
     path("sales/export/", crm_views.sale_export, name="sale_export"),
     path("debts/", crm_views.debt_list, name="debt_list"),
-    # Qarzdor mijozni to'g'ridan-to'g'ri qarzlar ro'yxatidan kiritish: mijoz +
-    # boshlang'ich qarz bir oynada.
-    path("debts/qarzdor-qoshish/", crm_views.debtor_create, name="debtor_create"),
+    # Before the <int:pk> routes: a named path, not a client id.
+    path("debts/qarzdor-qoshish/", crm_views.debtor_add, name="debtor_add"),
     path("debts/export/", crm_views.debt_export, name="debt_export"),
     path("debts/<int:pk>/", crm_views.debt_client, name="debt_client"),
     path(

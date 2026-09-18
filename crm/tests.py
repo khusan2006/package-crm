@@ -2,6 +2,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from io import BytesIO, StringIO
 
+from django.contrib.messages import get_messages
 from django.core.management import call_command
 from django.db.models import Sum
 from django.test import TestCase, override_settings
@@ -22,6 +23,7 @@ from .forms import (
 from .models import (
     ADVANCE_ADJUST_NOTE,
     COST,
+    DEFAULT_DEBT_DAYS,
     AuditLog,
     Client,
     Employee,
@@ -45,6 +47,7 @@ from .models import (
 from .utils import uz_month
 from .views import (
     XLSX_CONTENT_TYPE,
+    _kassa_net_profit,
     _kassa_summary,
     _per_employee_kassa,
     _realized_profit_by_seller,
@@ -454,7 +457,11 @@ class AuthTests(BaseSetup):
         response = self.client.get(reverse("dashboard"))
         ctx = response.context
         self.assertEqual(len(ctx["monthly"]["rows"]), 6)      # 6-month trend
-        self.assertIn("revenue", ctx["monthly"]["rows"][0])
+        # Both charts are drawn from the same two-series geometry: `a` is the filled
+        # line (savdo), `b` the plain one (foyda here, tushgan pul on the day chart).
+        self.assertIn("a", ctx["monthly"]["rows"][0])
+        self.assertIn("b", ctx["monthly"]["rows"][0])
+        self.assertIn("a", ctx["daily"]["rows"][0])
         self.assertEqual(len(ctx["donut"]["segments"]), 3)    # cash / card / transfer
         self.assertIsNotNone(ctx["donut"]["grand_short"])
         self.assertTrue(all("pct" in c for c in ctx["top_clients"]))
@@ -474,6 +481,257 @@ class AuthTests(BaseSetup):
         self.assertEqual(response.context["overdue_count"], 1)
         self.assertEqual(response.context["overdue_total"], Decimal("240000"))
         self.assertContains(response, "overdue-banner")
+
+
+class DashboardNetProfitTests(BaseSetup):
+    """The dashboard's Sof foyda KPI.
+
+    Deliberately the KASSA page's figure, not the dashboard's own: profit counted as
+    the money arrives (a sale's takings cover its tannarx first), less the period's
+    expenses. The "Foyda" KPI beside it stays the other reading — what the goods sold
+    in the window earned, paid for or not — so the two are only equal when everything
+    has been collected and nothing was spent."""
+
+    def _spend(self, who, amount, **kwargs):
+        return Expense.objects.create(
+            amount=Decimal(amount), category="Boshqa", method=Payment.Method.CASH,
+            created_by=who, **kwargs,
+        )
+
+    def _dash(self, user, **params):
+        self.client.force_login(user)
+        return self.client.get(reverse("dashboard"), params).context
+
+    def test_it_is_the_profit_collected_less_the_periods_expenses(self):
+        # BaseSetup's sale1 is paid in full: 240 000 taken, 180 000 tannarx.
+        self._spend(self.sales1, "20000")
+        ctx = self._dash(self.sales1)
+        self.assertEqual(ctx["realized_profit"], Decimal("60000"))
+        self.assertEqual(ctx["period_expenses"], Decimal("20000"))
+        self.assertEqual(ctx["net_profit"], Decimal("40000"))
+
+    def test_an_unpaid_sale_lifts_foyda_but_not_sof_foyda(self):
+        make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        ctx = self._dash(self.sales1)
+        # The goods are sold, so the gross KPI counts them …
+        self.assertEqual(ctx["period_profit"], Decimal("120000"))
+        # … but nobody has paid for them, so nothing is realized yet.
+        self.assertEqual(ctx["net_profit"], Decimal("60000"))
+
+    def test_it_matches_the_kassa_page_for_the_same_window(self):
+        self._spend(self.sales1, "35000")
+        make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        today = timezone.localdate()
+        ctx = self._dash(self.sales1)
+        kassa = _kassa_summary(today.replace(day=1), today, rep=self.sales1)
+        self.assertEqual(ctx["net_profit"], kassa["net_profit"])
+        self.assertEqual(ctx["period_expenses"], kassa["expense_total"])
+
+    def test_a_seller_sees_only_their_own(self):
+        self._spend(self.sales2, "90000")          # another seller's outgoing
+        ctx = self._dash(self.sales1)
+        self.assertEqual(ctx["net_profit"], Decimal("60000"))   # sale2 and its cost stay out
+        self.assertEqual(ctx["period_expenses"], Decimal("0"))
+
+    def test_an_admin_sees_every_seller_and_can_narrow_to_one(self):
+        self._spend(self.sales1, "10000")
+        self._spend(self.sales2, "25000")
+        # Both sellers' paid sales (60 000 each), less both outgoings.
+        self.assertEqual(self._dash(self.admin)["net_profit"], Decimal("85000"))
+        scoped = self._dash(self.admin, rep=self.sales1.pk)
+        self.assertEqual(scoped["net_profit"], Decimal("50000"))
+
+    def test_the_card_says_so_when_a_cross_filter_cannot_reach_it(self):
+        # An expense belongs to no client, so a client filter cannot narrow the net
+        # figure — the card admits that rather than showing an unfiltered sum silently.
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("dashboard"), {"client": self.client1.pk})
+        self.assertTrue(response.context["net_profit_unfiltered"])
+        self.assertContains(response, "filtrsiz")
+        plain = self.client.get(reverse("dashboard"))
+        self.assertFalse(plain.context["net_profit_unfiltered"])
+
+    def test_the_kpi_is_on_the_page(self):
+        self._spend(self.sales1, "20000")
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("dashboard"))
+        self.assertContains(response, "Sof foyda")
+        # Rendered grouped, with the non-breaking space the uz locale uses.
+        self.assertContains(response, "40 000")
+
+
+class DashboardAccuracyTests(BaseSetup):
+    """The dashboard's period figures, after the clean-up.
+
+    Every card here answers a question the seller actually asks, so each one has to
+    answer it in the same terms the rest of the CRM uses: goods that came back are not
+    sales, money that came in is money that came in whatever receipt it lands on, and a
+    figure written in so'm is not drawn as a count of receipts."""
+
+    def _dash(self, user, **params):
+        self.client.force_login(user)
+        return self.client.get(reverse("dashboard"), params).context
+
+    def _return(self, sale, weight="4", restock=True):
+        item = sale.items.first()
+        return Return.objects.create(
+            sale=sale, sale_item=item, product=item.product, dimension=item.dimension,
+            weight=Decimal(weight), price=item.price, cost_price=item.cost_price,
+            restock=restock, date=sale.date, created_by=sale.sales_rep,
+        )
+
+    # --- returns ------------------------------------------------------------
+    def test_returned_goods_leave_savdo_foyda_and_kg(self):
+        self._return(self.sale1, "4")          # 4 kg × 24 000 = 96 000 back
+        ctx = self._dash(self.sales1)
+        self.assertEqual(ctx["period_revenue"], Decimal("144000"))   # 240 000 − 96 000
+        self.assertEqual(ctx["period_returned"], Decimal("96000"))
+        self.assertEqual(ctx["period_kg"], Decimal("6.000"))         # 10 kg − 4 kg
+        # Restocked, so its tannarx goes back too: profit drops by the margin only.
+        self.assertEqual(ctx["period_profit"], Decimal("36000"))     # 60 000 − 24 000
+
+    def test_a_written_off_return_costs_the_profit_in_full(self):
+        # Goods that did not come back were still consumed, so the cost stands.
+        self._return(self.sale1, "4", restock=False)
+        ctx = self._dash(self.sales1)
+        self.assertEqual(ctx["period_revenue"], Decimal("144000"))
+        self.assertEqual(ctx["period_profit"], Decimal("-36000"))    # 60 000 − 96 000
+
+    def test_top_clients_are_ranked_after_returns(self):
+        other = Client.objects.create(name="Boshqa mijoz", owner=self.sales1)
+        make_sale(other, self.sales1, self.product, weight="9")      # 216 000
+        self._return(self.sale1, "5")                                # 240 000 → 120 000
+        rows = self._dash(self.sales1)["top_clients"]
+        self.assertEqual(rows[0]["name"], "Boshqa mijoz")
+        self.assertEqual(rows[0]["total"], Decimal("216000"))
+        self.assertEqual(rows[1]["total"], Decimal("120000"))
+
+    def test_the_sales_page_totals_agree_with_the_dashboard(self):
+        self._return(self.sale1, "4")
+        dash = self._dash(self.sales1)
+        totals = self.client.get(reverse("sale_list")).context["totals"]
+        self.assertEqual(totals["revenue"], dash["period_revenue"])
+        self.assertEqual(totals["profit"], dash["period_profit"])
+
+    # --- money in -----------------------------------------------------------
+    def test_tushgan_pul_is_what_the_till_took(self):
+        # An old receipt repaid today is today's money, though the sale is not.
+        old = make_sale(
+            self.client1, self.sales1, self.product,
+            is_debt=True, date=timezone.localdate() - timedelta(days=90),
+        )
+        Payment.objects.create(
+            sale=old, amount=Decimal("100000"), method=Payment.Method.CARD,
+            kind=Payment.Kind.DEBT, date=timezone.localdate(), created_by=self.sales1,
+        )
+        ctx = self._dash(self.sales1)
+        # sale1's own 240 000 (paid on the day) plus the 100 000 collected today.
+        self.assertEqual(ctx["received"], Decimal("340000"))
+        # …and the donut splits exactly that sum, never the sales' own payments.
+        self.assertEqual(ctx["donut"]["grand"], Decimal("340000"))
+
+    def test_an_advance_counts_once_when_it_is_taken(self):
+        Payment.objects.create(
+            client=self.client1, amount=Decimal("500000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.ADVANCE_IN, date=timezone.localdate(),
+            created_by=self.sales1,
+        )
+        ctx = self._dash(self.sales1)
+        # The deposit is in (it used to be missing entirely: it hangs off no sale) …
+        self.assertEqual(ctx["received"], Decimal("740000"))
+        used = Payment.objects.create(
+            sale=self.sale1, client=self.client1, amount=Decimal("500000"),
+            method=Payment.Method.CASH, kind=Payment.Kind.ADVANCE_USED,
+            date=timezone.localdate(), created_by=self.sales1,
+        )
+        # … and spending it later adds nothing: that cash arrived once.
+        self.assertEqual(self._dash(self.sales1)["received"], Decimal("740000"))
+        self.assertTrue(used.pk)
+
+    # --- charts -------------------------------------------------------------
+    def test_the_debt_sparkline_is_drawn_in_money(self):
+        make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        ctx = self._dash(self.sales1)
+        # 240 000 owed lands in this month's bucket; a count would have plotted "1".
+        self.assertIn(",", ctx["sparks"]["debt"])
+        self.assertTrue(ctx["debt_total"] > 0)
+
+    def test_the_day_chart_covers_the_window_one_column_per_day(self):
+        today = timezone.localdate()
+        ctx = self._dash(
+            self.sales1, dan=(today - timedelta(days=6)).isoformat(), gacha=today.isoformat()
+        )
+        self.assertEqual(len(ctx["daily"]["rows"]), 7)
+        self.assertEqual(ctx["daily"]["step"], 1)
+        self.assertEqual(ctx["daily"]["rows"][-1]["dan"], today.isoformat())
+        # Sold and collected ride together: sale1 was paid on the day it was written.
+        self.assertEqual(ctx["daily"]["rows"][-1]["a"], Decimal("240000"))
+        self.assertEqual(ctx["daily"]["rows"][-1]["b"], Decimal("240000"))
+
+    def test_a_long_window_is_bucketed_instead_of_smeared(self):
+        today = timezone.localdate()
+        ctx = self._dash(
+            self.sales1, dan=(today - timedelta(days=364)).isoformat(),
+            gacha=today.isoformat(),
+        )
+        self.assertTrue(ctx["daily"]["step"] > 1)
+        self.assertTrue(len(ctx["daily"]["rows"]) <= 62)
+
+    # --- standing figures ---------------------------------------------------
+    def test_the_page_shows_the_till_and_production_debt_as_of_today(self):
+        ctx = self._dash(self.sales1)
+        kassa = self.client.get(reverse("kassa")).context["summary"]
+        # The same figures as the kassa page, to the so'm (the card rounds, the till
+        # page reconciles to the tiyin).
+        self.assertTrue(abs(ctx["cash_on_hand"] - kassa["cash"]) < 1)
+        self.assertTrue(abs(ctx["production_debt"] - kassa["production_debt"]) < 1)
+
+    def test_a_till_left_holding_a_tiyin_is_not_printed_as_minus_zero(self):
+        # Percentage bank fees leave hundredths behind; an empty drawer that holds
+        # -0.01 used to render as "-0 so'm".
+        Expense.objects.create(
+            amount=Decimal("240000.01"), category="Boshqa", method=Payment.Method.CASH,
+            created_by=self.sales1,
+        )
+        ctx = self._dash(self.sales1)
+        self.assertEqual(ctx["cash_on_hand"], Decimal("0"))
+        self.assertEqual(f"{ctx['cash_on_hand']:,.0f}", "0")
+        # The kassa page still reconciles to the tiyin.
+        self.assertEqual(
+            self.client.get(reverse("kassa")).context["summary"]["cash"], Decimal("-0.01")
+        )
+
+    # --- seller scoreboard --------------------------------------------------
+    def test_the_scoreboard_gives_an_admin_one_row_per_seller(self):
+        rows = {r["name"]: r for r in self._dash(self.admin)["scoreboard"]}
+        self.assertEqual(len(rows), 2)
+        mine = rows[str(self.sales1)]
+        self.assertEqual(mine["revenue"], Decimal("240000"))
+        self.assertEqual(mine["received"], Decimal("240000"))
+        self.assertEqual(mine["kg"], Decimal("10.000"))
+
+    def test_a_seller_gets_no_scoreboard(self):
+        self.assertIsNone(self._dash(self.sales1)["scoreboard"])
+
+    def test_picking_one_seller_puts_the_table_away(self):
+        self.assertIsNone(self._dash(self.admin, rep=self.sales1.pk)["scoreboard"])
+
+    def test_the_scoreboard_net_matches_the_kassa_figure(self):
+        Expense.objects.create(
+            amount=Decimal("15000"), category="Boshqa", method=Payment.Method.CASH,
+            created_by=self.sales1,
+        )
+        rows = {r["name"]: r for r in self._dash(self.admin)["scoreboard"]}
+        today = timezone.localdate()
+        _, _, net = _kassa_net_profit(today.replace(day=1), today, self.sales1)
+        self.assertEqual(rows[str(self.sales1)]["net"], net)
+
+    def test_the_page_renders_both_groups_of_cards(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("dashboard"))
+        for label in ("Bu davrda", "Bugungi holat", "Tushgan pul", "Sof foyda",
+                      "Kassadagi pul", "Ishlab chiq. qarz", "Kunlik savdo"):
+            self.assertContains(response, label)
 
 
 class DayViewTests(BaseSetup):
@@ -5166,6 +5424,184 @@ class OpeningDebtEditTests(BaseSetup):
         self.assertContains(
             response, reverse("client_opening_debt", args=[self.client1.pk]), count=2
         )
+
+
+class DebtorAddTests(BaseSetup):
+    """Putting a client on the debtors list from the Qarzlar page.
+
+    The debt predates the CRM — or the goods went out with no receipt kept — so WHAT
+    was taken is unknown. There is nothing to write a sale from, and the sum is stored
+    as an opening balance: a receipt with no line items, which lifts the receivable
+    without inventing kilograms for the revenue and profit reports."""
+
+    def _post(self, client, amount, date=None, days=None):
+        data = {
+            "client": client.pk,
+            "amount": amount,
+            "date": (date or timezone.localdate()).isoformat(),
+        }
+        if days is not None:
+            data["debt_days"] = days
+        return self.client.post(reverse("debtor_add"), data)
+
+    def _opening(self, client):
+        return Sale.objects.filter(client=client, is_opening=True).order_by("pk").first()
+
+    def _remaining(self, sale):
+        return Sale.objects.filter(pk=sale.pk).with_balance()[0].remaining
+
+    def test_the_sum_lands_as_an_opening_balance_with_no_goods_behind_it(self):
+        self.client.force_login(self.sales1)
+        response = self._post(self.client1, "1500000")
+        self.assertEqual(response.status_code, 302)
+        opening = self._opening(self.client1)
+        self.assertEqual(opening.opening_amount, Decimal("1500000"))
+        self.assertEqual(self._remaining(opening), Decimal("1500000"))
+        # No line items: the goods behind an old debt are exactly what nobody knows.
+        self.assertEqual(opening.items.count(), 0)
+        self.assertEqual(opening.sales_rep, self.client1.owner)
+
+    def test_the_client_shows_up_on_the_debt_list(self):
+        self.client.force_login(self.sales1)
+        self._post(self.client1, "800000")
+        ctx = self.client.get(reverse("debt_list")).context
+        rows = {g["client"]: g for g in ctx["debtors"]}
+        self.assertIn(self.client1, rows)
+        self.assertEqual(rows[self.client1]["remaining"], Decimal("800000"))
+
+    def test_it_never_touches_revenue_or_profit(self):
+        self.client.force_login(self.sales1)
+        before = Sale.objects.with_totals().aggregate(s=Sum("total"))["s"]
+        self._post(self.client1, "5000000")
+        after = Sale.objects.with_totals().aggregate(s=Sum("total"))["s"]
+        self.assertEqual(after, before)
+
+    def test_a_client_who_already_owes_from_before_is_topped_up_not_overwritten(self):
+        self.client.force_login(self.sales1)
+        self._post(self.client1, "1000000")
+        self._post(self.client1, "250000")
+        # One balance per client, carrying both entries.
+        self.assertEqual(
+            Sale.objects.filter(client=self.client1, is_opening=True).count(), 1
+        )
+        self.assertEqual(self._opening(self.client1).opening_amount, Decimal("1250000"))
+
+    def test_topping_up_says_what_the_figure_was_before(self):
+        self.client.force_login(self.sales1)
+        self._post(self.client1, "1000000")
+        response = self._post(self.client1, "250000")
+        messages = [str(m) for m in get_messages(response.wsgi_request)]
+        self.assertTrue(any("1,000,000" in m and "1,250,000" in m for m in messages))
+
+    def test_the_term_decides_the_deadline(self):
+        self.client.force_login(self.sales1)
+        day = timezone.localdate() - timedelta(days=40)
+        self._post(self.client1, "600000", date=day, days=30)
+        opening = self._opening(self.client1)
+        self.assertEqual(opening.date, day)
+        self.assertEqual(opening.debt_deadline, day + timedelta(days=30))
+
+    def test_a_blank_term_falls_back_to_the_default(self):
+        self.client.force_login(self.sales1)
+        day = timezone.localdate() - timedelta(days=5)
+        self._post(self.client1, "600000", date=day)
+        opening = self._opening(self.client1)
+        self.assertEqual(
+            opening.debt_deadline, day + timedelta(days=DEFAULT_DEBT_DAYS)
+        )
+
+    def test_a_future_date_is_refused(self):
+        self.client.force_login(self.sales1)
+        response = self._post(
+            self.client1, "200000", date=timezone.localdate() + timedelta(days=3)
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "kelajakda")
+        self.assertIsNone(self._opening(self.client1))
+
+    def test_a_sum_of_zero_is_refused(self):
+        self.client.force_login(self.sales1)
+        response = self._post(self.client1, "0")
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(self._opening(self.client1))
+
+    def test_a_seller_cannot_put_another_sellers_client_on_the_list(self):
+        self.client.force_login(self.sales1)
+        response = self._post(self.client2, "9000000")
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(self._opening(self.client2))
+
+    def test_the_picker_offers_only_the_sellers_own_clients(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("debtor_add"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, self.client1.name)
+        self.assertNotContains(response, self.client2.name)
+
+    def test_an_admin_can_pick_any_sellers_client(self):
+        self.client.force_login(self.admin)
+        response = self._post(self.client2, "700000")
+        self.assertEqual(response.status_code, 302)
+        opening = self._opening(self.client2)
+        self.assertEqual(opening.opening_amount, Decimal("700000"))
+        # The debt stays with the seller who owns the client, not the admin typing it.
+        self.assertEqual(opening.sales_rep, self.sales2)
+
+    def test_the_picker_carries_the_balance_a_client_already_has(self):
+        self.client.force_login(self.sales1)
+        self._post(self.client1, "1000000")
+        response = self.client.get(reverse("debtor_add"))
+        # The warning in the form is driven by this attribute: entering the same old
+        # debt twice should be visible before it is saved, not after.
+        self.assertContains(response, 'data-opening="1000000.00"')
+
+    def test_held_credit_settles_onto_the_new_debt(self):
+        self.client.force_login(self.sales1)
+        Payment.objects.create(
+            client=self.client1, amount=Decimal("300000"),
+            method=Payment.Method.CASH, kind=Payment.Kind.ADVANCE_IN,
+            date=timezone.localdate(), created_by=self.sales1,
+        )
+        self._post(self.client1, "1000000")
+        self.assertEqual(self._remaining(self._opening(self.client1)), Decimal("700000"))
+        self.assertEqual(
+            client_advance_balance(self.client1, self.sales1), Decimal("0")
+        )
+
+    def test_the_entry_is_audited(self):
+        self.client.force_login(self.sales1)
+        self._post(self.client1, "1500000")
+        entry = AuditLog.objects.filter(action="create", target_type="Sotuv").latest("pk")
+        self.assertIn(self.client1.name, entry.summary)
+        self.assertIn("1,500,000", entry.summary)
+
+    def test_the_debt_page_links_to_the_form(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("debt_list"))
+        self.assertContains(response, reverse("debtor_add"))
+
+    def test_it_opens_as_a_modal_and_can_add_the_client_too(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(
+            reverse("debtor_add"), headers={"x-requested-with": "XMLHttpRequest"}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "crm/_debtor_add_modal.html")
+        # A debtor who is not in the CRM at all is added inside the same dialog,
+        # through the quick-add the sale form already uses.
+        self.assertContains(response, reverse("client_quick_create"))
+
+    def test_an_invalid_modal_comes_back_with_the_errors(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("debtor_add"),
+            {"client": self.client1.pk, "amount": "0",
+             "date": timezone.localdate().isoformat()},
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+        # 422 keeps the dialog open with the message in it instead of reloading.
+        self.assertEqual(response.status_code, 422)
+        self.assertIsNone(self._opening(self.client1))
 
 
 class ProductionDebtAdjustTests(BaseSetup):

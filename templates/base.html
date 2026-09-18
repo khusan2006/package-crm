@@ -1075,6 +1075,38 @@
     document.addEventListener('modal:loaded', update);
   })();
 
+  // Qarzdor qo'shish: picking a client who ALREADY carries an opening balance says so
+  // before the sum is typed. The form adds on top rather than replacing, so the same
+  // old debt entered twice would otherwise stay invisible until it showed up doubled
+  // on the debt list.
+  (function () {
+    function update(root) {
+      var boxes = (root || document).querySelectorAll('[data-debtor-form]');
+      Array.prototype.forEach.call(boxes, function (box) {
+        var hint = box.querySelector('[data-debtor-existing]');
+        var select = box.querySelector('select');
+        if (!hint || !select) { return; }
+        var opt = select.options[select.selectedIndex];
+        var existing = opt ? parseFloat(opt.getAttribute('data-opening')) : NaN;
+        if (!existing || isNaN(existing)) {
+          hint.hidden = true;
+          hint.style.display = 'none';
+          hint.textContent = '';
+          return;
+        }
+        hint.textContent = 'Bu mijozda allaqachon '
+          + existing.toLocaleString('ru-RU', { maximumFractionDigits: 0 })
+          + " so'm boshlang'ich qarz bor — yangi summa uning ustiga qo'shiladi.";
+        hint.hidden = false;
+        hint.style.display = '';
+      });
+    }
+    document.addEventListener('change', function (e) {
+      if (e.target.closest('[data-debtor-form]')) { update(); }
+    });
+    document.addEventListener('modal:loaded', function (e) { update(e.detail || document); });
+  })();
+
   // Removing an advance: only one of the two answers involves money leaving the
   // drawer, so the amount/date/izoh only appear once that one is picked. Otherwise
   // the form asks when the cash went out on a form that isn't about cash going out.
