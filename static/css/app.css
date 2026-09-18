@@ -667,12 +667,14 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
   }
 }
 
-/* Period KPIs under the Kassa toolbar — three compact cards, full width */
+/* Period KPIs under the Kassa toolbar — five compact cards, full width */
 .kpi-grid--period {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
-@media (max-width: 900px) {
+/* Same 2-up fallback as the production-flow row above: five columns stop being
+   readable well before the old four did. */
+@media (max-width: 1100px) {
   .kpi-grid--period {
     grid-template-columns: repeat(2, 1fr);
   }
