@@ -2268,6 +2268,27 @@ def _period_activity(scope, date_from, date_to, clients=None):
     return activity
 
 
+def _open_sale_cost(sale):
+    """The tannarx (cost) still sitting inside one open receipt.
+
+    A receipt is part-paid proportionally: the money that came in covers cost and
+    margin in the ratio the goods were sold at, so what is still owed carries that
+    same share of the tannarx. Reads the annotations `outstanding()` already put on
+    the sale, so it costs no extra queries.
+
+    An opening balance carries no line items — what the client took is no longer
+    known — so it has no tannarx at all and lands here as zero. That part of the debt
+    is counted separately (`opening`) instead of being quietly folded into the cost."""
+    billed = sale.net_revenue + sale.opening_amount
+    if billed <= 0 or sale.net_cost_total <= 0:
+        return Decimal("0")
+    # A sale can be over-refunded (settlements beyond payments), which lifts
+    # `remaining` above what was ever billed; the cost behind it is still only the
+    # cost of the goods.
+    share = min(sale.remaining / billed, Decimal("1"))
+    return sale.net_cost_total * share
+
+
 def _debtor_rows(request):
     """One row per debtor client for the current filters: total owed, open receipts,
     earliest deadline. Shared by the Qarzlar page and its Excel export.
@@ -2314,9 +2335,14 @@ def _debtor_rows(request):
                 "overdue_amount": Decimal("0"),
                 "advance": Decimal("0"),
                 "advance_since": None,
+                "cost": Decimal("0"),
+                "opening": Decimal("0"),
             }
         group["remaining"] += remaining
         group["count"] += 1
+        group["cost"] += _open_sale_cost(sale)
+        if sale.is_opening:
+            group["opening"] += remaining
         if sale.debt_deadline and (
             group["earliest"] is None or sale.debt_deadline < group["earliest"]
         ):
@@ -2391,6 +2417,10 @@ def _debtor_rows(request):
         group["period"] = activity
     for group in groups.values():
         group.setdefault("period", None)
+        # Rows that joined for an advance or for the sverka alone carry no open
+        # receipt, so there is no tannarx behind them.
+        group.setdefault("cost", Decimal("0"))
+        group.setdefault("opening", Decimal("0"))
 
     # The Qarzdorlar / Avans switch. Counted before the switch is applied, so each
     # button can carry how many rows it leads to — including the one you are not on.
@@ -2425,6 +2455,11 @@ def _debtor_rows(request):
     totals = {
         "debt": sum((g["remaining"] for g in debtors), Decimal("0")),
         "overdue": sum((g["overdue_amount"] for g in debtors), Decimal("0")),
+        # How much of the money on the street is the firm's own — the tannarx of the
+        # goods behind the debt, which is also what the seller owes production for
+        # them. Whatever the debt carries above it is margin not yet collected.
+        "debt_cost": sum((g["cost"] for g in debtors), Decimal("0")),
+        "debt_opening": sum((g["opening"] for g in debtors), Decimal("0")),
         "advance": sum((g["advance"] for g in debtors), Decimal("0")),
         "debtors": sum(1 for g in debtors if g["remaining"]),
         "overdue_debtors": sum(1 for g in debtors if g["overdue_count"]),
