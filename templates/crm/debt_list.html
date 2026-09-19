@@ -26,19 +26,6 @@ birga bir oynada.{% endcomment %}
     <div class="kpi-meta">{{ overdue_debtors }} ta mijoz</div>
   </div>
 
-  {% comment %}Qarzning qaysi qismi firmaning o'z puli — sotilgan tovar tannarxi;
-  qolgani hali qo'lga tegmagan foyda. Eski qarzda tovar noma'lum, tannarxi ham yo'q —
-  bu qo'shni kartalardagidek bitta qator bo'lib sig'maydi, shuning uchun raqamning
-  ustiga borilganda aytiladi.{% endcomment %}
-  <div class="kpi kpi--violet"{% if totals.debt_opening %} title="{{ totals.debt_opening|floatformat:'0g' }} so'm eski qarzning tovari noma'lum — uning tannarxi hisobga kirmagan"{% endif %}>
-    <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
-      <span class="kpi-label">Qarzdagi tannarx</span>
-    </div>
-    <div class="kpi-value">{{ totals.debt_cost|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta muted">sotilgan tovarning o'z narxi</div>
-  </div>
-
   <div class="kpi kpi--green">
     <div class="kpi-head">
       <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg></span>
