@@ -53,6 +53,18 @@ and carries no ids that would clash between the two copies.
         <td class="c-sum"></td>
       </tr>
       {% endfor %}
+      {% comment %}
+      The balance is written onto the form's own ruled lines — the same rows a clerk
+      would fill in by hand — so the sheet keeps the 21 lines of the pad instead of
+      growing a block of its own underneath.
+      {% endcomment %}
+      {% for row in money_rows %}
+      <tr{% if row.strong %} class="nak-total"{% endif %}>
+        <td class="c-no">{{ row.no }}</td>
+        <td class="c-name" colspan="4">{{ row.label }}</td>
+        <td class="c-sum">{{ row.amount|floatformat:"0g" }}</td>
+      </tr>
+      {% endfor %}
     </tbody>
   </table>
 

@@ -6750,14 +6750,81 @@ def sale_print(request, pk):
     if sale.is_opening:
         raise Http404("Ochilish qoldig'i uchun yuk xati chiqarilmaydi.")
     items = list(sale.items.all())
+    money_rows = _print_money_rows(request, sale)
+    # The money lines are written onto the form's own ruled lines, so the sheet keeps
+    # the 21 rows of the pad however much is written on it.
+    first_money_no = max(len(items) + 1, FORM_ROWS - len(money_rows) + 1)
+    for offset, row in enumerate(money_rows):
+        row["no"] = first_money_no + offset
     return render(
         request,
         "crm/sale_print.html",
         {
             "sale": sale,
             "items": items,
-            "blank_rows": range(len(items) + 1, FORM_ROWS + 1),
+            "blank_rows": range(len(items) + 1, first_money_no),
+            "money_rows": money_rows,
         },
+    )
+
+
+def _print_money_rows(request, sale):
+    """The money written under the goods on the yuk xati, as lines that add up.
+
+    A figure the driver cannot check against the line above it is a figure he argues
+    about at the gate, so the goods total is walked down to the debt step by step —
+    what came back, what the client's prepaid credit covered, what they have already
+    paid — and only then joined to what they owe on their other receipts. Steps worth
+    nothing are left off: a plain credit sale still reads as three lines.
+
+    Returns [{label, amount, strong}]; the caller numbers them."""
+    advance_used = (
+        sale.payments.filter(kind=Payment.Kind.ADVANCE_USED)
+        .aggregate(s=Sum(PAYMENT_CREDIT))["s"]
+        or Decimal("0")
+    )
+    # settled (money handed back on this receipt) belongs with the payments it undoes,
+    # or the lines would not reach `debt_remaining`.
+    paid = sale.paid_amount - advance_used - sale.settled_amount
+    sale_debt = max(sale.debt_remaining, Decimal("0"))
+    prior_debt = _client_prior_debt(request, sale)
+    scope = None if request.user.can_see_all_records else request.user
+    advance_left = client_advance_balance(sale.client, scope)
+
+    rows = [
+        ("Qaytarildi / Возврат", -sale.returned_amount, False),
+        ("Avansdan / Из аванса", -advance_used, False),
+        ("To'landi / Оплачено", -paid, False),
+        ("Ushbu yuk xati qarzi / Долг по накладной", sale_debt, False),
+        ("Oldingi qarz / Старый долг", prior_debt, False),
+    ]
+    # The total is only worth a line when there are two debts to add: with one of them
+    # zero it would just repeat the figure on the line above it.
+    if prior_debt and sale_debt:
+        rows.append(("Jami qarz / Общий долг", prior_debt + sale_debt, True))
+    rows.append(("Avans qoldig'i / Остаток аванса", advance_left, False))
+    return [
+        {"label": label, "amount": amount, "strong": strong}
+        for label, amount, strong in rows
+        if amount
+    ]
+
+
+def _client_prior_debt(request, sale):
+    """What the client still owed on their OTHER receipts — the ostatka the driver is
+    asked about at the gate.
+
+    Every open receipt of theirs except this one counts, whatever its date: a debt is a
+    balance, not a period. Scoped the same way the Qarzlar list is, so a seller reads
+    the part of the balance they can see and admin reads the whole of it — the printed
+    figure can then never disagree with the screen the seller checked it on."""
+    return (
+        Sale.objects.visible_to(request.user)
+        .filter(client_id=sale.client_id)
+        .exclude(pk=sale.pk)
+        .outstanding()
+        .aggregate(s=Sum("remaining"))["s"]
+        or Decimal("0")
     )
 
 
