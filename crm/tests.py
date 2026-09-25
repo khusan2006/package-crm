@@ -1966,6 +1966,30 @@ class ListExportTests(BaseSetup):
         rows = read_xlsx(self.client.get(reverse("debt_export"), {"overdue": "1"}))
         self.assertEqual(len(rows), 1)  # deadline is in the future — nothing overdue
 
+    def test_debt_export_honours_the_amount_range(self):
+        # The one debtor owes 240 000 — in "200 000 – 300 000", out of "250 000 dan".
+        self.client.force_login(self.admin)
+        inside = read_xlsx(self.client.get(
+            reverse("debt_export"), {"summa_dan": "200 000", "summa_gacha": "300000"}
+        ))
+        self.assertEqual([r[0] for r in inside[1:]], [self.client1.name])
+        above = read_xlsx(self.client.get(reverse("debt_export"), {"summa_dan": "250000"}))
+        self.assertEqual(len(above), 1)
+        below = read_xlsx(self.client.get(reverse("debt_export"), {"summa_gacha": "100000"}))
+        self.assertEqual(len(below), 1)
+
+    def test_debt_list_amount_range_ignores_garbage_and_shows_chips(self):
+        self.client.force_login(self.admin)
+        ctx = self.client.get(reverse("debt_list"), {"summa_dan": "abc"}).context
+        self.assertEqual(len(ctx["debtors"]), 1)  # an unreadable bound is ignored
+        ctx = self.client.get(
+            reverse("debt_list"), {"summa_dan": "200000", "summa_gacha": "300000"}
+        ).context
+        self.assertEqual(len(ctx["debtors"]), 1)
+        self.assertEqual(
+            [c["value"] for c in ctx["active_filters"]], ["200 000 so'm", "300 000 so'm"]
+        )
+
     def test_debt_export_counts_how_many_days_late(self):
         # Off the soonest deadline, so the figure is the age of the oldest unpaid
         # receipt — what a collector is actually chasing.

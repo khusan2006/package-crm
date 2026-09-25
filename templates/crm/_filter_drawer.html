@@ -142,6 +142,14 @@
       <input type="date" name="gacha" value="{{ filters.gacha }}">
     </label>
     {% endif %}
+    {% if show_amount_range %}
+    <label>Qarz summasi (dan)
+      <input type="text" name="summa_dan" value="{{ filters.summa_dan }}" data-money placeholder="masalan, 1 000 000">
+    </label>
+    <label>Qarz summasi (gacha)
+      <input type="text" name="summa_gacha" value="{{ filters.summa_gacha }}" data-money placeholder="masalan, 5 000 000">
+    </label>
+    {% endif %}
     {% if show_overdue %}
     <label class="check-row"><input type="checkbox" name="overdue" value="1" {% if filters.overdue %}checked{% endif %}> Faqat muddati o'tgan</label>
     {% endif %}

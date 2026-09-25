@@ -303,6 +303,27 @@ def _parse_amount(value):
         return None
 
 
+def _money_bound(value):
+    """A so'm bound typed into a range filter ("1 000 000"), or None when blank,
+    unreadable or negative — a bad bound is ignored rather than emptying the list."""
+    cleaned = re.sub(r"[\s ]", "", str(value or "")).replace(",", ".")
+    if not cleaned:
+        return None
+    try:
+        amount = Decimal(cleaned)
+    except ArithmeticError:
+        return None
+    return amount.normalize() if amount.is_finite() and amount >= 0 else None
+
+
+def _som(value):
+    """"1 000 000 so'm" for a filter chip, or "" when there is no figure."""
+    amount = _money_bound(value)
+    if amount is None:
+        return ""
+    return f"{amount:,.0f}".replace(",", " ") + " so'm"
+
+
 # --- Dashboard ---------------------------------------------------------------
 
 UZ_MONTHS_SHORT = ["Yan", "Fev", "Mar", "Apr", "May", "Iyn", "Iyl", "Avg", "Sen", "Okt", "Noy", "Dek"]
@@ -2285,7 +2306,7 @@ def _debtor_rows(request):
 
     filters = {
         key: request.GET.get(key, "")
-        for key in ("client", "rep", "overdue", "tur", "dan", "gacha")
+        for key in ("client", "rep", "overdue", "tur", "dan", "gacha", "summa_dan", "summa_gacha")
     }
     filters["q"] = request.GET.get("q", "").strip()
     # No window by default: a debtors list is about balances, which have no period —
@@ -2392,6 +2413,22 @@ def _debtor_rows(request):
     for group in groups.values():
         group.setdefault("period", None)
 
+    # Qarz summasi oralig'i ("shunchadan shunchagacha"), over the debt balance. With a
+    # bound set the question is "who owes this much", so rows that owe nothing (advance
+    # or sverka only) drop out even when only the upper bound is given. Applied before
+    # the counts so the Hammasi / Qarzdorlar / Avans buttons agree with the table.
+    amount_from = _money_bound(filters["summa_dan"])
+    amount_to = _money_bound(filters["summa_gacha"])
+    filters["summa_dan"] = "" if amount_from is None else f"{amount_from:f}"
+    filters["summa_gacha"] = "" if amount_to is None else f"{amount_to:f}"
+    if amount_from is not None or amount_to is not None:
+        groups = {
+            pk: g for pk, g in groups.items()
+            if g["remaining"] > 0
+            and (amount_from is None or g["remaining"] >= amount_from)
+            and (amount_to is None or g["remaining"] <= amount_to)
+        }
+
     # The Qarzdorlar / Avans switch. Counted before the switch is applied, so each
     # button can carry how many rows it leads to — including the one you are not on.
     counts = {
@@ -2455,6 +2492,8 @@ def debt_list(request):
         {"param": "client", "label": "Mijoz", "value": client_obj.name if client_obj else ""},
         {"param": "rep", "label": "Sotuvchi", "value": str(rep_obj) if rep_obj else ""},
         {"param": "overdue", "label": "Holat", "value": "Muddati o'tgan" if filters["overdue"] == "1" else ""},
+        {"param": "summa_dan", "label": "Qarz dan", "value": _som(filters["summa_dan"])},
+        {"param": "summa_gacha", "label": "Qarz gacha", "value": _som(filters["summa_gacha"])},
     ])
     # Qarzdorlar / Avans — a switch, not a chip: it sits in the toolbar as its own
     # buttons, each carrying the number of rows behind it.
@@ -2498,7 +2537,10 @@ def debt_list(request):
             "search_keep": [
                 {"name": "dan", "value": filters["dan"]},
                 {"name": "gacha", "value": filters["gacha"]},
+                {"name": "summa_dan", "value": filters["summa_dan"]},
+                {"name": "summa_gacha", "value": filters["summa_gacha"]},
             ],
+            "show_amount_range": True,
             "totals": totals,
             **dates,
         },
