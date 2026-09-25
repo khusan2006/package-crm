@@ -4,10 +4,13 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from django import forms
 from django.forms import inlineformset_factory
+from django.template.loader import render_to_string
+from django.urls import reverse_lazy
 from django.utils import timezone
 
 from accounts.models import User
 
+from .geo import LocationError, resolve_location
 from .utils import UZ_MONTH_NAMES
 
 from .models import (
@@ -130,21 +133,55 @@ def _searchable_select(field, placeholder=""):
         field.widget.attrs["data-placeholder"] = placeholder
 
 
+class LocationPickerWidget(forms.TextInput):
+    """The joylashuv box with its map, "here" and search around it.
+
+    It posts one text field: coordinates or a pasted link. The page's own script
+    (static/js/geo.js) only ever writes "lat, lng" into that box — the server reads
+    the box, so a phone with no JavaScript, or a map that failed to load, still
+    saves whatever was typed."""
+
+    template_name = "crm/widgets/location_picker.html"
+
+    def __init__(self, attrs=None):
+        super().__init__({"autocomplete": "off", "inputmode": "url",
+                          "placeholder": "Havola yoki koordinata", **(attrs or {})})
+
+    def get_context(self, name, value, attrs):
+        context = super().get_context(name, value, attrs)
+        context["parse_url"] = reverse_lazy("geo_parse")
+        return context
+
+    def render(self, name, value, attrs=None, renderer=None):
+        # Through the project's template engine rather than the form renderer, which
+        # does not look in templates/.
+        return render_to_string(self.template_name, self.get_context(name, value, attrs))
+
+
 class ClientForm(forms.ModelForm):
     allow_duplicate = forms.BooleanField(
         label="Bir xil nomli mijoz bo'lsa ham, baribir qo'shilsin",
         required=False,
     )
+    location = forms.CharField(
+        label="Joylashuv", required=False, max_length=2000,
+        help_text="Google Maps, Yandex, 2GIS havolasi yoki koordinata — "
+                  "qaysi biri qulay bo'lsa.",
+        widget=LocationPickerWidget())
 
     class Meta:
         model = Client
-        fields = ["name", "company", "owner", "phone", "address", "notes"]
+        fields = ["name", "company", "owner", "phone", "address", "location", "notes"]
         widgets = {"notes": forms.Textarea(attrs={"rows": 3})}
 
     def __init__(self, *args, user=None, check_duplicates=True, **kwargs):
         self.user = user
         self.check_duplicates = check_duplicates
         super().__init__(*args, **kwargs)
+        # On the form's own initial, not the field's: form_changes reads the "before"
+        # side of the audit line from `form.initial`.
+        self.initial.setdefault("location", self.instance.coordinates)
+        self._point = None
         self.fields["phone"].widget.attrs["data-phone"] = ""
         # "Mas'ul xodim" — which employee this client is attached to. Only
         # admins/managers assign it across the team; a seller's clients stay
@@ -176,6 +213,23 @@ class ClientForm(forms.ModelForm):
                 f"bo'lsa, quyidagi katakchani belgilab qayta saqlang."
             )
         return cleaned
+
+    def clean_location(self):
+        """Whatever was pasted, read down to a point — or nothing for an empty box,
+        which is how a joylashuv is taken off a mijoz. Returned as "lat, lng" text so
+        the audit line reads as coordinates, not as a pair of Decimals."""
+        try:
+            self._point = resolve_location(self.cleaned_data.get("location"))
+        except LocationError as err:
+            raise forms.ValidationError(str(err)) from err
+        if self._point is None:
+            return ""
+        lat, lng = self._point
+        return f"{lat.normalize():f}, {lng.normalize():f}"
+
+    def save(self, commit=True):
+        self.instance.latitude, self.instance.longitude = self._point or (None, None)
+        return super().save(commit)
 
 
 class ProductForm(forms.ModelForm):

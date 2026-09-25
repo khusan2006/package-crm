@@ -28,6 +28,8 @@ urlpatterns = [
         name="client_history_export",
     ),
     path("clients/<int:pk>/edit/", crm_views.client_edit, name="client_edit"),
+    path("clients/<int:pk>/location/", crm_views.client_location, name="client_location"),
+    path("geo/parse/", crm_views.geo_parse, name="geo_parse"),
     path("clients/<int:pk>/delete/", crm_views.client_delete, name="client_delete"),
     path("clients/<int:pk>/transfer/", crm_views.client_transfer, name="client_transfer"),
     path("clients/<int:pk>/advance/", crm_views.client_advance_pay, name="client_advance_pay"),

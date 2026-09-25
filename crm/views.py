@@ -3,6 +3,7 @@ import math
 import re
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from urllib.parse import quote, urlencode
 
 from django.contrib import messages
 from django.core.paginator import Paginator
@@ -93,6 +94,7 @@ from .models import (
     seller_cash_on_hand,
     seller_production_debt,
 )
+from .geo import LocationError, resolve_location
 from .utils import (
     form_changes,
     form_reload,
@@ -1219,6 +1221,55 @@ def client_quick_create(request):
         f"{client.name} (sotuv oynasidan tez qo'shildi)",
     )
     return JsonResponse({"id": client.pk, "text": client.name})
+
+
+def client_location(request, pk):
+    """The mijoz's joylashuv on a map, with every way of passing it on.
+
+    Scoped like every other client page: a seller only reaches their own mijozlar.
+    The share text is built here once, so the native Ulashish sheet and the
+    Telegram / WhatsApp / SMS fallbacks all send the same words."""
+    client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    if not client.has_location:
+        raise Http404("Mijozning joylashuvi kiritilmagan")
+    lines = [client.name]
+    if client.company:
+        lines.append(client.company)
+    if client.address:
+        lines.append(client.address)
+    if client.phone:
+        lines.append(client.phone)
+    links = [f"Google: {client.google_maps_url}", f"Yandex: {client.yandex_maps_url}"]
+    share_text = "\n".join(lines + links)
+    template = ("crm/_client_location_modal.html" if is_ajax(request)
+                else "crm/client_location.html")
+    return render(request, template, {
+        "client": client, "title": f"Joylashuv · {client.name}",
+        "share_text": share_text,
+        # Telegram's share page takes the link apart from the words and shows it
+        # first, so the Google link goes in `url` and the rest in `text`.
+        "telegram_url": "https://t.me/share/url?" + urlencode({
+            "url": client.google_maps_url, "text": "\n".join(lines + links[1:])},
+            quote_via=quote),
+        "whatsapp_url": "https://wa.me/?" + urlencode({"text": share_text}, quote_via=quote),
+        # `?&body=` rather than `?body=`: the one form both iOS and Android read.
+        "sms_url": "sms:?&" + urlencode({"body": share_text}, quote_via=quote),
+    })
+
+
+def geo_parse(request):
+    """The point in a pasted link or coordinates, as JSON — so the picker can show
+    the pin before the form is saved. The form reads the box again on save; this
+    is only the preview."""
+    try:
+        point = resolve_location(request.GET.get("q", ""))
+    except LocationError as err:
+        return JsonResponse({"error": str(err)}, status=400)
+    if point is None:
+        return JsonResponse({"error": "Bo'sh"}, status=400)
+    lat, lng = point
+    return JsonResponse({"lat": float(lat), "lng": float(lng),
+                         "text": f"{lat.normalize():f}, {lng.normalize():f}"})
 
 
 def _unique_product_sku(name):

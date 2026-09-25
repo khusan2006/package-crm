@@ -1,0 +1,14 @@
+<div class="modal-head">
+  <h2>Joylashuv · {{ client.name }}</h2>
+  <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
+</div>
+
+{# .modal-confirm for its padding — a modal has none of its own. #}
+<div class="modal-confirm">
+  {% include "crm/_client_location_body.html" %}
+
+  <div class="modal-actions">
+    <a class="btn btn-ghost" href="{% url 'client_edit' client.pk %}" data-modal>Tahrirlash</a>
+    <button type="button" class="btn btn-ghost" data-modal-close>Yopish</button>
+  </div>
+</div>

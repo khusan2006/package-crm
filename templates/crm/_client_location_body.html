@@ -1,0 +1,34 @@
+{% comment %}
+A mijoz's joylashuv and the ways of passing it on. Ulashish is the phone's own
+share sheet — Telegram, WhatsApp, SMS, whatever is installed — and only appears
+where the browser has one. The named buttons below it are there regardless:
+Telegram's in-app browser on Android has no share sheet, and on a computer the
+operator usually wants one app and not a menu.
+{% endcomment %}
+<div class="geo-view">
+  <div class="geo-map" data-geo-view data-lat="{{ client.latitude|stringformat:'f' }}" data-lng="{{ client.longitude|stringformat:'f' }}"></div>
+
+  <dl class="geo-facts">
+    {% if client.address %}<dt>Manzil</dt><dd>{{ client.address }}</dd>{% endif %}
+    {% if client.phone %}<dt>Telefon</dt><dd>{{ client.phone }}</dd>{% endif %}
+    <dt>Koordinata</dt><dd><code>{{ client.coordinates }}</code></dd>
+  </dl>
+
+  <div class="geo-share" data-geo-share data-share-title="{{ client.name }}" data-share-text="{{ share_text }}" data-share-url="{{ client.google_maps_url }}">
+    <button type="button" class="btn geo-share-main" data-share-native hidden>
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+      Ulashish
+    </button>
+    <div class="geo-share-row">
+      <a class="btn btn-ghost btn-sm" href="{{ telegram_url }}" target="_blank" rel="noopener">Telegram</a>
+      <a class="btn btn-ghost btn-sm" href="{{ whatsapp_url }}" target="_blank" rel="noopener">WhatsApp</a>
+      <a class="btn btn-ghost btn-sm" href="{{ sms_url }}">SMS</a>
+      <button type="button" class="btn btn-ghost btn-sm" data-share-copy>Nusxa olish</button>
+    </div>
+    <div class="geo-share-row" title="Xaritada ochish">
+      <a class="btn btn-ghost btn-sm" href="{{ client.google_maps_url }}" target="_blank" rel="noopener">Google Maps ↗</a>
+      <a class="btn btn-ghost btn-sm" href="{{ client.yandex_maps_url }}" target="_blank" rel="noopener">Yandex Maps ↗</a>
+    </div>
+    <span class="geo-status" data-share-status role="status" aria-live="polite"></span>
+  </div>
+</div>

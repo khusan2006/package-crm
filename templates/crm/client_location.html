@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% comment %}
+The non-AJAX fallback for the joylashuv modal — opened in a new tab, or with JS
+off. Same body; only the chrome differs.
+{% endcomment %}
+{% block title %}{{ title }} · Paket CRM{% endblock %}
+{% block topbar_title %}{{ title }}{% endblock %}
+{% block topbar_back %}<a href="{% url 'client_history' client.pk %}" class="icon-btn topbar-back" title="Orqaga" aria-label="Orqaga"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></a>{% endblock %}
+{% block content %}
+<div class="card" style="max-width: 720px;">
+  {% include "crm/_client_location_body.html" %}
+  <div class="modal-actions">
+    <a class="btn btn-ghost" href="{% url 'client_edit' client.pk %}">Tahrirlash</a>
+  </div>
+</div>
+{% endblock %}
