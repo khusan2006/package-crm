@@ -20,6 +20,7 @@ from .forms import (
     ExpenseForm,
     ProductionRemittanceForm,
     SaleForm,
+    weight_terms,
 )
 from .models import (
     ADVANCE_ADJUST_NOTE,
@@ -6631,3 +6632,56 @@ class ActingSellerTests(BaseSetup):
         form = ClientForm(user=self.admin, instance=self.client1, check_duplicates=False)
         self.assertTrue(form.fields["owner"].disabled)
         self.assertTrue(ClientForm(user=self.admin).fields["owner"].required)
+
+
+class WeightSumTests(BaseSetup):
+    """Og'irlik typed roll by roll — "100+20+50": the line keeps the total, the count
+    of pieces becomes its rulon soni, and price/tannarx stay one per kg."""
+
+    def _sale(self, weight, **item):
+        self.client.force_login(self.sales1)
+        data = sale_post(
+            self.client1.pk, [{**one_item(self.product, weight=weight), **item}]
+        )
+        return self.client.post(reverse("sale_create"), data)
+
+    def _last_item(self):
+        return SaleItem.objects.filter(sale__client=self.client1).latest("pk")
+
+    def test_terms(self):
+        self.assertEqual(weight_terms("100+20+50"), [100, 20, 50])
+        self.assertEqual(weight_terms(" 12,5 + 7.5 +"), [Decimal("12.5"), Decimal("7.5")])
+        self.assertEqual(weight_terms("4 950"), [4950])
+        for bad in ("100+abc", "100-20", "100+0", "100+-5"):
+            with self.assertRaises(ValueError):
+                weight_terms(bad)
+
+    def test_sum_is_stored_as_total_with_its_roll_count(self):
+        self._sale("100+20+50")
+        item = self._last_item()
+        self.assertEqual(item.weight, Decimal("170"))
+        self.assertEqual(item.rolls, 3)
+        self.assertEqual(item.total_price, Decimal("170") * Decimal("24000"))
+
+    def test_typed_count_wins_over_the_pieces(self):
+        self._sale("100+20+50", rolls="4")
+        self.assertEqual(self._last_item().rolls, 4)
+
+    def test_a_single_figure_leaves_the_count_blank(self):
+        self._sale("4950")
+        item = self._last_item()
+        self.assertEqual(item.weight, Decimal("4950"))
+        self.assertIsNone(item.rolls)
+
+    def test_garbage_is_refused(self):
+        before = SaleItem.objects.count()
+        response = self._sale("100+abc")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(SaleItem.objects.count(), before)
+
+    def test_edit_shows_the_total_without_padding(self):
+        self._sale("100+20+50")
+        sale = self._last_item().sale
+        response = self.client.get(reverse("sale_edit", args=[sale.pk]))
+        self.assertContains(response, 'value="170"')
+        self.assertContains(response, 'value="3"')

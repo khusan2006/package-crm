@@ -586,6 +586,84 @@
     document.addEventListener('modal:loaded', function (e) { init(e.detail || document); });
   })();
 
+  // Sale form: og'irlik typed roll by roll — "100+20+50". The box keeps what was
+  // typed (the server adds it up the same way, see forms.weight_terms); under it the
+  // total shows, and Rulon soni fills itself with the number of pieces until the
+  // seller types a count of their own. The "+" button is there because a phone's
+  // number pad has no plus key.
+  (function () {
+    // {total, count} of a weight box's value; count 0 when it doesn't read as one.
+    function weightSum(v) {
+      var parts = String(v == null ? '' : v).replace(/\s/g, '').replace(/,/g, '.')
+        .split('+').filter(Boolean);
+      var total = 0;
+      for (var i = 0; i < parts.length; i++) {
+        if (!/^\d*\.?\d+$|^\d+\.$/.test(parts[i])) { return { total: 0, count: 0 }; }
+        total += parseFloat(parts[i]);
+      }
+      return { total: total, count: parts.length };
+    }
+    window.weightSum = weightSum;
+
+    function fmt(n) {
+      var r = Math.round(n * 1000) / 1000;
+      var s = r.toString().split('.');
+      return s[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + (s[1] ? ',' + s[1] : '');
+    }
+    function update(input) {
+      var row = input.closest('.item-row');
+      if (!row) { return; }
+      var sum = weightSum(input.value);
+      var out = row.querySelector('[data-weight-total]');
+      var isSum = input.value.indexOf('+') !== -1;
+      if (out) {
+        if (isSum && sum.count) {
+          var dim = row.querySelector('[name$="-dimension"]');
+          out.textContent = '= ' + fmt(sum.total) + ' ' + (dim ? dim.value : 'kg');
+          out.hidden = false;
+        } else {
+          out.hidden = true;
+        }
+      }
+      var rolls = row.querySelector('[data-rolls]');
+      if (rolls && !rolls.dataset.touched && sum.count > 1) { rolls.value = sum.count; }
+    }
+    document.addEventListener('input', function (e) {
+      var w = e.target.closest('[data-weight-sum]');
+      if (w) { update(w); return; }
+      var r = e.target.closest('[data-rolls]');
+      if (r) { r.dataset.touched = r.value ? '1' : ''; }
+    });
+    document.addEventListener('change', function (e) {
+      var dim = e.target.closest('select[name$="-dimension"]');
+      var row = dim && dim.closest('.item-row');
+      var w = row && row.querySelector('[data-weight-sum]');
+      if (w) { update(w); }
+    });
+    // Keep the keyboard up: the tap must not take focus away from the box.
+    document.addEventListener('pointerdown', function (e) {
+      if (e.target.closest('.weight-plus')) { e.preventDefault(); }
+    });
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('.weight-plus');
+      if (!btn) { return; }
+      e.preventDefault();
+      var input = btn.closest('.weight-sum').querySelector('[data-weight-sum]');
+      var v = input.value.replace(/\s+$/, '');
+      if (v && v.slice(-1) !== '+') { input.value = v + '+'; }
+      input.focus();
+      var end = input.value.length;
+      try { input.setSelectionRange(end, end); } catch (err) { /* not a text box */ }
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    function init(root) {
+      (root || document).querySelectorAll('[data-weight-sum]').forEach(update);
+    }
+    if (document.readyState !== 'loading') { init(); }
+    else { document.addEventListener('DOMContentLoaded', function () { init(); }); }
+    document.addEventListener('modal:loaded', function (e) { init(e.detail || document); });
+  })();
+
   // Sale form: live per-row line total (og'irlik × narx) and the grand total, so the
   // seller sees "10 × 23 000 = 230 000 so'm" and the running Jami as they type.
   (function () {
@@ -601,7 +679,10 @@
         blk.querySelectorAll('.item-row').forEach(function (row) {
           var del = row.querySelector('.item-del [name$="-DELETE"]');
           var out = row.querySelector('[data-line-total]');
-          var w = num((row.querySelector('[name$="-weight"]') || {}).value);
+          // Og'irlik may be a sum of rolls ("100+20+50") — add it up first.
+          var w = window.weightSum(
+            (row.querySelector('[name$="-weight"]') || {}).value
+          ).total;
           var p = num((row.querySelector('[name$="-price"]') || {}).value);
           if (!(del && del.checked) && w > 0 && p > 0) {
             var t = w * p;

@@ -718,6 +718,10 @@ class SaleItem(models.Model):
         "O'lchov birligi", max_length=2, choices=Sale.Dimension.choices, default=Sale.Dimension.KG
     )
     weight = models.DecimalField("Og'irligi", max_digits=12, decimal_places=3)
+    # How many rolls the weight came in — what the driver counts at the gate. Only a
+    # count: price and tannarx stay per kg for the whole line, and every weight/money
+    # figure reads `weight` alone. Blank on lines written before it was asked.
+    rolls = models.PositiveIntegerField("Rulon soni", null=True, blank=True)
     price = models.DecimalField("Narxi (1 birlik, so'm)", max_digits=14, decimal_places=2)
     cost_price = models.DecimalField(
         "Tannarxi (1 birlik, so'm)", max_digits=14, decimal_places=2

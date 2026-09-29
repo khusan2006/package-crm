@@ -1488,6 +1488,41 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
   height: 40px;
 }
 
+/* Og'irlik typed roll by roll (100+20+50): the box with its "+" button, the running
+   total under it, and Rulon soni straight below in the same column. The first pair
+   aligns from the top, so the total line appearing under Og'irligi doesn't push
+   Birlik's box out of line with it. */
+.item-subfields > .if-dim,
+.item-subfields > .if-weight {
+  align-self: start;
+}
+
+.item-subfields > .if-rolls {
+  grid-column: 2;
+}
+
+.weight-sum {
+  display: flex;
+  gap: 6px;
+}
+
+.item-fields .weight-sum input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.weight-sum .weight-plus {
+  flex: 0 0 auto;
+  min-width: 40px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.weight-total {
+  font-size: 12px;
+  color: var(--success);
+}
+
 .item-add {
   margin-top: 8px;
 }

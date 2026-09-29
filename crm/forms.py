@@ -1348,6 +1348,51 @@ class SaleForm(forms.ModelForm):
         return self.user
 
 
+def weight_terms(text):
+    """The pieces of a weight written as a sum — "100+20+50" → [100, 20, 50].
+
+    Spaces are ignored and a comma reads as the decimal point (a phone's number pad
+    gives either). A stray "+" at either end, or doubled, is just skipped: it is what
+    is left on screen after tapping the plus button once too often. Raises
+    ValueError on anything that is not a number, and on a piece of zero or less —
+    a roll that weighs nothing is a typo, not a roll."""
+    cleaned = re.sub(r"\s", "", str(text)).replace(",", ".")
+    # A lone figure of 0 is left for the field's own "0 dan katta" message.
+    is_sum = "+" in cleaned
+    terms = []
+    for part in cleaned.split("+"):
+        if not part:
+            continue
+        try:
+            value = Decimal(part)
+        except ArithmeticError as err:
+            raise ValueError(text) from err
+        if not value.is_finite() or (is_sum and value <= 0):
+            raise ValueError(text)
+        terms.append(value)
+    return terms
+
+
+class WeightSumField(forms.DecimalField):
+    """Og'irlik as a number or as the rolls weighed one by one, "100+20+50", which is
+    stored as their total. The line only ever keeps the total — it is what price,
+    tannarx, stock and every report multiply — while the number of pieces becomes
+    the line's rulon soni (see `SaleItemForm.clean`)."""
+
+    def to_python(self, value):
+        if value in self.empty_values:
+            return None
+        try:
+            terms = weight_terms(value)
+        except ValueError:
+            raise forms.ValidationError(
+                "Og'irlikni son yoki 100+20+50 ko'rinishida yozing.", code="invalid"
+            )
+        if not terms:
+            return None
+        return sum(terms, Decimal("0"))
+
+
 class SaleItemForm(forms.ModelForm):
     """One product line on the receipt.
 
@@ -1355,11 +1400,24 @@ class SaleItemForm(forms.ModelForm):
     boxes on every line, and they slowed the seller down for nothing: the catalogue
     now carries the thickness in the product itself, so picking the product already
     says which one it is. The columns stay on `SaleItem` because old receipts were
-    written with them and their labels still show in the ombor report."""
+    written with them and their labels still show in the ombor report.
+
+    Og'irlik may be typed roll by roll ("100+20+50"): the line keeps the total and
+    the count of rolls; price and tannarx are one figure for all of them."""
 
     class Meta:
         model = SaleItem
-        fields = ["product", "dimension", "weight", "price", "cost_price"]
+        fields = ["product", "dimension", "weight", "rolls", "price", "cost_price"]
+        field_classes = {"weight": WeightSumField}
+        widgets = {
+            # Text, not a number box: a browser's number input refuses the "+".
+            "weight": forms.TextInput(attrs={
+                "inputmode": "decimal", "autocomplete": "off", "data-weight-sum": "",
+            }),
+            "rolls": forms.NumberInput(attrs={
+                "min": "1", "inputmode": "numeric", "data-rolls": "",
+            }),
+        }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1367,7 +1425,12 @@ class SaleItemForm(forms.ModelForm):
         _searchable_select(self.fields["product"], "Mahsulotni tanlang")
         self.fields["cost_price"].required = False
         self.fields["cost_price"].widget.attrs["placeholder"] = "Bo'sh qolsa — mahsulot tannarxi"
+        self.fields["rolls"].widget.attrs["placeholder"] = "Ixtiyoriy"
         _mark_money(self.fields["price"], self.fields["cost_price"])
+        # The stored total, without the ".000" a 3-decimal column pads it with.
+        weight = self.initial.get("weight")
+        if isinstance(weight, Decimal):
+            self.initial["weight"] = f"{weight.normalize():f}"
 
     def clean_weight(self):
         weight = self.cleaned_data.get("weight")
@@ -1381,6 +1444,12 @@ class SaleItemForm(forms.ModelForm):
             raise forms.ValidationError("Narx 0 dan katta bo'lishi kerak.")
         return price
 
+    def clean_rolls(self):
+        rolls = self.cleaned_data.get("rolls")
+        if rolls is not None and rolls < 1:
+            raise forms.ValidationError("Rulon soni kamida 1 bo'lishi kerak.")
+        return rolls
+
     def clean(self):
         cleaned = super().clean()
         product = cleaned.get("product")
@@ -1388,6 +1457,16 @@ class SaleItemForm(forms.ModelForm):
         # Empty cost price falls back to the product's cost, converted to the sale unit
         if product and dimension and not cleaned.get("cost_price"):
             cleaned["cost_price"] = product.cost_price_for(dimension)
+        # Weighed roll by roll and the count left blank: each piece of the sum is a
+        # roll. A single figure says nothing about how many rolls it was, so it
+        # leaves the count empty rather than guessing 1.
+        if cleaned.get("rolls") is None and cleaned.get("weight") is not None:
+            try:
+                pieces = len(weight_terms(self.data.get(self.add_prefix("weight"), "")))
+            except ValueError:
+                pieces = 0
+            if pieces > 1:
+                cleaned["rolls"] = pieces
         return cleaned
 
 

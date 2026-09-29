@@ -28,7 +28,7 @@ and carries no ids that would clash between the two copies.
       {% for item in items %}
       <tr>
         <td class="c-no">{{ forloop.counter }}</td>
-        <td class="c-name">{{ item.product.name }}{% if item.variant_label %} · {{ item.variant_label }}{% endif %}</td>
+        <td class="c-name">{{ item.product.name }}{% if item.variant_label %} · {{ item.variant_label }}{% endif %}{% if item.rolls %} · {{ item.rolls }} rulon{% endif %}</td>
         <td class="c-unit">{{ item.dimension }}</td>
         <td class="c-qty">{{ item.weight|floatformat:"-3g" }}</td>
         <td class="c-price">{{ item.price|floatformat:"0g" }}</td>
