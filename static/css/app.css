@@ -1451,7 +1451,8 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
 }
 
 /* The remaining inputs sit two to a line, deliberately and at every width: Birlik
-   with Og'irligi, then Narxi with Tannarx. Auto-fitting them left the count to the
+   with Rulon soni (under a full-width Og'irligi, see below), then Narxi with
+   Tannarx. Auto-fitting them left the count to the
    container, so the same four boxes came out 3 + 1 in the modal and 4 across on the
    page — and the pair that belongs together got split. The remove button stays
    pinned to the right of the whole grid. */
@@ -1488,17 +1489,11 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
   height: 40px;
 }
 
-/* Og'irlik typed roll by roll (100+20+50): the box with its "+" button, the running
-   total under it, and Rulon soni straight below in the same column. The first pair
-   aligns from the top, so the total line appearing under Og'irligi doesn't push
-   Birlik's box out of line with it. */
-.item-subfields > .if-dim,
+/* Og'irlik typed roll by roll (100+20+50) runs long, so it takes a line of its own —
+   the box with its "+" button and the running total under it — and Birlik sits
+   beside Rulon soni on the next one. */
 .item-subfields > .if-weight {
-  align-self: start;
-}
-
-.item-subfields > .if-rolls {
-  grid-column: 2;
+  grid-column: 1 / -1;
 }
 
 .weight-sum {

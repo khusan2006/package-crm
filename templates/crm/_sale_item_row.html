@@ -4,15 +4,16 @@
   <div class="item-fields">
     <label class="if if-product">Mahsulot{{ f.product }}{{ f.product.errors }}</label>
     <div class="item-subfields">
-      <label class="if if-dim">Birlik{{ f.dimension }}</label>
-      {% comment %}Og'irlik rulonma-rulon yozilsa bo'ladi: 100+20+50. Telefonning raqam
-      klaviaturasida "+" yo'q, shuning uchun yonida "+" tugmasi. Ostida jami chiqadi,
-      rulon soni esa bo'laklar sonidan o'zi to'ladi (qo'lda o'zgartirsa bo'ladi).{% endcomment %}
+      {% comment %}Og'irlik rulonma-rulon yozilsa bo'ladi: 100+20+50 — shuning uchun
+      alohida, butun qator. Telefonning raqam klaviaturasida "+" yo'q, yonida "+"
+      tugmasi. Ostida jami chiqadi; rulon soni bo'laklar sonidan o'zi to'ladi (qo'lda
+      o'zgartirsa bo'ladi) va Birlik bilan yonma-yon turadi.{% endcomment %}
       <label class="if if-weight">Og'irligi
         <span class="weight-sum">{{ f.weight }}<button type="button" class="btn btn-sm weight-plus" tabindex="-1" title="Keyingi rulon og'irligini qo'shish" aria-label="Qo'shish">+</button></span>
         <span class="weight-total" data-weight-total hidden></span>
         {{ f.weight.errors }}
       </label>
+      <label class="if if-dim">Birlik{{ f.dimension }}</label>
       <label class="if if-rolls">Rulon soni{{ f.rolls }}{{ f.rolls.errors }}</label>
       <label class="if if-price">Narxi{{ f.price }}{{ f.price.errors }}</label>
       <label class="if if-cost">Tannarx{{ f.cost_price }}{{ f.cost_price.errors }}</label>

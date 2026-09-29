@@ -588,9 +588,10 @@
 
   // Sale form: og'irlik typed roll by roll — "100+20+50". The box keeps what was
   // typed (the server adds it up the same way, see forms.weight_terms); under it the
-  // total shows, and Rulon soni fills itself with the number of pieces until the
-  // seller types a count of their own. The "+" button is there because a phone's
-  // number pad has no plus key.
+  // total shows, and Rulon soni follows the number of pieces for as long as it still
+  // holds the count it was given (or nothing) — a different number typed there is
+  // the seller's and stays. The "+" button is there because a phone's number pad
+  // has no plus key.
   (function () {
     // {total, count} of a weight box's value; count 0 when it doesn't read as one.
     function weightSum(v) {
@@ -610,7 +611,7 @@
       var s = r.toString().split('.');
       return s[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + (s[1] ? ',' + s[1] : '');
     }
-    function update(input) {
+    function update(input, onLoad) {
       var row = input.closest('.item-row');
       if (!row) { return; }
       var sum = weightSum(input.value);
@@ -625,14 +626,16 @@
           out.hidden = true;
         }
       }
+      if (onLoad) { return; }
       var rolls = row.querySelector('[data-rolls]');
-      if (rolls && !rolls.dataset.touched && sum.count > 1) { rolls.value = sum.count; }
+      if (rolls && sum.count > 1 && (!rolls.value || rolls.value === rolls.dataset.auto)) {
+        rolls.value = sum.count;
+        rolls.dataset.auto = String(sum.count);
+      }
     }
     document.addEventListener('input', function (e) {
       var w = e.target.closest('[data-weight-sum]');
-      if (w) { update(w); return; }
-      var r = e.target.closest('[data-rolls]');
-      if (r) { r.dataset.touched = r.value ? '1' : ''; }
+      if (w) { update(w); }
     });
     document.addEventListener('change', function (e) {
       var dim = e.target.closest('select[name$="-dimension"]');
@@ -657,7 +660,14 @@
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     function init(root) {
-      (root || document).querySelectorAll('[data-weight-sum]').forEach(update);
+      // A count already on the line (an edit, or a form sent back with an error) is
+      // left as it is on load; a sum typed after that re-derives it.
+      (root || document).querySelectorAll('[data-rolls]').forEach(function (r) {
+        r.dataset.auto = r.value;
+      });
+      (root || document).querySelectorAll('[data-weight-sum]').forEach(function (w) {
+        update(w, true);
+      });
     }
     if (document.readyState !== 'loading') { init(); }
     else { document.addEventListener('DOMContentLoaded', function () { init(); }); }
