@@ -4,6 +4,12 @@
 {% comment %}Mijoz ro'yxatda bo'lmasa — sotuv oynasidagi kabi shu yerning o'zida
 qo'shiladi ("+" tugmasi). Tanlangan mijozda allaqachon boshlang'ich qarz bo'lsa,
 pastdagi ogohlantirish chiqadi — bir qarz ikki marta kiritilmasin.{% endcomment %}
+{% if form.seller %}
+<p>
+  {{ form.seller.label_tag }}{{ form.seller }}{{ form.seller.errors }}
+  <span class="helptext">{{ form.seller.help_text }}</span>
+</p>
+{% endif %}
 <p class="qa-container" data-debtor-form>
   {{ form.client.label_tag }}
   <span class="field-with-add">

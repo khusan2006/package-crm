@@ -16,6 +16,7 @@ from .forms import (
     AdvanceEditForm,
     AdvanceForm,
     AdvanceRemoveForm,
+    ClientForm,
     ExpenseForm,
     ProductionRemittanceForm,
     SaleForm,
@@ -2615,12 +2616,13 @@ class ReturnVoidTests(BaseSetup):
         )
 
     def test_seller_cannot_void_another_sellers_return(self):
-        # The sale belongs to sales1; the return was accepted by the manager. A plain
-        # seller must not be able to reach in and void someone else's return.
+        # The sale belongs to sales1; the manager took the return in for them, so it
+        # is sales1's return. Another seller must not be able to reach in and void it.
         sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
         self.client.force_login(self.manager)
         ret = self._return(sale, "4")  # inside the debt — only cancels debt, no cash
-        self.client.force_login(self.sales1)
+        self.assertEqual(ret.created_by, self.sales1)
+        self.client.force_login(self.sales2)
         response = self.client.post(reverse("return_delete", args=[ret.pk]))
         self.assertEqual(response.status_code, 404)
         self.assertEqual(sale.returns.count(), 1)
@@ -6530,3 +6532,102 @@ class BackdatedPayoutWarningTests(BaseSetup):
         )
         self.assertFalse(form.is_valid())
         self.assertIn("Saqlashni yana bosing", " ".join(form.errors["__all__"]))
+
+
+class ActingSellerTests(BaseSetup):
+    """An admin/manager writing records in a seller's name (the «Sotuvchi» picker).
+
+    Whatever they enter must land exactly where the seller's own entry would: the
+    sale under the mijoz's seller, the money in that seller's till. The audit log
+    still names who pressed the button."""
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+
+    def _sale(self, client, **header):
+        data = sale_post(client.pk, [one_item(self.product, weight="5")], **header)
+        return self.client.post(reverse("sale_create"), data)
+
+    def test_sale_goes_to_the_picked_seller(self):
+        self._sale(self.client1, seller=self.sales1.pk)
+        sale = Sale.objects.filter(client=self.client1).latest("pk")
+        self.assertEqual(sale.sales_rep, self.sales1)
+        log = AuditLog.objects.filter(target_type="Sotuv", target_id=sale.pk).get()
+        self.assertEqual(log.user, self.admin)
+        self.assertIn("sotuvchi: ", log.summary)
+
+    def test_sale_without_a_pick_goes_to_the_mijozs_seller(self):
+        self._sale(self.client2)
+        sale = Sale.objects.filter(client=self.client2).latest("pk")
+        self.assertEqual(sale.sales_rep, self.sales2)
+
+    def test_another_sellers_mijoz_is_refused(self):
+        before = Sale.objects.count()
+        response = self._sale(self.client2, seller=self.sales1.pk)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("client", response.context["form"].errors)
+        self.assertEqual(Sale.objects.count(), before)
+
+    def test_only_admins_see_the_picker(self):
+        self.assertIn("seller", SaleForm(user=self.admin).fields)
+        self.assertNotIn("seller", SaleForm(user=self.sales1).fields)
+        # Sellers only — an admin holds no till to write a sale into.
+        offered = set(SaleForm(user=self.admin).fields["seller"].queryset)
+        self.assertEqual(offered, {self.sales1, self.sales2})
+
+    def test_edit_keeps_the_seller_and_their_mijozlar(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        form = SaleForm(user=self.admin, instance=sale)
+        self.assertTrue(form.fields["seller"].disabled)
+        other = Client.objects.create(name="Mijoz C", owner=self.sales2)
+        form = SaleForm(
+            {"date": sale.date.isoformat(), "client": other.pk, "seller": self.sales2.pk},
+            user=self.admin, instance=sale,
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("client", form.errors)
+
+    def test_debt_payment_lands_in_the_sellers_till(self):
+        make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        till = seller_cash_on_hand(self.sales1)
+        self.client.post(
+            reverse("client_debt_pay", args=[self.client1.pk]),
+            {"amount": "100000", "method": "cash", "currency": "uzs"},
+        )
+        payment = Payment.objects.filter(kind=Payment.Kind.DEBT).latest("pk")
+        self.assertEqual(payment.created_by, self.sales1)
+        self.assertEqual(seller_cash_on_hand(self.sales1) - till, Decimal("100000"))
+
+    def test_advance_is_held_by_the_mijozs_seller(self):
+        self.client.post(
+            reverse("client_advance_pay", args=[self.client1.pk]),
+            {"amount": "50000", "method": "cash", "currency": "uzs",
+             "to_kassa": AdvanceForm.IN_KASSA},
+        )
+        self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("50000"))
+        self.assertEqual(client_advance_balance(self.client1, self.admin), Decimal("0"))
+
+    def test_quick_added_mijoz_needs_a_seller(self):
+        url = reverse("client_quick_create")
+        response = self.client.post(url, {"name": "Yangi mijoz"})
+        self.assertEqual(response.status_code, 400)
+        response = self.client.post(url, {"name": "Yangi mijoz", "seller": self.sales2.pk})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Client.objects.get(name="Yangi mijoz").owner, self.sales2)
+
+    def test_expense_leaves_the_picked_sellers_till(self):
+        data = {
+            "date": timezone.localdate().isoformat(), "amount": "30000",
+            "currency": "uzs", "category": "Benzin", "method": "cash",
+        }
+        self.client.post(reverse("expense_create"), {**data, "seller": self.sales1.pk,
+                                                    "note": "sotuvchi uchun"})
+        self.assertEqual(Expense.objects.get(note="sotuvchi uchun").created_by, self.sales1)
+        # Left empty, it stays the admin's own — the Xodimlar page pays wages that way.
+        self.client.post(reverse("expense_create"), {**data, "note": "o'zim"})
+        self.assertEqual(Expense.objects.get(note="o'zim").created_by, self.admin)
+
+    def test_client_seller_is_locked_on_edit(self):
+        form = ClientForm(user=self.admin, instance=self.client1, check_duplicates=False)
+        self.assertTrue(form.fields["owner"].disabled)
+        self.assertTrue(ClientForm(user=self.admin).fields["owner"].required)

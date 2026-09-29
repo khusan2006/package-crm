@@ -337,11 +337,13 @@
       if (saveBtn.dataset.dupName !== name) { saveBtn.dataset.dupOk = ''; }
       var form = saveBtn.closest('form');
       var token = form.querySelector('[name=csrfmiddlewaretoken]').value;
+      // An admin adds the mijoz for the seller picked on this form.
+      var picker = form.querySelector('select[data-seller-picker]');
       saveBtn.disabled = true;
       fetch(toggle.getAttribute('data-quick-url'), {
         method: 'POST',
         headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ name: name, phone: window.canonicalPhone ? window.canonicalPhone(phoneEl) : phoneEl.value.trim(), csrfmiddlewaretoken: token, allow_duplicate: saveBtn.dataset.dupOk || '' }),
+        body: new URLSearchParams({ name: name, phone: window.canonicalPhone ? window.canonicalPhone(phoneEl) : phoneEl.value.trim(), csrfmiddlewaretoken: token, allow_duplicate: saveBtn.dataset.dupOk || '', seller: picker ? picker.value : '' }),
       }).then(function (r) {
         return r.json().then(function (d) { return { ok: r.ok, data: d }; });
       }).then(function (res) {
@@ -357,7 +359,9 @@
           return;
         }
         saveBtn.dataset.dupOk = '';
-        select.add(new Option(res.data.text, res.data.id, true, true));
+        var added = new Option(res.data.text, res.data.id, true, true);
+        if (res.data.owner) { added.dataset.owner = res.data.owner; }
+        select.add(added);
         select.dispatchEvent(new Event('change', { bubbles: true }));
         panel.hidden = true;
         nameEl.value = '';
@@ -535,6 +539,51 @@
       var sel = e.target.closest('select[name="client"]');
       if (sel) { updateHint(sel); }
     });
+  })();
+
+  // «Sotuvchi» picker — admin/manager writing a sale or an old debt in a seller's
+  // name. Picking the seller narrows the mijoz list on the same form to their
+  // clients (each option carries data-owner); picking a mijoz first fills the seller
+  // in. The server checks the pair again, so this only saves a wrong pick.
+  (function () {
+    function pickerOf(form) { return form && form.querySelector('select[data-seller-picker]'); }
+    function narrow(form) {
+      var picker = pickerOf(form);
+      if (!picker) { return; }
+      var seller = picker.value;
+      form.querySelectorAll('select[name="client"]').forEach(function (sel) {
+        Array.prototype.forEach.call(sel.options, function (opt) {
+          if (opt.value) { opt.hidden = !!seller && opt.dataset.owner !== seller; }
+        });
+        var cur = sel.options[sel.selectedIndex];
+        if (cur && cur.value && cur.hidden) {
+          sel.value = '';
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      });
+    }
+    document.addEventListener('change', function (e) {
+      var picker = e.target.closest('select[data-seller-picker]');
+      if (picker) { narrow(picker.closest('form')); return; }
+      var sel = e.target.closest('select[name="client"]');
+      if (!sel) { return; }
+      var p = pickerOf(sel.closest('form'));
+      if (!p || p.disabled) { return; }
+      var opt = sel.options[sel.selectedIndex];
+      var owner = opt && opt.dataset.owner;
+      if (owner && p.value !== owner && p.querySelector('option[value="' + owner + '"]')) {
+        p.value = owner;
+        p.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    });
+    function init(root) {
+      (root || document).querySelectorAll('select[data-seller-picker]').forEach(function (p) {
+        narrow(p.closest('form'));
+      });
+    }
+    if (document.readyState !== 'loading') { init(); }
+    else { document.addEventListener('DOMContentLoaded', function () { init(); }); }
+    document.addEventListener('modal:loaded', function (e) { init(e.detail || document); });
   })();
 
   // Sale form: live per-row line total (og'irlik × narx) and the grand total, so the
@@ -1537,6 +1586,9 @@
           // Never list the invisible placeholder row (empty value + empty label);
           // a labelled empty choice like the filters' "Barchasi" still shows.
           if (!opt.value && !text) { return; }
+          // Rows another script has set aside — e.g. another seller's mijozlar
+          // once a «Sotuvchi» is picked — are not offered.
+          if (opt.hidden) { return; }
           // Match against the option's data-search haystack (name + phone +
           // address, set server-side) when present; else the visible text.
           var haystack = (opt.dataset.search || text).toLowerCase();

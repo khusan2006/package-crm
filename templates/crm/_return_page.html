@@ -6,6 +6,7 @@
   {% include "crm/_return_split_note.html" %}
   <form method="post" class="stacked">
     {% csrf_token %}
+    {% include "crm/_acting_seller.html" %}
     {{ form.as_p }}
     <button type="submit" class="btn">Qaytarishni saqlash</button>
   </form>

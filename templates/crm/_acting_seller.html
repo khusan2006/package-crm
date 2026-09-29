@@ -1,0 +1,13 @@
+{% comment %}
+  Faqat admin/menejerda. To'lov, avans va qaytarishda mijoz allaqachon tanlangan —
+  yozuv o'sha mijozning sotuvchisi nomiga va kassasiga tushadi. Shuning uchun
+  sotuvchi bu yerda tanlanmaydi, faqat ko'rsatiladi: boshqa sotuvchi kassasiga
+  yozilsa, mijozning bitta hisobi ikki kassaga bo'linib ketadi.
+{% endcomment %}
+{% if acting_seller and request.user.can_see_all_records %}
+<p class="acting-seller">
+  <label>Sotuvchi:</label>
+  <input type="text" value="{{ acting_seller }}" disabled>
+  <span class="field-hint">Mijoz shu sotuvchiga biriktirilgan — yozuv uning nomiga va kassasiga tushadi.</span>
+</p>
+{% endif %}
