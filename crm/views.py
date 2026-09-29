@@ -25,6 +25,7 @@ from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
@@ -95,6 +96,8 @@ from .models import (
     seller_cash_on_hand,
     seller_production_debt,
 )
+from .context_processors import SESSION_KEY as ACTING_SELLER_KEY
+from .context_processors import current_acting_seller
 from .geo import LocationError, resolve_location
 from .utils import (
     form_changes,
@@ -119,6 +122,36 @@ def _on_behalf(user, seller):
     if seller is None or seller.pk == user.pk:
         return ""
     return f" · sotuvchi: {seller}"
+
+
+def _acting_initial(request, field="seller"):
+    """Form initial that opens a new record in the name of the seller picked in the top
+    bar (see context_processors) — {} when none is, or for a seller themselves."""
+    seller = current_acting_seller(request)
+    return {field: seller.pk} if seller else {}
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def acting_seller_set(request):
+    """The top bar's «Sotuvchi» switch: remember which seller an admin/manager is
+    working as, so each new sale, qarzdor, chiqim and mijoz opens in that seller's
+    name instead of asking every time. An empty pick clears it. Returns to the page
+    the switch was used on."""
+    if request.method == "POST":
+        pk = request.POST.get("seller", "")
+        seller = sellers_queryset().filter(pk=pk).first() if pk.isdigit() else None
+        if seller is not None:
+            request.session[ACTING_SELLER_KEY] = seller.pk
+            messages.success(request, f"Endi {seller} nomidan ishlayapsiz.")
+        else:
+            request.session.pop(ACTING_SELLER_KEY, None)
+            messages.success(request, "Sotuvchi tanlovi olib tashlandi.")
+    target = request.POST.get("next", "")
+    if not url_has_allowed_host_and_scheme(
+        target, allowed_hosts={request.get_host()}, require_https=request.is_secure()
+    ):
+        target = reverse("dashboard")
+    return redirect(target)
 
 
 def _advance_balance_map(client_pks, seller):
@@ -1182,7 +1215,10 @@ def client_export(request):
 
 
 def client_create(request):
-    form = ClientForm(request.POST or None, user=request.user)
+    form = ClientForm(
+        request.POST or None, user=request.user,
+        initial=_acting_initial(request, "owner"),
+    )
     if request.method == "POST":
         if form.is_valid():
             client = form.save(commit=False)
@@ -2682,7 +2718,8 @@ def debtor_add(request):
             return form_reload(request, reverse("debt_list"))
         return _render_debtor_add(request, form, invalid=True)
     form = DebtorAddForm(
-        clients=clients, user=request.user, initial={"date": timezone.localdate()}
+        clients=clients, user=request.user,
+        initial={"date": timezone.localdate(), **_acting_initial(request)},
     )
     return _render_debtor_add(request, form)
 
@@ -5292,7 +5329,7 @@ def expense_create(request):
     The Xodimlar page links in with ?employee=<pk>, which preselects the worker and
     the wage category so paying someone is one click from their row; it may add
     ?summa= to fill in what is still owed, for the common case of settling in full."""
-    initial = {}
+    initial = _acting_initial(request)
     employee_pk = request.GET.get("employee", "")
     if request.method == "GET" and employee_pk.isdigit():
         if Employee.objects.filter(pk=employee_pk, is_active=True).exists():
@@ -7027,7 +7064,9 @@ def _product_price_map():
 
 
 def sale_create(request):
-    form = SaleForm(request.POST or None, user=request.user)
+    form = SaleForm(
+        request.POST or None, user=request.user, initial=_acting_initial(request)
+    )
     formset = SaleItemFormSet(request.POST or None, instance=Sale(), prefix="items")
     if request.method == "POST":
         if form.is_valid() and formset.is_valid():

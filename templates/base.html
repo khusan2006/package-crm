@@ -111,6 +111,24 @@
         <span class="topbar-title">{% block topbar_title %}Paket CRM{% endblock %}</span>
       </div>
       <div class="topbar-right">
+        {% comment %}Faqat admin/menejerda: qaysi sotuvchi nomidan ishlayotgani. Bir marta
+        tanlanadi va sessiyada qoladi — yangi sotuv, qarzdor, chiqim, mijoz shu sotuvchi
+        nomiga ochiladi (formaning o'zida baribir o'zgartirsa bo'ladi).{% endcomment %}
+        {% if acting_sellers %}
+        <form method="post" action="{% url 'acting_seller_set' %}" class="acting-switch{% if acting_seller_id %} is-set{% endif %}">
+          {% csrf_token %}
+          <input type="hidden" name="next" value="{{ request.get_full_path }}">
+          <label for="acting-seller-select">Sotuvchi</label>
+          <select id="acting-seller-select" name="seller" data-acting-switch
+                  title="Qaysi sotuvchi nomidan ishlayapsiz">
+            <option value="">— tanlanmagan —</option>
+            {% for s in acting_sellers %}
+            <option value="{{ s.pk }}"{% if s.pk == acting_seller_id %} selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+          <noscript><button type="submit" class="btn btn-sm">OK</button></noscript>
+        </form>
+        {% endif %}
         <div class="user-chip">
           <span class="avatar sm">{{ user.username|slice:":1"|upper }}</span>
           <div class="meta">
@@ -540,6 +558,13 @@
       if (sel) { updateHint(sel); }
     });
   })();
+
+  // Top-bar «Sotuvchi» switch: picking a seller saves it straight away (the page
+  // reloads with every new form opening in that seller's name).
+  document.addEventListener('change', function (e) {
+    var sw = e.target.closest('[data-acting-switch]');
+    if (sw) { sw.form.submit(); }
+  });
 
   // «Sotuvchi» picker — admin/manager writing a sale or an old debt in a seller's
   // name. Picking the seller narrows the mijoz list on the same form to their

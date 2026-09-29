@@ -314,6 +314,48 @@ h2 {
   flex-shrink: 0;
 }
 
+/* Top-bar «Sotuvchi» switch (admin/manager working as a seller). Stays on phones,
+   where the user chip beside it is hidden — it is the one thing on the bar that
+   changes what the forms do. Tinted once a seller is picked, so it is obvious whose
+   name everything is going in. */
+.acting-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.acting-switch label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.acting-switch select {
+  width: auto;
+  max-width: 170px;
+  padding: 6px 10px;
+  border-radius: var(--r-pill);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.acting-switch.is-set select {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+@media (max-width: 560px) {
+  .acting-switch label {
+    display: none;
+  }
+
+  .acting-switch select {
+    max-width: 118px;
+    padding: 6px 8px;
+  }
+}
+
 .user-chip {
   display: flex;
   align-items: center;

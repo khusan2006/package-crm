@@ -6712,3 +6712,59 @@ class WeightSumTests(BaseSetup):
         response = self.client.get(reverse("sale_edit", args=[sale.pk]))
         self.assertContains(response, 'value="170"')
         self.assertContains(response, 'value="3"')
+
+
+class ActingSellerSwitchTests(BaseSetup):
+    """The top-bar «Sotuvchi» switch: an admin picks a seller once and every new
+    record's form opens in that seller's name."""
+
+    def _switch(self, seller_pk, next_url="/sales/"):
+        return self.client.post(
+            reverse("acting_seller_set"), {"seller": seller_pk, "next": next_url}
+        )
+
+    def test_the_pick_prefills_every_new_form(self):
+        self.client.force_login(self.admin)
+        response = self._switch(self.sales2.pk)
+        self.assertRedirects(response, "/sales/", fetch_redirect_response=False)
+        sale = self.client.get(reverse("sale_create")).context["form"]
+        self.assertEqual(sale["seller"].value(), self.sales2.pk)
+        debtor = self.client.get(reverse("debtor_add")).context["form"]
+        self.assertEqual(debtor["seller"].value(), self.sales2.pk)
+        expense = self.client.get(reverse("expense_create")).context["form"]
+        self.assertEqual(expense["seller"].value(), self.sales2.pk)
+        client = self.client.get(reverse("client_create")).context["form"]
+        self.assertEqual(client["owner"].value(), self.sales2.pk)
+
+    def test_the_sale_then_goes_to_that_seller(self):
+        self.client.force_login(self.admin)
+        self._switch(self.sales2.pk)
+        form = self.client.get(reverse("sale_create")).context["form"]
+        data = sale_post(
+            self.client2.pk, [one_item(self.product)], seller=form["seller"].value()
+        )
+        self.client.post(reverse("sale_create"), data)
+        sale = Sale.objects.filter(client=self.client2).latest("pk")
+        self.assertEqual(sale.sales_rep, self.sales2)
+
+    def test_an_empty_pick_clears_it(self):
+        self.client.force_login(self.admin)
+        self._switch(self.sales2.pk)
+        self._switch("")
+        form = self.client.get(reverse("sale_create")).context["form"]
+        self.assertIsNone(form["seller"].value())
+
+    def test_a_seller_has_no_switch(self):
+        self.client.force_login(self.sales1)
+        self.assertEqual(self._switch(self.sales2.pk).status_code, 403)
+        page = self.client.get(reverse("sale_list"))
+        self.assertNotContains(page, 'id="acting-seller-select"')
+        self.client.force_login(self.admin)
+        self.assertContains(
+            self.client.get(reverse("sale_list")), 'id="acting-seller-select"'
+        )
+
+    def test_only_a_local_address_is_followed_back(self):
+        self.client.force_login(self.admin)
+        response = self._switch(self.sales1.pk, next_url="https://evil.example/")
+        self.assertRedirects(response, reverse("dashboard"), fetch_redirect_response=False)
