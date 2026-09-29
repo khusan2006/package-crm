@@ -6628,6 +6628,33 @@ class ActingSellerTests(BaseSetup):
         self.client.post(reverse("expense_create"), {**data, "note": "o'zim"})
         self.assertEqual(Expense.objects.get(note="o'zim").created_by, self.admin)
 
+    def test_a_seller_cannot_write_in_another_sellers_name(self):
+        # Even a hand-made POST carrying `seller` is ignored for a plain seller:
+        # the field doesn't exist for them, so everything stays their own.
+        self.client.force_login(self.sales1)
+        before = Sale.objects.filter(client=self.client2).count()
+        self._sale(self.client2, seller=self.sales2.pk)
+        self.assertEqual(Sale.objects.filter(client=self.client2).count(), before)
+        self._sale(self.client1, seller=self.sales2.pk)
+        self.assertEqual(
+            Sale.objects.filter(client=self.client1).latest("pk").sales_rep, self.sales1
+        )
+        self.client.post(
+            reverse("client_quick_create"), {"name": "Soxta", "seller": self.sales2.pk}
+        )
+        self.assertEqual(Client.objects.get(name="Soxta").owner, self.sales1)
+        self.client.post(reverse("expense_create"), {
+            "date": timezone.localdate().isoformat(), "amount": "1000", "currency": "uzs",
+            "category": "Benzin", "method": "cash", "seller": self.sales2.pk,
+            "note": "soxta", "confirm_backdated": "1",
+        })
+        self.assertEqual(Expense.objects.get(note="soxta").created_by, self.sales1)
+        response = self.client.post(
+            reverse("client_debt_pay", args=[self.client2.pk]),
+            {"amount": "1000", "method": "cash", "currency": "uzs"},
+        )
+        self.assertEqual(response.status_code, 404)
+
     def test_client_seller_is_locked_on_edit(self):
         form = ClientForm(user=self.admin, instance=self.client1, check_duplicates=False)
         self.assertTrue(form.fields["owner"].disabled)
