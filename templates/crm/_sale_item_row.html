@@ -3,24 +3,29 @@
   {% if f.non_field_errors %}<div class="flash flash-error">{{ f.non_field_errors.0 }}</div>{% endif %}
   <div class="item-fields">
     <label class="if if-product">Mahsulot{{ f.product }}{{ f.product.errors }}</label>
+    {% comment %}Uch ustun: ikkita maydon ustuni va o'ngda tugmalar ustuni. Og'irlik
+    butun qator (rulonma-rulon yoziladi: 100+20+50), yonida "+" — telefonning raqam
+    klaviaturasida "+" yo'q. Ostida jami chiqadi; rulon soni bo'laklar sonidan o'zi
+    to'ladi va Birlik bilan yonma-yon. Qatorni o'chirish "−" Tannarx yonida, "+" bilan
+    bitta ustunda. Tugma maydon bilan bitta flex qatorda — balandligi doim teng.{% endcomment %}
     <div class="item-subfields">
-      {% comment %}Og'irlik rulonma-rulon yozilsa bo'ladi: 100+20+50 — shuning uchun
-      alohida, butun qator. Telefonning raqam klaviaturasida "+" yo'q, yonida "+"
-      tugmasi. Ostida jami chiqadi; rulon soni bo'laklar sonidan o'zi to'ladi (qo'lda
-      o'zgartirsa bo'ladi) va Birlik bilan yonma-yon turadi.{% endcomment %}
-      <label class="if if-weight">Og'irligi
-        <span class="weight-sum">{{ f.weight }}<button type="button" class="btn btn-sm weight-plus" tabindex="-1" title="Keyingi rulon og'irligini qo'shish" aria-label="Qo'shish">+</button></span>
+      <div class="if if-weight">
+        <label for="{{ f.weight.id_for_label }}">Og'irligi</label>
+        <span class="field-line">{{ f.weight }}<button type="button" class="btn btn-sm weight-plus" tabindex="-1" title="Keyingi rulon og'irligini qo'shish" aria-label="Qo'shish">+</button></span>
         <span class="weight-total" data-weight-total hidden></span>
         {{ f.weight.errors }}
-      </label>
+      </div>
       <label class="if if-dim">Birlik{{ f.dimension }}</label>
       <label class="if if-rolls">Rulon soni{{ f.rolls }}{{ f.rolls.errors }}</label>
       <label class="if if-price">Narxi{{ f.price }}{{ f.price.errors }}</label>
-      <label class="if if-cost">Tannarx{{ f.cost_price }}{{ f.cost_price.errors }}</label>
+      <div class="if if-cost">
+        <label for="{{ f.cost_price.id_for_label }}">Tannarx</label>
+        <span class="field-line">{{ f.cost_price }}<button type="button" class="icon-action danger item-remove" title="Qatorni o'chirish">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button></span>
+        {{ f.cost_price.errors }}
+      </div>
     </div>
-    <button type="button" class="icon-action danger item-remove" title="Qatorni o'chirish">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
-    </button>
   </div>
   <div class="item-total muted" data-line-total hidden></div>
   <span class="item-del" hidden>{{ f.DELETE }}</span>

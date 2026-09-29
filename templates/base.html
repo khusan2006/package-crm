@@ -651,7 +651,7 @@
       var btn = e.target.closest('.weight-plus');
       if (!btn) { return; }
       e.preventDefault();
-      var input = btn.closest('.weight-sum').querySelector('[data-weight-sum]');
+      var input = btn.closest('.item-row').querySelector('[data-weight-sum]');
       var v = input.value.replace(/\s+$/, '');
       if (v && v.slice(-1) !== '+') { input.value = v + '+'; }
       input.focus();

@@ -1450,19 +1450,26 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
   flex: 1 1 100%;
 }
 
-/* The remaining inputs sit two to a line, deliberately and at every width: Birlik
-   with Rulon soni (under a full-width Og'irligi, see below), then Narxi with
-   Tannarx. Auto-fitting them left the count to the
-   container, so the same four boxes came out 3 + 1 in the modal and 4 across on the
-   page — and the pair that belongs together got split. The remove button stays
-   pinned to the right of the whole grid. */
+/* The remaining inputs sit two to a line, deliberately and at every width: under a
+   full-width Og'irligi, Birlik with Rulon soni, then Narxi with Tannarx. Auto-fitting
+   them left the count to the container, so the same four boxes came out 3 + 1 in the
+   modal and 4 across on the page — and the pair that belongs together got split.
+   A narrow third column holds the row's buttons — Og'irligi's "+" and the remove
+   "−" beside Tannarx — so both line up under each other and every box ends on the
+   same right edge. */
 .item-fields .item-subfields {
   flex: 1 1 auto;
   display: grid;
-  grid-template-columns: repeat(2, minmax(110px, 1fr));
+  grid-template-columns: minmax(110px, 1fr) minmax(110px, 1fr) 40px;
   gap: 10px;
   align-items: end;
 }
+
+.item-subfields > .if-weight { grid-column: 1 / -1; }
+.item-subfields > .if-dim,
+.item-subfields > .if-price { grid-column: 1; }
+.item-subfields > .if-rolls { grid-column: 2; }
+.item-subfields > .if-cost { grid-column: 2 / -1; }
 
 .item-fields .if {
   display: flex;
@@ -1476,6 +1483,9 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
 .item-fields .if input,
 .item-fields .if select {
   width: 100%;
+  /* Fill the column whatever its width — the 480px cap on inputs elsewhere would
+     leave the boxes ending short of each other on the wide page. */
+  max-width: none;
 }
 
 .item-fields .if-price input,
@@ -1489,26 +1499,31 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
   height: 40px;
 }
 
-/* Og'irlik typed roll by roll (100+20+50) runs long, so it takes a line of its own —
-   the box with its "+" button and the running total under it — and Birlik sits
-   beside Rulon soni on the next one. */
-.item-subfields > .if-weight {
-  grid-column: 1 / -1;
-}
-
-.weight-sum {
+/* A box and its button (Og'irligi "+", Tannarx "−") on one line, spanning into the
+   button column. The gap equals the grid's, so the box ends exactly where the boxes
+   above and below it do, and the button stretches to the box's own height. */
+.item-fields .field-line {
   display: flex;
-  gap: 6px;
+  gap: 10px;
+  align-items: stretch;
 }
 
-.item-fields .weight-sum input {
+.item-fields .field-line input {
   flex: 1 1 auto;
   min-width: 0;
 }
 
-.weight-sum .weight-plus {
-  flex: 0 0 auto;
-  min-width: 40px;
+.item-fields .field-line .weight-plus,
+.item-fields .field-line .item-remove {
+  flex: 0 0 40px;
+  width: 40px;
+  height: auto;
+  padding: 0;
+  justify-content: center;
+  align-self: stretch;
+}
+
+.item-fields .field-line .weight-plus {
   font-size: 18px;
   line-height: 1;
 }
