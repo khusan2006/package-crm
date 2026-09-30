@@ -25,10 +25,21 @@ def test_print_page_carries_the_receipt(client, admin_user, sample_data):
     body = resp.content.decode()
     assert "YUK XATI/НАКЛАДНАЯ" in body
     assert "Test Mijoz" in body       # Kimga — title-cased, client names are stored SHOUTING
-    assert "Rise service Sel Ler" in body  # Kimdan — the firm, then the seller who released them
+    assert "Sel Ler" in body           # Kimdan — the seller who released them
     assert "Test paket" in body
     # 10 kg × 15 000 = 150 000, space-grouped the way every screen prints money.
     assert "150\xa0000" in body
+
+
+def test_kimdan_puts_the_sellers_firm_before_their_name(client, admin_user, sample_data):
+    """Each seller trades under their own firm — Kamola's is not Umida's."""
+    sale = sample_data["sale"]
+    sale.sales_rep.firm_name = "Polimer111"
+    sale.sales_rep.save(update_fields=["firm_name"])
+    client.force_login(admin_user)
+
+    body = client.get(f"/sales/{sale.pk}/yuk-xati/").content.decode()
+    assert "Polimer111 Sel Ler" in body
 
 
 def test_sheet_holds_two_copies(client, admin_user, sample_data):

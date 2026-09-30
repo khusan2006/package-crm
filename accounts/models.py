@@ -10,6 +10,9 @@ class User(AbstractUser):
 
     role = models.CharField("Rol", max_length=10, choices=Role.choices, default=Role.SALES)
     phone = models.CharField("Telefon", max_length=30, blank=True)
+    # The firm a seller trades under, printed before their name in the yuk xati's
+    # «Kimdan» line — each seller releases goods under their own firm, not one shared name.
+    firm_name = models.CharField("Firma nomi (yuk xati)", max_length=100, blank=True)
     # A carried-over pre-CRM debt this seller owes production at go-live: the tannarx of
     # goods taken before the CRM existed and not yet remitted. It behaves exactly like
     # real production debt — it lifts `seller_production_debt` from day one and is whittled
