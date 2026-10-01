@@ -481,6 +481,7 @@ class Sale(models.Model):
     debt_term_days = models.PositiveIntegerField(
         "Qarz muddati (kun)", null=True, blank=True
     )
+    note = models.CharField("Izoh", max_length=255, blank=True)
     # An opening balance carried over from before go-live: a client's old debt that
     # was never a CRM sale. Such a "sale" has NO line items — the debt is this amount
     # alone, and it flows into `debt_remaining`/`remaining` only. Because it has no

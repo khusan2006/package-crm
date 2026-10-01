@@ -76,6 +76,7 @@
     <div class="detail-row"><span class="k">Sana</span><span class="v">{{ sale.date|date:"d.m.Y" }}</span></div>
     <div class="detail-row"><span class="k">Mijoz</span><span class="v">{{ sale.client.name }}</span></div>
     <div class="detail-row"><span class="k">Sotuvchi</span><span class="v">{{ sale.sales_rep }}</span></div>
+    {% if sale.note %}<div class="detail-row"><span class="k">Izoh</span><span class="v">{{ sale.note|linebreaksbr }}</span></div>{% endif %}
     <div class="detail-row"><span class="k">Umumiy narx</span><span class="v">{{ sale.total_price|floatformat:"0g" }} so'm</span></div>
     <div class="detail-row"><span class="k">Umumiy tannarx</span><span class="v">{{ sale.total_cost|floatformat:"0g" }} so'm</span></div>
     <div class="detail-row"><span class="k">Foyda</span><span class="v">{{ sale.profit|floatformat:"0g" }} so'm</span></div>

@@ -72,5 +72,9 @@
   <span class="deadline-preview" data-deadline-preview hidden></span>
 </p>
 
+<p>
+  {{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}
+</p>
+
 {{ products_json|json_script:"product-price-map" }}
 {{ client_advance_json|json_script:"client-advance-map" }}

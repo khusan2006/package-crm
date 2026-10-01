@@ -1190,10 +1190,11 @@ class SaleForm(forms.ModelForm):
 
     class Meta:
         model = Sale
-        fields = ["date", "client"]
+        fields = ["date", "client", "note"]
         widgets = {
             "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
             "client": ClientSelect,
+            "note": forms.Textarea(attrs={"rows": 2, "placeholder": "Ixtiyoriy"}),
         }
 
     def __init__(self, *args, user=None, **kwargs):
