@@ -42,7 +42,7 @@
   </div>
 </div>
 
-{% include "crm/_filter_toolbar.html" with show_daterange_picker=True show_search=True %}
+{% include "crm/_filter_toolbar.html" with show_daterange_picker=True keep_daterange=True show_search=True %}
 
 {# Ikki xil o'qish — qaysi biri ochiqligi jadval ustidan ko'rinib tursin (tanlash filtrda). #}
 <p class="section-eyebrow">{% if by_client %}Mijozlar kesimida{% else %}Har bir to'lov{% endif %}</p>
@@ -155,5 +155,5 @@
   lekin jamiga qo'shilmaydi — u pul avans olingan kuni allaqachon sanalgan.
 </p>
 
-{% include "crm/_filter_drawer.html" with show_method=True show_currency=True %}
+{% include "crm/_filter_drawer.html" with show_method=True show_currency=True drawer_keep=window_keep %}
 {% endblock %}

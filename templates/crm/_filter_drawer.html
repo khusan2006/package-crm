@@ -9,6 +9,10 @@
     <input type="hidden" name="dan" value="{{ filters.dan }}">
     <input type="hidden" name="gacha" value="{{ filters.gacha }}">
     {% endif %}
+    {% comment %}Sotuvlar: sana oynasi faqat foydalanuvchi o'zi tanlagan bo'lsa ilashadi
+    (ro'yxat bo'sh qiymat bilan keladi, agar tanlanmagan bo'lsa) — aks holda filtr
+    faqat bugungi kunni ko'rsatib qo'yardi.{% endcomment %}
+    {% for keep in drawer_keep %}{% if keep.value %}<input type="hidden" name="{{ keep.name }}" value="{{ keep.value }}">{% endif %}{% endfor %}
     {% if filters.q %}<input type="hidden" name="q" value="{{ filters.q }}">{% endif %}
     {% comment %}Toolbar tugmasi bilan tanlangan ko'rinish filtr qo'llanganda ham qoladi.{% endcomment %}
     {% if filters.tur %}<input type="hidden" name="tur" value="{{ filters.tur }}">{% endif %}
@@ -153,10 +157,10 @@
     {% if show_overdue %}
     <label class="check-row"><input type="checkbox" name="overdue" value="1" {% if filters.overdue %}checked{% endif %}> Faqat muddati o'tgan</label>
     {% endif %}
-    {% if show_status %}<p class="field-hint">Filtr qo'llanganda sana oralig'i hisobga olinmaydi — barcha kunlar bo'yicha qidiriladi.</p>{% endif %}
+    {% if show_status %}<p class="field-hint">Sana tanlangan bo'lsa, filtr shu oraliq ichida qidiradi. Sana tanlanmagan bo'lsa — barcha kunlar bo'yicha.</p>{% endif %}
     <div class="drawer-actions">
       <button type="submit" class="btn">Qo'llash</button>
-      <a href="{{ filter_url }}" class="btn btn-ghost">Tozalash</a>
+      <a href="{{ filter_clear_url|default:filter_url }}" class="btn btn-ghost">Tozalash</a>
     </div>
   </form>
 </aside>

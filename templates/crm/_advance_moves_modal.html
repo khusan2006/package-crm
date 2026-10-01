@@ -8,6 +8,7 @@ o'sha kartaga olib borardi, endi bu oynani ochadi — o'sha yo'l yo'qolmasin.{% 
 <div class="adv-moves adv-moves--foot">
   <div class="modal-actions">
     <a class="btn btn-primary" href="{% url 'client_advance_pay' client.pk %}" data-modal>Avans qabul qilish</a>
+    {% if advance > 0 %}<a class="btn btn-ghost" href="{% url 'client_advance_clear' client.pk %}" data-modal title="Qolgan avansni hisobdan o'chirish — kassaga tegmaydi">Avansni o'chirish</a>{% endif %}
     <a class="btn btn-ghost" href="{% url 'debt_client' client.pk %}">Qarz kartasi</a>
     <button type="button" class="btn btn-ghost" data-modal-close>Yopish</button>
   </div>

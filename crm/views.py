@@ -65,6 +65,7 @@ from .models import (
     ADVANCE_DEPOSIT_KINDS,
     ADVANCE_SPENT_KINDS,
     COST,
+    DEBT_CLEAR_NOTE,
     ITEM_WEIGHT_KG,
     PAYING_KINDS,
     PAYMENT_CREDIT,
@@ -1134,9 +1135,11 @@ def _last_payment_map(user, client_pks):
     showing — and return credits / refunds move money the other way. Advances marked
     `is_opening` are dropped too: their cash was taken in earlier and the row carries
     the day it was written up, not the day the client handed anything over, so it says
-    nothing about when they last actually paid."""
+    nothing about when they last actually paid. The same flag on a receipt's payment
+    marks a debt that was cleared, not paid (DEBT_CLEAR_NOTE) — no money there either."""
     on_sales = Payment.objects.filter(
-        sale__client__in=client_pks, kind__in=(Payment.Kind.SALE, Payment.Kind.DEBT)
+        sale__client__in=client_pks, kind__in=(Payment.Kind.SALE, Payment.Kind.DEBT),
+        is_opening=False,
     )
     advances = Payment.objects.filter(
         client__in=client_pks, sale__isnull=True,
@@ -1416,26 +1419,69 @@ def _render_client_edit(request, client, form, title, invalid=False):
     return render(request, "crm/_client_edit_page.html", context)
 
 
+def _client_delete_extras(client):
+    """What goes with a client when they are deleted, as the phrases the confirm
+    dialog and the audit line are built from: (records, balances). Counted across
+    every seller — the whole account goes, not only the caller's side of it."""
+    sales = Sale.objects.filter(client=client)
+    sale_count = sales.real().count()
+    opening_count = sales.count() - sale_count
+    payment_count = (
+        Payment.objects.filter(Q(sale__client=client) | Q(client=client))
+        .distinct().count()
+    )
+    return_count = Return.objects.filter(sale__client=client).count()
+    debt = sales.outstanding().aggregate(s=Sum("remaining"))["s"] or Decimal("0")
+    advance = client_advance_balance(client)
+    records = [
+        f"{count} ta {label}"
+        for count, label in (
+            (sale_count, "sotuv"), (opening_count, "ochilish qarzi"),
+            (payment_count, "to'lov"), (return_count, "qaytarish"),
+        )
+        if count
+    ]
+    balances = [
+        f"{amount:,.0f} so'm {label}"
+        for amount, label in ((debt, "qarz"), (advance, "avans"))
+        if amount > 0
+    ]
+    return records, balances
+
+
 def client_delete(request, pk):
+    """Delete a client outright — debt, advance and all. Their sales (with the items,
+    payments and returns on them) and their advance movements go with them, so the
+    till, debt and profit re-derive as if the client had never been entered. Like
+    `sale_delete`, nothing is blocked: the confirm dialog spells out what will go."""
     client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    records, balances = _client_delete_extras(client)
     if request.method == "POST":
-        try:
+        summary = f"{client.name} o'chirildi"
+        if records or balances:
+            summary += f" — {', '.join(records + balances)}"
+        with transaction.atomic():
+            # Sale → Client is PROTECT, so the sales go first; their items, payments
+            # and returns cascade. Advance movements cascade with the client itself.
+            Sale.objects.filter(client=client).delete()
             client.delete()
-            AuditLog.record(
-                request.user, AuditLog.Action.DELETE, "Mijoz", pk,
-                f"{client.name} o'chirildi",
-            )
-            messages.success(request, f"“{client.name}” mijozi o'chirildi.")
-        except ProtectedError:
-            messages.error(
-                request,
-                f"“{client.name}” mijozini o'chirib bo'lmaydi — sotuvlari mavjud.",
-            )
+        AuditLog.record(
+            request.user, AuditLog.Action.DELETE, "Mijoz", pk, summary[:255]
+        )
+        messages.success(request, f"“{client.name}” mijozi o'chirildi.")
         return form_reload(request, reverse("client_list"))
+    warn = ""
+    if records:
+        warn += f" Unga bog'liq {', '.join(records)} ham o'chiriladi."
+    if balances:
+        warn += f" {' va '.join(balances)} hisobdan chiqadi."
+    if warn:
+        warn += " Kassa va qarz qayta hisoblanadi."
     return render_confirm(
         request,
         "Mijozni o'chirish",
-        f"“{client.name}” mijozi o'chiriladi. Bu amalni qaytarib bo'lmaydi.",
+        f"“{client.name}” mijozi butunlay o'chiriladi.{warn} "
+        "Bu amalni qaytarib bo'lmaydi.",
         "Ha, o'chirish",
         confirm_class="btn-danger",
     )
@@ -1509,6 +1555,10 @@ def _payment_event(payment):
     client with, so the running balance follows their debt: the full sum they sent
     when the seller carried the bank fee, the net when they carried it themselves."""
     label, cls, icon = _PAY_EVENTS[payment.kind]
+    if payment.note.startswith(DEBT_CLEAR_NOTE):
+        # Shaped like a debt payment so the balance follows it, but no money came in:
+        # under its own label it stays out of the history's "to'ladi" total.
+        label, cls = DEBT_CLEAR_NOTE, "badge-neutral"
     paying = payment.kind in PAYING_KINDS
     amount = payment.credited_amount
     if paying:
@@ -2050,12 +2100,21 @@ def _client_search(qs, term, base="", extra=None):
     return qs.filter(match)
 
 
-def _filter_sales(request, sales):
-    """Filter sales by client/product/rep/status and, only when no such filter
-    is active, a date window (dan..gacha, default today..today).
+def _picked_date_window(request):
+    """Whether the URL carries a date window the user actually chose — as opposed to
+    the "today" a page falls back on when it is given none."""
+    return bool(
+        _parse_date(request.GET.get("dan")) or _parse_date(request.GET.get("gacha"))
+    )
 
-    A content filter searches across ALL dates — the date window is the default
-    (unfiltered) view's concern, so the two never apply at once.
+
+def _filter_sales(request, sales):
+    """Filter sales by client/product/rep/status and by a date window (dan..gacha).
+
+    A window the user picked always applies, so a search or a filter narrows the
+    chosen days rather than throwing them away. Only the fallback differs: with no
+    window in the URL the plain list shows today, while a content filter searches
+    across ALL dates — looking a client up by name must not stop at today's sales.
     Returns (queryset, filters, date_from, date_to, has_filters)."""
     today = timezone.localdate()
     filters = {key: request.GET.get(key, "") for key in ("client", "product", "rep", "status")}
@@ -2072,11 +2131,13 @@ def _filter_sales(request, sales):
     date_to = _parse_date(request.GET.get("gacha")) or date_from
     if date_to < date_from:
         date_from, date_to = date_to, date_from
-    if not has_filters:
+    windowed = _picked_date_window(request) or not has_filters
+    if windowed:
         sales = sales.filter(date__gte=date_from, date__lte=date_to)
 
-    filters["dan"] = date_from.isoformat()
-    filters["gacha"] = date_to.isoformat()
+    # Empty when no window is in force, which is what the picker reads as "Hammasi".
+    filters["dan"] = date_from.isoformat() if windowed else ""
+    filters["gacha"] = date_to.isoformat() if windowed else ""
     if filters["q"]:
         sales = _client_search(sales, filters["q"], "client")
     if filters["client"].isdigit():
@@ -2224,6 +2285,37 @@ def _date_range_context(request, default_window="today"):
     }
 
 
+def _windowed_filter_context(request, url_name, filters, has_filters, keep):
+    """Toolbar context for a list whose date window and content filters work together
+    (sotuvlar, mijozlar to'lovlari): the picker's vars plus what each control must
+    carry so that using one never drops another.
+
+    A window the user picked rides along with every search and filter. The implicit
+    "today" does not: carried along, it would stop a name search at today's rows.
+    `keep` names the drawer's filters — the search box is its own form, so it has to
+    take them with it."""
+    picked = _picked_date_window(request)
+    window_keep = [
+        {"name": key, "value": filters[key] if picked else ""}
+        for key in ("dan", "gacha")
+    ]
+    window_qs = urlencode([(k["name"], k["value"]) for k in window_keep if k["value"]])
+    return {
+        # Filtered with no window picked, the list spans every date — the picker then
+        # reads "Hammasi" instead of a "Bugun" that isn't being applied.
+        **_date_range_context(
+            request, default_window="all" if has_filters else "today"
+        ),
+        "allow_all_window": has_filters,
+        "window_keep": window_keep,
+        "search_keep": window_keep + [
+            {"name": key, "value": filters[key]} for key in keep
+        ],
+        "search_clear_url": _url_without(request, url_name, "q", "page"),
+        "filter_clear_url": reverse(url_name) + (f"?{window_qs}" if window_qs else ""),
+    }
+
+
 def _outstanding_balance(sales):
     """Total still owed across the given sales: item revenue − returns − payments,
     plus any carried-over opening balance.
@@ -2286,7 +2378,10 @@ def sale_list(request):
             "has_filters": has_filters,
             "active_filters": active_filters,
             "filter_count": len(active_filters),
-            **_date_range_context(request),
+            **_windowed_filter_context(
+                request, "sale_list", filters, has_filters,
+                keep=("client", "product", "rep", "status"),
+            ),
             "clients": clients,
             "products": products,
             "reps": reps,
@@ -3397,6 +3492,286 @@ def client_advance_moves(request, pk):
     return render(request, "crm/_advance_moves_page.html", context)
 
 
+def _advance_held_by_seller(client, user):
+    """{seller_pk: advance balance} for every till that still holds credit for this
+    client — the caller's own only, for a seller. Advance is seller-bound, so a
+    balance can only be taken off the till it sits in."""
+    rows = Payment.objects.filter(client=client)
+    if not user.can_see_all_records:
+        rows = rows.filter(created_by=user)
+    agg = rows.values("created_by").annotate(
+        dep=Sum(PAYMENT_CREDIT, filter=Q(kind__in=ADVANCE_DEPOSIT_KINDS)),
+        used=Sum(PAYMENT_CREDIT, filter=Q(kind__in=ADVANCE_SPENT_KINDS)),
+    )
+    held = {
+        r["created_by"]: (r["dep"] or Decimal("0")) - (r["used"] or Decimal("0"))
+        for r in agg
+    }
+    return {seller: balance for seller, balance in held.items() if balance > 0}
+
+
+def _render_balance_clear(request, client, context):
+    """The shared "o'chirish" dialog for a client's debt or advance: what the balance
+    is made of, what to fix first if it is simply wrong, and what happens if it is
+    taken off regardless."""
+    context = {"client": client, **context}
+    if is_ajax(request):
+        return render(request, "crm/_balance_clear_modal.html", context)
+    return render(request, "crm/_balance_clear_page.html", context)
+
+
+def _advance_sources(client, held):
+    """The deposits a client's remaining advance is made of, as dialog rows.
+
+    The pool is spent oldest-first, so what is left sits on the newest deposits: each
+    till's rows are walked back from the latest until they cover its balance. Every
+    row names the thing that can be fixed instead of clearing — a deposit has its own
+    edit and delete, credit that came off a sale leads back to that receipt."""
+    labels = {
+        Payment.Kind.ADVANCE_IN: "Avans olingan",
+        Payment.Kind.RETURN_CREDIT: "Qaytarishdan ortgan pul",
+        Payment.Kind.ADJUST_CREDIT: "Narx tuzatilganda ortgan pul",
+    }
+    rows = []
+    for seller_pk, balance in held.items():
+        deposits = (
+            Payment.objects.filter(
+                client=client, created_by_id=seller_pk, kind__in=ADVANCE_DEPOSIT_KINDS
+            )
+            .select_related("sale")
+            .order_by("-date", "-created_at")
+        )
+        for dep in deposits:
+            if balance <= 0:
+                break
+            balance -= dep.credited_amount
+            if dep.kind == Payment.Kind.ADVANCE_IN:
+                links = [
+                    {"label": "Tahrirlash", "modal": True,
+                     "url": reverse("advance_edit", args=[dep.pk])},
+                    {"label": "O'chirish", "modal": True,
+                     "url": reverse("advance_delete", args=[dep.pk])},
+                ]
+                hint = dep.note
+            else:
+                links = [{"label": "Chekni ochish",
+                          "url": reverse("sale_detail", args=[dep.sale_id])}]
+                hint = f"{dep.sale.date:%d.%m.%Y} sotuvi"
+            rows.append({
+                "date": dep.date,
+                "kind": dep.kind,
+                "label": labels[dep.kind],
+                "hint": hint,
+                "amount": dep.credited_amount,
+                "links": links,
+            })
+    return rows
+
+
+def _advance_clear_steps(rows):
+    """What to try before clearing an advance, by what the balance is made of."""
+    kinds = {row["kind"] for row in rows}
+    steps = []
+    if Payment.Kind.ADVANCE_IN in kinds:
+        steps += [
+            "Avans summasi xato yozilgan bo'lsa — qatordagi «Tahrirlash»ni bosing.",
+            "Avans umuman xato yozilgan yoki pul mijozga qaytarib berilgan bo'lsa — "
+            "qatordagi «O'chirish»ni bosing: u pul kassadan chiqqan-chiqmaganini "
+            "so'raydi.",
+        ]
+    if Payment.Kind.RETURN_CREDIT in kinds:
+        steps.append(
+            "Tovar qaytarilgani xato yozilgan bo'lsa — chekni ochib qaytarishni bekor "
+            "qiling: avans ham u bilan birga yo'qoladi."
+        )
+    if Payment.Kind.ADJUST_CREDIT in kinds:
+        steps.append(
+            "Sotuv narxi tuzatilganda ortib qolgan pulning tuzatadigan alohida "
+            "yozuvi yo'q — kerak bo'lmasa shu yerda o'chiriladi."
+        )
+    steps.append(
+        "Mijoz yana savdo qiladigan bo'lsa, hech narsa qilish shart emas — avans "
+        "keyingi sotuvdan o'zi yechiladi."
+    )
+    return [{"text": text} for text in steps]
+
+
+def client_advance_clear(request, pk):
+    """Take whatever advance a client still holds off their account, in one step.
+
+    The way out for credit that has no deposit behind it to edit or delete — the few
+    so'm left over when a sale's price was corrected or goods came back — and for a
+    balance nobody is going to spend. No cash moves: the money stays in the till it is
+    already in, only the "biz mijozga qarzmiz" figure goes.
+
+    Clearing is never refused, but the dialog first lays out what the balance is made
+    of and what to fix if it is simply wrong — a mistyped deposit is better edited
+    than cleared, because only the edit puts the kassa right too.
+
+    Written as an advance return kept out of the kassa, tagged as a correction so no
+    screen reads it as the client taking their money back. Being an ordinary
+    ADVANCE_OUT row it shows under Avans harakatlari, where `advance_out_delete`
+    undoes it."""
+    client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    held = _advance_held_by_seller(client, request.user)
+    total = sum(held.values(), Decimal("0"))
+    back = reverse("debt_client", args=[client.pk])
+    if not held:
+        messages.error(request, f"“{client.name}” mijozida o'chiriladigan avans yo'q.")
+        return form_reload(request, back)
+    if request.method != "POST":
+        rows = _advance_sources(client, held)
+        return _render_balance_clear(request, client, {
+            "title": f"Avansni o'chirish: {client.name}",
+            "total_label": "Mijozda turgan avans",
+            "total": total,
+            "check_intro": (
+                "Avans noto'g'ri chiqib qolgan bo'lsa, avval sababini tuzating — "
+                "shunda kassa ham to'g'ri qoladi:"
+            ),
+            "steps": _advance_clear_steps(rows),
+            "rows_title": "Avans nimadan yig'ilgan",
+            "rows": rows,
+            "effect": (
+                f"{total:,.0f} so'm avans hisobdan chiqadi — mijozga qarzimiz "
+                f"qolmaydi. Pul kassadan chiqmaydi, kassa o'zgarmaydi. Qaytarish "
+                f"uchun «Avans harakatlari»dagi «tuzatish» qatorini o'chiring."
+            ),
+            "confirm_label": "Baribir o'chirish",
+        })
+    with transaction.atomic():
+        for seller_pk, amount in held.items():
+            Payment.objects.create(
+                client=client,
+                sale=None,
+                amount=amount,
+                amount_original=amount,
+                method=Payment.Method.CASH,
+                note=f"{ADVANCE_ADJUST_NOTE}: avans o'chirildi",
+                kind=Payment.Kind.ADVANCE_OUT,
+                is_opening=True,
+                date=timezone.localdate(),
+                created_by_id=seller_pk,
+            )
+    AuditLog.record(
+        request.user, AuditLog.Action.VOID, "To'lov", client.pk,
+        f"Mijoz {client.name} avansi o'chirildi — {total:,.0f} so'm "
+        f"(kassaga tegmadi)",
+    )
+    messages.success(
+        request, f"Avans o'chirildi: {total:,.0f} so'm — kassaga tegilmadi."
+    )
+    return form_reload(request, back)
+
+
+def _debt_clear_rows(client, sales):
+    """A client's open receipts as dialog rows, each leading to where it is fixed."""
+    rows = []
+    for sale in sales:
+        if sale.is_opening:
+            label, hint = "Boshlang'ich qarz", "CRM'gacha bo'lgan eski qarz"
+            links = [{"label": "Tahrirlash", "modal": True,
+                      "url": reverse("client_opening_debt", args=[client.pk])}]
+        else:
+            label, hint = sale.item_summary, ""
+            links = [{"label": "Chekni ochish",
+                      "url": reverse("sale_detail", args=[sale.pk])}]
+        rows.append({
+            "date": sale.date, "label": label, "hint": hint,
+            "amount": sale.remaining, "links": links,
+        })
+    return rows
+
+
+def _debt_clear_steps(client, sales):
+    """What to try before clearing a debt: each way a debt comes to be wrong, and the
+    screen that puts it right."""
+    steps = [
+        {"text": "Mijoz pul bergan, lekin to'lov yozilmagan bo'lsa —",
+         "action": "to'lovni kiriting", "modal": True,
+         "url": reverse("client_debt_pay", args=[client.pk])},
+        {"text": "Narx yoki og'irlik xato yozilgan bo'lsa — chekni ochib "
+                 "«Tahrirlash»ni bosing."},
+        {"text": "Tovar qaytib kelgan bo'lsa — chekni ochib «Qaytarish» yozing."},
+        {"text": "Chek xato yoki ikki marta yozilgan bo'lsa — uni Sotuvlar "
+                 "ro'yxatidan o'chiring."},
+    ]
+    if any(sale.is_opening for sale in sales):
+        steps.append({
+            "text": "CRM'gacha bo'lgan eski qarz xato kiritilgan bo'lsa —",
+            "action": "boshlang'ich qarzni tuzating", "modal": True,
+            "url": reverse("client_opening_debt", args=[client.pk]),
+        })
+    return steps
+
+
+def client_debt_clear(request, pk):
+    """Take a client's whole open debt off their account with no money changing hands
+    — the counterpart of `client_advance_clear`.
+
+    Never refused, but the dialog first lists the open receipts and the proper fix for
+    each way a debt goes wrong (an unrecorded payment, a mistyped price, goods that
+    came back): those put the kassa and the reports right, a clearing only hides the
+    figure. It is for what is left when none of them applies — a few so'm nobody will
+    collect, a debt that is being forgiven.
+
+    Each receipt gets a debt payment for its balance, kept out of every till and
+    carrying DEBT_CLEAR_NOTE. The sale, its revenue and the seller's cash are
+    untouched; deleting that payment on the receipt brings the debt back."""
+    client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    sales = list(_open_receipts(request, client))
+    total = sum((s.remaining for s in sales), Decimal("0"))
+    back = reverse("debt_client", args=[client.pk])
+    if not sales:
+        messages.error(request, f"“{client.name}” mijozida o'chiriladigan qarz yo'q.")
+        return form_reload(request, back)
+    if request.method != "POST":
+        return _render_balance_clear(request, client, {
+            "title": f"Qarzni o'chirish: {client.name}",
+            "total_label": f"Umumiy qarz · {len(sales)} ta ochiq chek",
+            "total": total,
+            "check_intro": (
+                "Qarz noto'g'ri chiqib qolgan bo'lsa, avval sababini tuzating — "
+                "shunda qarz o'zi to'g'rilanadi, kassa va hisobotlar ham to'g'ri "
+                "qoladi:"
+            ),
+            "steps": _debt_clear_steps(client, sales),
+            "rows_title": "Ochiq cheklar",
+            "rows": _debt_clear_rows(client, sales),
+            "effect": (
+                f"{total:,.0f} so'm qarz hisobdan chiqadi: har bir chekka "
+                f"«{DEBT_CLEAR_NOTE}» degan kassasiz to'lov yoziladi. Kassaga pul "
+                f"kirmaydi, sotuv va foyda o'zgarmaydi. Qaytarish uchun chek ichida "
+                f"shu to'lovni o'chiring."
+            ),
+            "confirm_label": "Baribir o'chirish",
+        })
+    with transaction.atomic():
+        for sale in sales:
+            Payment.objects.create(
+                sale=sale,
+                amount=sale.remaining,
+                amount_original=sale.remaining,
+                method=Payment.Method.CASH,
+                note=DEBT_CLEAR_NOTE,
+                kind=Payment.Kind.DEBT,
+                is_opening=True,
+                date=timezone.localdate(),
+                # The receivable is the sale's own seller's, whoever clears it.
+                created_by=sale.sales_rep,
+            )
+        recompute_client_debt_deadlines(client.pk)
+    AuditLog.record(
+        request.user, AuditLog.Action.VOID, "To'lov", client.pk,
+        f"Mijoz {client.name} qarzi o'chirildi — {total:,.0f} so'm, "
+        f"{len(sales)} ta chek (kassaga tegmadi)",
+    )
+    messages.success(
+        request, f"Qarz o'chirildi: {total:,.0f} so'm — kassaga tegilmadi."
+    )
+    return form_reload(request, back)
+
+
 def _reconcile_client_advance(client, seller):
     """Bring a client's advance (for one seller) back into balance after a deposit
     was changed or removed. If deposits have shrunk below what sales already drew
@@ -3821,11 +4196,11 @@ def _payment_scope(user):
 def _filter_payments(request):
     """Client payments for the current filters, newest first.
 
-    Dates work exactly as they do on the sales list: the dan..gacha window (today by
-    default) is what the unfiltered page shows, but as soon as a content filter is
-    set — a client, a method, a search term — the window steps aside and the search
-    runs over every date. Picking a client from the drawer is how you ask "what has
-    this person ever paid us", and answering for today alone would make it useless.
+    Dates work exactly as they do on the sales list: a dan..gacha window the user
+    picked always applies, filters or not. With none picked the unfiltered page shows
+    today, but a content filter — a client, a method, a search term — runs over every
+    date. Picking a client from the drawer is how you ask "what has this person ever
+    paid us", and answering for today alone would make it useless.
 
     Returns (queryset, filters, has_filters)."""
     qs = _payment_scope(request.user)
@@ -3851,9 +4226,11 @@ def _filter_payments(request):
     )
 
     dates = _date_range_context(request)
-    filters["dan"] = dates["date_from"].isoformat()
-    filters["gacha"] = dates["date_to"].isoformat()
-    if not has_filters:
+    windowed = _picked_date_window(request) or not has_filters
+    # Empty when no window is in force, which is what the picker reads as "Hammasi".
+    filters["dan"] = dates["date_from"].isoformat() if windowed else ""
+    filters["gacha"] = dates["date_to"].isoformat() if windowed else ""
+    if windowed:
         qs = qs.filter(date__gte=dates["date_from"], date__lte=dates["date_to"])
 
     if filters["q"]:
@@ -4045,7 +4422,10 @@ def payment_list(request):
         "filter_url": reverse("payment_list"),
         "search_placeholder": "Mijoz ismi yoki telefoni bo'yicha qidirish…",
         "export_url": reverse("payment_export") + (f"?{export_qs}" if export_qs else ""),
-        **_date_range_context(request),
+        **_windowed_filter_context(
+            request, "payment_list", filters, has_filters,
+            keep=("client", "rep", "method", "currency", "kind"),
+        ),
     })
 
 

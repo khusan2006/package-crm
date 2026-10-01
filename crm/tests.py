@@ -24,6 +24,7 @@ from .forms import (
 )
 from .models import (
     ADVANCE_ADJUST_NOTE,
+    DEBT_CLEAR_NOTE,
     COST,
     DEFAULT_DEBT_DAYS,
     AuditLog,
@@ -804,12 +805,90 @@ class DayViewTests(BaseSetup):
         resp = self.client.get(reverse("sale_list"), {"client": self.client1.pk})
         self.assertTrue(resp.context["has_filters"])
         self.assertEqual(resp.context["active_filters"], [])
-        # Toolbar shows the clear-filter control and hides the date-range picker,
-        # matching the pre-refactor behavior. (The bare class name also appears
-        # in base.html's unconditional JS behavior script, so match the actual
-        # rendered element instead of the substring.)
+        # Toolbar shows the clear-filter control, and the date-range picker stays
+        # beside it — a filter and a window work together. (The bare class name also
+        # appears in base.html's unconditional JS behavior script, so match the
+        # actual rendered element instead of the substring.)
         self.assertContains(resp, "chip-clear")
-        self.assertNotContains(resp, 'class="daterange-trigger"')
+        self.assertContains(resp, 'class="daterange-trigger"')
+
+    def _window_fixture(self):
+        """One sale of client1 inside a picked window, one before it."""
+        today = timezone.localdate()
+        inside = make_sale(
+            self.client1, self.sales1, self.product, date=today - timedelta(days=3)
+        )
+        before = make_sale(
+            self.client1, self.sales1, self.product, date=today - timedelta(days=30)
+        )
+        window = {
+            "dan": (today - timedelta(days=5)).isoformat(),
+            "gacha": (today - timedelta(days=1)).isoformat(),
+        }
+        return inside, before, window
+
+    def test_search_narrows_the_picked_window_instead_of_dropping_it(self):
+        inside, before, window = self._window_fixture()
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_list"), {"q": "Mijoz A", **window})
+        sales = list(response.context["page"].object_list)
+        self.assertIn(inside, sales)
+        self.assertNotIn(before, sales)       # outside the window
+        self.assertNotIn(self.sale1, sales)   # today, outside the window
+        self.assertFalse(response.context["is_all"])
+        # ...and the next search keeps it: the form carries the window along
+        self.assertContains(
+            response, f'<input type="hidden" name="dan" value="{window["dan"]}">', count=2
+        )
+        self.assertContains(
+            response, f'<input type="hidden" name="gacha" value="{window["gacha"]}">', count=2
+        )
+
+    def test_drawer_filter_narrows_the_picked_window_too(self):
+        inside, before, window = self._window_fixture()
+        self.client.force_login(self.sales1)
+        response = self.client.get(
+            reverse("sale_list"), {"client": self.client1.pk, **window}
+        )
+        sales = list(response.context["page"].object_list)
+        self.assertEqual(sales, [inside])
+
+    def test_search_without_a_picked_window_spans_every_date(self):
+        inside, before, _ = self._window_fixture()
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_list"), {"q": "Mijoz A"})
+        sales = list(response.context["page"].object_list)
+        self.assertIn(before, sales)
+        self.assertIn(self.sale1, sales)
+        # The picker says so, rather than showing a "Bugun" that isn't applied
+        self.assertTrue(response.context["is_all"])
+        # The implicit today is not carried into the next search
+        self.assertNotContains(response, '<input type="hidden" name="dan"')
+
+    def test_plain_list_does_not_pin_today_onto_the_next_search(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_list"))
+        self.assertTrue(response.context["is_today"])
+        self.assertNotContains(response, '<input type="hidden" name="dan"')
+
+    def test_clearing_filters_keeps_the_picked_window(self):
+        _, _, window = self._window_fixture()
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_list"), {"q": "Mijoz A", **window})
+        self.assertEqual(
+            response.context["filter_clear_url"],
+            f'{reverse("sale_list")}?dan={window["dan"]}&gacha={window["gacha"]}',
+        )
+
+    def test_payments_search_narrows_the_picked_window(self):
+        inside, before, window = self._window_fixture()
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("payment_list"), {"q": "Mijoz A", **window})
+        sale_pks = {row["sale_pk"] for row in response.context["page"].object_list}
+        self.assertEqual(sale_pks, {inside.pk})
+        everything = self.client.get(reverse("payment_list"), {"q": "Mijoz A"})
+        sale_pks = {row["sale_pk"] for row in everything.context["page"].object_list}
+        self.assertEqual(sale_pks, {inside.pk, before.pk, self.sale1.pk})
 
 
 class StockTests(BaseSetup):
@@ -4860,6 +4939,352 @@ class InnerPageBackTests(BaseSetup):
             r = self.client.get(url)
             self.assertEqual(r.status_code, 200, url)
             self.assertIn("topbar-back", r.content.decode(), url)
+
+
+class AdvanceClearTests(BaseSetup):
+    """Credit a client holds can be taken off in one step, even when no deposit stands
+    behind it — the few so'm left when a paid sale's price was corrected. The till is
+    not touched and the step can be undone."""
+
+    def _stray_credit(self, seller=None, amount="1000"):
+        """What a price correction on a paid sale leaves behind: credit on the client's
+        pool, hung on the sale, with no deposit row to edit or delete."""
+        seller = seller or self.sales1
+        # The client paid that much over the receipt...
+        Payment.objects.create(
+            sale=self.sale1, amount=Decimal(amount), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, created_by=seller,
+        )
+        # ...and the correction parked the excess as their credit.
+        return Payment.objects.create(
+            sale=self.sale1, client=self.client1, amount=Decimal(amount),
+            method=Payment.Method.CASH, kind=Payment.Kind.ADJUST_CREDIT,
+            note="Narx tuzatildi", created_by=seller,
+        )
+
+    def _clear(self):
+        return self.client.post(reverse("client_advance_clear", args=[self.client1.pk]))
+
+    def test_qarz_card_offers_the_button_for_credit_with_no_deposit(self):
+        self._stray_credit()
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("debt_client", args=[self.client1.pk]))
+        self.assertContains(
+            response, reverse("client_advance_clear", args=[self.client1.pk])
+        )
+
+    def test_no_button_without_advance(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("debt_client", args=[self.client1.pk]))
+        self.assertNotContains(
+            response, reverse("client_advance_clear", args=[self.client1.pk])
+        )
+
+    def test_clear_zeroes_the_balance_and_leaves_the_till_alone(self):
+        self._stray_credit()
+        till = seller_cash_on_hand(self.sales1)
+        self.client.force_login(self.sales1)
+        self.assertEqual(self._clear().status_code, 302)
+        self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("0"))
+        self.assertEqual(seller_cash_on_hand(self.sales1), till)
+        row = Payment.objects.get(kind=Payment.Kind.ADVANCE_OUT)
+        self.assertEqual(row.amount, Decimal("1000"))
+        self.assertTrue(row.is_opening)            # kept out of the kassa
+        self.assertTrue(row.note.startswith(ADVANCE_ADJUST_NOTE))
+        self.assertEqual(row.created_by, self.sales1)
+
+    def test_clear_can_be_undone_from_the_moves_table(self):
+        self._stray_credit()
+        self.client.force_login(self.sales1)
+        self._clear()
+        row = Payment.objects.get(kind=Payment.Kind.ADVANCE_OUT)
+        card = self.client.get(reverse("debt_client", args=[self.client1.pk]))
+        self.assertContains(card, reverse("advance_out_delete", args=[row.pk]))
+        self.client.post(reverse("advance_out_delete", args=[row.pk]))
+        self.assertEqual(
+            client_advance_balance(self.client1, self.sales1), Decimal("1000")
+        )
+
+    def test_nothing_is_written_when_there_is_no_advance(self):
+        self.client.force_login(self.sales1)
+        self._clear()
+        self.assertFalse(Payment.objects.filter(kind=Payment.Kind.ADVANCE_OUT).exists())
+
+    def test_admin_clears_each_sellers_till_separately(self):
+        self._stray_credit(self.sales1, "1000")
+        self._stray_credit(self.sales2, "700")
+        self.client.force_login(self.admin)
+        self._clear()
+        rows = {
+            p.created_by_id: p.amount
+            for p in Payment.objects.filter(kind=Payment.Kind.ADVANCE_OUT)
+        }
+        self.assertEqual(
+            rows, {self.sales1.pk: Decimal("1000"), self.sales2.pk: Decimal("700")}
+        )
+        self.assertEqual(client_advance_balance(self.client1), Decimal("0"))
+
+    def test_seller_clears_only_their_own_till(self):
+        self._stray_credit(self.sales1, "1000")
+        self._stray_credit(self.sales2, "700")
+        self.client.force_login(self.sales1)
+        self._clear()
+        self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("0"))
+        self.assertEqual(
+            client_advance_balance(self.client1, self.sales2), Decimal("700")
+        )
+
+    def test_seller_cannot_clear_another_sellers_client(self):
+        Payment.objects.create(
+            sale=self.sale2, client=self.client2, amount=Decimal("1000"),
+            method=Payment.Method.CASH, kind=Payment.Kind.ADJUST_CREDIT,
+            created_by=self.sales2,
+        )
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("client_advance_clear", args=[self.client2.pk])
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(Payment.objects.filter(kind=Payment.Kind.ADVANCE_OUT).exists())
+
+    def test_clear_is_written_to_the_audit_log(self):
+        self._stray_credit()
+        self.client.force_login(self.sales1)
+        self._clear()
+        entry = AuditLog.objects.filter(action=AuditLog.Action.VOID).latest("pk")
+        self.assertIn("avansi o'chirildi", entry.summary)
+        self.assertIn("1,000", entry.summary)
+
+
+class AdvanceClearDialogTests(AdvanceClearTests):
+    """Before clearing, the dialog says what the advance is made of and what to fix
+    first — and still lets it be cleared."""
+
+    def _dialog(self):
+        return self.client.get(reverse("client_advance_clear", args=[self.client1.pk]))
+
+    def test_credit_off_a_sale_leads_back_to_its_receipt(self):
+        self._stray_credit()
+        self.client.force_login(self.sales1)
+        response = self._dialog()
+        self.assertContains(response, "Avval tekshiring")
+        self.assertContains(response, "Narx tuzatilganda ortgan pul")
+        self.assertContains(response, reverse("sale_detail", args=[self.sale1.pk]))
+        self.assertContains(response, "Baribir o&#x27;chirish")
+        # Looking is not clearing
+        self.assertFalse(Payment.objects.filter(kind=Payment.Kind.ADVANCE_OUT).exists())
+
+    def test_a_deposit_offers_its_own_edit_and_delete(self):
+        buyer = Client.objects.create(name="Avansli mijoz", owner=self.sales1)
+        deposit = Payment.objects.create(
+            client=buyer, amount=Decimal("500000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.ADVANCE_IN, created_by=self.sales1,
+        )
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_advance_clear", args=[buyer.pk]))
+        self.assertContains(response, reverse("advance_edit", args=[deposit.pk]))
+        self.assertContains(response, reverse("advance_delete", args=[deposit.pk]))
+        self.assertEqual(response.context["total"], Decimal("500000"))
+
+    def test_only_the_deposits_still_holding_money_are_listed(self):
+        buyer = Client.objects.create(name="Avansli mijoz", owner=self.sales1)
+        today = timezone.localdate()
+        spent = Payment.objects.create(
+            client=buyer, amount=Decimal("300000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.ADVANCE_IN, created_by=self.sales1,
+            date=today - timedelta(days=10),
+        )
+        Payment.objects.create(
+            client=buyer, amount=Decimal("300000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.ADVANCE_OUT, created_by=self.sales1,
+            date=today - timedelta(days=5),
+        )
+        live = Payment.objects.create(
+            client=buyer, amount=Decimal("200000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.ADVANCE_IN, created_by=self.sales1,
+        )
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_advance_clear", args=[buyer.pk]))
+        self.assertContains(response, reverse("advance_edit", args=[live.pk]))
+        self.assertNotContains(response, reverse("advance_edit", args=[spent.pk]))
+
+
+class DebtClearTests(BaseSetup):
+    """A client's open debt can be taken off with no money changing hands. The dialog
+    first shows what to fix instead; the clearing itself touches no till and is undone
+    by deleting the payment it wrote."""
+
+    def setUp(self):
+        self.debt = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+
+    def _url(self, client=None):
+        return reverse("client_debt_clear", args=[(client or self.client1).pk])
+
+    def _clear(self):
+        return self.client.post(self._url())
+
+    def test_qarz_card_offers_the_button_only_with_open_receipts(self):
+        self.client.force_login(self.sales1)
+        card = self.client.get(reverse("debt_client", args=[self.client1.pk]))
+        self.assertContains(card, self._url())
+        self.client.force_login(self.sales2)
+        card = self.client.get(reverse("debt_client", args=[self.client2.pk]))
+        self.assertNotContains(card, self._url(self.client2))
+
+    def test_dialog_shows_what_to_fix_first(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(self._url())
+        self.assertContains(response, "Avval tekshiring")
+        # The receipt behind the debt, and the screens that put a wrong debt right
+        self.assertContains(response, reverse("sale_detail", args=[self.debt.pk]))
+        self.assertContains(response, reverse("client_debt_pay", args=[self.client1.pk]))
+        self.assertEqual(response.context["total"], Decimal("240000"))
+        self.assertContains(response, "Baribir o&#x27;chirish")
+        # Looking is not clearing
+        self.debt.refresh_from_db()
+        self.assertEqual(self.debt.debt_remaining, Decimal("240000"))
+
+    def test_opening_debt_leads_to_its_own_form(self):
+        Sale.objects.create(
+            client=self.client1, sales_rep=self.sales1, is_opening=True,
+            opening_amount=Decimal("100000"),
+            debt_deadline=timezone.localdate() + timedelta(days=7),
+        )
+        self.client.force_login(self.sales1)
+        response = self.client.get(self._url())
+        self.assertContains(response, "Boshlang&#x27;ich qarz")
+        self.assertContains(
+            response, reverse("client_opening_debt", args=[self.client1.pk])
+        )
+
+    def test_clear_settles_every_receipt_and_leaves_the_till_alone(self):
+        opening = Sale.objects.create(
+            client=self.client1, sales_rep=self.sales1, is_opening=True,
+            opening_amount=Decimal("100000"),
+            debt_deadline=timezone.localdate() + timedelta(days=7),
+        )
+        till = seller_cash_on_hand(self.sales1)
+        self.client.force_login(self.admin)
+        self.assertEqual(self._clear().status_code, 302)
+        open_left = Sale.objects.filter(client=self.client1).outstanding()
+        self.assertFalse(open_left.exists())
+        self.assertEqual(seller_cash_on_hand(self.sales1), till)
+        rows = Payment.objects.filter(note=DEBT_CLEAR_NOTE)
+        self.assertEqual(
+            {p.sale_id: p.amount for p in rows},
+            {self.debt.pk: Decimal("240000"), opening.pk: Decimal("100000")},
+        )
+        for row in rows:
+            self.assertEqual(row.kind, Payment.Kind.DEBT)
+            self.assertTrue(row.is_opening)                 # kept out of the kassa
+            self.assertEqual(row.created_by, self.sales1)   # the sale's own seller
+        self.assertFalse(Payment.objects.till_income().filter(note=DEBT_CLEAR_NOTE).exists())
+
+    def test_cleared_debt_is_not_reported_as_money_received(self):
+        self.client.force_login(self.sales1)
+        self._clear()
+        payments = self.client.get(reverse("payment_list"))
+        self.assertEqual(
+            [row["sale_pk"] for row in payments.context["page"].object_list],
+            [self.sale1.pk],     # the paid sale from BaseSetup, nothing else
+        )
+        history = self.client.get(reverse("client_history", args=[self.client1.pk]))
+        self.assertEqual(history.context["totals"]["debt"], Decimal("0"))
+        self.assertEqual(history.context["totals"]["paid"], Decimal("240000"))
+        self.assertContains(history, DEBT_CLEAR_NOTE.replace("'", "&#x27;"))
+        # Nor does it count as the day the client last paid
+        card = self.client.get(reverse("debt_client", args=[self.client1.pk]))
+        self.assertEqual(card.context["last_payment"], self.sale1.date)
+
+    def test_clear_is_undone_by_deleting_the_payment_on_the_receipt(self):
+        self.client.force_login(self.sales1)
+        self._clear()
+        row = Payment.objects.get(note=DEBT_CLEAR_NOTE)
+        detail = self.client.get(reverse("sale_detail", args=[self.debt.pk]))
+        self.assertContains(detail, reverse("payment_delete", args=[row.pk]))
+        self.assertContains(detail, "kassasiz")
+        self.client.post(reverse("payment_delete", args=[row.pk]))
+        self.debt.refresh_from_db()
+        self.assertEqual(self.debt.debt_remaining, Decimal("240000"))
+
+    def test_nothing_is_written_when_there_is_no_debt(self):
+        self.client.force_login(self.sales2)
+        self.client.post(self._url(self.client2))
+        self.assertFalse(Payment.objects.filter(note=DEBT_CLEAR_NOTE).exists())
+
+    def test_seller_cannot_clear_another_sellers_client(self):
+        self.client.force_login(self.sales2)
+        self.assertEqual(self._clear().status_code, 404)
+        self.assertFalse(Payment.objects.filter(note=DEBT_CLEAR_NOTE).exists())
+
+    def test_clear_is_written_to_the_audit_log(self):
+        self.client.force_login(self.sales1)
+        self._clear()
+        entry = AuditLog.objects.filter(action=AuditLog.Action.VOID).latest("pk")
+        self.assertIn("qarzi o'chirildi", entry.summary)
+        self.assertIn("240,000", entry.summary)
+
+
+class ClientDeleteTests(BaseSetup):
+    """A client is deleted outright, whatever is on their account — debt, advance,
+    paid sales. Nothing blocks it; the dialog says what goes and the money re-derives."""
+
+    def _owing_client_with_advance(self):
+        buyer = Client.objects.create(name="Qarzdor mijoz", owner=self.sales1)
+        debt = make_sale(buyer, self.sales1, self.product, is_debt=True)   # owes 240000
+        paid = make_sale(buyer, self.sales1, self.product)                 # paid 240000
+        Payment.objects.create(
+            client=buyer, amount=Decimal("500000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.ADVANCE_IN, created_by=self.sales1,
+        )
+        return buyer, debt, paid
+
+    def test_client_with_debt_and_advance_is_deleted_with_everything_on_it(self):
+        buyer, debt, paid = self._owing_client_with_advance()
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("client_delete", args=[buyer.pk]))
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(Client.objects.filter(pk=buyer.pk).exists())
+        self.assertFalse(Sale.objects.filter(pk__in=[debt.pk, paid.pk]).exists())
+        self.assertFalse(SaleItem.objects.filter(sale__in=[debt.pk, paid.pk]).exists())
+        self.assertFalse(Payment.objects.filter(sale=paid.pk).exists())
+        self.assertFalse(Payment.objects.filter(kind=Payment.Kind.ADVANCE_IN).exists())
+        # Everyone else's records are untouched
+        self.assertTrue(Sale.objects.filter(pk=self.sale1.pk).exists())
+        self.assertEqual(self.sale1.payments.count(), 1)
+
+    def test_dialog_spells_out_what_goes(self):
+        buyer, _, _ = self._owing_client_with_advance()
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_delete", args=[buyer.pk]))
+        self.assertContains(response, "2 ta sotuv")
+        self.assertContains(response, "2 ta to&#x27;lov")
+        self.assertContains(response, "240,000 so&#x27;m qarz")
+        self.assertContains(response, "500,000 so&#x27;m avans")
+        # Opening the dialog deletes nothing
+        self.assertTrue(Client.objects.filter(pk=buyer.pk).exists())
+
+    def test_audit_line_keeps_what_was_on_the_account(self):
+        buyer, _, _ = self._owing_client_with_advance()
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("client_delete", args=[buyer.pk]))
+        entry = AuditLog.objects.get(target_type="Mijoz", action=AuditLog.Action.DELETE)
+        self.assertIn("Qarzdor mijoz", entry.summary)
+        self.assertIn("240,000 so'm qarz", entry.summary)
+        self.assertIn("500,000 so'm avans", entry.summary)
+
+    def test_empty_client_dialog_has_no_money_warning(self):
+        buyer = Client.objects.create(name="Bo'sh mijoz", owner=self.sales1)
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_delete", args=[buyer.pk]))
+        self.assertNotContains(response, "qayta hisoblanadi")
+
+    def test_seller_cannot_delete_another_sellers_client(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("client_delete", args=[self.client2.pk]))
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(Client.objects.filter(pk=self.client2.pk).exists())
+        self.assertTrue(Sale.objects.filter(pk=self.sale2.pk).exists())
 
 
 class AuditCoverageTests(BaseSetup):

@@ -41,6 +41,16 @@ urlpatterns = [
         name="client_advance_moves",
     ),
     path(
+        "clients/<int:pk>/advance/clear/",
+        crm_views.client_advance_clear,
+        name="client_advance_clear",
+    ),
+    path(
+        "clients/<int:pk>/qarz/clear/",
+        crm_views.client_debt_clear,
+        name="client_debt_clear",
+    ),
+    path(
         "clients/<int:pk>/boshlangich-qarz/",
         crm_views.client_opening_debt,
         name="client_opening_debt",

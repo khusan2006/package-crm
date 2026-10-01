@@ -2468,6 +2468,54 @@ tbody tr:hover td.sticky-col {
   justify-content: flex-end;
 }
 
+/* ---- Qarz / avansni o'chirish oynasi ----------------------------------------
+   Oddiy tasdiqlash oynasidan ko'proq gapiradi: avval nimani tuzatish kerakligi,
+   balans nimadan yig'ilgani va o'chirilsa nima bo'lishi. Jadvali bor, shuning uchun
+   avans harakatlari oynasi kabi kengroq ochiladi. */
+.modal:has(.balance-clear) {
+  width: min(680px, calc(100vw - var(--sidebar-w) - 32px));
+}
+
+@media (max-width: 560px) {
+  .modal:has(.balance-clear) {
+    width: min(680px, calc(100vw - 32px));
+  }
+}
+
+.balance-clear .clear-title {
+  margin: 16px 0 6px;
+  font-size: 14px;
+}
+
+.balance-clear .clear-steps {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.balance-clear .clear-steps li + li {
+  margin-top: 6px;
+}
+
+.balance-clear .clear-rows th,
+.balance-clear .clear-rows td {
+  padding: 10px 12px;
+}
+
+.balance-clear .clear-rows td.note {
+  white-space: normal;
+  min-width: 150px;
+}
+
+.balance-clear .clear-links a + a {
+  margin-left: 10px;
+}
+
+.balance-clear .modal-actions {
+  margin-top: 16px;
+}
+
 /* ---- Excel chooser (kassa) --------------------------------------------------
    The till keeps two ledgers, so its Excel button opens a short menu rather than
    guessing which one you meant. Each option is a card: a colour-coded icon (blue

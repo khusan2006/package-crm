@@ -336,6 +336,14 @@ ADVANCE_SPENT_KINDS = ("advance_used", "advance_out")
 ADVANCE_ADJUST_NOTE = "Avans tuzatildi"
 
 
+# A debt taken off a client's account with no money behind it is written as an
+# ordinary debt payment kept out of every till (`is_opening`), for the same reason as
+# above: the receipt's balance already knows how to read a payment, and no till figure
+# counts one flagged that way. This note is how the screens tell it from money the
+# client actually handed over.
+DEBT_CLEAR_NOTE = "Qarz o'chirildi"
+
+
 def _sale_paid_sum():
     """A subquery summing the payments credited against one sale.
 

@@ -113,7 +113,8 @@
       <td>{% include "crm/_method_badge.html" with code=p.method label=p.get_method_display %}
         {% if p.note %}<span class="cell-sub">{{ p.note }}</span>{% endif %}
       </td>
-      <td>{% if p.kind == 'debt' %}<span class="badge badge-shipped">Qarz to'lovi</span>{% else %}<span class="badge badge-paid">Sotuvda</span>{% endif %}</td>
+      {# Kassasiz qarz to'lovi — o'chirilgan qarz: pul kirmagan, faqat qoldiq yopilgan. #}
+      <td>{% if p.is_opening and p.kind == 'debt' %}<span class="badge badge-neutral">Qarz o'chirildi · kassasiz</span>{% elif p.kind == 'debt' %}<span class="badge badge-shipped">Qarz to'lovi</span>{% else %}<span class="badge badge-paid">Sotuvda</span>{% endif %}</td>
       <td>{{ p.created_by }}</td>
       <td>
         {% if user.can_see_all_records or p.created_by == user %}
