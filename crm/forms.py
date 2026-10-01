@@ -3,6 +3,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
 from django import forms
+from django.db.models import Q
 from django.forms import inlineformset_factory
 from django.template.loader import render_to_string
 from django.urls import reverse_lazy
@@ -133,6 +134,60 @@ def _searchable_select(field, placeholder=""):
         field.widget.attrs["data-placeholder"] = placeholder
 
 
+def sellers_queryset(*keep):
+    """The people a till belongs to: active sellers. An admin or manager writing a
+    record in a seller's name picks from this list — never themselves, since an admin
+    holds no till and a sale in their name would sit outside every seller's kassa.
+    `keep` adds back whoever an existing record already points at (a seller who has
+    since left), or editing that record would fail on its own value."""
+    rule = Q(is_active=True, role=User.Role.SALES)
+    keep = [pk for pk in keep if pk]
+    if keep:
+        rule |= Q(pk__in=keep)
+    return User.objects.filter(rule).order_by("first_name", "last_name", "username")
+
+
+def _acting_seller_field(form, user, current=None, lock=False, name="seller", blank=None):
+    """Set up (or drop) the «Sotuvchi» picker an admin or manager uses to act for a
+    seller — the sale, the old debt, the chiqim then land in that seller's name and
+    till exactly as if they had entered it themselves.
+
+    Sellers never see it: whatever they write is theirs, so the field is removed.
+    `data-seller-picker` lets the page narrow the mijoz list on the same form to the
+    picked seller's clients (see base.html). `lock` shows the seller without letting
+    it change — a sale's seller moves only with its client, through the transfer.
+    `blank` makes an empty pick a real, labelled choice (a plain <select>, since the
+    combobox hides its blank row) for a form where "nobody" means the user's own."""
+    if user is None or not user.can_see_all_records:
+        form.fields.pop(name, None)
+        return
+    field = form.fields[name]
+    field.queryset = sellers_queryset(current)
+    if blank is None:
+        _searchable_select(field, "Sotuvchini tanlang")
+    else:
+        field.required = False
+        field.empty_label = blank
+    field.widget.attrs["data-seller-picker"] = ""
+    if current:
+        field.initial = current
+    if lock:
+        field.disabled = True
+
+
+def _client_seller_mismatch(client, seller):
+    """The error for a mijoz who belongs to another seller than the one picked, or
+    None. A client's debts and advances all live in their own seller's till, so a
+    record for them in anyone else's name would split one account across two kassas."""
+    if client is None or seller is None or client.owner_id == seller.pk:
+        return None
+    return (
+        f"«{client.name}» {client.owner} ga biriktirilgan. Sotuvchi sifatida "
+        f"{client.owner} ni tanlang yoki mijozni avval mijozlar ro'yxatidagi "
+        f"«O'tkazish» (⇄) tugmasi bilan o'tkazing."
+    )
+
+
 class LocationPickerWidget(forms.TextInput):
     """The joylashuv box with its map, "here" and search around it.
 
@@ -183,19 +238,25 @@ class ClientForm(forms.ModelForm):
         self.initial.setdefault("location", self.instance.coordinates)
         self._point = None
         self.fields["phone"].widget.attrs["data-phone"] = ""
-        # "Mas'ul xodim" — which employee this client is attached to. Only
-        # admins/managers assign it across the team; a seller's clients stay
-        # owned by themselves (the view fills that in), so drop the field for them.
-        if user is not None and user.can_see_all_records:
-            self.fields["owner"].label = "Mas'ul xodim"
-            self.fields["owner"].queryset = User.objects.filter(is_active=True).order_by(
-                "first_name", "last_name", "username"
+        # «Sotuvchi» — whose client this is. Only admins/managers assign it; a seller's
+        # clients stay owned by themselves (the view fills that in), so the field is
+        # dropped for them. The picker offers sellers only: a client owned by an admin
+        # would put their sales and debts in nobody's till. On an existing client it
+        # is shown but locked — changing it here would move the client and leave their
+        # sales and payments behind with the old seller; the transfer moves them all.
+        _acting_seller_field(
+            self, user, name="owner",
+            current=self.instance.owner_id if self.instance.pk else None,
+            lock=bool(self.instance.pk),
+        )
+        if "owner" in self.fields:
+            self.fields["owner"].label = "Sotuvchi"
+            self.fields["owner"].help_text = (
+                "Boshqa sotuvchiga o'tkazish — mijozlar ro'yxatidagi «O'tkazish» (⇄) "
+                "tugmasi orqali: sotuvlari ham birga ko'chadi."
+                if self.instance.pk
+                else "Mijoz shu sotuvchiga biriktiriladi — sotuv va qarzlari uniki bo'ladi."
             )
-            _searchable_select(self.fields["owner"], "Xodimni tanlang")
-            if user is not None and not self.instance.pk:
-                self.fields["owner"].initial = user.pk
-        else:
-            self.fields.pop("owner", None)
         # The override checkbox is only meaningful when creating a new client
         if not check_duplicates:
             self.fields.pop("allow_duplicate", None)
@@ -821,10 +882,25 @@ class ExpenseForm(forms.ModelForm):
 
     # Set once the seller has seen the backdating warning; the next submit passes.
     confirm_backdated = forms.BooleanField(required=False, widget=forms.HiddenInput)
+    # Admins/managers only — whose till the chiqim leaves. See `_acting_seller_field`.
+    seller = forms.ModelChoiceField(
+        label="Sotuvchi",
+        queryset=User.objects.none(),
+        required=False,
+        help_text="Chiqim shu sotuvchining kassasidan yoziladi. Bo'sh qolsa — "
+                  "o'zingizning kassangizdan.",
+    )
 
     def __init__(self, *args, **kwargs):
         self.user = kwargs.pop("user", None)
         super().__init__(*args, **kwargs)
+        # An admin paying a wage out of their own till (the Xodimlar page) is still
+        # the plain case, so an empty pick stays theirs rather than being refused.
+        _acting_seller_field(
+            self, self.user,
+            current=self.instance.created_by_id if self.instance.pk else None,
+            blank="— o'zim —",
+        )
         self.fields["amount"].label = "Miqdor"
         self.fields["amount"].help_text = "Tanlangan valyutada — dollar tanlansa, dollardagi summa"
         self.fields["exchange_rate"].required = False
@@ -892,14 +968,22 @@ class ExpenseForm(forms.ModelForm):
                 "Tanlang: bu pul xodim oyligidan ushlansinmi yoki yo'q.",
             )
         # A payout dated into a day the till could not carry — see _backdated_warning.
-        seller = self.instance.created_by_id and self.instance.created_by or self.user
         warning = _needs_second_press(self, _backdated_warning(
-            seller, cleaned.get("date"), som,
+            self.acting_seller(), cleaned.get("date"), som,
             exclude_expense_pk=self.instance.pk,
         ))
         if warning:
             raise forms.ValidationError(warning)
         return cleaned
+
+    def acting_seller(self):
+        """Whose till the chiqim leaves: the seller an admin/manager picked; else
+        whoever it was first entered by; else the user themselves."""
+        if "seller" in self.fields and self.cleaned_data.get("seller"):
+            return self.cleaned_data["seller"]
+        if self.instance.created_by_id:
+            return self.instance.created_by
+        return self.user
 
 
 class ProductionRemittanceForm(forms.ModelForm):
@@ -1147,6 +1231,8 @@ class ClientSelect(forms.Select):
       "+998 90 123 45 67". The combobox keeps an option when every typed word is
       a substring of this — so "Ali Chilonzor" (name + address) narrows too.
     - ``data-subtitle``: "phone · address" for the muted second line in results.
+    - ``data-owner``: the seller the client belongs to, so a form with a «Sotuvchi»
+      picker can narrow the list to that seller's clients.
 
     The blank "— choose —" option has no client instance and is left untouched.
     """
@@ -1166,6 +1252,7 @@ class ClientSelect(forms.Select):
             subtitle = " · ".join(p for p in (phone, client.address) if p)
             if subtitle:
                 option["attrs"]["data-subtitle"] = subtitle
+            option["attrs"]["data-owner"] = client.owner_id
         return option
 
 
@@ -1187,6 +1274,11 @@ class SaleForm(forms.ModelForm):
             attrs={"min": "0", "inputmode": "numeric", "data-debt-days": ""}
         ),
     )
+    # Admins/managers only — see `_acting_seller_field`. Optional: the sale goes to the
+    # mijoz's own seller either way; picking one first only narrows the mijoz list.
+    seller = forms.ModelChoiceField(
+        label="Sotuvchi", queryset=User.objects.none(), required=False
+    )
 
     class Meta:
         model = Sale
@@ -1199,9 +1291,24 @@ class SaleForm(forms.ModelForm):
 
     def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
+        self.user = user
         if user is not None and not user.can_see_all_records:
             self.fields["client"].queryset = Client.objects.filter(owner=user)
         _searchable_select(self.fields["client"], "Mijozni qidiring yoki tanlang")
+        # A new sale goes to whichever seller is picked; an existing one stays with its
+        # seller, and its mijoz can only be swapped for another of theirs.
+        _acting_seller_field(
+            self, user,
+            current=self.instance.sales_rep_id if self.instance.pk else None,
+            lock=bool(self.instance.pk),
+        )
+        if "seller" in self.fields:
+            self.fields["seller"].help_text = (
+                "Sotuv shu sotuvchida qoladi. Boshqasiga o'tkazish — mijoz bilan "
+                "birga, mijozlar ro'yxatidagi «O'tkazish» (⇄) orqali."
+                if self.instance.pk
+                else "Sotuv shu sotuvchi nomiga yoziladi — mijozlar ham faqat uniki."
+            )
         # Pre-fill the days input: on edit, show the receipt's agreed term; on create,
         # seed with the default so the preview shows a date up front. Deliberately the
         # term and not (deadline - date): once a payment has restarted the clock those
@@ -1224,7 +1331,67 @@ class SaleForm(forms.ModelForm):
         self.instance.debt_term_days = days
         self.instance.recompute_debt_deadline(commit=False)
         cleaned["debt_deadline"] = self.instance.debt_deadline
+        mismatch = _client_seller_mismatch(cleaned.get("client"), self.acting_seller())
+        if mismatch:
+            self.add_error("client", mismatch)
         return cleaned
+
+    def acting_seller(self):
+        """Whose name the sale is in. An admin/manager writes it for the mijoz's own
+        seller — the one picked, or else the one the mijoz belongs to — so the sale
+        joins that client's debts in that seller's till. On an edit it stays with the
+        sale's seller; a seller's own sale is theirs."""
+        if "seller" in self.fields:
+            client = self.cleaned_data.get("client")
+            return self.cleaned_data.get("seller") or (client.owner if client else None)
+        if self.instance.pk:
+            return self.instance.sales_rep
+        return self.user
+
+
+def weight_terms(text):
+    """The pieces of a weight written as a sum — "100+20+50" → [100, 20, 50].
+
+    Spaces are ignored and a comma reads as the decimal point (a phone's number pad
+    gives either). A stray "+" at either end, or doubled, is just skipped: it is what
+    is left on screen after tapping the plus button once too often. Raises
+    ValueError on anything that is not a number, and on a piece of zero or less —
+    a roll that weighs nothing is a typo, not a roll."""
+    cleaned = re.sub(r"\s", "", str(text)).replace(",", ".")
+    # A lone figure of 0 is left for the field's own "0 dan katta" message.
+    is_sum = "+" in cleaned
+    terms = []
+    for part in cleaned.split("+"):
+        if not part:
+            continue
+        try:
+            value = Decimal(part)
+        except ArithmeticError as err:
+            raise ValueError(text) from err
+        if not value.is_finite() or (is_sum and value <= 0):
+            raise ValueError(text)
+        terms.append(value)
+    return terms
+
+
+class WeightSumField(forms.DecimalField):
+    """Og'irlik as a number or as the rolls weighed one by one, "100+20+50", which is
+    stored as their total. The line only ever keeps the total — it is what price,
+    tannarx, stock and every report multiply — while the number of pieces becomes
+    the line's rulon soni (see `SaleItemForm.clean`)."""
+
+    def to_python(self, value):
+        if value in self.empty_values:
+            return None
+        try:
+            terms = weight_terms(value)
+        except ValueError:
+            raise forms.ValidationError(
+                "Og'irlikni son yoki 100+20+50 ko'rinishida yozing.", code="invalid"
+            )
+        if not terms:
+            return None
+        return sum(terms, Decimal("0"))
 
 
 class SaleItemForm(forms.ModelForm):
@@ -1234,11 +1401,24 @@ class SaleItemForm(forms.ModelForm):
     boxes on every line, and they slowed the seller down for nothing: the catalogue
     now carries the thickness in the product itself, so picking the product already
     says which one it is. The columns stay on `SaleItem` because old receipts were
-    written with them and their labels still show in the ombor report."""
+    written with them and their labels still show in the ombor report.
+
+    Og'irlik may be typed roll by roll ("100+20+50"): the line keeps the total and
+    the count of rolls; price and tannarx are one figure for all of them."""
 
     class Meta:
         model = SaleItem
-        fields = ["product", "dimension", "weight", "price", "cost_price"]
+        fields = ["product", "dimension", "weight", "rolls", "price", "cost_price"]
+        field_classes = {"weight": WeightSumField}
+        widgets = {
+            # Text, not a number box: a browser's number input refuses the "+".
+            "weight": forms.TextInput(attrs={
+                "inputmode": "decimal", "autocomplete": "off", "data-weight-sum": "",
+            }),
+            "rolls": forms.NumberInput(attrs={
+                "min": "1", "inputmode": "numeric", "data-rolls": "",
+            }),
+        }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1246,7 +1426,12 @@ class SaleItemForm(forms.ModelForm):
         _searchable_select(self.fields["product"], "Mahsulotni tanlang")
         self.fields["cost_price"].required = False
         self.fields["cost_price"].widget.attrs["placeholder"] = "Bo'sh qolsa — mahsulot tannarxi"
+        self.fields["rolls"].widget.attrs["placeholder"] = "Ixtiyoriy"
         _mark_money(self.fields["price"], self.fields["cost_price"])
+        # The stored total, without the ".000" a 3-decimal column pads it with.
+        weight = self.initial.get("weight")
+        if isinstance(weight, Decimal):
+            self.initial["weight"] = f"{weight.normalize():f}"
 
     def clean_weight(self):
         weight = self.cleaned_data.get("weight")
@@ -1260,6 +1445,12 @@ class SaleItemForm(forms.ModelForm):
             raise forms.ValidationError("Narx 0 dan katta bo'lishi kerak.")
         return price
 
+    def clean_rolls(self):
+        rolls = self.cleaned_data.get("rolls")
+        if rolls is not None and rolls < 1:
+            raise forms.ValidationError("Rulon soni kamida 1 bo'lishi kerak.")
+        return rolls
+
     def clean(self):
         cleaned = super().clean()
         product = cleaned.get("product")
@@ -1267,6 +1458,16 @@ class SaleItemForm(forms.ModelForm):
         # Empty cost price falls back to the product's cost, converted to the sale unit
         if product and dimension and not cleaned.get("cost_price"):
             cleaned["cost_price"] = product.cost_price_for(dimension)
+        # Weighed roll by roll and the count left blank: each piece of the sum is a
+        # roll. A single figure says nothing about how many rolls it was, so it
+        # leaves the count empty rather than guessing 1.
+        if cleaned.get("rolls") is None and cleaned.get("weight") is not None:
+            try:
+                pieces = len(weight_terms(self.data.get(self.add_prefix("weight"), "")))
+            except ValueError:
+                pieces = 0
+            if pieces > 1:
+                cleaned["rolls"] = pieces
         return cleaned
 
 
@@ -1589,8 +1790,13 @@ class DebtorAddForm(forms.Form):
         help_text=f"Necha kundan keyin qaytariladi — bo'sh qolsa {DEFAULT_DEBT_DAYS} kun",
         widget=forms.NumberInput(attrs={"min": "0", "inputmode": "numeric"}),
     )
+    # Admins/managers only — see `_acting_seller_field`. Optional: the debt is written
+    # for the mijoz's own seller either way; picking one only narrows the list.
+    seller = forms.ModelChoiceField(
+        label="Sotuvchi", queryset=User.objects.none(), required=False
+    )
 
-    def __init__(self, *args, clients=None, **kwargs):
+    def __init__(self, *args, clients=None, user=None, **kwargs):
         super().__init__(*args, **kwargs)
         # Whose clients this seller may put on the list — the view's visibility rule,
         # handed in so the form itself refuses another seller's client.
@@ -1599,6 +1805,19 @@ class DebtorAddForm(forms.Form):
         self.fields["client"].widget.openings = _opening_balances(qs)
         _searchable_select(self.fields["client"], "Mijozni qidiring yoki tanlang")
         _mark_money(self.fields["amount"])
+        _acting_seller_field(self, user)
+        if "seller" in self.fields:
+            self.fields["seller"].help_text = (
+                "Qarz shu sotuvchining mijoziga yoziladi — mijozlar ham faqat uniki."
+            )
+
+    def clean(self):
+        cleaned = super().clean()
+        if "seller" in self.fields:
+            mismatch = _client_seller_mismatch(cleaned.get("client"), cleaned.get("seller"))
+            if mismatch:
+                self.add_error("client", mismatch)
+        return cleaned
 
 
 class ProductionAdjustForm(forms.ModelForm):

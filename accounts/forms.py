@@ -44,7 +44,7 @@ class LoginForm(AuthenticationForm):
 class UserCreateForm(UserCreationForm):
     class Meta:
         model = User
-        fields = ["username", "first_name", "last_name", "phone", "role"]
+        fields = ["username", "first_name", "last_name", "phone", "role", "firm_name"]
         labels = USER_LABELS
         widgets = {"phone": forms.TextInput(attrs={"data-phone": ""})}
 
@@ -60,6 +60,6 @@ class UserCreateForm(UserCreationForm):
 class UserEditForm(forms.ModelForm):
     class Meta:
         model = User
-        fields = ["username", "first_name", "last_name", "email", "phone", "role", "is_active"]
+        fields = ["username", "first_name", "last_name", "email", "phone", "role", "firm_name", "is_active"]
         labels = USER_LABELS
         widgets = {"phone": forms.TextInput(attrs={"data-phone": ""})}

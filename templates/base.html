@@ -111,6 +111,24 @@
         <span class="topbar-title">{% block topbar_title %}Paket CRM{% endblock %}</span>
       </div>
       <div class="topbar-right">
+        {% comment %}Faqat admin/menejerda: qaysi sotuvchi nomidan ishlayotgani. Bir marta
+        tanlanadi va sessiyada qoladi — yangi sotuv, qarzdor, chiqim, mijoz shu sotuvchi
+        nomiga ochiladi (formaning o'zida baribir o'zgartirsa bo'ladi).{% endcomment %}
+        {% if acting_sellers %}
+        <form method="post" action="{% url 'acting_seller_set' %}" class="acting-switch{% if acting_seller_id %} is-set{% endif %}">
+          {% csrf_token %}
+          <input type="hidden" name="next" value="{{ request.get_full_path }}">
+          <label for="acting-seller-select">Sotuvchi</label>
+          <select id="acting-seller-select" name="seller" data-acting-switch
+                  title="Qaysi sotuvchi nomidan ishlayapsiz">
+            <option value="">— tanlanmagan —</option>
+            {% for s in acting_sellers %}
+            <option value="{{ s.pk }}"{% if s.pk == acting_seller_id %} selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+          <noscript><button type="submit" class="btn btn-sm">OK</button></noscript>
+        </form>
+        {% endif %}
         <div class="user-chip">
           <span class="avatar sm">{{ user.username|slice:":1"|upper }}</span>
           <div class="meta">
@@ -337,11 +355,13 @@
       if (saveBtn.dataset.dupName !== name) { saveBtn.dataset.dupOk = ''; }
       var form = saveBtn.closest('form');
       var token = form.querySelector('[name=csrfmiddlewaretoken]').value;
+      // An admin adds the mijoz for the seller picked on this form.
+      var picker = form.querySelector('select[data-seller-picker]');
       saveBtn.disabled = true;
       fetch(toggle.getAttribute('data-quick-url'), {
         method: 'POST',
         headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ name: name, phone: window.canonicalPhone ? window.canonicalPhone(phoneEl) : phoneEl.value.trim(), csrfmiddlewaretoken: token, allow_duplicate: saveBtn.dataset.dupOk || '' }),
+        body: new URLSearchParams({ name: name, phone: window.canonicalPhone ? window.canonicalPhone(phoneEl) : phoneEl.value.trim(), csrfmiddlewaretoken: token, allow_duplicate: saveBtn.dataset.dupOk || '', seller: picker ? picker.value : '' }),
       }).then(function (r) {
         return r.json().then(function (d) { return { ok: r.ok, data: d }; });
       }).then(function (res) {
@@ -357,7 +377,9 @@
           return;
         }
         saveBtn.dataset.dupOk = '';
-        select.add(new Option(res.data.text, res.data.id, true, true));
+        var added = new Option(res.data.text, res.data.id, true, true);
+        if (res.data.owner) { added.dataset.owner = res.data.owner; }
+        select.add(added);
         select.dispatchEvent(new Event('change', { bubbles: true }));
         panel.hidden = true;
         nameEl.value = '';
@@ -537,6 +559,146 @@
     });
   })();
 
+  // Top-bar «Sotuvchi» switch: picking a seller saves it straight away (the page
+  // reloads with every new form opening in that seller's name).
+  document.addEventListener('change', function (e) {
+    var sw = e.target.closest('[data-acting-switch]');
+    if (sw) { sw.form.submit(); }
+  });
+
+  // «Sotuvchi» picker — admin/manager writing a sale or an old debt in a seller's
+  // name. Picking the seller narrows the mijoz list on the same form to their
+  // clients (each option carries data-owner); picking a mijoz first fills the seller
+  // in. The server checks the pair again, so this only saves a wrong pick.
+  (function () {
+    function pickerOf(form) { return form && form.querySelector('select[data-seller-picker]'); }
+    function narrow(form) {
+      var picker = pickerOf(form);
+      if (!picker) { return; }
+      var seller = picker.value;
+      form.querySelectorAll('select[name="client"]').forEach(function (sel) {
+        Array.prototype.forEach.call(sel.options, function (opt) {
+          if (opt.value) { opt.hidden = !!seller && opt.dataset.owner !== seller; }
+        });
+        var cur = sel.options[sel.selectedIndex];
+        if (cur && cur.value && cur.hidden) {
+          sel.value = '';
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      });
+    }
+    document.addEventListener('change', function (e) {
+      var picker = e.target.closest('select[data-seller-picker]');
+      if (picker) { narrow(picker.closest('form')); return; }
+      var sel = e.target.closest('select[name="client"]');
+      if (!sel) { return; }
+      var p = pickerOf(sel.closest('form'));
+      if (!p || p.disabled) { return; }
+      var opt = sel.options[sel.selectedIndex];
+      var owner = opt && opt.dataset.owner;
+      if (owner && p.value !== owner && p.querySelector('option[value="' + owner + '"]')) {
+        p.value = owner;
+        p.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    });
+    function init(root) {
+      (root || document).querySelectorAll('select[data-seller-picker]').forEach(function (p) {
+        narrow(p.closest('form'));
+      });
+    }
+    if (document.readyState !== 'loading') { init(); }
+    else { document.addEventListener('DOMContentLoaded', function () { init(); }); }
+    document.addEventListener('modal:loaded', function (e) { init(e.detail || document); });
+  })();
+
+  // Sale form: og'irlik typed roll by roll — "100+20+50". The box keeps what was
+  // typed (the server adds it up the same way, see forms.weight_terms); under it the
+  // total shows, and Rulon soni follows the number of pieces for as long as it still
+  // holds the count it was given (or nothing) — a different number typed there is
+  // the seller's and stays. The "+" button is there because a phone's number pad
+  // has no plus key.
+  (function () {
+    // {total, count} of a weight box's value; count 0 when it doesn't read as one.
+    function weightSum(v) {
+      var parts = String(v == null ? '' : v).replace(/\s/g, '').replace(/,/g, '.')
+        .split('+').filter(Boolean);
+      var total = 0;
+      for (var i = 0; i < parts.length; i++) {
+        if (!/^\d*\.?\d+$|^\d+\.$/.test(parts[i])) { return { total: 0, count: 0 }; }
+        total += parseFloat(parts[i]);
+      }
+      return { total: total, count: parts.length };
+    }
+    window.weightSum = weightSum;
+
+    function fmt(n) {
+      var r = Math.round(n * 1000) / 1000;
+      var s = r.toString().split('.');
+      return s[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + (s[1] ? ',' + s[1] : '');
+    }
+    function update(input, onLoad) {
+      var row = input.closest('.item-row');
+      if (!row) { return; }
+      var sum = weightSum(input.value);
+      var out = row.querySelector('[data-weight-total]');
+      var isSum = input.value.indexOf('+') !== -1;
+      if (out) {
+        if (isSum && sum.count) {
+          var dim = row.querySelector('[name$="-dimension"]');
+          out.textContent = '= ' + fmt(sum.total) + ' ' + (dim ? dim.value : 'kg');
+          out.hidden = false;
+        } else {
+          out.hidden = true;
+        }
+      }
+      if (onLoad) { return; }
+      var rolls = row.querySelector('[data-rolls]');
+      if (rolls && sum.count > 1 && (!rolls.value || rolls.value === rolls.dataset.auto)) {
+        rolls.value = sum.count;
+        rolls.dataset.auto = String(sum.count);
+      }
+    }
+    document.addEventListener('input', function (e) {
+      var w = e.target.closest('[data-weight-sum]');
+      if (w) { update(w); }
+    });
+    document.addEventListener('change', function (e) {
+      var dim = e.target.closest('select[name$="-dimension"]');
+      var row = dim && dim.closest('.item-row');
+      var w = row && row.querySelector('[data-weight-sum]');
+      if (w) { update(w); }
+    });
+    // Keep the keyboard up: the tap must not take focus away from the box.
+    document.addEventListener('pointerdown', function (e) {
+      if (e.target.closest('.weight-plus')) { e.preventDefault(); }
+    });
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('.weight-plus');
+      if (!btn) { return; }
+      e.preventDefault();
+      var input = btn.closest('.item-row').querySelector('[data-weight-sum]');
+      var v = input.value.replace(/\s+$/, '');
+      if (v && v.slice(-1) !== '+') { input.value = v + '+'; }
+      input.focus();
+      var end = input.value.length;
+      try { input.setSelectionRange(end, end); } catch (err) { /* not a text box */ }
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    function init(root) {
+      // A count already on the line (an edit, or a form sent back with an error) is
+      // left as it is on load; a sum typed after that re-derives it.
+      (root || document).querySelectorAll('[data-rolls]').forEach(function (r) {
+        r.dataset.auto = r.value;
+      });
+      (root || document).querySelectorAll('[data-weight-sum]').forEach(function (w) {
+        update(w, true);
+      });
+    }
+    if (document.readyState !== 'loading') { init(); }
+    else { document.addEventListener('DOMContentLoaded', function () { init(); }); }
+    document.addEventListener('modal:loaded', function (e) { init(e.detail || document); });
+  })();
+
   // Sale form: live per-row line total (og'irlik × narx) and the grand total, so the
   // seller sees "10 × 23 000 = 230 000 so'm" and the running Jami as they type.
   (function () {
@@ -552,7 +714,10 @@
         blk.querySelectorAll('.item-row').forEach(function (row) {
           var del = row.querySelector('.item-del [name$="-DELETE"]');
           var out = row.querySelector('[data-line-total]');
-          var w = num((row.querySelector('[name$="-weight"]') || {}).value);
+          // Og'irlik may be a sum of rolls ("100+20+50") — add it up first.
+          var w = window.weightSum(
+            (row.querySelector('[name$="-weight"]') || {}).value
+          ).total;
           var p = num((row.querySelector('[name$="-price"]') || {}).value);
           if (!(del && del.checked) && w > 0 && p > 0) {
             var t = w * p;
@@ -1537,6 +1702,9 @@
           // Never list the invisible placeholder row (empty value + empty label);
           // a labelled empty choice like the filters' "Barchasi" still shows.
           if (!opt.value && !text) { return; }
+          // Rows another script has set aside — e.g. another seller's mijozlar
+          // once a «Sotuvchi» is picked — are not offered.
+          if (opt.hidden) { return; }
           // Match against the option's data-search haystack (name + phone +
           // address, set server-side) when present; else the visible text.
           var haystack = (opt.dataset.search || text).toLowerCase();

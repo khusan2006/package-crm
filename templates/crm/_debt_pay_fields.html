@@ -1,5 +1,6 @@
 {% load crm_extras %}
 {% csrf_token %}
+{% include "crm/_acting_seller.html" %}
 {% if advance %}
   {% if advance_balance %}<p class="muted">Joriy avans balansi: <strong style="color: var(--text);">{{ advance_balance|floatformat:"0g" }} so'm</strong></p>{% endif %}
   <p class="field-hint" style="margin: 0 0 6px;">Ochiq qarz bo'lsa avval o'shanga (eng eski chek — FIFO) taqsimlanadi, ortig'i avans balansida qoladi.</p>

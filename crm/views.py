@@ -25,6 +25,7 @@ from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
@@ -57,6 +58,7 @@ from .forms import (
     SaleItemFormSet,
     StockAdjustForm,
     StockEntryForm,
+    sellers_queryset,
 )
 from .models import (
     ADVANCE_ADJUST_NOTE,
@@ -94,6 +96,8 @@ from .models import (
     seller_cash_on_hand,
     seller_production_debt,
 )
+from .context_processors import SESSION_KEY as ACTING_SELLER_KEY
+from .context_processors import current_acting_seller
 from .geo import LocationError, resolve_location
 from .utils import (
     form_changes,
@@ -109,6 +113,45 @@ from .utils import (
 def _visible_clients(user):
     qs = Client.objects.select_related("owner")
     return qs if user.can_see_all_records else qs.filter(owner=user)
+
+
+def _on_behalf(user, seller):
+    """The audit-line tail naming the seller when an admin/manager wrote the record in
+    their name — the log keeps who pressed the button, this says whose till it hit.
+    Silent in the ordinary case of a seller writing their own."""
+    if seller is None or seller.pk == user.pk:
+        return ""
+    return f" · sotuvchi: {seller}"
+
+
+def _acting_initial(request, field="seller"):
+    """Form initial that opens a new record in the name of the seller picked in the top
+    bar (see context_processors) — {} when none is, or for a seller themselves."""
+    seller = current_acting_seller(request)
+    return {field: seller.pk} if seller else {}
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def acting_seller_set(request):
+    """The top bar's «Sotuvchi» switch: remember which seller an admin/manager is
+    working as, so each new sale, qarzdor, chiqim and mijoz opens in that seller's
+    name instead of asking every time. An empty pick clears it. Returns to the page
+    the switch was used on."""
+    if request.method == "POST":
+        pk = request.POST.get("seller", "")
+        seller = sellers_queryset().filter(pk=pk).first() if pk.isdigit() else None
+        if seller is not None:
+            request.session[ACTING_SELLER_KEY] = seller.pk
+            messages.success(request, f"Endi {seller} nomidan ishlayapsiz.")
+        else:
+            request.session.pop(ACTING_SELLER_KEY, None)
+            messages.success(request, "Sotuvchi tanlovi olib tashlandi.")
+    target = request.POST.get("next", "")
+    if not url_has_allowed_host_and_scheme(
+        target, allowed_hosts={request.get_host()}, require_https=request.is_secure()
+    ):
+        target = reverse("dashboard")
+    return redirect(target)
 
 
 def _advance_balance_map(client_pks, seller):
@@ -1172,12 +1215,15 @@ def client_export(request):
 
 
 def client_create(request):
-    form = ClientForm(request.POST or None, user=request.user)
+    form = ClientForm(
+        request.POST or None, user=request.user,
+        initial=_acting_initial(request, "owner"),
+    )
     if request.method == "POST":
         if form.is_valid():
             client = form.save(commit=False)
-            # Admins/managers pick the responsible employee on the form; sellers'
-            # clients are always owned by themselves.
+            # Admins/managers pick the seller on the form; sellers' clients are always
+            # owned by themselves.
             if not client.owner_id:
                 client.owner = request.user
             client.save()
@@ -1196,12 +1242,24 @@ def client_quick_create(request):
 
     Guards against accidental duplicates: an existing same-name client is
     reported back (409) so the caller can reuse it, unless allow_duplicate is set.
+
+    A seller's new client is their own. An admin/manager adds it for the seller
+    picked on the form it was opened from (`seller`) — without one there is nobody
+    whose client it would be, so it is refused rather than left owned by the admin.
     """
     if request.method != "POST":
         return JsonResponse({"error": "POST kerak"}, status=405)
     name = request.POST.get("name", "").strip()
     if not name:
         return JsonResponse({"error": "Ism kiritilishi shart"}, status=400)
+    owner = request.user
+    if request.user.can_see_all_records:
+        seller_pk = request.POST.get("seller", "")
+        owner = (
+            sellers_queryset().filter(pk=seller_pk).first() if seller_pk.isdigit() else None
+        )
+        if owner is None:
+            return JsonResponse({"error": "Avval sotuvchini tanlang"}, status=400)
     if not request.POST.get("allow_duplicate"):
         dup = Client.find_duplicate(request.user, name)
         if dup:
@@ -1214,13 +1272,13 @@ def client_quick_create(request):
                 status=409,
             )
     client = Client.objects.create(
-        name=name, phone=request.POST.get("phone", "").strip(), owner=request.user
+        name=name, phone=request.POST.get("phone", "").strip(), owner=owner
     )
     AuditLog.record(
         request.user, AuditLog.Action.CREATE, "Mijoz", client.pk,
-        f"{client.name} (sotuv oynasidan tez qo'shildi)",
+        f"{client.name} (sotuv oynasidan tez qo'shildi){_on_behalf(request.user, owner)}",
     )
-    return JsonResponse({"id": client.pk, "text": client.name})
+    return JsonResponse({"id": client.pk, "text": client.name, "owner": owner.pk})
 
 
 def client_location(request, pk):
@@ -1684,7 +1742,7 @@ def _store_opening_debt(user, client, sale, new_total, on_date, term_days=None):
     AuditLog.record(
         user, action, "Sotuv", sale.pk,
         f"Mijoz {client.name} boshlang'ich qarzi "
-        f"{was:,.0f} → {new_total:,.0f} so'm",
+        f"{was:,.0f} → {new_total:,.0f} so'm{_on_behalf(user, sale.sales_rep)}",
     )
     return sale
 
@@ -2633,12 +2691,14 @@ def debtor_add(request):
     seller can only pick their own clients) and every entry lands in the audit log."""
     clients = _visible_clients(request.user)
     if request.method == "POST":
-        form = DebtorAddForm(request.POST, clients=clients)
+        form = DebtorAddForm(request.POST, clients=clients, user=request.user)
         if form.is_valid():
             cd = form.cleaned_data
             client, amount = cd["client"], cd["amount"]
             sale = _opening_sale(client)
             existing = sale.opening_amount if sale else Decimal("0")
+            # The balance is written in the client's own seller's name — the form has
+            # already made sure that is the seller an admin picked.
             _store_opening_debt(
                 request.user, client, sale, existing + amount, cd["date"],
                 term_days=cd["debt_days"],
@@ -2657,7 +2717,10 @@ def debtor_add(request):
                 )
             return form_reload(request, reverse("debt_list"))
         return _render_debtor_add(request, form, invalid=True)
-    form = DebtorAddForm(clients=clients, initial={"date": timezone.localdate()})
+    form = DebtorAddForm(
+        clients=clients, user=request.user,
+        initial={"date": timezone.localdate(), **_acting_initial(request)},
+    )
     return _render_debtor_add(request, form)
 
 
@@ -3116,6 +3179,7 @@ def _render_client_pay(request, client, total, form, invalid=False, debts=None):
         # taken before choosing the payment date.
         "debts": debts or [],
         "title": f"Umumiy to'lov: {client.name}",
+        "acting_seller": client.owner,
     }
     if is_ajax(request):
         return render(
@@ -3125,8 +3189,12 @@ def _render_client_pay(request, client, total, form, invalid=False, debts=None):
 
 
 def client_debt_pay(request, pk):
-    """Take one amount and pay down the client's debts oldest-first (FIFO)."""
+    """Take one amount and pay down the client's debts oldest-first (FIFO).
+
+    The money goes into the client's own seller's till, whoever types it in: when an
+    admin/manager records it for them it must still land where the debt lives."""
     client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    seller = client.owner
     sales = _client_outstanding_fifo(request, client)
     total = sum((s.remaining for s in sales), Decimal("0")).quantize(
         Decimal("0.01"), ROUND_HALF_UP
@@ -3142,7 +3210,7 @@ def client_debt_pay(request, pk):
                 form.cleaned_data["method"],
                 form.cleaned_data["commission_percent"],
                 form.cleaned_data["note"],
-                request.user,
+                seller,
                 currency=form.cleaned_data["currency"],
                 exchange_rate=form.cleaned_data["exchange_rate"],
                 on_date=form.cleaned_data["date"],
@@ -3153,7 +3221,7 @@ def client_debt_pay(request, pk):
                 request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
                 f"Mijoz {client.name} qarz to'lovi "
                 f"({_method_label(form.cleaned_data['method'])}){_usd_note(form.cleaned_data)} "
-                f"— {form.cleaned_data['amount']:,.0f} so'm",
+                f"— {form.cleaned_data['amount']:,.0f} so'm{_on_behalf(request.user, seller)}",
             )
             msg = f"{form.cleaned_data['amount']:,.0f} so'm {touched} ta chekka taqsimlandi."
             if touched:
@@ -3182,6 +3250,7 @@ def _render_client_advance(request, client, balance, form, invalid=False):
         "client": client,
         "advance_balance": balance,
         "title": f"Avans qabul qilish: {client.name}",
+        "acting_seller": client.owner,
         **_client_advance_context(request, client),
     }
     if is_ajax(request):
@@ -3204,9 +3273,14 @@ def client_advance_pay(request, pk):
     money taken in long ago and only being written up today, which is most of what the
     old sverkas turn out to hold — and the deposit is recorded exactly the same but
     kept out of the till, so today's kirim isn't inflated by cash nobody handed over
-    (see `AdvanceForm`)."""
+    (see `AdvanceForm`).
+
+    "Whoever took it" is the client's own seller even when an admin/manager types it
+    in for them: the advance has to sit where the client's debts do, or it could never
+    be spent on them."""
     client = get_object_or_404(_visible_clients(request.user), pk=pk)
-    balance = client_advance_balance(client, request.user)
+    seller = client.owner
+    balance = client_advance_balance(client, seller)
     if request.method == "POST":
         form = AdvanceForm(request.POST)
         if form.is_valid():
@@ -3226,16 +3300,17 @@ def client_advance_pay(request, pk):
                 kind=Payment.Kind.ADVANCE_IN,
                 is_opening=cd["is_opening"],
                 date=cd["date"],
-                created_by=request.user,
+                created_by=seller,
             )
-            applied = _apply_advance_to_open_sales(client, request.user, on_date=cd["date"])
+            applied = _apply_advance_to_open_sales(client, seller, on_date=cd["date"])
             AuditLog.record(
                 request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
                 f"Mijoz {client.name} avans to'lovi "
                 f"({_method_label(cd['method'])}){_usd_note(cd)} "
-                f"— {cd['amount']:,.0f} so'm{_kassa_note(cd['is_opening'])}",
+                f"— {cd['amount']:,.0f} so'm{_kassa_note(cd['is_opening'])}"
+                f"{_on_behalf(request.user, seller)}",
             )
-            left = client_advance_balance(client, request.user)
+            left = client_advance_balance(client, seller)
             msg = f"Avans qabul qilindi: {cd['amount']:,.0f} so'm."
             if cd["is_opening"]:
                 msg += " Kassaga kirim qilinmadi."
@@ -5254,7 +5329,7 @@ def expense_create(request):
     The Xodimlar page links in with ?employee=<pk>, which preselects the worker and
     the wage category so paying someone is one click from their row; it may add
     ?summa= to fill in what is still owed, for the common case of settling in full."""
-    initial = {}
+    initial = _acting_initial(request)
     employee_pk = request.GET.get("employee", "")
     if request.method == "GET" and employee_pk.isdigit():
         if Employee.objects.filter(pk=employee_pk, is_active=True).exists():
@@ -5274,7 +5349,8 @@ def expense_create(request):
     if request.method == "POST":
         if form.is_valid():
             expense = form.save(commit=False)
-            expense.created_by = request.user
+            # The seller picked on the form when an admin/manager writes it for them.
+            expense.created_by = form.acting_seller()
             expense.save()
             usd = (
                 f" · ${expense.original_amount:,.2f} × {expense.exchange_rate:,.0f}"
@@ -5291,7 +5367,8 @@ def expense_create(request):
                 request.user, AuditLog.Action.CREATE, "Chiqim", expense.pk,
                 f"{expense.category} chiqimi "
                 f"({expense.get_method_display()}){usd}{who} "
-                f"— {expense.amount:,.0f} so'm",
+                f"— {expense.amount:,.0f} so'm"
+                f"{_on_behalf(request.user, expense.created_by)}",
             )
             messages.success(request, f"Chiqim qo'shildi: {expense.amount:,.0f} so'm.")
             return form_success(request, _expense_back(request))
@@ -5309,10 +5386,14 @@ def expense_edit(request, pk):
     form = ExpenseForm(request.POST or None, instance=expense, user=request.user)
     if request.method == "POST":
         if form.is_valid():
-            form.save()
+            # An admin/manager may move a mistaken chiqim to the right seller's till.
+            expense = form.save(commit=False)
+            expense.created_by = form.acting_seller()
+            expense.save()
             AuditLog.record(
                 request.user, AuditLog.Action.UPDATE, "Chiqim", expense.pk,
-                f"{expense.category} chiqimi — {expense.amount:,.0f} so'm",
+                f"{expense.category} chiqimi — {expense.amount:,.0f} so'm"
+                f"{_on_behalf(request.user, expense.created_by)}",
             )
             messages.success(request, "Chiqim yangilandi.")
             return form_success(request, _expense_back(request))
@@ -6945,12 +7026,19 @@ def _client_advance_map(user):
     picked. Scoped to `user` because that's the seller whose advance a new sale would
     actually consume. Only positive balances are included.
 
+    An admin/manager writes the sale in the client's own seller's name, so for them
+    it is each client's advance with that seller — the one the sale will draw on.
+
     Counts the same kinds as `client_advance_balance`, credit owed back from returns
     and price corrections included — otherwise the hint would contradict the balance
     the sale then actually draws on."""
+    scope = (
+        Q(created_by=F("client__owner")) if user.can_see_all_records
+        else Q(created_by=user)
+    )
     rows = (
         Payment.objects.filter(
-            created_by=user,
+            scope,
             kind__in=ADVANCE_DEPOSIT_KINDS + ADVANCE_SPENT_KINDS,
         )
         .values("client")
@@ -6976,12 +7064,16 @@ def _product_price_map():
 
 
 def sale_create(request):
-    form = SaleForm(request.POST or None, user=request.user)
+    form = SaleForm(
+        request.POST or None, user=request.user, initial=_acting_initial(request)
+    )
     formset = SaleItemFormSet(request.POST or None, instance=Sale(), prefix="items")
     if request.method == "POST":
         if form.is_valid() and formset.is_valid():
             sale = form.save(commit=False)
-            sale.sales_rep = request.user
+            # The seller picked on the form when an admin/manager writes it for them.
+            seller = form.acting_seller()
+            sale.sales_rep = seller
             sale.save()
             formset.instance = sale
             formset.save()
@@ -6989,13 +7081,13 @@ def sale_create(request):
             _mark_fulfilment(sale, [])
             # If the client has prepaid this seller, spend that advance on the new
             # receipt (oldest first) — the sale opens already part/fully paid.
-            applied = _apply_advance_to_open_sales(sale.client, request.user)
+            applied = _apply_advance_to_open_sales(sale.client, seller)
             # A backdated receipt may predate a repayment the client has already made.
             recompute_client_debt_deadlines(sale.client_id)
             AuditLog.record(
                 request.user, AuditLog.Action.CREATE, "Sotuv", sale.pk,
                 f"Mijoz {sale.client.name}, {sale.items.count()} ta mahsulot "
-                f"— {sale.total_price:,.0f} so'm",
+                f"— {sale.total_price:,.0f} so'm{_on_behalf(request.user, seller)}",
             )
             if applied > 0:
                 messages.success(
@@ -7166,10 +7258,13 @@ def sale_edit(request, pk):
     overpay = net_paid - (_formset_total(formset) - returned)
     choice = request.POST.get("overpay_settlement") or ""
     refunded = choice == ReturnForm.SETTLE_REFUND
+    # Any money handed back comes out of the sale's own seller's till — the one the
+    # client paid into — even when an admin/manager is making the correction.
+    seller = sale.sales_rep
     if overpay > 0:
         overpay_ctx = {
             "amount": overpay,
-            "cash_on_hand": seller_cash_on_hand(request.user),
+            "cash_on_hand": seller_cash_on_hand(seller),
             "weight_dropped": _weight_dropped(sale, formset),
         }
         if choice not in (ReturnForm.SETTLE_ADVANCE, ReturnForm.SETTLE_REFUND):
@@ -7192,7 +7287,7 @@ def sale_edit(request, pk):
     formset.save()
     _mark_fulfilment(sale, [], only_unset=True)
     if overpay > 0:
-        _settle_overpay(sale, overpay, refunded, request.user)
+        _settle_overpay(sale, overpay, refunded, seller)
     # A new date or client changes whose repayments this receipt's money counts as,
     # and which repayments count for it — so both clients' deadlines are re-derived.
     for client_id in {was_client_id, sale.client_id}:
@@ -7206,6 +7301,7 @@ def sale_edit(request, pk):
             f"; ortiqcha {overpay:,.0f} so'm "
             f"({'naqd qaytarildi' if refunded else 'avansga'})"
         )
+    summary += _on_behalf(request.user, seller)
     AuditLog.record(request.user, AuditLog.Action.UPDATE, "Sotuv", sale.pk, summary)
     messages.success(request, _sale_edit_message(overpay, refunded))
     return form_reload(request, reverse("sale_list"))
@@ -7217,15 +7313,18 @@ def sale_mark_paid(request, pk):
     if request.method == "POST":
         remaining = sale.debt_remaining
         if remaining > 0:
+            # Into the sale's own seller's till, whoever clicks it.
             Payment.objects.create(
                 sale=sale, amount=remaining, amount_original=remaining,
                 method=Payment.Method.CASH,
-                kind=Payment.Kind.SALE, date=timezone.localdate(), created_by=request.user,
+                kind=Payment.Kind.SALE, date=timezone.localdate(),
+                created_by=sale.sales_rep,
             )
             recompute_client_debt_deadlines(sale.client_id)
             AuditLog.record(
                 request.user, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
-                f"Mijoz {sale.client.name} to'liq to'ladi (Naqd) — {remaining:,.0f} so'm",
+                f"Mijoz {sale.client.name} to'liq to'ladi (Naqd) — {remaining:,.0f} so'm"
+                f"{_on_behalf(request.user, sale.sales_rep)}",
             )
             messages.success(request, "Sotuv to'langan deb belgilandi.")
         return form_reload(request, reverse("sale_list"))
@@ -7244,6 +7343,7 @@ def _render_debt_pay(request, sale, form, invalid=False):
         "sale": sale,
         "remaining": sale.debt_remaining,
         "title": f"To'lov: {sale.client.name}",
+        "acting_seller": sale.sales_rep,
     }
     if is_ajax(request):
         return render(request, "crm/_debt_pay_modal.html", context, status=422 if invalid else 200)
@@ -7253,19 +7353,22 @@ def _render_debt_pay(request, sale, form, invalid=False):
 def sale_pay(request, pk):
     """Pay one receipt. Paying MORE than it owes is allowed: the receipt is settled
     and the surplus becomes the client's advance, which then covers their other open
-    receipts oldest-first — anything still left stays on their balance."""
+    receipts oldest-first — anything still left stays on their balance.
+
+    The money is the sale's own seller's, even when an admin/manager records it."""
     # .with_balance() annotates `remaining`, which _distribute_debt_payment reads.
     sale = get_object_or_404(Sale.objects.visible_to(request.user).with_balance(), pk=pk)
     if sale.is_paid:
         return form_reload(request, reverse("debt_list"))
     remaining = sale.debt_remaining
+    seller = sale.sales_rep
     if request.method == "POST":
         form = DebtPaymentForm(request.POST)
         if form.is_valid():
             cd = form.cleaned_data
             _, surplus = _distribute_debt_payment(
                 [sale], cd["amount"], cd["method"], cd["commission_percent"], cd["note"],
-                request.user,
+                seller,
                 currency=cd["currency"],
                 exchange_rate=cd["exchange_rate"],
                 on_date=cd["date"],
@@ -7277,13 +7380,13 @@ def sale_pay(request, pk):
                 # The overpayment is the client's credit now — spend it on whatever
                 # else they still owe before letting it sit on their balance.
                 applied = _apply_advance_to_open_sales(
-                    sale.client, request.user, on_date=cd["date"]
+                    sale.client, seller, on_date=cd["date"]
                 )
             AuditLog.record(
                 request.user, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
                 f"Mijoz {sale.client.name} to'lovi "
                 f"({_method_label(cd['method'])}){_usd_note(cd)} "
-                f"— {cd['amount']:,.0f} so'm",
+                f"— {cd['amount']:,.0f} so'm{_on_behalf(request.user, seller)}",
             )
             if sale.debt_remaining <= 0:
                 msg = "Qarz to'liq to'landi."
@@ -7330,7 +7433,9 @@ def _render_return_form(request, sale, form, invalid=False, title=None):
         # False when no return, however large, could exceed the debt — the settlement
         # choice is then dropped from the form (see ReturnForm.can_overpay).
         "can_overpay": ReturnForm.can_overpay(sale),
-        "cash_on_hand": seller_cash_on_hand(request.user),
+        # A cash refund leaves the sale's own seller's till, not the admin's.
+        "cash_on_hand": seller_cash_on_hand(sale.sales_rep),
+        "acting_seller": sale.sales_rep,
     }
     if is_ajax(request):
         return render(request, "crm/_return_modal.html", context, status=422 if invalid else 200)
@@ -7345,29 +7450,34 @@ def sale_return(request, pk):
     client had already paid for, so it is handed back — either parked as advance
     credit (which then flows onto their other open receipts) or paid out in cash.
     Without that settlement the receipt would sit at a permanent negative balance and
-    the money owed to the client would be invisible."""
+    the money owed to the client would be invisible.
+
+    The return is the sale's own seller's — their till pays any refund and holds any
+    credit — even when an admin/manager records it for them."""
     sale = get_object_or_404(
         Sale.objects.visible_to(request.user).prefetch_related("items__product", "returns"),
         pk=pk,
     )
+    seller = sale.sales_rep
     if request.method == "POST":
-        form = ReturnForm(request.POST, sale=sale, user=request.user)
+        form = ReturnForm(request.POST, sale=sale, user=seller)
         if form.is_valid():
             ret = form.save(commit=False)
-            ret.created_by = request.user
+            ret.created_by = seller
             ret.save()
-            to_debt, excess, refunded = _settle_return(ret, form, request.user)
+            to_debt, excess, refunded = _settle_return(ret, form, seller)
             AuditLog.record(
                 request.user, AuditLog.Action.RETURN, "Qaytarish", sale.pk,
                 f"Mijoz {sale.client.name} qaytardi ({ret.product.name}) — "
                 f"{ret.amount:,.0f} so'm; qarzdan {to_debt:,.0f}, "
                 f"ortiqcha {excess:,.0f} "
-                f"({'naqd berildi' if refunded else 'avansga'})",
+                f"({'naqd berildi' if refunded else 'avansga'})"
+                f"{_on_behalf(request.user, seller)}",
             )
             messages.success(request, _return_message(ret.amount, to_debt, excess, refunded))
             return form_reload(request, reverse("sale_detail", args=[sale.pk]))
         return _render_return_form(request, sale, form, invalid=True)
-    form = ReturnForm(sale=sale, user=request.user, initial={"restock": True})
+    form = ReturnForm(sale=sale, user=seller, initial={"restock": True})
     return _render_return_form(request, sale, form)
 
 
@@ -7441,13 +7551,14 @@ def return_edit(request, pk):
             # Validate against the restored state, so the quantity cap and the debt
             # split both see the sale as if this return had never happened.
             sale.refresh_from_db()
-            form = ReturnForm(request.POST, sale=sale, user=request.user)
+            form = ReturnForm(request.POST, sale=sale, user=sale.sales_rep)
             if form.is_valid():
                 new = form.save(commit=False)
                 new.created_by = acceptor
                 new.date = orig_date
                 new.save()
-                to_debt, excess, refunded = _settle_return(new, form, request.user)
+                # Settled in the sale's own seller's till, like the original return.
+                to_debt, excess, refunded = _settle_return(new, form, sale.sales_rep)
                 AuditLog.record(
                     request.user, AuditLog.Action.UPDATE, "Qaytarish", sale.pk,
                     f"Mijoz {sale.client.name} qaytarishi o'zgartirildi "
@@ -7464,7 +7575,7 @@ def return_edit(request, pk):
         else ReturnForm.SETTLE_ADVANCE
     )
     form = ReturnForm(
-        sale=sale, user=request.user,
+        sale=sale, user=sale.sales_rep,
         initial={
             "sale_item": ret.sale_item_id,
             "weight": ret.weight,

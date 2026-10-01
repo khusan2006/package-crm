@@ -16,9 +16,11 @@ from .forms import (
     AdvanceEditForm,
     AdvanceForm,
     AdvanceRemoveForm,
+    ClientForm,
     ExpenseForm,
     ProductionRemittanceForm,
     SaleForm,
+    weight_terms,
 )
 from .models import (
     ADVANCE_ADJUST_NOTE,
@@ -2615,12 +2617,13 @@ class ReturnVoidTests(BaseSetup):
         )
 
     def test_seller_cannot_void_another_sellers_return(self):
-        # The sale belongs to sales1; the return was accepted by the manager. A plain
-        # seller must not be able to reach in and void someone else's return.
+        # The sale belongs to sales1; the manager took the return in for them, so it
+        # is sales1's return. Another seller must not be able to reach in and void it.
         sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
         self.client.force_login(self.manager)
         ret = self._return(sale, "4")  # inside the debt — only cancels debt, no cash
-        self.client.force_login(self.sales1)
+        self.assertEqual(ret.created_by, self.sales1)
+        self.client.force_login(self.sales2)
         response = self.client.post(reverse("return_delete", args=[ret.pk]))
         self.assertEqual(response.status_code, 404)
         self.assertEqual(sale.returns.count(), 1)
@@ -6530,3 +6533,238 @@ class BackdatedPayoutWarningTests(BaseSetup):
         )
         self.assertFalse(form.is_valid())
         self.assertIn("Saqlashni yana bosing", " ".join(form.errors["__all__"]))
+
+
+class ActingSellerTests(BaseSetup):
+    """An admin/manager writing records in a seller's name (the «Sotuvchi» picker).
+
+    Whatever they enter must land exactly where the seller's own entry would: the
+    sale under the mijoz's seller, the money in that seller's till. The audit log
+    still names who pressed the button."""
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+
+    def _sale(self, client, **header):
+        data = sale_post(client.pk, [one_item(self.product, weight="5")], **header)
+        return self.client.post(reverse("sale_create"), data)
+
+    def test_sale_goes_to_the_picked_seller(self):
+        self._sale(self.client1, seller=self.sales1.pk)
+        sale = Sale.objects.filter(client=self.client1).latest("pk")
+        self.assertEqual(sale.sales_rep, self.sales1)
+        log = AuditLog.objects.filter(target_type="Sotuv", target_id=sale.pk).get()
+        self.assertEqual(log.user, self.admin)
+        self.assertIn("sotuvchi: ", log.summary)
+
+    def test_sale_without_a_pick_goes_to_the_mijozs_seller(self):
+        self._sale(self.client2)
+        sale = Sale.objects.filter(client=self.client2).latest("pk")
+        self.assertEqual(sale.sales_rep, self.sales2)
+
+    def test_another_sellers_mijoz_is_refused(self):
+        before = Sale.objects.count()
+        response = self._sale(self.client2, seller=self.sales1.pk)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("client", response.context["form"].errors)
+        self.assertEqual(Sale.objects.count(), before)
+
+    def test_only_admins_see_the_picker(self):
+        self.assertIn("seller", SaleForm(user=self.admin).fields)
+        self.assertNotIn("seller", SaleForm(user=self.sales1).fields)
+        # Sellers only — an admin holds no till to write a sale into.
+        offered = set(SaleForm(user=self.admin).fields["seller"].queryset)
+        self.assertEqual(offered, {self.sales1, self.sales2})
+
+    def test_edit_keeps_the_seller_and_their_mijozlar(self):
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        form = SaleForm(user=self.admin, instance=sale)
+        self.assertTrue(form.fields["seller"].disabled)
+        other = Client.objects.create(name="Mijoz C", owner=self.sales2)
+        form = SaleForm(
+            {"date": sale.date.isoformat(), "client": other.pk, "seller": self.sales2.pk},
+            user=self.admin, instance=sale,
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("client", form.errors)
+
+    def test_debt_payment_lands_in_the_sellers_till(self):
+        make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        till = seller_cash_on_hand(self.sales1)
+        self.client.post(
+            reverse("client_debt_pay", args=[self.client1.pk]),
+            {"amount": "100000", "method": "cash", "currency": "uzs"},
+        )
+        payment = Payment.objects.filter(kind=Payment.Kind.DEBT).latest("pk")
+        self.assertEqual(payment.created_by, self.sales1)
+        self.assertEqual(seller_cash_on_hand(self.sales1) - till, Decimal("100000"))
+
+    def test_advance_is_held_by_the_mijozs_seller(self):
+        self.client.post(
+            reverse("client_advance_pay", args=[self.client1.pk]),
+            {"amount": "50000", "method": "cash", "currency": "uzs",
+             "to_kassa": AdvanceForm.IN_KASSA},
+        )
+        self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("50000"))
+        self.assertEqual(client_advance_balance(self.client1, self.admin), Decimal("0"))
+
+    def test_quick_added_mijoz_needs_a_seller(self):
+        url = reverse("client_quick_create")
+        response = self.client.post(url, {"name": "Yangi mijoz"})
+        self.assertEqual(response.status_code, 400)
+        response = self.client.post(url, {"name": "Yangi mijoz", "seller": self.sales2.pk})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Client.objects.get(name="Yangi mijoz").owner, self.sales2)
+
+    def test_expense_leaves_the_picked_sellers_till(self):
+        data = {
+            "date": timezone.localdate().isoformat(), "amount": "30000",
+            "currency": "uzs", "category": "Benzin", "method": "cash",
+        }
+        self.client.post(reverse("expense_create"), {**data, "seller": self.sales1.pk,
+                                                    "note": "sotuvchi uchun"})
+        self.assertEqual(Expense.objects.get(note="sotuvchi uchun").created_by, self.sales1)
+        # Left empty, it stays the admin's own — the Xodimlar page pays wages that way.
+        self.client.post(reverse("expense_create"), {**data, "note": "o'zim"})
+        self.assertEqual(Expense.objects.get(note="o'zim").created_by, self.admin)
+
+    def test_a_seller_cannot_write_in_another_sellers_name(self):
+        # Even a hand-made POST carrying `seller` is ignored for a plain seller:
+        # the field doesn't exist for them, so everything stays their own.
+        self.client.force_login(self.sales1)
+        before = Sale.objects.filter(client=self.client2).count()
+        self._sale(self.client2, seller=self.sales2.pk)
+        self.assertEqual(Sale.objects.filter(client=self.client2).count(), before)
+        self._sale(self.client1, seller=self.sales2.pk)
+        self.assertEqual(
+            Sale.objects.filter(client=self.client1).latest("pk").sales_rep, self.sales1
+        )
+        self.client.post(
+            reverse("client_quick_create"), {"name": "Soxta", "seller": self.sales2.pk}
+        )
+        self.assertEqual(Client.objects.get(name="Soxta").owner, self.sales1)
+        self.client.post(reverse("expense_create"), {
+            "date": timezone.localdate().isoformat(), "amount": "1000", "currency": "uzs",
+            "category": "Benzin", "method": "cash", "seller": self.sales2.pk,
+            "note": "soxta", "confirm_backdated": "1",
+        })
+        self.assertEqual(Expense.objects.get(note="soxta").created_by, self.sales1)
+        response = self.client.post(
+            reverse("client_debt_pay", args=[self.client2.pk]),
+            {"amount": "1000", "method": "cash", "currency": "uzs"},
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_client_seller_is_locked_on_edit(self):
+        form = ClientForm(user=self.admin, instance=self.client1, check_duplicates=False)
+        self.assertTrue(form.fields["owner"].disabled)
+        self.assertTrue(ClientForm(user=self.admin).fields["owner"].required)
+
+
+class WeightSumTests(BaseSetup):
+    """Og'irlik typed roll by roll — "100+20+50": the line keeps the total, the count
+    of pieces becomes its rulon soni, and price/tannarx stay one per kg."""
+
+    def _sale(self, weight, **item):
+        self.client.force_login(self.sales1)
+        data = sale_post(
+            self.client1.pk, [{**one_item(self.product, weight=weight), **item}]
+        )
+        return self.client.post(reverse("sale_create"), data)
+
+    def _last_item(self):
+        return SaleItem.objects.filter(sale__client=self.client1).latest("pk")
+
+    def test_terms(self):
+        self.assertEqual(weight_terms("100+20+50"), [100, 20, 50])
+        self.assertEqual(weight_terms(" 12,5 + 7.5 +"), [Decimal("12.5"), Decimal("7.5")])
+        self.assertEqual(weight_terms("4 950"), [4950])
+        for bad in ("100+abc", "100-20", "100+0", "100+-5"):
+            with self.assertRaises(ValueError):
+                weight_terms(bad)
+
+    def test_sum_is_stored_as_total_with_its_roll_count(self):
+        self._sale("100+20+50")
+        item = self._last_item()
+        self.assertEqual(item.weight, Decimal("170"))
+        self.assertEqual(item.rolls, 3)
+        self.assertEqual(item.total_price, Decimal("170") * Decimal("24000"))
+
+    def test_typed_count_wins_over_the_pieces(self):
+        self._sale("100+20+50", rolls="4")
+        self.assertEqual(self._last_item().rolls, 4)
+
+    def test_a_single_figure_leaves_the_count_blank(self):
+        self._sale("4950")
+        item = self._last_item()
+        self.assertEqual(item.weight, Decimal("4950"))
+        self.assertIsNone(item.rolls)
+
+    def test_garbage_is_refused(self):
+        before = SaleItem.objects.count()
+        response = self._sale("100+abc")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(SaleItem.objects.count(), before)
+
+    def test_edit_shows_the_total_without_padding(self):
+        self._sale("100+20+50")
+        sale = self._last_item().sale
+        response = self.client.get(reverse("sale_edit", args=[sale.pk]))
+        self.assertContains(response, 'value="170"')
+        self.assertContains(response, 'value="3"')
+
+
+class ActingSellerSwitchTests(BaseSetup):
+    """The top-bar «Sotuvchi» switch: an admin picks a seller once and every new
+    record's form opens in that seller's name."""
+
+    def _switch(self, seller_pk, next_url="/sales/"):
+        return self.client.post(
+            reverse("acting_seller_set"), {"seller": seller_pk, "next": next_url}
+        )
+
+    def test_the_pick_prefills_every_new_form(self):
+        self.client.force_login(self.admin)
+        response = self._switch(self.sales2.pk)
+        self.assertRedirects(response, "/sales/", fetch_redirect_response=False)
+        sale = self.client.get(reverse("sale_create")).context["form"]
+        self.assertEqual(sale["seller"].value(), self.sales2.pk)
+        debtor = self.client.get(reverse("debtor_add")).context["form"]
+        self.assertEqual(debtor["seller"].value(), self.sales2.pk)
+        expense = self.client.get(reverse("expense_create")).context["form"]
+        self.assertEqual(expense["seller"].value(), self.sales2.pk)
+        client = self.client.get(reverse("client_create")).context["form"]
+        self.assertEqual(client["owner"].value(), self.sales2.pk)
+
+    def test_the_sale_then_goes_to_that_seller(self):
+        self.client.force_login(self.admin)
+        self._switch(self.sales2.pk)
+        form = self.client.get(reverse("sale_create")).context["form"]
+        data = sale_post(
+            self.client2.pk, [one_item(self.product)], seller=form["seller"].value()
+        )
+        self.client.post(reverse("sale_create"), data)
+        sale = Sale.objects.filter(client=self.client2).latest("pk")
+        self.assertEqual(sale.sales_rep, self.sales2)
+
+    def test_an_empty_pick_clears_it(self):
+        self.client.force_login(self.admin)
+        self._switch(self.sales2.pk)
+        self._switch("")
+        form = self.client.get(reverse("sale_create")).context["form"]
+        self.assertIsNone(form["seller"].value())
+
+    def test_a_seller_has_no_switch(self):
+        self.client.force_login(self.sales1)
+        self.assertEqual(self._switch(self.sales2.pk).status_code, 403)
+        page = self.client.get(reverse("sale_list"))
+        self.assertNotContains(page, 'id="acting-seller-select"')
+        self.client.force_login(self.admin)
+        self.assertContains(
+            self.client.get(reverse("sale_list")), 'id="acting-seller-select"'
+        )
+
+    def test_only_a_local_address_is_followed_back(self):
+        self.client.force_login(self.admin)
+        response = self._switch(self.sales1.pk, next_url="https://evil.example/")
+        self.assertRedirects(response, reverse("dashboard"), fetch_redirect_response=False)

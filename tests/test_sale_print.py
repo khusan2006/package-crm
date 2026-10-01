@@ -31,6 +31,17 @@ def test_print_page_carries_the_receipt(client, admin_user, sample_data):
     assert "150\xa0000" in body
 
 
+def test_kimdan_puts_the_sellers_firm_before_their_name(client, admin_user, sample_data):
+    """Each seller trades under their own firm — Kamola's is not Umida's."""
+    sale = sample_data["sale"]
+    sale.sales_rep.firm_name = "Polimer111"
+    sale.sales_rep.save(update_fields=["firm_name"])
+    client.force_login(admin_user)
+
+    body = client.get(f"/sales/{sale.pk}/yuk-xati/").content.decode()
+    assert "Polimer111 Sel Ler" in body
+
+
 def test_sheet_holds_two_copies(client, admin_user, sample_data):
     """One half stays with the seller, the other is cut off and goes with the load."""
     client.force_login(admin_user)

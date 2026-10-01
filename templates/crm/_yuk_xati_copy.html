@@ -10,7 +10,7 @@ and carries no ids that would clash between the two copies.
   {% endcomment %}
   <div class="nak-date">«<span class="nak-slot s-day">{{ sale.date|date:"d" }}</span>» <span class="nak-slot s-month">{{ sale.date|date:"m" }}</span> 20<span class="nak-slot s-year">{{ sale.date|date:"y" }}</span> г.</div>
   <div class="nak-title">YUK XATI/НАКЛАДНАЯ №<span class="nak-no">&nbsp;</span></div>
-  <div class="nak-field"><span class="nak-lbl">Kimdan/От кого</span><span class="nak-line">{{ sale.sales_rep }}</span></div>
+  <div class="nak-field"><span class="nak-lbl">Kimdan/От кого</span><span class="nak-line">{% if sale.sales_rep.firm_name %}{{ sale.sales_rep.firm_name }} {% endif %}{{ sale.sales_rep }}</span></div>
   <div class="nak-field"><span class="nak-lbl">Kimga/Кому</span><span class="nak-line">{{ sale.client.name|title }}{% if sale.client.phone %}<span class="nak-phone">Tel: {{ sale.client.phone }}</span>{% endif %}</span></div>
 
   <table class="nak-tbl">
@@ -28,7 +28,7 @@ and carries no ids that would clash between the two copies.
       {% for item in items %}
       <tr>
         <td class="c-no">{{ forloop.counter }}</td>
-        <td class="c-name">{{ item.product.name }}{% if item.variant_label %} · {{ item.variant_label }}{% endif %}</td>
+        <td class="c-name">{{ item.product.name }}{% if item.variant_label %} · {{ item.variant_label }}{% endif %}{% if item.rolls %} · {{ item.rolls }} rulon{% endif %}</td>
         <td class="c-unit">{{ item.dimension }}</td>
         <td class="c-qty">{{ item.weight|floatformat:"-3g" }}</td>
         <td class="c-price">{{ item.price|floatformat:"0g" }}</td>
