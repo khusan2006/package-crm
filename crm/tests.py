@@ -17,6 +17,7 @@ from .forms import (
     AdvanceForm,
     AdvanceRemoveForm,
     ClientForm,
+    EmployeeForm,
     ExpenseForm,
     ProductionRemittanceForm,
     SaleForm,
@@ -3840,6 +3841,34 @@ class EmployeePayrollTests(BaseSetup):
         self.assertEqual(
             self.client.get(reverse("employee_edit", args=[self.worker.pk])).status_code,
             200,
+        )
+
+    def test_edit_form_opens_on_the_workers_own_start_month(self):
+        # The select used to open on its first option — next month — because the
+        # instance's date matched none of the "YYYY-MM" values. Saving that as-is
+        # would have moved the account past every month already on the books.
+        self.worker.start_month = date(self.today.year - 1, 3, 1)
+        self.worker.save(update_fields=["start_month"])
+        self.client.force_login(self.admin)
+        opened = f"{self.today.year - 1}-03"
+        for url in (
+            reverse("employee_edit", args=[self.worker.pk]),
+            reverse("employee_create"),
+        ):
+            form = self.client.get(url).context["form"]
+            value = form["start_month"].value()
+            self.assertIn(value, dict(form.fields["start_month"].choices))
+            self.assertIn(f'value="{value}" selected', str(form["start_month"]))
+            # the edit form shows the worker's month, a new worker starts this month
+            self.assertEqual(value, opened)
+            opened = f"{self.today.year}-{self.today.month:02d}"
+
+    def test_start_month_older_than_the_list_is_still_offered(self):
+        self.worker.start_month = date(self.today.year - 5, 1, 1)
+        self.worker.save(update_fields=["start_month"])
+        form = EmployeeForm(instance=self.worker)
+        self.assertIn(
+            f'value="{self.today.year - 5}-01" selected', str(form["start_month"])
         )
 
     def test_detail_page_tells_the_whole_history(self):

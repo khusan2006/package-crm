@@ -12,7 +12,7 @@ from django.utils import timezone
 from accounts.models import User
 
 from .geo import LocationError, resolve_location
-from .utils import UZ_MONTH_NAMES
+from .utils import UZ_MONTH_NAMES, uz_month
 
 from .models import (
     DEFAULT_DEBT_DAYS,
@@ -778,9 +778,16 @@ class EmployeeForm(forms.ModelForm):
         self.fields["start_month"].choices = months
         self.fields["salary_from"].choices = months
         this_month = timezone.localdate().replace(day=1)
-        self.fields["start_month"].initial = (
-            self.instance.start_month if self.instance.pk else this_month
-        ).strftime("%Y-%m")
+        # Set on the form's `initial`, not the field's: a ModelForm fills `initial`
+        # from the instance, and that date wins over the field. It matches no "YYYY-MM"
+        # option, so the select fell back to its first entry — next month.
+        opened = self.instance.start_month if self.instance.pk else this_month
+        self.initial["start_month"] = opened.strftime("%Y-%m")
+        if self.initial["start_month"] not in dict(months):
+            # An account older than the list reaches back still has to show its month.
+            self.fields["start_month"].choices = months + [
+                (self.initial["start_month"], uz_month(opened.year, opened.month))
+            ]
         # A raise defaults to "from this month": nobody edits a wage meaning to
         # backdate it, and the months behind it are already paid against.
         self.fields["salary_from"].initial = this_month.strftime("%Y-%m")
