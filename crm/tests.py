@@ -1,6 +1,8 @@
+import calendar
 from datetime import date, timedelta
 from decimal import Decimal
 from io import BytesIO, StringIO
+from unittest import mock
 
 from django.contrib.messages import get_messages
 from django.core.management import call_command
@@ -3623,6 +3625,14 @@ class EmployeePayrollTests(BaseSetup):
     that month counted against it."""
 
     def setUp(self):
+        # A wage is earned by the day now (tests/test_hr_davomad.py), so "this month's
+        # wage" is the whole salary only once the month has run out. These cases are
+        # about payouts measured against a month, so they are asked on its last day.
+        real = timezone.localdate()
+        last = real.replace(day=calendar.monthrange(real.year, real.month)[1])
+        pinned = mock.patch.object(timezone, "localdate", lambda *args, **kwargs: last)
+        pinned.start()
+        self.addCleanup(pinned.stop)
         self.worker = Employee.objects.create(
             name="Косимов Рахматжон", salary=Decimal("2000000")
         )

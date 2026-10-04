@@ -116,6 +116,27 @@ urlpatterns = [
     path("kassa/amal/<str:kind>/<int:pk>/", crm_views.kassa_entry_detail, name="kassa_entry_detail"),
     path("xodimlar/", crm_views.employee_list, name="employee_list"),
     path("xodimlar/export/", crm_views.employee_export, name="employee_export"),
+    # Davomad: oylik shu jadvaldan hisoblanadi
+    path("xodimlar/davomad/", crm_views.attendance_grid, name="attendance_grid"),
+    path(
+        "xodimlar/davomad/excel/",
+        crm_views.attendance_excel,
+        name="attendance_excel",
+    ),
+    path(
+        "xodimlar/<int:pk>/reja/<str:sana>/",
+        crm_views.employee_day,
+        name="employee_day",
+    ),
+    path("bayramlar/", crm_views.holiday_list, name="holiday_list"),
+    path("bayramlar/yangi/", crm_views.holiday_create, name="holiday_create"),
+    path("bayramlar/toldirish/", crm_views.holiday_seed, name="holiday_seed"),
+    path("bayramlar/<int:pk>/edit/", crm_views.holiday_edit, name="holiday_edit"),
+    path(
+        "bayramlar/<int:pk>/delete/",
+        crm_views.holiday_delete,
+        name="holiday_delete",
+    ),
     path("xodimlar/yangi/", crm_views.employee_create, name="employee_create"),
     path("xodimlar/<int:pk>/", crm_views.employee_detail, name="employee_detail"),
     path("xodimlar/<int:pk>/edit/", crm_views.employee_edit, name="employee_edit"),

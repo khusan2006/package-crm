@@ -9,6 +9,12 @@
   Oylik — oylik raqam, shuning uchun sahifa kun filtriga emas, bitta oyga bog'langan.
   Har oy o'zicha yopilmaydi: to'liq berilmagan oylik keyingi oyga o'tadi (“O'tgan
   oydan” ustuni), oldindan ortiqcha olingan pul esa minus bo'lib o'tadi.
+
+  “Hisoblangan” — shartnomadagi raqam emas, DAVOMADDAN chiqqan raqam: kelgan kun ×
+  kunlik narx. Kunlik narx = oylik ÷ o'sha oyning ish kunlari (yakshanbasiz;
+  yopilgan bayram ham chiqadi). Ya'ni hamma kuni kelgan xodim aniq o'z oyligini
+  oladi, bir hafta kelmagani esa kamroq. Joriy oyda hisob bugungi kungacha
+  yuritiladi.
 {% endcomment %}
 {% comment %}Oy tanlash sahifaning eng tepasida: u faqat jadvalni emas, kartalarni ham
 boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% endcomment %}
@@ -28,6 +34,9 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
       <a class="seg-btn{% if s.active %} is-active{% endif %}" href="{{ s.url }}"{% if s.active %} aria-current="true"{% endif %}>{{ s.label }}<span class="seg-count">{{ s.count }}</span></a>
       {% endfor %}
     </div>
+    {% comment %}Davomad — shu oyliklar hisoblanadigan jadval. Uni nazoratchi
+    yuritadi, shuning uchun havola faqat admin/menejerga ko'rinadi.{% endcomment %}
+    {% if davomad_url %}<a class="btn btn-sm btn-ghost" href="{{ davomad_url }}">Davomad →</a>{% endif %}
     {% if not is_current_month %}<a class="btn btn-sm btn-ghost" href="{% qs_replace oy='' %}">Shu oy</a>{% endif %}
     <div class="month-pick" role="group" aria-label="Oy tanlash">
       <a class="datebar-btn" href="{% qs_replace oy=prev_month %}" title="Oldingi oy" aria-label="Oldingi oy">
@@ -61,7 +70,7 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
       <span class="kpi-label">Shu oy oylik fondi</span>
     </div>
     <div class="kpi-value">{{ totals.salary|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta muted">faol xodimlar · {{ month_label }}</div>
+    <div class="kpi-meta muted">shundan hisoblangani {{ totals.earned|floatformat:"0g" }} · {{ month_label }}</div>
   </div>
 
   <div class="kpi kpi--gold">
@@ -102,7 +111,8 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
   <table class="table--blue-head">
     <tr>
       <th class="sticky-col">Xodim</th>
-      <th class="num">Oyligi</th>
+      <th class="num">Kun</th>
+      <th class="num">Hisoblangan</th>
       <th class="num">O'tgan oydan</th>
       <th class="num">Jami olishi kerak</th>
       <th class="num">Shu oy berilgan</th>
@@ -115,14 +125,21 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
         <span class="cell-user">
           {% include "crm/_avatar.html" with name=r.employee.name %}
           {# Ism — xodimning to'liq tarixiga yo'l: oylari, olgan pullari, rasxotlari #}
-          <span><a href="{% url 'employee_detail' r.employee.pk %}" title="Xodim tarixi">{{ r.employee.name }}</a>
+          <span><a href="{% url 'employee_detail' r.employee.pk %}?oy={{ month_value }}" title="Xodim tarixi va grafigi">{{ r.employee.name }}</a>
             {% if not r.employee.is_active %}<span class="badge badge-cancelled" style="margin-left:6px;">Faol emas</span>{% endif %}
-            {% if r.employee.note %}<span class="cell-sub">{{ r.employee.note }}</span>{% endif %}
+            {# Kelishilgan oylik — «Hisoblangan» shundan, kelgan kunlarga qarab chiqadi #}
+            <span class="cell-sub">{% if r.accrues %}{{ r.salary|floatformat:"0g" }}{% else %}{{ r.employee.salary|floatformat:"0g" }}{% endif %} so'm{% if r.employee.note %} · {{ r.employee.note }}{% endif %}</span>
           </span>
         </span>
       </td>
       {# Hisob boshlanmagan (yoki ishdan ketgan) oyda oylik yozilmaydi #}
-      <td class="num">{% if r.accrues %}{{ r.salary|floatformat:"0g" }}{% else %}<span class="muted" title="Bu oyda oylik hisoblanmaydi">—</span>{% endif %}</td>
+      {% if r.accrues %}
+      <td class="num">{{ r.days }}<span class="cell-sub">{{ r.working_days }} kundan</span>{% if r.missed_days %}<span class="cell-sub att-missed">{{ r.missed_days }} kun kelmadi</span>{% endif %}{% if r.sunday_days %}<span class="cell-sub">+{{ r.sunday_days }} dam kunida</span>{% endif %}</td>
+      <td class="num">{{ r.earned|floatformat:"0g" }}<span class="cell-sub">kuniga {{ r.daily_rate|floatformat:"0g" }}</span></td>
+      {% else %}
+      <td class="num"><span class="muted">—</span></td>
+      <td class="num"><span class="muted" title="Bu oyda oylik hisoblanmaydi">—</span></td>
+      {% endif %}
       {% if r.tracked %}
       {# Manfiy = oldindan ortiqcha olgan, ya'ni kelasi oy oyligidan ushlanadi #}
       <td class="num">{% if r.carried > 0 %}<strong class="amt-debt">{{ r.carried|floatformat:"0g" }}</strong>{% elif r.carried < 0 %}<span class="amt-in">{{ r.carried|floatformat:"0g" }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
@@ -154,8 +171,9 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
     </tr>
     {% endfor %}
     <tr>
-      <td class="sticky-col"><strong>Jami</strong> <span class="cell-sub">oylik — faol xodimlar</span></td>
-      <td class="num"><strong>{{ totals.salary|floatformat:"0g" }}</strong></td>
+      <td class="sticky-col"><strong>Jami</strong> <span class="cell-sub">kun va hisoblangan — faol xodimlar</span></td>
+      <td class="num"><strong>{{ totals.days }}</strong></td>
+      <td class="num"><strong>{{ totals.earned|floatformat:"0g" }}</strong></td>
       <td class="num"><strong>{{ totals.carried|floatformat:"0g" }}</strong></td>
       <td class="num"><strong>{{ totals.due|floatformat:"0g" }}</strong></td>
       <td class="num amt-out"><strong>{{ totals.paid|floatformat:"0g" }}</strong></td>
@@ -165,7 +183,18 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
   </table>
   </div>
   {% else %}
+  {% comment %}
+    Bo'sh ro'yxatning ikki sababi bor: hali xodim yo'q, yoki filtr hammani
+    chiqarib tashlagan. Ikkinchisida «xodim qo'shing» — noto'g'ri maslahat.
+  {% endcomment %}
+  {% if q or holat %}
+  <p class="muted">
+    Tanlangan filtrga mos xodim yo'q.
+    <a href="{% url 'employee_list' %}?oy={{ month_value }}">Filtrni tozalash</a>
+  </p>
+  {% else %}
   <p class="muted">Hali xodim qo'shilmagan. O'ng pastdagi “Yangi xodim” tugmasi bilan qo'shing.</p>
+  {% endif %}
   {% endif %}
 </div>
 

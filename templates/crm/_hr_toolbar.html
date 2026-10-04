@@ -1,0 +1,45 @@
+{% load crm_extras %}
+{% comment %}
+  Davomad sahifasining boshqaruv qatori. U Xodimlar sahifasi bilan bir xil xodimlar
+  to'plamini ko'rsatishi kerak, shuning uchun qidiruv ham, Faol/Faol emas tanlovi
+  ham bir xil nomdagi parametrlar bilan o'tadi.
+
+  Chapda qidiruv, o'ngda sahifaning havolalari va oy — boshqa sahifalardagi
+  tartibning aynan o'zi. Yashirin maydonlar muhim: qidirilganda oy va tanlov
+  yo'qolmasin, oy almashtirilganda qidiruv yo'qolmasin.
+
+  `toolbar_links` — sahifaga xos havolalar, view'dan keladi («Excel'ga chiqarish»,
+  «Bayramlar», «Oylik hisobi →»). Ular shu qatorda turadi: filtr ham, sahifaning
+  tugmalari ham bitta yo'lakda o'qiladi, ikkinchi qator ochilmaydi.
+{% endcomment %}
+<div class="table-toolbar">
+  <div class="toolbar-left">
+    <form method="get" class="toolbar-search{% if q %} is-active{% endif %}" role="search" data-live-search>
+      <svg class="toolbar-search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="search" name="q" value="{{ q }}" placeholder="Xodim ismi yoki izoh bo'yicha qidirish…" autocomplete="off" aria-label="Xodim qidirish">
+      <input type="hidden" name="oy" value="{{ month_value }}">
+      {% if holat %}<input type="hidden" name="holat" value="{{ holat }}">{% endif %}
+      {% if q %}<a href="{% qs_replace q='' %}" class="toolbar-search-x" title="Qidiruvni tozalash" aria-label="Qidiruvni tozalash">&times;</a>{% endif %}
+    </form>
+  </div>
+  <div class="toolbar-right">
+    {% for l in toolbar_links %}<a class="btn btn-sm btn-ghost" href="{{ l.url }}">{{ l.label }}</a>{% endfor %}
+    {% if not is_current_month %}<a class="btn btn-sm btn-ghost" href="{% qs_replace oy='' %}">Shu oy</a>{% endif %}
+    <div class="month-pick" role="group" aria-label="Oy tanlash">
+      <a class="datebar-btn" href="{% qs_replace oy=prev_month %}" title="Oldingi oy" aria-label="Oldingi oy">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </a>
+      <form method="get" class="month-pick-form">
+        {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
+        {% if holat %}<input type="hidden" name="holat" value="{{ holat }}">{% endif %}
+        <select name="oy" class="month-pick-select" aria-label="Oy" onchange="this.form.submit()">
+          {% for o in month_options %}<option value="{{ o.value }}"{% if o.value == month_value %} selected{% endif %}>{{ o.label }}</option>{% endfor %}
+        </select>
+        <noscript><button type="submit" class="btn btn-sm">Ko'rsat</button></noscript>
+      </form>
+      <a class="datebar-btn" href="{% qs_replace oy=next_month %}" title="Keyingi oy" aria-label="Keyingi oy">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </a>
+    </div>
+  </div>
+</div>

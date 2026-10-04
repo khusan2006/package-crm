@@ -76,10 +76,27 @@
           Oylik hammaga ochiq: naqdni uzatadigan ham, "mendan qancha qoldi?" degan
           savolga javob beradigan ham sotuvchining o'zi.
         {% endcomment %}
+        {% comment %}
+          Davomad va Bayramlar — oylik shu ikkisidan hisoblanadi. Ularni nazoratchi
+          yuritadi (belgi oylikni o'zgartiradi), shuning uchun faqat admin/menejerga
+          ko'rinadi.
+        {% endcomment %}
+        {% if user.can_see_all_records %}
+        <a class="nav-item {% if 'attendance' in url_name %}active{% endif %}" href="{% url 'attendance_grid' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="m9 16 2 2 4-4"/></svg></span>
+          <span>Davomad</span>
+        </a>
+        {% endif %}
         <a class="nav-item {% if 'employee' in url_name %}active{% endif %}" href="{% url 'employee_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
           <span>Xodimlar oyligi</span>
         </a>
+        {% if user.can_see_all_records %}
+        <a class="nav-item {% if 'holiday' in url_name %}active{% endif %}" href="{% url 'holiday_list' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5.8 11.3 2 22l10.7-3.79"/><path d="M4 3h.01"/><path d="M22 8h.01"/><path d="M15 2h.01"/><path d="M22 20h.01"/><path d="m22 2-2.24.75a2.9 2.9 0 0 0-1.96 3.12c.1.86-.57 1.63-1.45 1.63h-.38c-.86 0-1.6.6-1.76 1.44L14 10"/><path d="m22 13-.82-.33c-.86-.34-1.82.2-1.98 1.11c-.11.7-.72 1.22-1.43 1.22H16"/><path d="M11 2 9.66 2.6a2 2 0 0 0-1.14 2.4l.25.9A1.7 1.7 0 0 1 7.1 8H6"/></svg></span>
+          <span>Bayramlar</span>
+        </a>
+        {% endif %}
         <a class="nav-item {% if 'audit' in url_name %}active{% endif %}" href="{% url 'audit_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/><line x1="9" y1="11" x2="12" y2="11"/></svg></span>
           <span>Amallar tarixi</span>
@@ -2024,6 +2041,91 @@
     if (document.readyState !== 'loading') { enhanceMultipicks(); }
     else { document.addEventListener('DOMContentLoaded', function () { enhanceMultipicks(); }); }
     document.addEventListener('modal:loaded', function (e) { enhanceMultipicks(e.detail || document); });
+  })();
+
+  /* Davomad katagi — bosilganda holat aylanadi.
+     Aylanish tartibini sahifa o'ylab topmaydi, serverdan data-cycle bilan keladi:
+     ish kuni va dam kuni turlicha aylanadi (dam kunida "kelmadi" degan holat yo'q —
+     o'tkazib yuborilgan narsa bo'lmagan), va qaysi kun kimga dam kuni ekanini
+     server hal qiladi (yakshanba, bayram, haqli dam). Buni ikkinchi marta JS'da hisoblansa, ikkita
+     javob paydo bo'ladi.
+
+     Haqiqiy qiymat yonidagi yashirin maydonda turadi — forma o'shani yuboradi.
+     Tugmaning o'zi hech narsa yubormaydi, u faqat ko'rinish. */
+  (function () {
+    var CYCLE_FALLBACK = ['keldi', 'kelmadi'];
+
+    function step(button) {
+      var cycle = (button.dataset.cycle || '').split(',').filter(Boolean);
+      if (!cycle.length) { cycle = CYCLE_FALLBACK; }
+      var at = cycle.indexOf(button.dataset.state);
+      var next = cycle[(at + 1) % cycle.length];
+      button.dataset.state = next;
+      var field = button.parentNode.querySelector('input[type="hidden"]');
+      if (field) { field.value = next; }
+      /* Istisno bo'lgan katak ajralib tursin — jadvalda aynan shular oylikni
+         o'zgartiradi. Sukut holati har xil kunda har xil: ish kunida "keldi",
+         dam kunida "dam", ya'ni aylanish ro'yxatining birinchisi. */
+      var cell = button.closest('.att-cell');
+      if (cell) { cell.classList.toggle('att-cell--flag', next !== cycle[0]); }
+    }
+
+    /* Tugagan kun yopiq turadi. Jadval 31 ustun va uni yonga surib o'qiladi —
+       yo'l-yo'lakay tegib ketgan sichqoncha hech kim qaramayotgan oylikni
+       o'zgartirib yuborishi mumkin edi. Bitta bosish yopiq katakka hech narsa
+       qilmaydi; ochish uchun ataylab IKKI marta bosiladi.
+
+       Ochilishning o'zi kunni o'zgartirmaydi — faqat qulfni oladi. Shundan keyin
+       katak odatdagidek aylanadi. Server ham shu bayroqni tekshiradi, ya'ni himoya
+       bu yerda emas, `_save_attendance` da. */
+    function unlock(button) {
+      button.dataset.locked = '0';
+      button.classList.add('is-opened');
+      button.removeAttribute('aria-disabled');
+      var flag = button.parentNode.querySelector('[data-att-open]');
+      if (flag) { flag.value = '1'; }
+      var cell = button.closest('.att-cell');
+      if (cell) { cell.classList.remove('att-cell--locked'); }
+    }
+
+    document.addEventListener('click', function (e) {
+      var button = e.target.closest('[data-att-cell]');
+      if (!button) { return; }
+      e.preventDefault();
+      if (button.dataset.locked === '1') { return; }
+      step(button);
+    });
+
+    document.addEventListener('dblclick', function (e) {
+      var button = e.target.closest('[data-att-cell]');
+      if (!button || button.dataset.locked !== '1') { return; }
+      e.preventDefault();
+      unlock(button);
+    });
+
+    /* Jadval BUGUNGA surilgan holda ochiladi.
+       Oy 31 ustun, ekranga esa o'ntachasi sig'adi — sukut bo'yicha chapdan
+       ochilsa, har safar belgilanadigan kunga yetib borish uchun jadvalni qo'lda
+       surish kerak bo'ladi. Bugun o'ng chekkaga qo'yiladi: undan keyingi kunlar
+       baribir kelajak, ulardan oldingi bir necha kun esa ochiq va tuzatilishi
+       mumkin — ya'ni ko'z aynan kerakli joyga tushadi.
+
+       O'lchov `getBoundingClientRect` bilan: `offsetLeft` eng yaqin joylashgan
+       ota-elementga nisbatan bo'ladi va jadval tuzilishi o'zgarsa buziladi. */
+    function showToday() {
+      var wrap = document.querySelector('.att-wrap');
+      if (!wrap) { return; }
+      var today = wrap.querySelector('.att-day--today');
+      if (!today) { return; }   // boshqa oy ochilgan — chapdan boshlangani to'g'ri
+      var pinned = wrap.querySelector('thead .att-total');
+      var gap = (pinned ? pinned.offsetWidth : 0) + 8;
+      var move = today.getBoundingClientRect().right
+        - wrap.getBoundingClientRect().right + gap;
+      if (move > 0) { wrap.scrollLeft += move; }
+    }
+
+    if (document.readyState !== 'loading') { showToday(); }
+    else { document.addEventListener('DOMContentLoaded', showToday); }
   })();
 </script>
 </body>

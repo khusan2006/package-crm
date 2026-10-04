@@ -19,6 +19,7 @@ from .models import (
     Client,
     Employee,
     Expense,
+    Holiday,
     Payment,
     Product,
     ProductionAdjustment,
@@ -800,6 +801,10 @@ class EmployeeForm(forms.ModelForm):
             # Nothing to re-price yet, so the question isn't asked on a new worker.
             del self.fields["salary_from"]
         _mark_money(self.fields["salary"], self.fields["opening_balance"])
+        self.fields["salary"].help_text = (
+            "Kunlik narx shundan chiqadi: oylik ÷ o'sha oyning ish kunlari "
+            "(yakshanba va dam beriladigan bayramlarsiz)"
+        )
 
     def clean_salary(self):
         salary = self.cleaned_data.get("salary")
@@ -841,6 +846,110 @@ class EmployeeForm(forms.ModelForm):
         folded = name.casefold()
         if any(existing.casefold() == folded for existing in taken.values_list("name", flat=True)):
             raise forms.ValidationError("Bu ismli xodim allaqachon bor.")
+        return name
+
+
+class DayCardForm(forms.Form):
+    """Everything one day of one worker can be told to be — recorded or planned —
+    asked as a single question.
+
+    In practice there is only ever one question about a day: "what about Bekzod on
+    the 5th?" The answer is sometimes a fact (he did not come in) and sometimes a plan
+    (he is off). Two screens for one question means opening both to find out which
+    one holds the answer.
+
+    Which answers are offered is decided by the day itself and handed in, because the
+    form must not offer one it cannot carry out: a day that has not happened cannot be
+    marked absent, and a day that has cannot be planned.
+
+    The choices are spelled out rather than being a tick box each. The difference
+    between paid and unpaid leave is a day's wage, and so is the difference between
+    "came" and "did not come" — controls that look the same whichever they mean are
+    how that gets picked wrong."""
+
+    # What happened — only offered once the day is over.
+    KELDI = "keldi"
+    KELMADI = "kelmadi"
+    DAM = "dam"
+    # What is meant to happen — only offered while the day is still ahead.
+    LEAVE_PAID = "dam_haqli"
+    LEAVE_UNPAID = "dam_oz_hisobidan"
+    CLEAR = "damni_olib_tashlash"
+
+    # The ones that write a davomad row rather than a plan. Kept as a set so the view
+    # asks "is this attendance?" once instead of listing them again.
+    ATTENDANCE = frozenset({KELDI, KELMADI, DAM})
+
+    action = forms.ChoiceField(label="Nima qilinsin?", widget=forms.RadioSelect)
+    note = forms.CharField(
+        label="Izoh", max_length=255, required=False,
+        widget=forms.TextInput(attrs={"placeholder": "Ixtiyoriy — nima uchun"}),
+    )
+
+    def __init__(self, *args, has_leave=False, is_rest=False,
+                 recordable=False, plannable=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        choices = []
+        if recordable:
+            # The sheet's own two pairs: a day off is rested or worked, a working
+            # day is worked or missed.
+            choices += (
+                [(self.DAM, "Dam oldi"),
+                 (self.KELDI, "Chiqib ishladi — oylik ustiga qo'shiladi")]
+                if is_rest else
+                [(self.KELDI, "Keldi"),
+                 (self.KELMADI, "Kelmadi — oylikdan ushlanadi")]
+            )
+        if plannable:
+            choices += [
+                (self.LEAVE_PAID, "Haqli dam — oyligi saqlanadi"),
+                (self.LEAVE_UNPAID, "O'z hisobidan dam — oylikdan ushlanadi"),
+            ]
+            if has_leave:
+                choices.append((self.CLEAR, "Belgilangan damni olib tashlash"))
+        self.fields["action"].choices = choices
+
+
+class HolidayForm(forms.ModelForm):
+    """A holiday, and the one decision that matters about it: does the firm close.
+
+    Closed, the day leaves the divisor — so a worker who takes it off is still paid
+    their full salary, and one who comes in has it added on top like any other rest
+    day worked. Left open, the holiday is a label on the sheet and moves no money at
+    all."""
+
+    class Meta:
+        model = Holiday
+        fields = ["date", "name", "rest", "note"]
+        widgets = {
+            "date": forms.DateInput(attrs={"type": "date"}),
+            "name": forms.TextInput(attrs={"placeholder": "Masalan: Ramazon hayit"}),
+            "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["rest"].help_text = (
+            "Belgilansa — o'sha kun dam kuni: dam olgan xodim to'liq oyligini oladi, "
+            "chiqib ishlagani esa oylik ustiga qo'shiladi. Belgilanmasa — oddiy ish "
+            "kuni, faqat jadvalda nomi ko'rinadi."
+        )
+
+    def clean_date(self):
+        # One row per date: two holidays on one day would leave "is the firm shut"
+        # with two answers, and the payroll reads whichever it happens to find.
+        when = self.cleaned_data.get("date")
+        taken = Holiday.objects.filter(date=when)
+        if self.instance.pk:
+            taken = taken.exclude(pk=self.instance.pk)
+        if taken.exists():
+            raise forms.ValidationError("Bu sanada allaqachon bayram bor.")
+        return when
+
+    def clean_name(self):
+        name = (self.cleaned_data.get("name") or "").strip()
+        if not name:
+            raise forms.ValidationError("Bayram nomini yozing.")
         return name
 
 

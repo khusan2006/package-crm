@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Bayramlar · Paket CRM{% endblock %}
+{% block topbar_title %}Bayramlar{% endblock %}
+{% block content %}
+
+{% comment %}
+  Bayram — kunning o'zida bitta qaror: ishxona yopiladimi yoki yo'q. «Dam beriladi»
+  belgilangan kun bo'luvchidan chiqadi, ya'ni oylik o'sha oyning kamroq kuniga
+  bo'linadi — natijada dam olgan xodim to'liq oyligini oladi, chiqib ishlagani esa
+  yakshanba kabi ustiga qo'shiladi.
+
+  «Dam beriladi» olib tashlansa — kun oddiy ish kuni bo'lib qoladi, jadvalda faqat
+  nomi ko'rinadi va hech qanday pulga tegmaydi.
+
+  Ro'yxat aniq sanalarda saqlanadi, takrorlanuvchi qoida sifatida emas: hayitlar
+  har yili suriladi, va bayram yakshanbaga tushsa ba'zan ko'chiriladi. Qoida yozib
+  qo'yilsa, u har yili qo'lda tuzatilishi kerak bo'lardi va shu bilan birga
+  «to'g'ri» bo'lib ko'rinib turardi.
+{% endcomment %}
+
+<div class="table-toolbar">
+  <div class="toolbar-left">
+    <h2 style="margin:0;">{{ year }} yil</h2>
+  </div>
+  <div class="toolbar-right">
+    <a class="btn btn-sm btn-ghost" href="{{ davomad_url }}">Davomad →</a>
+    {% if not is_current_year %}<a class="btn btn-sm btn-ghost" href="{% url 'holiday_list' %}">Shu yil</a>{% endif %}
+    <div class="month-pick" role="group" aria-label="Yil tanlash">
+      <a class="datebar-btn" href="?yil={{ prev_year }}" title="Oldingi yil" aria-label="Oldingi yil">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </a>
+      <span class="month-pick-select" style="display:inline-flex;align-items:center;padding:0 10px;">{{ year }}</span>
+      <a class="datebar-btn" href="?yil={{ next_year }}" title="Keyingi yil" aria-label="Keyingi yil">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </a>
+    </div>
+    <a class="btn btn-sm btn-primary" href="{% url 'holiday_create' %}" data-modal>Bayram qo'shish</a>
+  </div>
+</div>
+
+<div class="card">
+  {% if rows %}
+  <div class="table-wrap">
+    <table class="table--blue-head">
+      <tr>
+        <th>Sana</th><th>Nomi</th><th>Holati</th><th>Izoh</th><th></th>
+      </tr>
+      {% for r in rows %}
+      <tr>
+        <td><strong>{{ r.date|date:"d.m.Y" }}</strong> <span class="cell-sub">{{ r.date|date:"l" }}</span></td>
+        <td>{{ r.name }}</td>
+        <td>
+          {% if r.rest %}<span class="badge badge-ok">Dam beriladi</span>
+          {% else %}<span class="badge badge-neutral">Ish kuni</span>{% endif %}
+        </td>
+        <td class="muted">{{ r.note|default:"—" }}</td>
+        <td class="num row-actions">
+          <a class="icon-action" href="{% url 'holiday_edit' r.pk %}" data-modal title="Tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>
+          <a class="icon-action danger" href="{% url 'holiday_delete' r.pk %}" data-modal title="O'chirish"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></a>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  <p class="field-hint" style="margin-top:12px;">
+    {{ year }} yilda <strong>{{ rows|length }}</strong> ta bayram kiritilgan, shundan
+    <strong>{{ rest_count }}</strong> tasida dam beriladi. Dam beriladigan kun
+    oylik bo'luvchisidan chiqadi — ya'ni dam olgan xodim to'liq oyligini oladi, o'sha
+    kuni chiqib ishlagani esa oylik ustiga qo'shiladi. Kim chiqib ishlagani Davomad
+    jadvalidan belgilanadi.
+  </p>
+  {% else %}
+  <p class="muted">{{ year }} yil uchun bayram kiritilmagan.</p>
+  {% endif %}
+
+  <form method="post" action="{% url 'holiday_seed' %}?yil={{ year }}" style="margin-top:14px;">
+    {% csrf_token %}
+    <button type="submit" class="btn btn-sm">{{ year }} yil bayramlarini to'ldirish</button>
+    <span class="field-hint" style="display:block;margin-top:8px;">
+      Har yili bir xil sanaga tushadigan bayramlarni qo'shadi: 1-yanvar, 8-mart,
+      Navro'z, 9-may, 1-sentabr, 1-oktabr, 8-dekabr. Allaqachon kiritilgan sanaga
+      tegmaydi. <strong>Ramazon va Qurbon hayit sanasi har yili suriladi</strong> —
+      ularni qo'lda qo'shasiz.
+    </span>
+  </form>
+</div>
+{% endblock %}

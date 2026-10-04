@@ -40,10 +40,12 @@ from .forms import (
     AdvanceRemoveForm,
     ClientForm,
     ClientTransferForm,
+    DayCardForm,
     DebtPaymentForm,
     DebtorAddForm,
     EmployeeForm,
     ExpenseForm,
+    HolidayForm,
     OpeningDebtForm,
     PaymentEditForm,
     ProductForm,
@@ -76,10 +78,14 @@ from .models import (
     RETURN_COST,
     RETURN_WEIGHT_KG,
     REVENUE,
+    SUNDAY,
+    Attendance,
     AuditLog,
     Client,
     Employee,
     Expense,
+    Holiday,
+    Leave,
     Payment,
     client_advance_balance,
     recompute_client_debt_deadlines,
@@ -94,6 +100,8 @@ from .models import (
     SalaryRate,
     StockEntry,
     month_span,
+    rest_dates_in_month,
+    rest_holidays_in,
     seller_cash_on_hand,
     seller_production_debt,
 )
@@ -2203,6 +2211,24 @@ def _segment(request, param, value, label, count, current):
         "url": _segment_url(request, **{param: value}),
         "active": current == value,
     }
+
+
+def _sibling_url(request, name, **params):
+    """The current query pointed at a different view — the export link, which has to
+    show exactly the sheet being read rather than the unfiltered payroll.
+
+    Built from the route name rather than by rewriting the path, so renaming a URL
+    cannot silently produce a link to nowhere."""
+    query = request.GET.copy()
+    for key, value in params.items():
+        if value in ("", None):
+            query.pop(key, None)
+        else:
+            query[key] = value
+    query.pop("page", None)
+    encoded = query.urlencode()
+    url = reverse(name)
+    return f"{url}?{encoded}" if encoded else url
 
 
 def _active_filter_chips(request, filters, clients, products, reps):
@@ -6184,6 +6210,38 @@ def _rate_at(rates, first_day, fallback):
     return amount
 
 
+def _marked_months(employee_ids):
+    """{(employee id, year, month)} holding anything that moves a wage off the salary:
+    a davomad row, or a day booked off in advance.
+
+    Present is the default and rows are exceptions, so a finished month missing from
+    this set earned exactly its salary — which lets the carry-forward skip the
+    day-by-day arithmetic for every month nobody wrote anything against."""
+    marked = set()
+    for model in (Attendance, Leave):
+        rows = model.objects.filter(employee_id__in=employee_ids)
+        for employee_id, day in rows.values_list("employee_id", "date"):
+            marked.add((employee_id, day.year, day.month))
+    return marked
+
+
+def _month_wage(employee, year, month, salary, marked, today, closed):
+    """What that month added to a worker's balance, given the wage in force in it.
+
+    The same figure as `Employee.accrued_in` — off the davomad sheet — reached without
+    touching the database for a finished month with nothing written against it, where
+    the answer is the salary itself. `closed` caches each month's closed holidays, so
+    a payroll of twenty asks for them once rather than twenty times."""
+    if not employee.accrues_in(year, month):
+        return Decimal("0")
+    finished = (year, month) < (today.year, today.month)
+    if finished and (employee.pk, year, month) not in marked:
+        return salary
+    if (year, month) not in closed:
+        closed[(year, month)] = rest_holidays_in(year, month)
+    return employee.earned_in(year, month, closed[(year, month)], salary)
+
+
 def _payroll_rows(employees, year, month):
     """One row per worker for the chosen month: what rode in unpaid from earlier
     months, what this month adds, what the till has paid against it, and what rides on.
@@ -6193,13 +6251,20 @@ def _payroll_rows(employees, year, month):
     cumulative: the opening balance, plus every month's wage, minus everything paid,
     from `start_month` through the month on screen.
 
-    Two queries carry the whole payroll however deep the history runs: wage rates and
-    payouts are each fetched once and folded together in Python. Payouts dated BEFORE a
-    worker's start month are deliberately left out — that stretch is what the opening
-    balance already summarises, and counting it again would credit the firm twice for
-    money it settled before the CRM was watching."""
+    What a month adds is what its WORK was worth — the days on the davomad sheet times
+    the day's pay — not the salary: a week missed is a smaller wage.
+
+    A handful of queries carry the carry-forward however deep the history runs: wage
+    rates, payouts and the months with davomad marks are each fetched once and folded
+    together in Python. Payouts dated BEFORE a worker's start month are deliberately
+    left out — that stretch is what the opening balance already summarises, and
+    counting it again would credit the firm twice for money it settled before the CRM
+    was watching."""
     ids = [e.pk for e in employees]
     target = date(year, month, 1)
+    today = timezone.localdate()
+    marked = _marked_months(ids)
+    closed = {}
     next_year, next_month = _month_shift(year, month, 1)
     drawn_rows = (
         Expense.objects.filter(
@@ -6229,39 +6294,63 @@ def _payroll_rows(employees, year, month):
         tracked = target >= e.start_month.replace(day=1)
         if not tracked:
             rows.append({
-                "employee": e, "carried": None, "salary": None, "due": None,
-                "paid": paid, "remaining": None, "accrues": False, "tracked": False,
+                "employee": e, "carried": None, "salary": None, "earned": None,
+                "due": None, "paid": paid, "remaining": None, "accrues": False,
+                "tracked": False,
             })
             continue
         carried = e.opening_balance
         for y, m in month_span(e.start_month, target):
             if (y, m) == (year, month):
                 continue                      # the month on screen is not "carried in"
-            first = date(y, m, 1)
-            wage = (
-                _rate_at(own_rates, first, e.salary)
-                if e.accrues_in(y, m) else Decimal("0")
+            wage = _month_wage(
+                e, y, m, _rate_at(own_rates, date(y, m, 1), e.salary),
+                marked, today, closed,
             )
             carried += wage - drawn.get((e.pk, y, m), Decimal("0"))
         accrues = e.accrues_in(year, month)
         salary = _rate_at(own_rates, target, e.salary) if accrues else Decimal("0")
-        rows.append({
+        earned = _month_wage(e, year, month, salary, marked, today, closed)
+        row = {
             "employee": e,
             "carried": carried,                     # o'tgan oylardan qolgan
-            "salary": salary,                       # shu oy oyligi
-            "due": carried + salary,                # jami olishi kerak
+            "salary": salary,                       # shu oyning kelishilgan oyligi
+            "earned": earned,                       # davomaddan chiqqani
+            "due": carried + earned,                # jami olishi kerak
             "paid": paid,                           # shu oy berilgan
-            "remaining": carried + salary - paid,   # kelasi oyga o'tadi
+            "remaining": carried + earned - paid,   # kelasi oyga o'tadi
             "accrues": accrues,
             "tracked": True,
-        })
+        }
+        if accrues:
+            # How `earned` came about, for the page to show next to it: the days
+            # counted, the ones missed, and what one day is worth this month.
+            if (year, month) not in closed:
+                closed[(year, month)] = rest_holidays_in(year, month)
+            holidays = closed[(year, month)]
+            worked, rest_worked = e.days_in(year, month, holidays)
+            row.update({
+                "days": worked + rest_worked,
+                "sunday_days": rest_worked,
+                "missed_days": len(e.countable_days(year, month, holidays)) - worked,
+                "daily_rate": e.daily_rate_in(year, month, holidays, salary),
+                "working_days": e.working_days_in(year, month, holidays),
+            })
+        rows.append(row)
     return rows
 
 
 def _payroll_employees(request):
-    """The workers the Xodimlar page is showing: the name search and the
-    Hammasi / Faol / Faol emas switch. Shared by the page and its Excel export so the
-    file always holds exactly the rows on screen."""
+    """The workers the HR pages are showing: the name search and the
+    Hammasi / Faol / Faol emas switch.
+
+    Shared by Xodimlar, its Excel export, Davomad and the davomad export, so all of
+    them always hold exactly the same people — a davomad sheet listing somebody the
+    payroll page filtered out would be two answers to one question.
+
+    Returns the filter values alongside the rows because every page has to hand them
+    back — to the toolbar, to the hidden fields that keep them across a search, and to
+    the redirect after a save."""
     employees = Employee.objects.all()
     q = request.GET.get("q", "").strip()
     if q:
@@ -6273,7 +6362,7 @@ def _payroll_employees(request):
         employees = employees.filter(is_active=False)
     else:
         status = ""
-    return list(employees), q, status
+    return list(employees), {"q": q, "holat": status}
 
 
 def employee_list(request):
@@ -6286,7 +6375,8 @@ def employee_list(request):
     that pays a wage was already theirs to do, so the figure it is measured against was
     the one thing they could not see."""
     year, month = _payroll_month(request)
-    employees, q, status = _payroll_employees(request)
+    employees, filters = _payroll_employees(request)
+    q, status = filters["q"], filters["holat"]
     rows = _payroll_rows(employees, year, month)
     # A worker whose account opens later has no figures for this month — only what the
     # till happened to pay them. They are left out of every total but the paid one.
@@ -6294,6 +6384,9 @@ def employee_list(request):
     active = [r for r in counted if r["employee"].is_active]
     totals = {
         "salary": sum((r["salary"] for r in active), Decimal("0")),
+        # What the davomad sheet makes of that fund: the days actually worked.
+        "earned": sum((r["earned"] for r in active), Decimal("0")),
+        "days": sum((r.get("days", 0) for r in active), 0),
         "carried": sum((r["carried"] for r in counted), Decimal("0")),
         "due": sum((r["due"] for r in counted), Decimal("0")),
         "paid": sum((r["paid"] for r in rows), Decimal("0")),
@@ -6334,6 +6427,12 @@ def employee_list(request):
         "q": q,
         "holat": status,
         "segments": segments,
+        # The sheet these wages are computed from. Marking it up is the supervisor's
+        # job, so the door to it is only shown to the roles that can walk through.
+        "davomad_url": (
+            f"{reverse('attendance_grid')}?oy={year:04d}-{month:02d}"
+            if request.user.can_see_all_records else ""
+        ),
         "export_url": reverse("employee_export") + (f"?{export_qs}" if export_qs else ""),
         "totals": totals,
         "payouts": payouts,
@@ -6354,10 +6453,11 @@ def employee_export(request):
     """Excel (.xlsx) of the payroll month as filtered — one row per worker, the same
     figures the page shows."""
     year, month = _payroll_month(request)
-    employees, _, _ = _payroll_employees(request)
+    employees, _ = _payroll_employees(request)
     rows = _payroll_rows(employees, year, month)
     headers = [
-        "Xodim", "Holat", "Hisob boshlangan", "Oyligi (so'm)", "O'tgan oydan (so'm)",
+        "Xodim", "Holat", "Hisob boshlangan", "Oyligi (so'm)",
+        "Hisoblangan kun", "Kelmagan kun", "Hisoblangan (so'm)", "O'tgan oydan (so'm)",
         "Jami olishi kerak (so'm)", "Shu oy berilgan (so'm)", "Qolgan (so'm)", "Izoh",
     ]
     data = [
@@ -6366,6 +6466,9 @@ def employee_export(request):
             "Faol" if r["employee"].is_active else "Faol emas",
             r["employee"].start_month.strftime("%m.%Y"),
             float(r["salary"] or 0),
+            r.get("days", 0),
+            r.get("missed_days", 0),
+            float(r["earned"] or 0),
             float(r["carried"] or 0),
             float(r["due"] or 0),
             float(r["paid"]),
@@ -6374,7 +6477,7 @@ def employee_export(request):
         ]
         for r in rows
     ]
-    number_formats = {i: "#,##0.00" for i in range(4, 9)}
+    number_formats = {4: "#,##0.00", **{i: "#,##0.00" for i in range(7, 12)}}
     return _xlsx_response(
         f"xodimlar-{year:04d}-{month:02d}.xlsx",
         uz_month(year, month), headers, data, number_formats,
@@ -6399,11 +6502,18 @@ def _employee_history(employee, today):
     ]
     # Runs to today, or further if money was handed over in a later month.
     last = max([today.replace(day=1)] + [date(y, m, 1) for y, m in drawn])
+    marked = _marked_months([employee.pk])
+    closed = {}
     months = []
     balance = employee.opening_balance
     for y, m in month_span(employee.start_month, last):
         accrues = employee.accrues_in(y, m)
-        wage = _rate_at(rates, date(y, m, 1), employee.salary) if accrues else Decimal("0")
+        # What the month's work was worth, off the davomad sheet — the same figure
+        # the payroll page carries forward.
+        wage = _month_wage(
+            employee, y, m, _rate_at(rates, date(y, m, 1), employee.salary),
+            marked, today, closed,
+        )
         paid = drawn.get((y, m), Decimal("0"))
         balance += wage - paid
         months.append({
@@ -6441,6 +6551,41 @@ def employee_detail(request, pk):
     this_month = next(
         (m for m in months if m["value"] == f"{today.year:04d}-{today.month:02d}"), None
     )
+
+    # The schedule: one month of this worker's days, whichever month ?oy= asks for.
+    # A month rather than a week — a week repeats, and so cannot show the days that
+    # actually differ: a holiday the firm shut for, a Sunday somebody came in on, a
+    # day missed.
+    year, month = _payroll_month(request)
+    holidays = rest_holidays_in(year, month)
+    named = {
+        row.date: row
+        for row in Holiday.objects.filter(date__year=year, date__month=month)
+    }
+    rest, unpaid = employee.rest_state_in(year, month, holidays)
+    marks = {
+        row.date: row
+        for row in employee.attendance.filter(date__year=year, date__month=month)
+    }
+    leaves = {
+        row.date: row
+        for row in employee.leaves.filter(date__year=year, date__month=month)
+    }
+    worked, rest_worked = employee.days_in(year, month, holidays)
+    exceptions = [
+        {
+            "date": day,
+            "state": _cell_state(
+                marks[day], day in rest, employee.assumed_present(day, rest, unpaid)
+            ),
+            "note": marks[day].note,
+            "holiday": named.get(day),
+        }
+        for day in sorted(marks)
+    ]
+    prev_year, prev_month = _month_shift(year, month, -1)
+    next_year, next_month = _month_shift(year, month, 1)
+    can_manage = request.user.can_see_all_records
     return render(request, "crm/employee_detail.html", {
         "employee": employee,
         "months": months,
@@ -6450,7 +6595,30 @@ def employee_detail(request, pk):
         "errands": errands,
         "payout_total": sum((e.amount for e in payouts), Decimal("0")),
         "errand_total": sum((e.amount for e in errands), Decimal("0")),
-        "month_value": f"{today.year:04d}-{today.month:02d}",
+        "weeks": _schedule_calendar(year, month, rest, named, marks, leaves, today),
+        "leaves": [leaves[d] for d in sorted(leaves)],
+        "weekday_names": UZ_WEEKDAY_SHORT,
+        "holidays": [named[d] for d in sorted(named)],
+        "total_days": worked + rest_worked,
+        "rest_worked": rest_worked,
+        "missed_days": len(employee.countable_days(year, month, holidays)) - worked,
+        "working_days": employee.working_days_in(year, month, holidays),
+        "daily_rate": employee.daily_rate_in(year, month, holidays),
+        "earned": employee.accrued_in(year, month, holidays),
+        "exceptions": exceptions,
+        # Marking a day moves a wage, so the day card is the supervisor's — a seller
+        # reads the calendar but gets no pencil on it.
+        "can_manage": can_manage,
+        "davomad_url": (
+            f"{reverse('attendance_grid')}?oy={year:04d}-{month:02d}"
+            if can_manage else ""
+        ),
+        "month_value": f"{year:04d}-{month:02d}",
+        "month_label": uz_month(year, month),
+        "month_options": _month_options(year, month, today),
+        "prev_month": f"{prev_year:04d}-{prev_month:02d}",
+        "next_month": f"{next_year:04d}-{next_month:02d}",
+        "is_current_month": (year, month) == (today.year, today.month),
     })
 
 
@@ -6571,6 +6739,767 @@ def employee_delete(request, pk):
     return render_confirm(
         request, "Xodimni o'chirish", body, button, confirm_class="btn-danger"
     )
+
+
+def _schedule_calendar(year, month, rest, named, marks, leaves, today):
+    """A worker's month as a calendar: which days are theirs to work, which are off,
+    and what actually happened on each.
+
+    A month rather than a week. A week repeats and could be drawn once, but it cannot
+    show the days that actually differ: a holiday the firm shut for, a Sunday somebody
+    came in on, a day missed. The month can."""
+    days = _month_days(year, month)
+    # The first day lands under its own weekday column. The cells before it are not
+    # left blank: they carry the neighbouring month's day numbers, because an empty
+    # cell reads as "these days do not exist" — they do, in another month. They carry
+    # nothing else, since the schedule belongs to this month's wage.
+    cells = [
+        {"day": (days[0] - timedelta(days=back)).day, "outside": True}
+        for back in range(days[0].weekday(), 0, -1)
+    ]
+    for day in days:
+        row = marks.get(day)
+        booked = leaves.get(day)
+        # Paid leave is already in `rest` — it leaves the divisor like a holiday.
+        # Unpaid leave does not, but the day is still not worked, so the calendar
+        # draws it as a day off either way and the label says which kind.
+        is_rest = day in rest or booked is not None
+        cells.append({
+            "day": day.day,
+            "date": day,
+            "outside": False,
+            "is_rest": is_rest,
+            "leave": booked,
+            "holiday": named.get(day),
+            "is_future": day > today,
+            "is_today": day == today,
+            # What actually happened, where it differs from the plan. Future days have
+            # no answer yet, so they carry none rather than a hopeful "keldi".
+            "mark": "" if day > today else _cell_state(row, is_rest),
+            "note": row.note if row else "",
+        })
+    ahead = 1
+    while len(cells) % 7:
+        cells.append({"day": (days[-1] + timedelta(days=ahead)).day, "outside": True})
+        ahead += 1
+    return [cells[i:i + 7] for i in range(0, len(cells), 7)]
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def employee_day(request, pk, sana):
+    """One day of one worker's calendar, opened from that day's own card (Kun kartasi).
+
+    ANY day, not only the ones still ahead. A day that is over is recorded rather than
+    planned — but it still has to be correctable, because a supervisor remembers on
+    Thursday that somebody left early on Monday, and the alternative is a wage that is
+    wrong for a month. What the card writes for a past day is the very same
+    `Attendance` row the davomad sheet writes, through the very same function
+    (`_apply_attendance`), so the two screens are two doors into one answer and never
+    two answers.
+
+    That is also why the sheet's closed-day lock is not repeated here. The lock exists
+    because the sheet is thirty-one columns read sideways and a mouse dragging past
+    can change a wage nobody is looking at. Opening a card, choosing an option and
+    pressing save is not something a mouse does on its way past."""
+    employee = get_object_or_404(Employee, pk=pk)
+    day = _parse_date(sana)
+    if day is None:
+        raise Http404
+    today = timezone.localdate()
+
+    holidays = rest_holidays_in(day.year, day.month)
+    rest, unpaid = employee.rest_state_in(day.year, day.month, holidays)
+    is_rest = day in rest
+    booked = Leave.objects.filter(employee=employee, date=day).first()
+    row = employee.attendance.filter(date=day).first()
+
+    # The card opens showing what the day IS. Without it a supervisor checking on a
+    # day has to read the calendar behind the modal to see what they are changing.
+    initial = {"note": row.note if row else ""}
+    if day <= today:
+        initial["action"] = _cell_state(
+            row, is_rest, employee.assumed_present(day, rest, unpaid)
+        )
+    form = DayCardForm(
+        request.POST or None,
+        has_leave=booked is not None,
+        is_rest=is_rest,
+        recordable=day <= today,
+        plannable=day >= today,
+        initial=initial,
+    )
+    title = f"{employee.name} · {day:%d.%m.%Y}"
+    back = f"{reverse('employee_detail', args=[employee.pk])}?oy={day:%Y-%m}"
+
+    if request.method == "POST":
+        if form.is_valid():
+            action = form.cleaned_data["action"]
+            note = form.cleaned_data["note"]
+
+            if action in DayCardForm.ATTENDANCE:
+                _apply_attendance(
+                    employee, day, action, note, request.user, rest, unpaid, row
+                )
+                label = CELL_LABELS[action]
+                AuditLog.record(
+                    request.user, AuditLog.Action.UPDATE, "Davomad", employee.pk,
+                    f"{employee.name}: {day} — {label.lower()}",
+                )
+                messages.success(
+                    request, f"{employee.name} — {day:%d.%m.%Y}: {label.lower()}."
+                )
+            elif action == DayCardForm.CLEAR:
+                if booked is not None:
+                    booked.delete()
+                AuditLog.record(
+                    request.user, AuditLog.Action.DELETE, "Dam", employee.pk,
+                    f"{employee.name}: {day} dagi dam olib tashlandi",
+                )
+                messages.success(request, "Belgilangan dam olib tashlandi.")
+            else:
+                paid = action == DayCardForm.LEAVE_PAID
+                Leave.objects.update_or_create(
+                    employee=employee, date=day,
+                    defaults={"paid": paid, "note": note, "created_by": request.user},
+                )
+                kind = "haqli dam" if paid else "o'z hisobidan dam"
+                AuditLog.record(
+                    request.user, AuditLog.Action.UPDATE, "Dam", employee.pk,
+                    f"{employee.name}: {day} — {kind}",
+                )
+                messages.success(request, f"{employee.name} — {day:%d.%m.%Y}: {kind}.")
+            return form_success(request, back)
+        return form_response(
+            request, form, title, invalid=True,
+            modal_template="crm/_day_card_modal.html",
+        )
+    return form_response(
+        request, form, title, modal_template="crm/_day_card_modal.html",
+    )
+
+
+def _holiday_year(request):
+    """The year the Bayramlar page is showing, from ?yil=YYYY (this year by default)."""
+    today = timezone.localdate()
+    try:
+        year = int(request.GET.get("yil", ""))
+    except (TypeError, ValueError):
+        return today.year
+    return year if 2000 <= year <= 2100 else today.year
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def holiday_list(request):
+    """Bayramlar: the firm's holidays for a year, and whether it closes for each.
+
+    `rest` is the decision the whole feature exists for. Closed, the day leaves the
+    divisor, so somebody who takes it off is still paid their full
+    salary and somebody who comes in has it added on top. Open, it is a label."""
+    year = _holiday_year(request)
+    rows = list(
+        Holiday.objects.filter(date__year=year).select_related("created_by")
+    )
+    today = timezone.localdate()
+    return render(request, "crm/holiday_list.html", {
+        "rows": rows,
+        "year": year,
+        "prev_year": year - 1,
+        "next_year": year + 1,
+        "is_current_year": year == today.year,
+        "rest_count": sum(1 for r in rows if r.rest),
+        "davomad_url": reverse("attendance_grid"),
+    })
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def holiday_seed(request):
+    """Put the fixed-date national holidays into a year in one go.
+
+    The two hayits are not here: they move against the calendar every year, and a
+    list that looked complete while quietly going stale would be worse than one the
+    supervisor knows to finish by hand."""
+    if request.method != "POST":
+        raise Http404
+    year = _holiday_year(request)
+    made = Holiday.seed_year(year, request.user)
+    if made:
+        AuditLog.record(
+            request.user, AuditLog.Action.CREATE, "Bayram", None,
+            f"{year} yil uchun {made} ta bayram qo'shildi",
+        )
+        messages.success(request, f"{year} yil uchun {made} ta bayram qo'shildi.")
+    else:
+        messages.info(request, f"{year} yilning bayramlari allaqachon kiritilgan.")
+    return redirect(f"{reverse('holiday_list')}?yil={year}")
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def holiday_create(request):
+    form = HolidayForm(request.POST or None)
+    title = "Yangi bayram"
+    if request.method == "POST":
+        if form.is_valid():
+            holiday = form.save(commit=False)
+            holiday.created_by = request.user
+            holiday.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Bayram", holiday.pk,
+                f"{holiday.date} — {holiday.name}"
+                + (" (dam)" if holiday.rest else " (ish kuni)"),
+            )
+            messages.success(request, f"“{holiday.name}” qo'shildi.")
+            return form_success(
+                request, f"{reverse('holiday_list')}?yil={holiday.date.year}"
+            )
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def holiday_edit(request, pk):
+    holiday = get_object_or_404(Holiday, pk=pk)
+    form = HolidayForm(request.POST or None, instance=holiday)
+    title = "Bayramni tahrirlash"
+    if request.method == "POST":
+        if form.is_valid():
+            form.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Bayram", holiday.pk,
+                f"{holiday.date} — {holiday.name}"
+                + (" (dam)" if holiday.rest else " (ish kuni)"),
+            )
+            messages.success(request, "Bayram yangilandi.")
+            return form_success(
+                request, f"{reverse('holiday_list')}?yil={holiday.date.year}"
+            )
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def holiday_delete(request, pk):
+    holiday = get_object_or_404(Holiday, pk=pk)
+    if request.method == "POST":
+        year, name = holiday.date.year, holiday.name
+        holiday.delete()
+        AuditLog.record(
+            request.user, AuditLog.Action.DELETE, "Bayram", pk, f"{name} o'chirildi"
+        )
+        messages.success(request, f"“{name}” o'chirildi.")
+        return form_success(request, f"{reverse('holiday_list')}?yil={year}")
+    return render_confirm(
+        request,
+        "Bayramni o'chirish",
+        f"{holiday.date:%d.%m.%Y} — {holiday.name}. O'chirilsa, o'sha kun "
+        "oddiy kunga aylanadi va oylik qayta hisoblanadi.",
+        "Ha, o'chirish",
+        confirm_class="btn-danger",
+    )
+
+
+# --- Davomad (attendance) -------------------------------------------------------
+#
+# The sheet the whole payroll is computed from. Everybody is on a monthly salary
+# counted by the day, so a cell is a mark rather than a measurement: was this person
+# here or not.
+#
+# Present is the DEFAULT. What gets written down is the exception — a day somebody was
+# away, or a Sunday somebody came in on — so a normal month is an empty sheet and the
+# rows that exist are exactly the ones that move a wage.
+
+# Column headings, Monday first — `date.weekday()` counts from Monday.
+UZ_WEEKDAY_SHORT = ["Du", "Se", "Ch", "Pa", "Ju", "Sh", "Ya"]
+
+# What one cell of the sheet can say: the worker was here, or was not. A day off has
+# its own word for "was not" — there was nothing to miss.
+CELL_PRESENT = "keldi"      # worked — the normal case on a working day
+CELL_ABSENT = "kelmadi"     # working day, not worked — comes off the wage
+CELL_OFF = "dam"            # a day off, rested — costs nothing
+
+# What a click turns a cell into, per kind of day. A working day is either worked or
+# missed; a day off is either rested or worked, and then it goes on top of the wage.
+# A rest day cannot be "absent": there was nothing to miss.
+WORKING_CYCLE = [CELL_PRESENT, CELL_ABSENT]
+REST_CYCLE = [CELL_OFF, CELL_PRESENT]
+
+
+# How many days back the sheet stays open. A day closes itself once it is over —
+# "kun oxirida saqlanadi" — because the sheet is 31 columns wide and is read by
+# dragging sideways, and a mouse that brushes a cell on the way past would rewrite a
+# wage nobody was looking at. Older days are read-only until a cell is deliberately
+# opened.
+#
+# Yesterday stays open with today, and that is not slack: the sheet is usually marked
+# up the next morning, once it is known who actually came in. Closing at midnight
+# would mean unlocking a cell for every one of yesterday's marks, every morning.
+OPEN_DAYS = 1
+
+
+def _open_from(today=None):
+    """The oldest day the sheet will accept an ordinary edit for."""
+    return (today or timezone.localdate()) - timedelta(days=OPEN_DAYS)
+
+
+def _apply_attendance(employee, day, state, note, user, rest, unpaid, row):
+    """Write ONE day of the sheet, and decide whether that day needs a row at all.
+
+    The only place that decision is made. Both doors into a day use it — the davomad
+    sheet posting thirty-one columns at once, and the day card on a worker's calendar
+    posting a single one — so the two cannot disagree about what happened. Two
+    screens each with their own rule would be two answers to the same day.
+
+    A row exists only where the day DIFFERS from what the sheet would otherwise
+    assume: a working day not worked, a day off worked, or leave somebody cancelled
+    and came in for. A day that goes back to normal loses its row rather than keeping
+    one that says "as expected" — and the note goes with it, because there is no
+    longer an exception to explain.
+
+    `note` of None leaves any existing note alone; an empty string clears it.
+    Returns "marked", "cleared" or "" — what the caller should count."""
+    present = state == CELL_PRESENT
+    if present == employee.assumed_present(day, rest, unpaid):
+        if row is not None:
+            row.delete()
+            return "cleared"
+        return ""
+    if row is None:
+        Attendance.objects.create(
+            employee=employee, date=day, present=present,
+            note=note or "", created_by=user,
+        )
+        return "marked"
+    renoted = note is not None and row.note != note
+    if row.present == present and not renoted:
+        return ""
+    row.present = present
+    fields = ["present", "updated_at"]
+    if renoted:
+        row.note = note
+        fields.append("note")
+    row.save(update_fields=fields)
+    return "marked"
+
+
+def _cell_state(row, is_rest_day, assumed=True):
+    """What the sheet draws in a cell, given its attendance row (or none).
+
+    No row means the day behaved as assumed — and what is assumed depends on the
+    calendar and on any leave booked in advance: a rest day was rested, a day of
+    unpaid leave was not worked, everything else was worked."""
+    present = row.present if row is not None else (assumed and not is_rest_day)
+    if present:
+        return CELL_PRESENT
+    return CELL_OFF if is_rest_day else CELL_ABSENT
+
+
+def _month_days(year, month):
+    total = calendar.monthrange(year, month)[1]
+    return [date(year, month, day) for day in range(1, total + 1)]
+
+
+def _sheet_holidays(days):
+    """(closed dates, date -> Holiday) for the days the sheet is showing."""
+    rows = list(Holiday.objects.filter(date__gte=days[0], date__lte=days[-1]))
+    return {row.date for row in rows if row.rest}, {row.date: row for row in rows}
+
+
+def _rest_for(employee, year, month, closed):
+    """(rest dates, unpaid leave dates, booked leave dates) for the sheet's month.
+
+    The third set is every day booked off in advance, paid or not: the sheet draws an
+    agreed day off differently from a day somebody simply failed to turn up for."""
+    rest, unpaid = employee.rest_state_in(year, month, closed)
+    booked = set().union(*employee.leave_in(year, month))
+    return rest, unpaid, booked
+
+
+def _save_attendance(request, employees, days):
+    """Write the posted grid back.
+
+    Only exceptions are stored, so most of the work here is DELETING: a working day
+    that has gone back to normal, or a day off nobody came in on, loses its row rather
+    than keeping one that says "as expected". Storing the normal case would double the
+    table for no reader.
+
+    Which days are rest days is the calendar plus the worker's own paid leave: Sunday
+    and a closed holiday rest everybody, a day of paid leave rests one person. So the
+    same column can be a day off in one row of the sheet and a working day in the
+    next.
+
+    A day that is over is CLOSED: an ordinary post cannot move it, no matter what the
+    cell says. Only a cell the user deliberately opened (`o-<worker>-<day>`) is
+    accepted, so a stray click while dragging the sheet sideways changes nothing —
+    which is the whole reason the lock exists.
+
+    A note is exempt. Typing into a text box is not something a mouse does on its way
+    past, and a note moves no money, so an explanation can still be written against a
+    closed day.
+
+    Cells are keyed by the FULL DATE, not the day number, so a form posted against one
+    month can never land its marks on the same day numbers of another.
+
+    Future days are ignored outright. A wage is earned by turning up, and marking
+    somebody absent next Thursday is not a fact about anything yet."""
+    today = timezone.localdate()
+    open_from = _open_from(today)
+    closed, _ = _sheet_holidays(days)
+    window = {"date__gte": days[0], "date__lte": days[-1]}
+    existing = {
+        (row.employee_id, row.date): row
+        for row in Attendance.objects.filter(employee__in=employees, **window)
+    }
+    marked = cleared = 0
+    for employee in employees:
+        rest, unpaid, _booked = _rest_for(
+            employee, days[0].year, days[0].month, closed
+        )
+        for day in days:
+            if day > today:
+                continue
+            key = day.isoformat()
+            is_rest_day = day in rest
+            cycle = REST_CYCLE if is_rest_day else WORKING_CYCLE
+            state = request.POST.get(f"d-{employee.pk}-{key}", "")
+            row = existing.get((employee.pk, day))
+            # The note travels with the day rather than with a row id, because the row
+            # may not exist yet when the note is typed — and when the day goes back to
+            # normal the row is deleted and the note goes with it, which is right: a
+            # note explains an exception, and there is no longer one.
+            #
+            # A field that did not arrive is None and leaves the note alone; an empty
+            # one that DID arrive is somebody clearing it.
+            posted = request.POST.get(f"n-{employee.pk}-{key}")
+            note = None if posted is None else posted.strip()[:255]
+
+            if day < open_from and request.POST.get(f"o-{employee.pk}-{key}") != "1":
+                # Closed day: the mark is untouchable, the explanation is not.
+                if row is not None and note is not None and row.note != note:
+                    row.note = note
+                    row.save(update_fields=["note", "updated_at"])
+                    marked += 1
+                continue
+
+            # A cell this day could not have produced — missing, or junk — LEAVES THE
+            # DAY EXACTLY AS IT WAS. Falling back to "normal" instead would let a form
+            # that arrived half-written quietly erase every absence already recorded,
+            # and the sheet would look like a month nobody missed a day of.
+            if state not in cycle:
+                continue
+            done = _apply_attendance(
+                employee, day, state, note, request.user, rest, unpaid, row
+            )
+            marked += done == "marked"
+            cleared += done == "cleared"
+    return marked, cleared
+
+
+# What a day is worth in the export, per cell state. Numbers rather than ticks: the
+# sheet is opened in Excel to be checked, and a row of numbers adds up to the days the
+# wage was actually built from. A rest day is left blank — it contributed nothing and
+# a 0 there would read as "did not turn up".
+CELL_UNITS = {
+    CELL_PRESENT: 1,
+    CELL_ABSENT: 0,
+    CELL_OFF: "",
+}
+
+CELL_LABELS = {
+    CELL_PRESENT: "keldi",
+    CELL_ABSENT: "kelmadi",
+    CELL_OFF: "dam",
+}
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def attendance_excel(request):
+    """The davomad sheet as .xlsx — the same month, search and switch as the page.
+
+    Four tabs, because the sheet answers four different questions and mixing them
+    makes each one harder to read: the grid it was marked up on, the wages that came
+    out of it, the notes explaining the exceptions, and the holidays the month was
+    measured against.
+
+    Cells carry the DAYS a wage was built from rather than ticks, so a row adds up to
+    the figure on the Oylik tab and can be checked with a calculator."""
+    year, month = _payroll_month(request)
+    days = _month_days(year, month)
+    employees = _sheet_employees(request, year, month)[0]
+    today = timezone.localdate()
+    holidays, named = _sheet_holidays(days)
+    marks = {
+        (row.employee_id, row.date): row
+        for row in Attendance.objects.filter(
+            employee__in=employees, date__gte=days[0], date__lte=days[-1]
+        )
+    }
+
+    def heading(day):
+        mark = UZ_WEEKDAY_SHORT[day.weekday()]
+        if day in named:
+            mark = "Bayram" if day in holidays else f"{mark}*"
+        return f"{day.day} {mark}"
+
+    grid_headers = (
+        ["Xodim"]
+        + [heading(day) for day in days]
+        + ["Jami kun", "Kelmagan", "Dam kunida ishlagan"]
+    )
+    grid_rows, wage_rows, note_rows = [], [], []
+    for employee in employees:
+        rest = employee.rest_dates_in(year, month, holidays)
+        cells = []
+        for day in days:
+            if day > today:
+                cells.append("")
+                continue
+            row = marks.get((employee.pk, day))
+            state = _cell_state(row, day in rest)
+            cells.append(CELL_UNITS[state])
+            if row is not None:
+                note_rows.append([
+                    day.isoformat(), employee.name, CELL_LABELS[state],
+                    named[day].name if day in named else "",
+                    row.note,
+                ])
+        worked, rest_worked = employee.days_in(year, month, holidays)
+        grid_rows.append(
+            [employee.name]
+            + cells
+            + [
+                worked + rest_worked,
+                len(employee.countable_days(year, month, holidays)) - worked,
+                rest_worked,
+            ]
+        )
+        wage_rows.append([
+            employee.name,
+            float(employee.salary_for(year, month)),
+            employee.working_days_in(year, month, holidays),
+            float(employee.daily_rate_in(year, month, holidays)),
+            worked + rest_worked,
+            float(employee.accrued_in(year, month, holidays)),
+            float(employee.paid_in(year, month)),
+        ])
+
+    money = "#,##0"
+    return _xlsx_book_response(
+        f"davomad-{year:04d}-{month:02d}.xlsx",
+        [
+            ("Davomad", grid_headers, grid_rows, None),
+            (
+                "Oylik",
+                [
+                    "Xodim", "Oyligi", "Bo'luvchi (kun)", "Kuniga", "Hisoblangan kun",
+                    "Hisoblangan", "Shu oy berilgan",
+                ],
+                wage_rows,
+                {2: money, 4: money, 6: money, 7: money},
+            ),
+            (
+                "Izohlar",
+                ["Sana", "Xodim", "Holat", "Bayram", "Izoh"],
+                sorted(note_rows),
+                None,
+            ),
+            (
+                "Bayramlar",
+                ["Sana", "Nomi", "Dam beriladi", "Izoh"],
+                [
+                    [
+                        row.date.isoformat(), row.name,
+                        "ha" if row.rest else "yo'q", row.note,
+                    ]
+                    for row in sorted(named.values(), key=lambda r: r.date)
+                ],
+                None,
+            ),
+        ],
+    )
+
+
+def _sheet_employees(request, year, month):
+    """Who the davomad sheet lists for that month: the same search and switch as
+    Xodimlar, minus anybody whose account is not open in it.
+
+    The sheet exists to move a wage. Somebody who left in March, or whose account
+    opens next month, has no wage in this one — a row for them would be thirty cells
+    that change nothing."""
+    employees, filters = _payroll_employees(request)
+    return [e for e in employees if e.accrues_in(year, month)], filters
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def attendance_grid(request):
+    """Davomad: one row per worker, one column per day, a mark for each day worked.
+
+    A mark rather than a number of hours: wages are counted by the day, so a day is a
+    day whether somebody left early or stayed late, and a figure here would be one
+    nothing reads. A cell says one thing: came, or did not.
+
+    The whole month posts as one form. There is no per-cell save: the sheet is filled
+    in from a paper list in one sitting, and 300 separate requests would be 300 chances
+    to lose half of it."""
+    year, month = _payroll_month(request)
+    days = _month_days(year, month)
+    # The same people the Xodimlar page is showing, narrowed by the same search and
+    # the same switch — two HR screens listing different staff would be two answers
+    # to one question. A POST only ever writes the rows on screen, which is why the
+    # filter is applied before saving as well as before drawing.
+    employees, filters = _sheet_employees(request, year, month)
+
+    if request.method == "POST":
+        if not employees:
+            raise Http404
+        marked, cleared = _save_attendance(request, employees, days)
+        if marked or cleared:
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Davomad", None,
+                f"{uz_month(year, month)}: {marked} ta belgi qo'yildi, "
+                f"{cleared} ta olib tashlandi",
+            )
+            messages.success(
+                request,
+                f"Davomad saqlandi — {marked} ta o'zgarish yozildi"
+                + (f", {cleared} ta odatdagiga qaytdi." if cleared else "."),
+            )
+        else:
+            messages.info(request, "O'zgarish yo'q.")
+        # Back to the sheet exactly as it was being read — the search and the switch
+        # ride along, or saving would silently widen the page back out.
+        return redirect(
+            _segment_url(request, oy=f"{year:04d}-{month:02d}", **filters)
+        )
+
+    today = timezone.localdate()
+    open_from = _open_from(today)
+    # One lookup for the whole sheet: the closed days every row is measured against.
+    closed, named = _sheet_holidays(days)
+    marks = {
+        (row.employee_id, row.date): row
+        for row in Attendance.objects.filter(
+            employee__in=employees, date__gte=days[0], date__lte=days[-1]
+        )
+    }
+    columns = [{
+        "day": day.day,
+        "key": day.isoformat(),
+        "label": UZ_WEEKDAY_SHORT[day.weekday()],
+        "is_sunday": day.weekday() == SUNDAY,
+        "is_future": day > today,
+        "is_today": day == today,
+        "month_label": uz_month(day.year, day.month),
+        # A holiday is called out whether or not the firm closed for it: an open one
+        # explains why the sheet looks unusual without pretending it moved a wage.
+        "holiday": named.get(day),
+        "is_closed": day in closed,
+    } for day in days]
+
+    rows = []
+    exceptions = []
+    for employee in employees:
+        rest, unpaid, booked = _rest_for(employee, year, month, closed)
+        cells = []
+        for day in days:
+            is_rest_day = day in rest
+            assumed = employee.assumed_present(day, rest, unpaid)
+            row = marks.get((employee.pk, day))
+            state = _cell_state(row, is_rest_day, assumed)
+            default = _cell_state(None, is_rest_day, assumed)
+            cells.append({
+                "day": day.day,
+                # The cell's name in the form: the full date, never the day number.
+                "key": day.isoformat(),
+                "is_sunday": day.weekday() == SUNDAY,
+                "is_rest_day": is_rest_day,
+                # Booked off in advance. Drawn differently from a day somebody simply
+                # failed to turn up for: one was agreed, the other was not.
+                "is_leave": day in booked,
+                "is_holiday": day in named,
+                "is_future": day > today,
+                # A day that is over. Drawn, but not clickable until it is opened on
+                # purpose — the sheet is dragged sideways to be read, and a mouse that
+                # brushes a cell must not rewrite a wage.
+                "is_locked": day < open_from,
+                "state": state,
+                "note": row.note if row else "",
+                # The order this particular cell cycles in, handed to the page so the
+                # click behaviour is decided here rather than guessed at in JS.
+                "cycle": ",".join(REST_CYCLE if is_rest_day else WORKING_CYCLE),
+                # Worth pointing out on the sheet: a day missed, or a day off worked.
+                # Everything else is the month behaving normally.
+                "is_exception": state != default,
+            })
+            if row is not None:
+                # The rows that already exist are exactly the ones worth explaining,
+                # so the note list is built from them rather than from every cell.
+                exceptions.append({
+                    "employee": employee,
+                    "day": day,
+                    "state": state,
+                    "note": row.note,
+                    "field": f"n-{employee.pk}-{day.isoformat()}",
+                    "holiday": named.get(day),
+                })
+        worked, rest_worked = employee.days_in(year, month, closed)
+        rows.append({
+            "employee": employee,
+            "cells": cells,
+            "sunday_days": rest_worked,
+            "total_days": worked + rest_worked,
+            "missed_days": len(employee.countable_days(year, month, closed)) - worked,
+            # The wage in force THAT month — a raise agreed since must not re-price
+            # the days of a month it was not in force for.
+            "salary": employee.salary_for(year, month),
+            "daily_rate": employee.daily_rate_in(year, month, closed),
+            "working_days": employee.working_days_in(year, month, closed),
+            "earned": employee.accrued_in(year, month, closed),
+        })
+
+    prev_year, prev_month = _month_shift(year, month, -1)
+    next_year, next_month = _month_shift(year, month, 1)
+    # The month's own working days, before anybody's leave: what the footer says the
+    # salary is spread over, and how many of those days are already behind us.
+    month_rest = rest_dates_in_month(year, month, closed)
+    return render(request, "crm/attendance.html", {
+        "columns": columns,
+        "rows": rows,
+        # What the sheet tells the user is still open, in their own words.
+        "open_from": open_from,
+        "open_days": OPEN_DAYS,
+        "exceptions": sorted(exceptions, key=lambda r: (r["day"], r["employee"].name)),
+        "holidays": [named[d] for d in sorted(named)],
+        "q": filters["q"],
+        "holat": filters["holat"],
+        # The toolbar row. The sister page carries this month across so the two stay
+        # in step, and it sits last — right beside the month control it hands over.
+        "toolbar_links": [
+            {
+                "url": _sibling_url(
+                    request, "attendance_excel", oy=f"{year:04d}-{month:02d}"
+                ),
+                "label": "Excel'ga chiqarish",
+            },
+            {
+                "url": f"{reverse('holiday_list')}?yil={year:04d}",
+                "label": "Bayramlar",
+            },
+            {
+                "url": f"{reverse('employee_list')}?oy={year:04d}-{month:02d}",
+                "label": "Oylik hisobi →",
+            },
+        ],
+        "workdays": len(days) - len(month_rest),
+        "elapsed_workdays": sum(
+            1 for day in days if day <= today and day not in month_rest
+        ),
+        "total_earned": sum((r["earned"] for r in rows), Decimal("0")),
+        "month_value": f"{year:04d}-{month:02d}",
+        "month_label": uz_month(year, month),
+        "month_options": _month_options(year, month, today),
+        "prev_month": f"{prev_year:04d}-{prev_month:02d}",
+        "next_month": f"{next_year:04d}-{next_month:02d}",
+        "is_current_month": (year, month) == (today.year, today.month),
+    })
 
 
 def _remit_summary(remit):

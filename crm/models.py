@@ -1,3 +1,4 @@
+import calendar
 from bisect import bisect_right
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -22,6 +23,10 @@ from django.utils import timezone
 MONEY = DecimalField(max_digits=18, decimal_places=2)
 QTY = DecimalField(max_digits=18, decimal_places=3)
 ZERO_QTY = Value(Decimal("0"), output_field=QTY)
+
+# `date.weekday()` counts from Monday, so Sunday is 6. Named because the payroll asks
+# "is this a Sunday" in several places and a bare 6 reads as nothing.
+SUNDAY = 6
 
 # How long a receipt is given to be paid when nobody says otherwise. It lives here
 # rather than in forms.py because the Sale model itself needs it: a receipt written
@@ -1122,6 +1127,39 @@ def month_span(start, end):
     return months
 
 
+def rest_holidays_in(year, month):
+    """The dates of that month the firm is closed for — holidays the supervisor
+    marked as days off, as a set of dates.
+
+    Only the ones with `rest` on. A holiday left as a working day is a label on the
+    sheet and nothing more, so it has no business in any wage arithmetic."""
+    return set(
+        Holiday.objects.filter(
+            date__year=year, date__month=month, rest=True
+        ).values_list("date", flat=True)
+    )
+
+
+def rest_dates_in_month(year, month, holidays=None):
+    """Every date of that month a worker owes the firm nothing: its Sundays, and the
+    holidays the firm closes for.
+
+    ONE function decides what a rest day is, and everything about a wage is derived
+    from it: the divisor is the month minus these days, the days that can be missed
+    are the month minus these days, and a day worked that IS one of these is the extra
+    that goes on top. Written in two places, the divisor and the bonus would disagree
+    the first time a rule changed, and a worker would be paid for a day twice or not
+    at all.
+
+    A holiday landing on a Sunday is one date in a set, so it can never be counted, or
+    subtracted, twice."""
+    if holidays is None:
+        holidays = rest_holidays_in(year, month)
+    total = calendar.monthrange(year, month)[1]
+    days = (date(year, month, day) for day in range(1, total + 1))
+    return {day for day in days if day in holidays or day.weekday() == SUNDAY}
+
+
 class Employee(models.Model):
     """A salaried worker (Xodim), the monthly wage they are owed, and what is left of
     it once the till has paid out.
@@ -1135,7 +1173,14 @@ class Employee(models.Model):
     (and an advance drawn beyond the wage rides in the other direction), so the balance
     is cumulative from `start_month` — see `balance_through`. That accumulation is why
     the account needs an explicit opening: without one, adding a worker who has been on
-    the job for a year would invent a year of unpaid wages on the spot."""
+    the job for a year would invent a year of unpaid wages on the spot.
+
+    What a month ADDS to that balance comes off the davomad sheet, not off the salary:
+    everybody is counted by the day, so a week missed is a smaller wage and a day off
+    worked a bigger one (`earned_in`). The week is six days — Sunday is everybody's
+    day off — and the wage is spread over exactly the working days of the month, so a
+    worker who turns up for every one of them is paid exactly their salary, to the
+    so'm."""
 
     name = models.CharField("Ismi", max_length=120)
     # The CURRENT wage. Every month's own figure lives in `rates` (SalaryRate); this
@@ -1201,11 +1246,157 @@ class Employee(models.Model):
             return False
         return True
 
-    def accrued_in(self, year, month):
-        """The wage earned in that month — zero outside the months they are on."""
+    def accrued_in(self, year, month, holidays=None, salary=None):
+        """The wage earned in that month — zero outside the months they are on.
+
+        Earned, not agreed: the figure comes off the davomad sheet (`earned_in`), so a
+        week missed is a smaller wage and a Sunday worked a bigger one. A finished
+        month nobody wrote anything against is the salary itself, to the so'm."""
         if not self.accrues_in(year, month):
             return Decimal("0")
-        return self.salary_for(year, month)
+        return self.earned_in(year, month, holidays, salary)
+
+    def leave_in(self, year, month):
+        """(paid leave dates, unpaid leave dates) for that month.
+
+        Leave is a PLAN — written before the day, unlike attendance, which is written
+        after it. The two never fight: leave says what the day was meant to be, and an
+        attendance row on the same day says what actually happened and wins."""
+        paid, unpaid = set(), set()
+        for row in self.leaves.filter(date__year=year, date__month=month):
+            (paid if row.paid else unpaid).add(row.date)
+        return paid, unpaid
+
+    def rest_state_in(self, year, month, holidays=None):
+        """(rest dates, unpaid leave dates) — the two things that change what a day
+        is assumed to be, read in one go because every caller needs both."""
+        paid, unpaid = self.leave_in(year, month)
+        rest = rest_dates_in_month(year, month, holidays)
+        # Paid leave behaves exactly like a holiday, for one person: the day leaves
+        # the divisor, so taking it costs nothing and working it is added on top.
+        return rest | paid, unpaid
+
+    def rest_dates_in(self, year, month, holidays=None):
+        """The days of that month this worker owes the firm nothing — Sundays, every
+        holiday the firm closes for, and their own paid leave."""
+        return self.rest_state_in(year, month, holidays)[0]
+
+    def assumed_present(self, day, rest, unpaid):
+        """What the sheet takes a day to be when nothing was written down.
+
+        ONE rule, because the divisor, the missable days and the bonus all read it:
+        a rest day was rested, a day of unpaid leave was not worked, and every other
+        day was worked. Split across three places these would disagree the first time
+        a fourth kind of day appeared."""
+        if day in rest:
+            return False
+        return day not in unpaid
+
+    def working_days_in(self, year, month, holidays=None):
+        """How many days of that month this worker is due to work — the divisor the
+        monthly salary is spread over.
+
+        Sundays stay out: the salary is owed for six days a week, so a rested Sunday
+        costs nothing. A closed holiday leaves the divisor too, which is what "dam olsa
+        ham oylik beriladi" means arithmetically: the month is worth the salary over
+        fewer days, so somebody who takes the holiday off is paid in full. Paid leave
+        does the same for one person."""
+        return calendar.monthrange(year, month)[1] - len(
+            self.rest_dates_in(year, month, holidays)
+        )
+
+    def _raw_daily_rate_in(self, year, month, holidays=None, salary=None):
+        """A day's pay at full precision, for computing with.
+
+        Kept unrounded on purpose: a salary over a month's working days rarely lands
+        on whole so'm — 3 000 000 over 26 days is 115 384.615… — and rounding before
+        multiplying by a month's days drifts the wage off the salary it is meant to
+        reproduce. Rounding once, at the end, makes a full month come out exact.
+
+        `salary` is that month's wage when the caller already holds it (the payroll
+        reads every rate in one query); otherwise it is looked up, because a raise
+        must not re-price the days of a month it was not in force for.
+
+        Zero rather than a division error in the impossible case of a month with no
+        working days; 0 reads as "nothing to pay" rather than a 500."""
+        days = self.working_days_in(year, month, holidays)
+        if not days:
+            return Decimal("0")
+        if salary is None:
+            salary = self.salary_for(year, month)
+        return salary / days
+
+    def daily_rate_in(self, year, month, holidays=None, salary=None):
+        """The same figure rounded to so'm — what the PAGE shows.
+
+        Display only: every wage total goes through `_raw_daily_rate_in`, so what is
+        printed here can never pull the arithmetic off by a few so'm."""
+        return self._raw_daily_rate_in(year, month, holidays, salary).quantize(
+            Decimal("0.01"), ROUND_HALF_UP
+        )
+
+    def countable_days(self, year, month, holidays=None):
+        """The working days of that month that have actually happened.
+
+        The current month stops at today. A wage is earned by turning up, and nobody
+        has yet turned up on the 29th when it is the 25th — counting the rest of the
+        month would show a worker as owed a full salary in the first week of it."""
+        rest = self.rest_dates_in(year, month, holidays)
+        total = calendar.monthrange(year, month)[1]
+        today = timezone.localdate()
+        days = []
+        for number in range(1, total + 1):
+            day = date(year, month, number)
+            if day > today:
+                break
+            if day not in rest:
+                days.append(day)
+        return days
+
+    def days_in(self, year, month, holidays=None):
+        """(working days credited, rest days worked) for that month.
+
+        Present is the DEFAULT, which is what makes the sheet quick: a working day is
+        counted unless somebody wrote down that the worker was away. Only the
+        exceptions are recorded — an absence, or a day off somebody came in on — so a
+        normal month is an empty sheet rather than thirty ticks.
+
+        The second figure is a day off that was worked anyway — a Sunday, or a holiday
+        the firm closed for. Such a day never enters the divisor, so resting on one
+        costs nothing and turning up on one is extra work, added on top.
+
+        Unpaid leave booked in advance counts as a day not worked — it stays in the
+        divisor, so it comes off the wage exactly like an absence, which is what
+        "o'z hisobidan" means. An attendance row on the same day overrides it: if
+        somebody cancelled their leave and came in, they are paid for coming in."""
+        rest, unpaid = self.rest_state_in(year, month, holidays)
+        rows = {
+            row.date: row
+            for row in self.attendance.filter(date__year=year, date__month=month)
+        }
+        countable = set(self.countable_days(year, month, holidays))
+        worked = rest_worked = 0
+        for day in set(rows) | countable:
+            row = rows.get(day)
+            if day in rest:
+                rest_worked += int(bool(row and row.present))
+                continue
+            present = row.present if row else self.assumed_present(day, rest, unpaid)
+            worked += int(day in countable and present)
+        return worked, rest_worked
+
+    def earned_in(self, year, month, holidays=None, salary=None):
+        """What this month's work is worth — before anything already drawn against it.
+
+        Days times a day's pay, with the day's pay derived from the salary so that a
+        full month reproduces the salary exactly. A missed working day comes off; a
+        day off worked goes on top.
+
+        Says nothing about whether the account was open that month — `accrued_in` is
+        the figure the balance is built from."""
+        worked, rest_worked = self.days_in(year, month, holidays)
+        rate = self._raw_daily_rate_in(year, month, holidays, salary)
+        return ((worked + rest_worked) * rate).quantize(Decimal("0.01"), ROUND_HALF_UP)
 
     def remaining_in(self, year, month):
         """What that month ALONE left over: its wage less what was drawn against it.
@@ -1265,6 +1456,175 @@ class SalaryRate(models.Model):
 
     def __str__(self):
         return f"{self.employee.name}: {self.amount} so'm ({self.effective_from:%m.%Y})"
+
+
+class Attendance(models.Model):
+    """One worker, one day, whether they turned up (Davomad).
+
+    A mark, not a measurement. Wages are counted by the day here — a day is a day
+    whether somebody left an hour early or stayed late — so recording hours would be
+    collecting a number nothing reads, and inviting two different answers to "was he
+    here on Tuesday".
+
+    Rows are EXCEPTIONS. A working day with no row is a day worked, because that is
+    what almost every day is; what gets written down is an absence, or a day off
+    somebody came in on. A normal month is therefore an empty sheet, and the rows that
+    exist are exactly the ones that change the wage.
+
+    One row per worker per day: the sheet has a single box per cell, and two rows for
+    one day would silently move somebody's pay twice."""
+
+    employee = models.ForeignKey(
+        Employee, on_delete=models.CASCADE, related_name="attendance",
+        verbose_name="Xodim",
+    )
+    date = models.DateField("Sana")
+    present = models.BooleanField("Keldi", default=True)
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="attendance_entries",
+        verbose_name="Kim kiritdi",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-date", "employee__name"]
+        verbose_name = "Davomad"
+        verbose_name_plural = "Davomad"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["employee", "date"], name="one_attendance_row_per_day"
+            ),
+        ]
+
+    def __str__(self):
+        mark = "keldi" if self.present else "kelmadi"
+        return f"{self.employee.name} — {self.date}: {mark}"
+
+
+class Leave(models.Model):
+    """A day off booked for one worker, before it happens (Rejalashtirilgan dam).
+
+    A PLAN, which is what separates it from everything else on the payroll: an
+    attendance row is written after the day and says what happened, a leave row is
+    written before it and says what is meant to happen. When the day arrives the two
+    meet, and attendance wins — somebody who cancelled their leave and turned up is
+    paid for turning up.
+
+    `paid` is the whole decision, and it is the difference between two things people
+    call the same word:
+
+      paid   — the day leaves the divisor, exactly as a holiday does for everyone.
+               The month is worth the same salary over fewer days, so the worker is
+               paid in full. This is leave the firm grants.
+      unpaid — the day stays in the divisor and counts as not worked, so it comes
+               off the wage like any absence. This is "o'z hisobidan".
+
+    One row per worker per day: two would leave "is this day paid" with two answers,
+    and the payroll would read whichever it happened to find first."""
+
+    employee = models.ForeignKey(
+        Employee, on_delete=models.CASCADE, related_name="leaves",
+        verbose_name="Xodim",
+    )
+    date = models.DateField("Sana")
+    paid = models.BooleanField("Oyligi saqlanadi", default=False)
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="granted_leaves",
+        verbose_name="Kim belgiladi",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date", "employee__name"]
+        verbose_name = "Rejalashtirilgan dam"
+        verbose_name_plural = "Rejalashtirilgan damlar"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["employee", "date"], name="one_leave_per_day"
+            )
+        ]
+
+    def __str__(self):
+        kind = "haqli dam" if self.paid else "o'z hisobidan"
+        return f"{self.employee.name} — {self.date}: {kind}"
+
+
+class Holiday(models.Model):
+    """A day the firm treats as a holiday (Bayram).
+
+    `rest` is the supervisor's decision, taken once for the whole firm: is the gate
+    shut. Shut, the day leaves the divisor exactly the way a Sunday does — the month
+    is worth the same salary over fewer days, so a worker who takes the holiday off is
+    paid in full, and one who does come in has the day added on top like any other
+    rest day worked. Open, the holiday is a label on the sheet and touches no wage.
+
+    Kept as concrete dates rather than a repeating rule, because half of the year's
+    holidays do not repeat: the two hayits move against the calendar, and a public
+    holiday landing on a Sunday is sometimes shifted by decree. A rule would have to
+    be corrected by hand every year anyway, and would look authoritative while being
+    wrong."""
+
+    # The fixed-date national holidays. The two hayits move every year and are added
+    # by hand — a list that quietly went stale would be worse than an empty one.
+    FIXED = [
+        (1, 1, "Yangi yil"),
+        (3, 8, "Xotin-qizlar kuni"),
+        (3, 21, "Navro'z"),
+        (5, 9, "Xotira va qadrlash kuni"),
+        (9, 1, "Mustaqillik kuni"),
+        (10, 1, "O'qituvchi va murabbiylar kuni"),
+        (12, 8, "Konstitutsiya kuni"),
+    ]
+
+    date = models.DateField("Sana", unique=True)
+    name = models.CharField("Nomi", max_length=80)
+    rest = models.BooleanField("Dam beriladi", default=True)
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="holidays",
+        verbose_name="Kim kiritdi",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["date"]
+        verbose_name = "Bayram"
+        verbose_name_plural = "Bayramlar"
+
+    @classmethod
+    def seed_year(cls, year, user=None):
+        """Put the fixed-date national holidays into a year, and say how many were new.
+
+        Never touches a date that already exists: the supervisor may have turned one
+        into a working day, or renamed it, and re-running this must not quietly undo
+        that decision."""
+        made = 0
+        for month, day, name in cls.FIXED:
+            _, created = cls.objects.get_or_create(
+                date=date(year, month, day),
+                defaults={"name": name, "created_by": user},
+            )
+            made += int(created)
+        return made
+
+    def __str__(self):
+        state = "dam" if self.rest else "ish kuni"
+        return f"{self.date}: {self.name} ({state})"
 
 
 class Expense(models.Model):

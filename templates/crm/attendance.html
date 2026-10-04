@@ -1,0 +1,245 @@
+{% extends "base.html" %}
+{% load crm_extras %}
+{% block title %}Davomad · Paket CRM{% endblock %}
+{% block topbar_title %}Davomad{% endblock %}
+{% block content %}
+
+{% comment %}
+  Davomad — butun oylik hisobi shu jadvaldan chiqadi. Katakda soat emas, BELGI turadi:
+  odam keldimi yoki kelmadimi. Ish haqi kunbay hisoblanadi, ya'ni kun — kun, xodim
+  bir soat erta ketdimi yoki kech qoldimi, farqi yo'q.
+
+  KELDI — sukut holati. Yozib qo'yiladigan narsa faqat istisno: kelmagan kun yoki dam
+  kunida chiqib ishlangan kun. Shuning uchun odatdagi oy — bo'sh jadval, va jadvalda
+  turgan belgilar aynan oylikni o'zgartiradiganlari.
+
+  Yakshanba — hammaga dam kuni: bo'luvchiga kirmaydi, dam olsa hech narsa turmaydi,
+  chiqib ishlasa ustiga qo'shiladi. «Dam beriladi» belgilangan bayram ham xuddi
+  shunday: bo'luvchidan chiqadi, ya'ni dam olgan xodim to'liq oyligini oladi.
+  Bayramlar ro'yxati — yon paneldagi Bayramlar sahifasida.
+
+  Katak bosilganda almashadi. Ish kuni: keldi ↔ kelmadi. Dam kuni: dam ↔ keldi.
+  Qaysi kun qanday almashishi serverdan `data-cycle` bilan keladi — buni sahifa emas,
+  `views.py` biladi.
+{% endcomment %}
+
+{% comment %}
+  Filtr yo'lagi: qidiruv, oy, «Excel'ga chiqarish», Bayramlar va Oylik hisobi.
+  Jadvalning o'zi o'z oynasi ichida siljiydi (`.att-wrap`), shuning uchun yo'lak
+  ham, kun raqamlari ham ko'rinib turadi.
+{% endcomment %}
+{% include "crm/_hr_toolbar.html" %}
+
+{% comment %}
+  Bayram tegi tugmalar bilan bir qatorda turmaydi: uzunligi oydan oyga o'zgaradi
+  (bir oyda hech narsa, boshqasida uchta nom) va yo'lakni tugmalar ustiga bosib
+  chiqaradi. Bayrami yo'q oyda bu qator umuman chizilmaydi.
+{% endcomment %}
+{% if holidays %}
+<div class="att-links">
+  <span class="field-hint" style="margin:0;">
+    Shu oyda:
+    {% for h in holidays %}<span class="att-holiday-tag{% if not h.rest %} is-open{% endif %}">{{ h.date|date:"j-M" }} {{ h.name }}{% if not h.rest %} (ish kuni){% endif %}</span>{% endfor %}
+  </span>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head">
+    <h2 style="margin:0;">Davomad · {{ month_label }}</h2>
+  </div>
+
+  {% if rows %}
+  <form method="post">
+    {% csrf_token %}
+    <div class="table-wrap att-wrap">
+      <table class="att-grid">
+        <thead>
+          <tr>
+            <th class="att-name">Xodim</th>
+            {% for c in columns %}
+            <th class="att-day{% if c.is_sunday %} att-day--sunday{% endif %}{% if c.is_future %} att-day--future{% endif %}{% if c.is_today %} att-day--today{% endif %}{% if c.holiday %} att-day--holiday{% endif %}"
+                title="{{ c.day }} {{ c.month_label }}{% if c.holiday %} · {{ c.holiday.name }}{% if c.is_closed %} — dam beriladi{% else %} — ish kuni{% endif %}{% endif %}">
+              <span class="att-daynum">{{ c.day }}</span>
+              <span class="att-dayname">{% if c.holiday %}★{% else %}{{ c.label }}{% endif %}</span>
+            </th>
+            {% endfor %}
+            <th class="num att-total">Kun</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td class="att-name">
+              <span class="cell-user">
+                {% include "crm/_avatar.html" with name=r.employee.name %}
+                <span>{{ r.employee.name }}
+                  <span class="cell-sub">{{ r.daily_rate|floatformat:"0g" }}/kun · {{ r.working_days }} kun</span>
+                </span>
+              </span>
+            </td>
+            {% for cell in r.cells %}
+            <td class="att-cell{% if cell.is_sunday %} att-cell--sunday{% endif %}{% if cell.is_holiday %} att-cell--holiday{% endif %}{% if cell.is_exception %} att-cell--flag{% endif %}{% if cell.is_locked %} att-cell--locked{% endif %}">
+              {% if cell.is_future %}
+              <span class="att-blank" aria-hidden="true">·</span>
+              {% else %}
+              <button type="button" class="att-mark" data-att-cell
+                      data-cycle="{{ cell.cycle }}" data-state="{{ cell.state }}"
+                      {% if cell.is_locked %}data-locked="1" aria-disabled="true"{% endif %}
+                      title="{{ r.employee.name }}, {{ cell.key }}{% if cell.note %} — {{ cell.note }}{% endif %}{% if cell.is_locked %} · yopiq kun, ochish uchun ikki marta bosing{% endif %}"
+                      aria-label="{{ r.employee.name }}, {{ cell.key }}{% if cell.is_locked %}, yopiq{% endif %}">
+                {# Belgi CSS bilan chiziladi — holat o'zgarganda data-state o'zgarishi kifoya #}
+                <span class="att-mark-face" aria-hidden="true"></span>
+              </button>
+              <input type="hidden" name="d-{{ r.employee.pk }}-{{ cell.key }}" value="{{ cell.state }}">
+              {% comment %}
+                Yopiq kun serverda ham yopiq. Bu bayroq bo'lmasa `_save_attendance`
+                o'sha kunga umuman tegmaydi — ya'ni himoya JS'da emas, serverda.
+                Faqat CSS bilan qilinsa, eski forma yoki uzilib qolgan sahifa baribir
+                eski kunni o'zgartirib yuborardi.
+              {% endcomment %}
+              {% if cell.is_locked %}
+              <input type="hidden" name="o-{{ r.employee.pk }}-{{ cell.key }}" value="0" data-att-open>
+              {% endif %}
+              {% endif %}
+            </td>
+            {% endfor %}
+            <td class="num att-total">
+              <strong>{{ r.total_days }}</strong>
+              {% if r.missed_days %}<span class="cell-sub att-missed">{{ r.missed_days }} kun kelmadi</span>{% endif %}
+              {% if r.sunday_days %}<span class="cell-sub">+{{ r.sunday_days }} dam kunida</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td class="att-name">
+              <strong>Jami</strong>
+              <span class="cell-sub">{{ workdays }} ish kuni{% if elapsed_workdays != workdays %} · {{ elapsed_workdays }} tasi o'tdi{% endif %}</span>
+            </td>
+            <td colspan="{{ columns|length }}"></td>
+            <td class="num att-total"></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    <div class="att-actions">
+      <button type="submit" class="btn btn-primary">Davomadni saqlash</button>
+      <span class="att-legend" aria-hidden="true">
+        <span class="att-legend-item"><span class="att-chip att-chip--keldi"></span>keldi</span>
+        <span class="att-legend-item"><span class="att-chip att-chip--kelmadi"></span>kelmadi</span>
+        <span class="att-legend-item"><span class="att-chip att-chip--dam"></span>dam</span>
+      </span>
+      {% comment %}
+        Qisqa tutilgan. Holatlar yonidagi rangli izohda ko'rinib turibdi, oylikka
+        ta'siri esa pastdagi «Shu oy hisoblangani» kartasida yozilgan — bu yerda
+        takrorlansa, tugma ostida hech kim o'qimaydigan matn devori paydo bo'ladi.
+        Qoladigani faqat o'zidan ko'rinmaydigan ikki narsa: katak bosilishi va
+        yopiq kunni ikki marta bosib ochish.
+      {% endcomment %}
+      <span class="field-hint">
+        Katakni bosing — keldi/kelmadi almashadi.
+        <strong>{{ open_from|date:"d.m" }} dan oldingi kunlar yopiq</strong>;
+        to'g'rilash uchun katakni ikki marta bosing.
+      </span>
+    </div>
+
+    {% if exceptions %}
+    {% comment %}
+      Izohlar — jadvalda qator bor kunlar, ya'ni aynan oylikni o'zgartirganlari.
+      Har kunga matn maydoni qo'yilmaydi: oyda yuzlab katak bor, izoh esa o'nga
+      yaqin kunga kerak bo'ladi.
+
+      Izoh kun bo'yicha yuboriladi (`n-xodim-kun`), qator raqami bo'yicha emas —
+      chunki katakni endi belgilaganda qator hali mavjud emas. Kun odatdagiga
+      qaytsa qator o'chadi va izoh ham u bilan ketadi: izoh istisnoni tushuntiradi,
+      istisno yo'q bo'lsa tushuntiradigan narsa ham qolmaydi.
+    {% endcomment %}
+    <div class="att-notes">
+      <h3>Izohlar · {{ month_label }}</h3>
+      <p class="field-hint">
+        Faqat istisno kunlar. Yozib, <strong>Davomadni saqlash</strong>ni bosing —
+        izoh yopiq kunga ham yoziladi.
+      </p>
+      <div class="table-wrap">
+        <table class="table--blue-head">
+          <tr><th>Sana</th><th>Xodim</th><th>Holat</th><th>Izoh</th></tr>
+          {% for e in exceptions %}
+          <tr>
+            <td>
+              <strong>{{ e.day|date:"d.m" }}</strong>
+              <span class="cell-sub">{{ e.day|date:"D" }}{% if e.holiday %} · {{ e.holiday.name }}{% endif %}</span>
+            </td>
+            <td>{{ e.employee.name }}</td>
+            <td>
+              {% if e.state == "kelmadi" %}<span class="badge badge-danger">Kelmadi</span>
+              {% else %}<span class="badge badge-info">Dam kunida ishladi</span>{% endif %}
+            </td>
+            <td>
+              <input type="text" name="{{ e.field }}" value="{{ e.note }}" maxlength="255"
+                     class="att-note-input" placeholder="Nima uchun — ixtiyoriy"
+                     aria-label="{{ e.employee.name }}, {{ e.day|date:"d.m" }} izohi">
+            </td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+    </div>
+    {% endif %}
+  </form>
+  {% else %}
+  {% comment %}
+    Bo'sh jadvalning ikki sababi bor va ular butunlay boshqacha: hali xodim
+    qo'shilmagan, yoki filtr hammani chiqarib tashlagan. Ikkinchisida «xodim
+    qo'shing» deyish — noto'g'ri maslahat, chunki xodim bor.
+  {% endcomment %}
+  {% if q or holat %}
+  <p class="muted">
+    Tanlangan filtrga mos xodim yo'q.
+    <a href="{% url 'attendance_grid' %}?oy={{ month_value }}">Filtrni tozalash</a>
+  </p>
+  {% else %}
+  <p class="muted">Bu oyda hisobi ochiq xodim yo'q. Xodim qo'shish yoki hisob boshlangan oyni o'zgartirish — <a href="{% url 'employee_list' %}">Xodimlar oyligi</a> sahifasida.</p>
+  {% endif %}
+  {% endif %}
+</div>
+
+{% if rows %}
+<div class="card">
+  <h2>Shu oy hisoblangani · {{ month_label }}</h2>
+  <div class="table-wrap">
+  <table class="table--blue-head">
+    <tr>
+      <th>Xodim</th><th class="num">Oyligi</th><th class="num">Kuniga</th>
+      <th class="num">Kun</th><th class="num">Hisoblangan</th>
+    </tr>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.employee.name }}</td>
+      <td class="num muted">{{ r.salary|floatformat:"0g" }}</td>
+      <td class="num muted">{{ r.daily_rate|floatformat:"0g" }}<span class="cell-sub">{{ r.working_days }} kunga bo'linadi</span></td>
+      <td class="num">
+        {{ r.total_days }}{% if r.sunday_days %} <span class="badge badge-info">+{{ r.sunday_days }} dam kunida</span>{% endif %}
+      </td>
+      <td class="num"><strong>{{ r.earned|floatformat:"0g" }}</strong></td>
+    </tr>
+    {% endfor %}
+    <tr>
+      <td colspan="4"><strong>Jami</strong></td>
+      <td class="num"><strong>{{ total_earned|floatformat:"0g" }}</strong></td>
+    </tr>
+  </table>
+  </div>
+  <p class="field-hint" style="margin-top:10px;">
+    Kunlik narx — oylik ÷ o'sha oyning ish kunlari, yakshanbasiz: {{ month_label }} da
+    {{ workdays }} kun. Dam beriladigan <strong>bayram</strong> ham bo'luvchidan chiqadi,
+    ya'ni o'sha kuni dam olgan xodim to'liq oyligini oladi; chiqib ishlagani esa ustiga
+    qo'shiladi. Hamma kuni kelgan xodim aniq o'z oyligini oladi. Joriy oyda hisob
+    bugungi kungacha yuritiladi — hali kelmagan kunlar uchun oylik yozilmaydi.
+    Berilgan pul va qoldiq — <a href="{% url 'employee_list' %}?oy={{ month_value }}">Oylik hisobi</a>
+    sahifasida: u yerda o'tgan oylardan qolgani ham qo'shiladi.
+  </p>
+</div>
+{% endif %}
+{% endblock %}

@@ -6,6 +6,7 @@ opening figure a payroll account starts from, and the rule that a raise prices t
 months from which it was agreed — never the ones already settled.
 """
 
+import calendar
 from datetime import timedelta
 from decimal import Decimal
 
@@ -18,6 +19,19 @@ from crm.models import Employee, Expense, SalaryRate
 pytestmark = pytest.mark.django_db
 
 WAGE = Decimal("2000000")
+
+
+@pytest.fixture(autouse=True)
+def month_is_over(monkeypatch):
+    """Pin today to the last day of the month.
+
+    A wage is earned by the day now, so "this month's wage" is only the whole salary
+    once the month has run out — on the 4th it is four days' worth. These tests are
+    about what carries from month to month, not about the davomad sheet (that is
+    tests/test_hr_davomad.py), so they are asked on the day the month is complete."""
+    real = timezone.localdate()
+    last = real.replace(day=calendar.monthrange(real.year, real.month)[1])
+    monkeypatch.setattr(timezone, "localdate", lambda *args, **kwargs: last)
 
 
 def this_month():
