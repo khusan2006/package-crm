@@ -5454,7 +5454,25 @@ a.cell-loc--map:hover { color: var(--accent); }
 .att-chip--kelmadi {
   background: color-mix(in srgb, var(--danger) 12%, var(--input));
   border-color: var(--danger);
+  position: relative;
 }
+
+/* Jadvaldagi katak bilan bir xil xoch — izoh katakning o'zini ko'rsatsin. */
+.att-chip--kelmadi::before,
+.att-chip--kelmadi::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 1.5px;
+  margin: -0.75px 0 0 -4px;
+  background: var(--danger);
+  border-radius: 1px;
+}
+
+.att-chip--kelmadi::before { transform: rotate(45deg); }
+.att-chip--kelmadi::after { transform: rotate(-45deg); }
 
 /* Kelajakdagi kun — hali hech narsa bo'lmagan, shuning uchun belgilanmaydi ham. */
 .att-day--future .att-daynum,
