@@ -126,6 +126,15 @@ OMBOR_START_DATE = date(
     *(int(p) for p in os.environ.get("OMBOR_START_DATE", "2026-07-20").split("-"))
 )
 
+# Wages are counted off the davomad sheet from this month on (only the year and
+# month matter). Every month before it was agreed and paid as the flat salary and
+# stays that way: no mark, leave or holiday written since reaches back to re-price
+# it, and the sheet does not open for it. The default is the month the HR module
+# went live. Override via env if ever needed; tests pin their own value.
+DAVOMAD_START_DATE = date(
+    *(int(p) for p in os.environ.get("DAVOMAD_START_DATE", "2026-10-01").split("-"))
+)
+
 USE_I18N = True
 
 USE_THOUSAND_SEPARATOR = True

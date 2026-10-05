@@ -26,9 +26,17 @@
     {% for l in toolbar_links %}<a class="btn btn-sm btn-ghost" href="{{ l.url }}">{{ l.label }}</a>{% endfor %}
     {% if not is_current_month %}<a class="btn btn-sm btn-ghost" href="{% qs_replace oy='' %}">Shu oy</a>{% endif %}
     <div class="month-pick" role="group" aria-label="Oy tanlash">
+      {% comment %}Davomad yoqilgan oydan orqaga yo'l yo'q — undan oldin varaq
+      yuritilmagan. Tugma o'rnida qoladi (yo'lak sakramasin), lekin bosilmaydi.{% endcomment %}
+      {% if prev_month %}
       <a class="datebar-btn" href="{% qs_replace oy=prev_month %}" title="Oldingi oy" aria-label="Oldingi oy">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
       </a>
+      {% else %}
+      <span class="datebar-btn is-disabled" title="Davomad shu oydan boshlangan" aria-disabled="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </span>
+      {% endif %}
       <form method="get" class="month-pick-form">
         {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
         {% if holat %}<input type="hidden" name="holat" value="{{ holat }}">{% endif %}

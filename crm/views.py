@@ -99,7 +99,9 @@ from .models import (
     SaleItem,
     SalaryRate,
     StockEntry,
+    davomad_start,
     month_span,
+    on_davomad,
     rest_dates_in_month,
     rest_holidays_in,
     seller_cash_on_hand,
@@ -6173,14 +6175,19 @@ def _month_shift(year, month, step):
     return index // 12, index % 12 + 1
 
 
-def _month_options(year, month, today, back=12):
+def _month_options(year, month, today, back=12, first=None):
     """Months offered in the picker: a rolling year back from today, newest first.
     A month reached by hand-editing ?oy= is folded in so the select never renders
-    blank on a URL that the view itself accepts."""
+    blank on a URL that the view itself accepts.
+
+    `first` drops every month before it — the davomad sheet does not reach back past
+    the month it was switched on, so its picker must not offer one."""
     months = [_month_shift(today.year, today.month, -step) for step in range(back)]
     if (year, month) not in months:
         months.append((year, month))
         months.sort(reverse=True)
+    if first is not None:
+        months = [m for m in months if m >= (first.year, first.month)]
     return [{"value": f"{y:04d}-{m:02d}", "label": uz_month(y, m)} for y, m in months]
 
 
@@ -6230,10 +6237,14 @@ def _month_wage(employee, year, month, salary, marked, today, closed):
 
     The same figure as `Employee.accrued_in` — off the davomad sheet — reached without
     touching the database for a finished month with nothing written against it, where
-    the answer is the salary itself. `closed` caches each month's closed holidays, so
-    a payroll of twenty asks for them once rather than twenty times."""
+    the answer is the salary itself. A month from before the sheet was switched on is
+    the salary too, whatever is written against it. `closed` caches each month's
+    closed holidays, so a payroll of twenty asks for them once rather than twenty
+    times."""
     if not employee.accrues_in(year, month):
         return Decimal("0")
+    if not on_davomad(year, month):
+        return salary
     finished = (year, month) < (today.year, today.month)
     if finished and (employee.pk, year, month) not in marked:
         return salary
@@ -6296,7 +6307,7 @@ def _payroll_rows(employees, year, month):
             rows.append({
                 "employee": e, "carried": None, "salary": None, "earned": None,
                 "due": None, "paid": paid, "remaining": None, "accrues": False,
-                "tracked": False,
+                "tracked": False, "by_day": False,
             })
             continue
         carried = e.opening_balance
@@ -6321,8 +6332,11 @@ def _payroll_rows(employees, year, month):
             "remaining": carried + earned - paid,   # kelasi oyga o'tadi
             "accrues": accrues,
             "tracked": True,
+            # Whether `earned` came off the davomad sheet. A month from before the
+            # sheet is the flat salary, and has no days to show for it.
+            "by_day": accrues and on_davomad(year, month),
         }
-        if accrues:
+        if row["by_day"]:
             # How `earned` came about, for the page to show next to it: the days
             # counted, the ones missed, and what one day is worth this month.
             if (year, month) not in closed:
@@ -6338,6 +6352,13 @@ def _payroll_rows(employees, year, month):
             })
         rows.append(row)
     return rows
+
+
+def _davomad_url(year, month):
+    """The davomad sheet for that month — or for its first month, when the one asked
+    for is from before the sheet was switched on."""
+    first = max(date(year, month, 1), davomad_start())
+    return f"{reverse('attendance_grid')}?oy={first:%Y-%m}"
 
 
 def _payroll_employees(request):
@@ -6430,9 +6451,12 @@ def employee_list(request):
         # The sheet these wages are computed from. Marking it up is the supervisor's
         # job, so the door to it is only shown to the roles that can walk through.
         "davomad_url": (
-            f"{reverse('attendance_grid')}?oy={year:04d}-{month:02d}"
-            if request.user.can_see_all_records else ""
+            _davomad_url(year, month) if request.user.can_see_all_records else ""
         ),
+        # Whether this month's wages are counted by the day at all — before the
+        # sheet was switched on they are the flat salary, with no days to total.
+        "by_day": on_davomad(year, month),
+        "davomad_from": davomad_start(),
         "export_url": reverse("employee_export") + (f"?{export_qs}" if export_qs else ""),
         "totals": totals,
         "payouts": payouts,
@@ -6466,8 +6490,8 @@ def employee_export(request):
             "Faol" if r["employee"].is_active else "Faol emas",
             r["employee"].start_month.strftime("%m.%Y"),
             float(r["salary"] or 0),
-            r.get("days", 0),
-            r.get("missed_days", 0),
+            r.get("days", ""),
+            r.get("missed_days", ""),
             float(r["earned"] or 0),
             float(r["carried"] or 0),
             float(r["due"] or 0),
@@ -6609,10 +6633,11 @@ def employee_detail(request, pk):
         # Marking a day moves a wage, so the day card is the supervisor's — a seller
         # reads the calendar but gets no pencil on it.
         "can_manage": can_manage,
-        "davomad_url": (
-            f"{reverse('attendance_grid')}?oy={year:04d}-{month:02d}"
-            if can_manage else ""
-        ),
+        "davomad_url": _davomad_url(year, month) if can_manage else "",
+        # A month from before the sheet was switched on has no calendar to draw:
+        # its wage is the flat salary and no day of it can be marked.
+        "by_day": on_davomad(year, month),
+        "davomad_from": davomad_start(),
         "month_value": f"{year:04d}-{month:02d}",
         "month_label": uz_month(year, month),
         "month_options": _month_options(year, month, today),
@@ -6803,7 +6828,10 @@ def employee_day(request, pk, sana):
     pressing save is not something a mouse does on its way past."""
     employee = get_object_or_404(Employee, pk=pk)
     day = _parse_date(sana)
-    if day is None:
+    # A day from before the sheet was switched on has no card: that month was paid
+    # as the flat salary, and a mark or a day of leave written against it now would
+    # move nothing.
+    if day is None or not on_davomad(day.year, day.month):
         raise Http404
     today = timezone.localdate()
 
@@ -7210,6 +7238,15 @@ CELL_LABELS = {
 }
 
 
+def _to_first_sheet(request):
+    """Send a request for a month before the sheet was switched on to its first month.
+
+    Those months were paid as the flat salary, so there is no sheet to show for them
+    and nothing a mark there could move — which is also why a POST is turned away
+    here without being read."""
+    return redirect(_segment_url(request, oy=f"{davomad_start():%Y-%m}"))
+
+
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
 def attendance_excel(request):
     """The davomad sheet as .xlsx — the same month, search and switch as the page.
@@ -7222,6 +7259,8 @@ def attendance_excel(request):
     Cells carry the DAYS a wage was built from rather than ticks, so a row adds up to
     the figure on the Oylik tab and can be checked with a calculator."""
     year, month = _payroll_month(request)
+    if not on_davomad(year, month):
+        return _to_first_sheet(request)
     days = _month_days(year, month)
     employees = _sheet_employees(request, year, month)[0]
     today = timezone.localdate()
@@ -7340,6 +7379,8 @@ def attendance_grid(request):
     in from a paper list in one sitting, and 300 separate requests would be 300 chances
     to lose half of it."""
     year, month = _payroll_month(request)
+    if not on_davomad(year, month):
+        return _to_first_sheet(request)
     days = _month_days(year, month)
     # The same people the Xodimlar page is showing, narrowed by the same search and
     # the same switch — two HR screens listing different staff would be two answers
@@ -7495,8 +7536,12 @@ def attendance_grid(request):
         "total_earned": sum((r["earned"] for r in rows), Decimal("0")),
         "month_value": f"{year:04d}-{month:02d}",
         "month_label": uz_month(year, month),
-        "month_options": _month_options(year, month, today),
-        "prev_month": f"{prev_year:04d}-{prev_month:02d}",
+        "month_options": _month_options(year, month, today, first=davomad_start()),
+        # No way back from the sheet's first month — there is no sheet before it.
+        "prev_month": (
+            f"{prev_year:04d}-{prev_month:02d}"
+            if on_davomad(prev_year, prev_month) else ""
+        ),
         "next_month": f"{next_year:04d}-{next_month:02d}",
         "is_current_month": (year, month) == (today.year, today.month),
     })

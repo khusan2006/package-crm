@@ -15,6 +15,10 @@
   yopilgan bayram ham chiqadi). Ya'ni hamma kuni kelgan xodim aniq o'z oyligini
   oladi, bir hafta kelmagani esa kamroq. Joriy oyda hisob bugungi kungacha
   yuritiladi.
+
+  Davomad yoqilgan oydan (`davomad_from`) oldingi oylar bundan mustasno: ular
+  to'liq oylik bilan yopilgan, shuning uchun «Kun» bo'sh, «Hisoblangan» — oylikning
+  o'zi.
 {% endcomment %}
 {% comment %}Oy tanlash sahifaning eng tepasida: u faqat jadvalni emas, kartalarni ham
 boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% endcomment %}
@@ -133,9 +137,13 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
         </span>
       </td>
       {# Hisob boshlanmagan (yoki ishdan ketgan) oyda oylik yozilmaydi #}
-      {% if r.accrues %}
+      {% if r.by_day %}
       <td class="num">{{ r.days }}<span class="cell-sub">{{ r.working_days }} kundan</span>{% if r.missed_days %}<span class="cell-sub att-missed">{{ r.missed_days }} kun kelmadi</span>{% endif %}{% if r.sunday_days %}<span class="cell-sub">+{{ r.sunday_days }} dam kunida</span>{% endif %}</td>
       <td class="num">{{ r.earned|floatformat:"0g" }}<span class="cell-sub">kuniga {{ r.daily_rate|floatformat:"0g" }}</span></td>
+      {% elif r.accrues %}
+      {# Davomad yuritilmagan oy: kun sanalmaydi, oylik to'liq yoziladi #}
+      <td class="num"><span class="muted" title="Davomad {{ davomad_from|date:'m.Y' }} dan yuritiladi">—</span></td>
+      <td class="num">{{ r.earned|floatformat:"0g" }}<span class="cell-sub">to'liq oylik</span></td>
       {% else %}
       <td class="num"><span class="muted">—</span></td>
       <td class="num"><span class="muted" title="Bu oyda oylik hisoblanmaydi">—</span></td>
@@ -172,7 +180,7 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
     {% endfor %}
     <tr>
       <td class="sticky-col"><strong>Jami</strong> <span class="cell-sub">kun va hisoblangan — faol xodimlar</span></td>
-      <td class="num"><strong>{{ totals.days }}</strong></td>
+      <td class="num">{% if by_day %}<strong>{{ totals.days }}</strong>{% else %}<span class="muted">—</span>{% endif %}</td>
       <td class="num"><strong>{{ totals.earned|floatformat:"0g" }}</strong></td>
       <td class="num"><strong>{{ totals.carried|floatformat:"0g" }}</strong></td>
       <td class="num"><strong>{{ totals.due|floatformat:"0g" }}</strong></td>

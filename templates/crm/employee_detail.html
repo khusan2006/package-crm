@@ -115,6 +115,17 @@
     </span>
   </div>
 
+  {% comment %}
+    Davomad yoqilgan oydan oldingi oyning grafigi yo'q: u to'liq oylik bilan
+    yopilgan, kunlari belgilanmaydi. Bo'sh kalendar chizilsa «hamma kuni kelgan»
+    deb o'qilar edi — bu esa hech kim yozmagan gap.
+  {% endcomment %}
+  {% if not by_day %}
+  <p class="field-hint" style="margin:0;">
+    Davomad {{ davomad_from|date:"m.Y" }} dan yuritiladi{% if earned %} — {{ month_label }}
+    kunbay hisoblanmagan, oylik to'liq yozilgan: <strong>{{ earned|floatformat:"0g" }} so'm</strong>{% endif %}.
+  </p>
+  {% else %}
   <div class="table-wrap">
     <table class="sched-month">
       <thead>
@@ -222,6 +233,7 @@
       {% endfor %}
     </table>
   </div>
+  {% endif %}
   {% endif %}
 </div>
 

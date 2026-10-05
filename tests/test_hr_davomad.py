@@ -39,6 +39,13 @@ def mark(worker, day, present=True):
     return Attendance.objects.create(employee=worker, date=day, present=present)
 
 
+@pytest.fixture(autouse=True)
+def sheet_on_from_july(settings):
+    """The davomad sheet is switched on from July 2026 here — the month these tests do
+    their arithmetic in — whichever month the deployment itself went live in."""
+    settings.DAVOMAD_START_DATE = date(2026, 7, 1)
+
+
 @pytest.fixture
 def on_august_12(monkeypatch):
     """Wednesday 12 August 2026 — a current month that is partly over, with a day
@@ -193,6 +200,80 @@ def test_a_finished_month_nobody_marked_carries_as_the_salary(client, on_august_
 def post_sheet(client, worker, cells, month="2026-08"):
     data = {f"{kind}-{worker.pk}-{day}": value for (kind, day), value in cells.items()}
     return client.post(f"{reverse('attendance_grid')}?oy={month}", data)
+
+
+# --- before the sheet was switched on ----------------------------------------------------
+#
+# June 2026 is the month before the sheet here. It was paid as the flat salary, and
+# nothing written since may re-price it.
+
+JUNE_MONDAY = date(2026, 6, 8)
+
+
+def test_a_month_before_the_sheet_is_the_flat_salary_whatever_is_written():
+    worker = make_worker(start=date(2026, 6, 1))
+    mark(worker, JUNE_MONDAY, present=False)
+    Leave.objects.create(employee=worker, date=date(2026, 6, 9), paid=False)
+    Holiday.objects.create(date=date(2026, 6, 10), name="Firma kuni", rest=True)
+    mark(worker, date(2026, 6, 10))
+    assert worker.earned_in(2026, 6) == WAGE
+    assert worker.balance_through(2026, 6) == WAGE
+
+
+def test_the_payroll_shows_no_days_for_a_month_before_the_sheet(
+    client, on_august_12, seller_user
+):
+    worker = make_worker(start=date(2026, 6, 1))
+    mark(worker, JUNE_MONDAY, present=False)
+    client.force_login(seller_user)
+
+    june = client.get(reverse("employee_list"), {"oy": "2026-06"})
+    row = {r["employee"].pk: r for r in june.context["rows"]}[worker.pk]
+    assert (row["earned"], row["by_day"]) == (WAGE, False)
+    assert "days" not in row
+    assert june.context["by_day"] is False
+
+    # June rides into July whole, despite the mark sitting against it.
+    july = client.get(reverse("employee_list"), {"oy": "2026-07"})
+    row = {r["employee"].pk: r for r in july.context["rows"]}[worker.pk]
+    assert (row["carried"], row["by_day"]) == (WAGE, True)
+
+    # The worker's own page says so rather than drawing a calendar nobody filled in.
+    detail = client.get(reverse("employee_detail", args=[worker.pk]), {"oy": "2026-06"})
+    assert detail.context["by_day"] is False
+    assert "sched-month" not in detail.content.decode()
+
+
+def test_the_sheet_and_the_day_card_do_not_open_before_the_first_month(
+    client, admin_user, on_august_12
+):
+    worker = make_worker(start=date(2026, 6, 1))
+    client.force_login(admin_user)
+
+    for name in ("attendance_grid", "attendance_excel"):
+        response = client.get(reverse(name), {"oy": "2026-06"})
+        assert response.status_code == 302
+        assert response.url == f"{reverse(name)}?oy=2026-07"
+
+    # Not even a cell opened on purpose — there is no sheet for that month to open.
+    posted = post_sheet(
+        client, worker,
+        {("d", "2026-06-08"): "kelmadi", ("o", "2026-06-08"): "1"}, month="2026-06",
+    )
+    assert posted.status_code == 302
+    card = reverse("employee_day", args=[worker.pk, "2026-06-08"])
+    assert client.get(card).status_code == 404
+    assert client.post(card, {"action": "kelmadi", "note": ""}).status_code == 404
+    assert client.post(card, {"action": "dam_haqli", "note": ""}).status_code == 404
+    assert not Attendance.objects.exists()
+    assert not Leave.objects.exists()
+
+    # The first month offers no way back, and the payroll's link lands on it.
+    first = client.get(reverse("attendance_grid"), {"oy": "2026-07"})
+    assert first.context["prev_month"] == ""
+    assert [o["value"] for o in first.context["month_options"]] == ["2026-08", "2026-07"]
+    june = client.get(reverse("employee_list"), {"oy": "2026-06"})
+    assert june.context["davomad_url"] == f"{reverse('attendance_grid')}?oy=2026-07"
 
 
 def test_marking_an_absence_writes_a_row_and_clearing_it_removes_the_row(

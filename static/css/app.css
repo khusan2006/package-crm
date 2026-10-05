@@ -3180,6 +3180,15 @@ ul.errorlist li::before {
   height: 18px;
 }
 
+/* Boradigan oyi yo'q o'q — joyida turadi, lekin bosilmaydi. */
+.datebar-btn.is-disabled,
+.datebar-btn.is-disabled:hover {
+  background: transparent;
+  color: var(--text-faint);
+  opacity: 0.5;
+  cursor: default;
+}
+
 .daterange a.datebar-btn:first-of-type {
   border-radius: var(--r) 0 0 var(--r);
 }

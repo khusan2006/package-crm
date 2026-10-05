@@ -1127,6 +1127,21 @@ def month_span(start, end):
     return months
 
 
+def davomad_start():
+    """The first day of the first month wages are counted off the davomad sheet."""
+    return settings.DAVOMAD_START_DATE.replace(day=1)
+
+
+def on_davomad(year, month):
+    """Whether that month's wage comes off the davomad sheet.
+
+    The sheet was switched on partway through the books. Every month before it was
+    agreed and paid as the flat salary, so nothing written since — a mark, a day of
+    leave, a holiday — may reach back and re-price it."""
+    start = davomad_start()
+    return (year, month) >= (start.year, start.month)
+
+
 def rest_holidays_in(year, month):
     """The dates of that month the firm is closed for — holidays the supervisor
     marked as days off, as a set of dates.
@@ -1392,8 +1407,13 @@ class Employee(models.Model):
         full month reproduces the salary exactly. A missed working day comes off; a
         day off worked goes on top.
 
+        A month before the sheet was switched on (`on_davomad`) is the flat salary,
+        whatever has been written against it since.
+
         Says nothing about whether the account was open that month — `accrued_in` is
         the figure the balance is built from."""
+        if not on_davomad(year, month):
+            return self.salary_for(year, month) if salary is None else salary
         worked, rest_worked = self.days_in(year, month, holidays)
         rate = self._raw_daily_rate_in(year, month, holidays, salary)
         return ((worked + rest_worked) * rate).quantize(Decimal("0.01"), ROUND_HALF_UP)
