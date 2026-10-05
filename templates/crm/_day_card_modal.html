@@ -3,16 +3,31 @@
   kerak — chunki amalda savol bitta: «5-kuni Bekzod nima qiladi?» Qaysi variantlar
   chiqishini view hal qiladi: o'tgan kunga reja qo'yib bo'lmaydi, hali kelmagan
   kunga esa «kelmadi» deb belgi qo'yib bo'lmaydi.
+
+  «Ish soatini o'zgartirish» — shu kunning o'z ish vaqti. Ikki soat maydoni faqat
+  shu variant tanlanganda kerak, shuning uchun boshqa variant tanlansa ular
+  yashiriladi (app.css, `.day-card:has(...)`).
 {% endcomment %}
 <div class="modal-head">
   <h2>{{ title }}</h2>
   <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
 </div>
-<form method="post" action="{{ request.path }}" class="stacked">
+<form method="post" action="{{ request.path }}" class="stacked day-card">
   {% csrf_token %}
   {% if form.non_field_errors %}<div class="flash flash-error">{{ form.non_field_errors.0 }}</div>{% endif %}
 
   <p class="payer-choice">{{ form.action.label_tag }}{{ form.action }}{{ form.action.errors }}</p>
+
+  {% if can_set_hours %}
+  <div class="day-hours">
+    <span class="day-hours-label">Shu kunning ish vaqti</span>
+    <div class="day-hours-row">
+      {{ form.work_start }}<span class="day-hours-dash" aria-hidden="true">—</span>{{ form.work_end }}
+    </div>
+    {{ form.work_start.errors }}{{ form.work_end.errors }}
+    <span class="field-hint">{% if usual_hours %}Odatdagi ish vaqti: {{ usual_hours }}. {% endif %}Oylikka ta'sir qilmaydi — hisob kunbay.</span>
+  </div>
+  {% endif %}
 
   <p>{{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}</p>
 

@@ -11,7 +11,7 @@ A month in the PAST is fixed on purpose — the current month stops counting at 
 which is right for the app and useless for arithmetic you want to check by hand.
 """
 
-from datetime import date
+from datetime import date, time
 from decimal import Decimal
 from io import BytesIO
 
@@ -20,7 +20,16 @@ from django.urls import reverse
 from django.utils import timezone
 from openpyxl import load_workbook
 
-from crm.models import Attendance, Employee, Expense, Holiday, Leave, SalaryRate
+from crm.forms import EmployeeForm
+from crm.models import (
+    Attendance,
+    DayHours,
+    Employee,
+    Expense,
+    Holiday,
+    Leave,
+    SalaryRate,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -349,6 +358,114 @@ def test_the_day_card_books_leave_ahead_and_records_what_happened(
     client.post(behind, {"action": "kelmadi", "note": "kasal"})
     row = Attendance.objects.get(employee=worker)
     assert (row.date, row.present, row.note) == (date(2026, 8, 3), False, "kasal")
+
+
+# --- ish vaqti -------------------------------------------------------------------------
+
+
+def test_the_day_card_changes_one_days_hours_and_moves_no_money(
+    client, admin_user, on_august_12
+):
+    """Hours say WHEN a day is worked, not whether: a short day is still a day."""
+    worker = make_worker(start=date(2026, 8, 1))
+    assert worker.work_hours == "09:00–19:00"               # what a new worker gets
+    client.force_login(admin_user)
+    wage = worker.earned_in(2026, 8)
+    card = reverse("employee_day", args=[worker.pk, "2026-08-20"])
+
+    client.post(card, {
+        "action": "ish_soati", "work_start": "10:00", "work_end": "15:00",
+        "note": "shifokor",
+    })
+    row = DayHours.objects.get(employee=worker)
+    assert (row.date, row.label, row.note) == (date(2026, 8, 20), "10:00–15:00", "shifokor")
+    assert worker.earned_in(2026, 8) == wage
+    assert not Attendance.objects.exists() and not Leave.objects.exists()
+
+    # Half a working day is not an answer, so nothing is overwritten with it.
+    client.post(card, {"action": "ish_soati", "work_start": "11:00", "work_end": ""})
+    assert DayHours.objects.get(employee=worker).label == "10:00–15:00"
+
+    # The usual hours put back remove the exception rather than repeat them.
+    client.post(card, {"action": "ish_soati", "work_start": "09:00", "work_end": "19:00"})
+    assert not DayHours.objects.exists()
+
+    # A Sunday nobody works has no hours to change, so its card does not ask.
+    sunday = client.get(reverse("employee_day", args=[worker.pk, "2026-08-16"]))
+    assert "ish_soati" in client.get(card).content.decode()
+    assert "ish_soati" not in sunday.content.decode()
+
+
+def test_the_calendar_colours_a_day_by_what_happened_and_prints_its_hours(
+    client, admin_user, on_august_12
+):
+    worker = make_worker(start=date(2026, 8, 1))
+    mark(worker, date(2026, 8, 3), present=False)           # a Monday missed
+    mark(worker, date(2026, 8, 9))                          # a Sunday worked
+    Holiday.objects.create(date=date(2026, 8, 25), name="Hayit", rest=True)
+    DayHours.objects.create(
+        employee=worker, date=date(2026, 8, 20), start=time(10), end=time(15)
+    )
+    client.force_login(admin_user)
+    weeks = client.get(reverse("employee_detail", args=[worker.pk])).context["weeks"]
+    cells = {c["date"].day: c for row in weeks for c in row if not c["outside"]}
+
+    #       Sunday  missed    worked     Sunday worked  ahead     ahead, own hours  holiday
+    days = [2,      3,        4,         9,             13,       20,               25]
+    assert [cells[d]["tone"] for d in days] == [
+        "rest", "absent", "present", "present", "future", "future", "holiday",
+    ]
+    assert [cells[d]["hours"] for d in days] == [
+        "", "", "09:00–19:00", "09:00–19:00", "09:00–19:00", "10:00–15:00", "",
+    ]
+    assert [d for d in days if cells[d]["hours_custom"]] == [20]
+
+
+def test_a_workers_hours_are_both_ends_or_neither():
+    month = timezone.localdate().strftime("%Y-%m")
+    data = {"name": "Ишчи Аваз", "salary": "2700000", "start_month": month,
+            "opening_balance": "0"}
+    assert EmployeeForm({**data, "work_start": "", "work_end": ""}).is_valid()
+    assert EmployeeForm({**data, "work_start": "20:00", "work_end": "08:00"}).is_valid()
+    half = EmployeeForm({**data, "work_start": "09:00", "work_end": ""})
+    assert not half.is_valid() and "work_end" in half.errors
+
+
+def test_a_row_of_the_workers_page_edits_that_row_and_nothing_else(client, admin_user):
+    """The pencils on a worker's page open the full form cut down to one row, so what
+    is not on the card is not touched — and a wage changed there is still dated."""
+    worker = make_worker()
+    client.force_login(admin_user)
+    hours = reverse("employee_edit_field", args=[worker.pk, "ish-vaqti"])
+    card = client.get(hours, headers={"x-requested-with": "XMLHttpRequest"})
+    assert 'name="work_start"' in card.content.decode()
+    assert 'name="salary"' not in card.content.decode()
+
+    client.post(hours, {"work_start": "08:00", "work_end": "17:00"})
+    worker.refresh_from_db()
+    assert worker.work_hours == "08:00–17:00"
+    assert (worker.name, worker.salary, worker.is_active) == ("Ишчи Аваз", WAGE, True)
+
+    wage = reverse("employee_edit_field", args=[worker.pk, "oylik"])
+    this_month = timezone.localdate().replace(day=1)
+    client.post(wage, {"salary": "3000000", "salary_from": this_month.strftime("%Y-%m")})
+    worker.refresh_from_db()
+    assert (worker.salary, worker.work_hours) == (Decimal("3000000"), "08:00–17:00")
+    assert SalaryRate.objects.filter(
+        employee=worker, amount=Decimal("3000000"), effective_from=this_month
+    ).exists()
+
+    # A raise still cannot start before the account does, though the account's start
+    # is not on this card to compare against.
+    early = client.post(
+        wage, {"salary": "4000000", "salary_from": "2026-06"},
+        headers={"x-requested-with": "XMLHttpRequest"},
+    )
+    worker.refresh_from_db()
+    assert (early.status_code, worker.salary) == (422, Decimal("3000000"))
+
+    unknown = reverse("employee_edit_field", args=[worker.pk, "ism"])
+    assert client.get(unknown).status_code == 404
 
 
 # --- bayramlar -------------------------------------------------------------------------

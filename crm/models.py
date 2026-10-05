@@ -1,6 +1,6 @@
 import calendar
 from bisect import bisect_right
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
@@ -1202,6 +1202,16 @@ class Employee(models.Model):
     # field is the latest of those, kept for the forms, the pickers and every existing
     # caller that just wants "what do they earn now".
     salary = models.DecimalField("Oylik (so'm)", max_digits=18, decimal_places=2)
+    # When their working day runs — what the Grafik calendar prints in a working day.
+    # Display only: the wage is counted by the day, not the hour, so these never enter
+    # the arithmetic. Both empty means "no fixed hours" and the calendar prints none.
+    # The end may be earlier than the start: a night shift runs past midnight.
+    work_start = models.TimeField(
+        "Ish boshlanishi", null=True, blank=True, default=time(9, 0)
+    )
+    work_end = models.TimeField(
+        "Ish tugashi", null=True, blank=True, default=time(19, 0)
+    )
     # The first month this account is accountable for. Nothing accrues before it, so a
     # worker who has been here for years can still be entered today without the CRM
     # claiming to know what happened before it was told.
@@ -1223,6 +1233,14 @@ class Employee(models.Model):
         ordering = ["name"]
         verbose_name = "Xodim"
         verbose_name_plural = "Xodimlar"
+
+    @property
+    def work_hours(self):
+        """The working day as the page prints it — "09:00–19:00" — or "" when no
+        hours are set."""
+        if self.work_start is None or self.work_end is None:
+            return ""
+        return f"{self.work_start:%H:%M}–{self.work_end:%H:%M}"
 
     def paid_in(self, year, month):
         """What they have already drawn against that month's pay — the wage itself and
@@ -1578,6 +1596,54 @@ class Leave(models.Model):
     def __str__(self):
         kind = "haqli dam" if self.paid else "o'z hisobidan"
         return f"{self.employee.name} — {self.date}: {kind}"
+
+
+class DayHours(models.Model):
+    """One day on which a worker's hours are not their usual ones (Kunlik ish vaqti).
+
+    The worker's own `work_start`/`work_end` say when their day normally runs; a row
+    here says that on this one date it runs differently — came in late by agreement,
+    left at noon, covered an evening. Like the usual hours it is display only: the
+    wage is counted by the day, so a shorter day is still a day.
+
+    Only the days that differ have a row. One matching the usual hours would say
+    nothing, so the day card removes it rather than writing it."""
+
+    employee = models.ForeignKey(
+        Employee, on_delete=models.CASCADE, related_name="day_hours",
+        verbose_name="Xodim",
+    )
+    date = models.DateField("Sana")
+    start = models.TimeField("Ish boshlanishi")
+    end = models.TimeField("Ish tugashi")
+    note = models.CharField("Izoh", max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="day_hours_set",
+        verbose_name="Kim belgiladi",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-date", "employee__name"]
+        verbose_name = "Kunlik ish vaqti"
+        verbose_name_plural = "Kunlik ish vaqtlari"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["employee", "date"], name="one_hours_row_per_day"
+            )
+        ]
+
+    @property
+    def label(self):
+        """"09:00–15:00" — the same shape as `Employee.work_hours`."""
+        return f"{self.start:%H:%M}–{self.end:%H:%M}"
+
+    def __str__(self):
+        return f"{self.employee.name} — {self.date}: {self.label}"
 
 
 class Holiday(models.Model):

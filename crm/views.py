@@ -82,6 +82,7 @@ from .models import (
     Attendance,
     AuditLog,
     Client,
+    DayHours,
     Employee,
     Expense,
     Holiday,
@@ -6407,9 +6408,11 @@ def employee_list(request):
         "salary": sum((r["salary"] for r in active), Decimal("0")),
         # What the davomad sheet makes of that fund: the days actually worked.
         "earned": sum((r["earned"] for r in active), Decimal("0")),
-        "days": sum((r.get("days", 0) for r in active), 0),
+        # The same over everyone on the table, for its Jami row: that row is read as
+        # a sum (earned + carried − paid = owed), and it only adds up if a worker who
+        # left mid-month is in the first figure as well as the last.
+        "earned_all": sum((r["earned"] for r in counted), Decimal("0")),
         "carried": sum((r["carried"] for r in counted), Decimal("0")),
-        "due": sum((r["due"] for r in counted), Decimal("0")),
         "paid": sum((r["paid"] for r in rows), Decimal("0")),
         "remaining": sum((r["remaining"] for r in counted), Decimal("0")),
     }
@@ -6619,7 +6622,14 @@ def employee_detail(request, pk):
         "errands": errands,
         "payout_total": sum((e.amount for e in payouts), Decimal("0")),
         "errand_total": sum((e.amount for e in errands), Decimal("0")),
-        "weeks": _schedule_calendar(year, month, rest, named, marks, leaves, today),
+        "weeks": _schedule_calendar(
+            year, month, rest, named, marks, leaves, today,
+            usual_hours=employee.work_hours,
+            day_hours={
+                row.date: row
+                for row in employee.day_hours.filter(date__year=year, date__month=month)
+            },
+        ),
         "leaves": [leaves[d] for d in sorted(leaves)],
         "weekday_names": UZ_WEEKDAY_SHORT,
         "holidays": [named[d] for d in sorted(named)],
@@ -6683,15 +6693,31 @@ def employee_create(request):
     return form_response(request, form, title)
 
 
+# The rows of a worker's own page that carry a pencil: the address each opens at, the
+# title of its card, and the fields of the full form it is cut down to.
+EMPLOYEE_ROW_EDITS = {
+    "oylik": ("Oylikni o'zgartirish", ("salary", "salary_from")),
+    "ish-vaqti": ("Ish vaqtini o'zgartirish", ("work_start", "work_end")),
+}
+
+
 @transaction.atomic
-def employee_edit(request, pk):
+def employee_edit(request, pk, maydon=None):
     """Edit a payroll worker. A changed wage is dated rather than swapped in: it takes
     effect from the month the form asks for (this month by default), leaving every
-    month already settled priced as it was agreed."""
+    month already settled priced as it was agreed.
+
+    `maydon` narrows the form to one row of the worker's page — their wage, or their
+    hours — for the pencil beside it. It is the same form and the same save, so a wage
+    changed from that row is dated and logged exactly like one changed here."""
     employee = get_object_or_404(Employee, pk=pk)
     was = employee.salary
-    form = EmployeeForm(request.POST or None, instance=employee)
-    title = "Xodimni tahrirlash"
+    title, only = "Xodimni tahrirlash", None
+    if maydon is not None:
+        if maydon not in EMPLOYEE_ROW_EDITS:
+            raise Http404
+        title, only = EMPLOYEE_ROW_EDITS[maydon]
+    form = EmployeeForm(request.POST or None, instance=employee, only=only)
     if request.method == "POST":
         if form.is_valid():
             form.save()
@@ -6714,10 +6740,17 @@ def employee_edit(request, pk):
                 summary += (
                     f" (oldin {was:,.0f}; {uz_month(since.year, since.month)}dan)"
                 )
+            if {"work_start", "work_end"} & set(form.changed_data):
+                summary += f"; ish vaqti {employee.work_hours or 'belgilanmagan'}"
             AuditLog.record(
                 request.user, AuditLog.Action.UPDATE, "Xodim", employee.pk, summary
             )
             messages.success(request, "Xodim yangilandi.")
+            if only is not None:
+                # Opened from the worker's own page, so that is the page to return to.
+                return form_reload(
+                    request, reverse("employee_detail", args=[employee.pk])
+                )
             return form_success(request, reverse("employee_list"))
         return form_response(request, form, title, invalid=True)
     return form_response(request, form, title)
@@ -6766,13 +6799,34 @@ def employee_delete(request, pk):
     )
 
 
-def _schedule_calendar(year, month, rest, named, marks, leaves, today):
+def _cell_tone(mark, is_rest, holiday):
+    """Which of the calendar's colours a day wears.
+
+    What HAPPENED outranks what the day was meant to be: a holiday somebody came in
+    on is a day worked, and reads as one. Only a day with nothing recorded against it
+    falls back to its kind — a closed holiday, any other day off, or a working day
+    that simply has not arrived yet."""
+    if mark == CELL_PRESENT:
+        return "present"
+    if mark == CELL_ABSENT:
+        return "absent"
+    if is_rest:
+        return "holiday" if holiday is not None and holiday.rest else "rest"
+    return "future"
+
+
+def _schedule_calendar(year, month, rest, named, marks, leaves, today,
+                       usual_hours="", day_hours=None):
     """A worker's month as a calendar: which days are theirs to work, which are off,
     and what actually happened on each.
 
     A month rather than a week. A week repeats and could be drawn once, but it cannot
     show the days that actually differ: a holiday the firm shut for, a Sunday somebody
-    came in on, a day missed. The month can."""
+    came in on, a day missed. The month can.
+
+    `usual_hours` is the worker's ordinary working day as a label, `day_hours` the
+    dates on which it runs differently; a day that is worked prints one of the two."""
+    day_hours = day_hours or {}
     days = _month_days(year, month)
     # The first day lands under its own weekday column. The cells before it are not
     # left blank: they carry the neighbouring month's day numbers, because an empty
@@ -6789,6 +6843,13 @@ def _schedule_calendar(year, month, rest, named, marks, leaves, today):
         # Unpaid leave does not, but the day is still not worked, so the calendar
         # draws it as a day off either way and the label says which kind.
         is_rest = day in rest or booked is not None
+        # What actually happened, where it differs from the plan. Future days have
+        # no answer yet, so they carry none rather than a hopeful "keldi".
+        mark = "" if day > today else _cell_state(row, is_rest)
+        custom = day_hours.get(day)
+        # Hours are printed on a day that is worked — an ordinary working day, past
+        # or ahead, or a day off somebody came in on — and never on one missed.
+        works = mark == CELL_PRESENT or (not is_rest and mark != CELL_ABSENT)
         cells.append({
             "day": day.day,
             "date": day,
@@ -6798,10 +6859,11 @@ def _schedule_calendar(year, month, rest, named, marks, leaves, today):
             "holiday": named.get(day),
             "is_future": day > today,
             "is_today": day == today,
-            # What actually happened, where it differs from the plan. Future days have
-            # no answer yet, so they carry none rather than a hopeful "keldi".
-            "mark": "" if day > today else _cell_state(row, is_rest),
-            "note": row.note if row else "",
+            "mark": mark,
+            "tone": _cell_tone(mark, is_rest, named.get(day)),
+            "hours": (custom.label if custom else usual_hours) if works else "",
+            "hours_custom": works and custom is not None,
+            "note": (row.note if row else "") or (custom.note if custom else ""),
         })
     ahead = 1
     while len(cells) % 7:
@@ -6840,10 +6902,20 @@ def employee_day(request, pk, sana):
     is_rest = day in rest
     booked = Leave.objects.filter(employee=employee, date=day).first()
     row = employee.attendance.filter(date=day).first()
+    custom = DayHours.objects.filter(employee=employee, date=day).first()
+    # Hours belong to a day that is worked: an ordinary working day, or a day off
+    # somebody came in on. A day of leave, or a Sunday rested, has none to change.
+    can_set_hours = booked is None and (
+        not is_rest or (row is not None and row.present)
+    )
 
     # The card opens showing what the day IS. Without it a supervisor checking on a
     # day has to read the calendar behind the modal to see what they are changing.
-    initial = {"note": row.note if row else ""}
+    initial = {
+        "note": row.note if row else "",
+        "work_start": custom.start if custom else employee.work_start,
+        "work_end": custom.end if custom else employee.work_end,
+    }
     if day <= today:
         initial["action"] = _cell_state(
             row, is_rest, employee.assumed_present(day, rest, unpaid)
@@ -6854,17 +6926,44 @@ def employee_day(request, pk, sana):
         is_rest=is_rest,
         recordable=day <= today,
         plannable=day >= today,
+        can_set_hours=can_set_hours,
         initial=initial,
     )
     title = f"{employee.name} · {day:%d.%m.%Y}"
     back = f"{reverse('employee_detail', args=[employee.pk])}?oy={day:%Y-%m}"
+    # What the card shows beside the form: whether the two time boxes are there at
+    # all, and the hours they are being changed FROM.
+    card = {"can_set_hours": can_set_hours, "usual_hours": employee.work_hours}
 
     if request.method == "POST":
         if form.is_valid():
             action = form.cleaned_data["action"]
             note = form.cleaned_data["note"]
 
-            if action in DayCardForm.ATTENDANCE:
+            if action == DayCardForm.HOURS:
+                opens = form.cleaned_data["work_start"]
+                closes = form.cleaned_data["work_end"]
+                if (opens, closes) == (employee.work_start, employee.work_end):
+                    # Back to the usual hours: the day stops being an exception, so
+                    # its row goes rather than repeating what the worker's own says.
+                    DayHours.objects.filter(employee=employee, date=day).delete()
+                else:
+                    DayHours.objects.update_or_create(
+                        employee=employee, date=day,
+                        defaults={
+                            "start": opens, "end": closes, "note": note,
+                            "created_by": request.user,
+                        },
+                    )
+                label = f"{opens:%H:%M}–{closes:%H:%M}"
+                AuditLog.record(
+                    request.user, AuditLog.Action.UPDATE, "Ish vaqti", employee.pk,
+                    f"{employee.name}: {day} — ish vaqti {label}",
+                )
+                messages.success(
+                    request, f"{employee.name} — {day:%d.%m.%Y}: ish vaqti {label}."
+                )
+            elif action in DayCardForm.ATTENDANCE:
                 _apply_attendance(
                     employee, day, action, note, request.user, rest, unpaid, row
                 )
@@ -6899,10 +6998,10 @@ def employee_day(request, pk, sana):
             return form_success(request, back)
         return form_response(
             request, form, title, invalid=True,
-            modal_template="crm/_day_card_modal.html",
+            modal_template="crm/_day_card_modal.html", **card,
         )
     return form_response(
-        request, form, title, modal_template="crm/_day_card_modal.html",
+        request, form, title, modal_template="crm/_day_card_modal.html", **card,
     )
 
 

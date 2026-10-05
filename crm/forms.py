@@ -767,13 +767,22 @@ class EmployeeForm(forms.ModelForm):
 
     class Meta:
         model = Employee
-        fields = ["name", "salary", "start_month", "opening_balance", "is_active", "note"]
+        fields = [
+            "name", "salary", "work_start", "work_end", "start_month",
+            "opening_balance", "is_active", "note",
+        ]
         widgets = {
             "name": forms.TextInput(attrs={"placeholder": "Masalan: Косимов Рахматжон"}),
             "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — lavozimi, izoh"}),
+            "work_start": forms.TimeInput(attrs={"type": "time"}, format="%H:%M"),
+            "work_end": forms.TimeInput(attrs={"type": "time"}, format="%H:%M"),
+        }
+        help_texts = {
+            "work_end": "Grafikda ko'rsatiladi, oylikka ta'sir qilmaydi. "
+                        "Belgilangan soat bo'lmasa ikkalasini bo'sh qoldiring",
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, only=None, **kwargs):
         super().__init__(*args, **kwargs)
         months = _month_choices()
         self.fields["start_month"].choices = months
@@ -805,6 +814,12 @@ class EmployeeForm(forms.ModelForm):
             "Kunlik narx shundan chiqadi: oylik ÷ o'sha oyning ish kunlari "
             "(yakshanba va dam beriladigan bayramlarsiz)"
         )
+        if only is not None:
+            # One row of the worker's page edited on its own. It is this form cut
+            # down rather than a second one, so a wage changed from that row is
+            # checked and dated by the very rules the full form uses.
+            for name in [name for name in self.fields if name not in only]:
+                del self.fields[name]
 
     def clean_salary(self):
         salary = self.cleaned_data.get("salary")
@@ -826,12 +841,26 @@ class EmployeeForm(forms.ModelForm):
         # A raise cannot start before the account does — there is no month there to
         # apply it to, and the rate row would sort ahead of the opening figure.
         start, rate_from = cleaned.get("start_month"), cleaned.get("salary_from")
+        if "start_month" not in self.fields and self.instance.pk:
+            # Cut down to one row (`only`): the account's start is not on the form,
+            # so the rule is held against the one already saved.
+            start = self.instance.start_month.replace(day=1)
         if start and rate_from and rate_from < start:
             self.add_error(
                 "salary_from",
                 "Hisob boshlangan oydan oldin bo'lishi mumkin emas "
                 f"({start.strftime('%m.%Y')}).",
             )
+        # Half a working day cannot be printed: both ends, or neither. An end before
+        # the start is left alone — that is a night shift, not a typo.
+        opens, closes = cleaned.get("work_start"), cleaned.get("work_end")
+        if (opens is None) != (closes is None):
+            self.add_error(
+                "work_start" if opens is None else "work_end",
+                "Ish vaqtining ikkala tomonini kiriting yoki ikkalasini bo'sh qoldiring.",
+            )
+        elif opens is not None and opens == closes:
+            self.add_error("work_end", "Ish tugashi boshlanishi bilan bir xil bo'lmasin.")
         return cleaned
 
     def clean_name(self):
@@ -875,19 +904,29 @@ class DayCardForm(forms.Form):
     LEAVE_PAID = "dam_haqli"
     LEAVE_UNPAID = "dam_oz_hisobidan"
     CLEAR = "damni_olib_tashlash"
+    # Not whether the day is worked but WHEN — past or ahead alike. Moves no money.
+    HOURS = "ish_soati"
 
     # The ones that write a davomad row rather than a plan. Kept as a set so the view
     # asks "is this attendance?" once instead of listing them again.
     ATTENDANCE = frozenset({KELDI, KELMADI, DAM})
 
     action = forms.ChoiceField(label="Nima qilinsin?", widget=forms.RadioSelect)
+    work_start = forms.TimeField(
+        label="Ish boshlanishi", required=False,
+        widget=forms.TimeInput(attrs={"type": "time"}, format="%H:%M"),
+    )
+    work_end = forms.TimeField(
+        label="Ish tugashi", required=False,
+        widget=forms.TimeInput(attrs={"type": "time"}, format="%H:%M"),
+    )
     note = forms.CharField(
         label="Izoh", max_length=255, required=False,
         widget=forms.TextInput(attrs={"placeholder": "Ixtiyoriy — nima uchun"}),
     )
 
     def __init__(self, *args, has_leave=False, is_rest=False,
-                 recordable=False, plannable=False, **kwargs):
+                 recordable=False, plannable=False, can_set_hours=False, **kwargs):
         super().__init__(*args, **kwargs)
         choices = []
         if recordable:
@@ -900,6 +939,11 @@ class DayCardForm(forms.Form):
                 [(self.KELDI, "Keldi"),
                  (self.KELMADI, "Kelmadi — oylikdan ushlanadi")]
             )
+        if can_set_hours:
+            choices.append((self.HOURS, "Ish soatini o'zgartirish"))
+        else:
+            # A day nobody works has no hours to move, so the card does not ask.
+            del self.fields["work_start"], self.fields["work_end"]
         if plannable:
             choices += [
                 (self.LEAVE_PAID, "Haqli dam — oyligi saqlanadi"),
@@ -908,6 +952,23 @@ class DayCardForm(forms.Form):
             if has_leave:
                 choices.append((self.CLEAR, "Belgilangan damni olib tashlash"))
         self.fields["action"].choices = choices
+
+    def clean(self):
+        cleaned = super().clean()
+        # The two times only mean something for the one answer that asks for them;
+        # under any other they are whatever the card happened to open with.
+        if cleaned.get("action") == self.HOURS:
+            opens, closes = cleaned.get("work_start"), cleaned.get("work_end")
+            if opens is None or closes is None:
+                self.add_error(
+                    "work_start" if opens is None else "work_end",
+                    "Ish vaqtining ikkala tomonini kiriting.",
+                )
+            elif opens == closes:
+                self.add_error(
+                    "work_end", "Ish tugashi boshlanishi bilan bir xil bo'lmasin."
+                )
+        return cleaned
 
 
 class HolidayForm(forms.ModelForm):
