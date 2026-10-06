@@ -28,6 +28,11 @@ USER_LABELS = {
     "is_active": "Faol",
 }
 
+PAYROLL_ACCESS_HELP = (
+    "Sotuvchi uchun: belgilansa «Xodimlar oyligi» bo'limi unga ham ochiladi. "
+    "Admin va menejer bu bo'limni doim ko'radi."
+)
+
 
 class LoginForm(AuthenticationForm):
     error_messages = {
@@ -44,8 +49,9 @@ class LoginForm(AuthenticationForm):
 class UserCreateForm(UserCreationForm):
     class Meta:
         model = User
-        fields = ["username", "first_name", "last_name", "phone", "role", "firm_name"]
+        fields = ["username", "first_name", "last_name", "phone", "role", "firm_name", "payroll_access"]
         labels = USER_LABELS
+        help_texts = {"payroll_access": PAYROLL_ACCESS_HELP}
         widgets = {"phone": forms.TextInput(attrs={"data-phone": ""})}
 
     def __init__(self, *args, **kwargs):
@@ -60,6 +66,10 @@ class UserCreateForm(UserCreationForm):
 class UserEditForm(forms.ModelForm):
     class Meta:
         model = User
-        fields = ["username", "first_name", "last_name", "email", "phone", "role", "firm_name", "is_active"]
+        fields = [
+            "username", "first_name", "last_name", "email", "phone", "role", "firm_name",
+            "payroll_access", "is_active",
+        ]
         labels = USER_LABELS
+        help_texts = {"payroll_access": PAYROLL_ACCESS_HELP}
         widgets = {"phone": forms.TextInput(attrs={"data-phone": ""})}

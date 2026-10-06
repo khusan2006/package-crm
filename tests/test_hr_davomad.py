@@ -177,10 +177,10 @@ def test_the_balance_carries_what_the_sheet_says_not_the_salary(on_august_12, se
     assert worker.balance_through(YEAR, MONTH) == Decimal("1600000")
 
 
-def test_the_payroll_page_agrees_with_the_model(client, on_august_12, seller_user):
+def test_the_payroll_page_agrees_with_the_model(client, on_august_12, payroll_seller):
     worker = make_worker()
     mark(worker, MONDAY, present=False)
-    client.force_login(seller_user)
+    client.force_login(payroll_seller)
 
     july = client.get(reverse("employee_list"), {"oy": "2026-07"})
     row = {r["employee"].pk: r for r in july.context["rows"]}[worker.pk]
@@ -195,9 +195,9 @@ def test_the_payroll_page_agrees_with_the_model(client, on_august_12, seller_use
     assert row["remaining"] == worker.balance_through(2026, 8)
 
 
-def test_a_finished_month_nobody_marked_carries_as_the_salary(client, on_august_12, seller_user):
+def test_a_finished_month_nobody_marked_carries_as_the_salary(client, on_august_12, payroll_seller):
     worker = make_worker()
-    client.force_login(seller_user)
+    client.force_login(payroll_seller)
     august = client.get(reverse("employee_list"), {"oy": "2026-08"})
     row = {r["employee"].pk: r for r in august.context["rows"]}[worker.pk]
     assert row["carried"] == WAGE
@@ -230,11 +230,11 @@ def test_a_month_before_the_sheet_is_the_flat_salary_whatever_is_written():
 
 
 def test_the_payroll_shows_no_days_for_a_month_before_the_sheet(
-    client, on_august_12, seller_user
+    client, on_august_12, payroll_seller
 ):
     worker = make_worker(start=date(2026, 6, 1))
     mark(worker, JUNE_MONDAY, present=False)
-    client.force_login(seller_user)
+    client.force_login(payroll_seller)
 
     june = client.get(reverse("employee_list"), {"oy": "2026-06"})
     row = {r["employee"].pk: r for r in june.context["rows"]}[worker.pk]
@@ -486,10 +486,10 @@ def test_fixed_holidays_are_seeded_and_a_year_can_be_filled_in(client, admin_use
 # --- who may do what ---------------------------------------------------------------------
 
 
-def test_a_seller_reads_the_payroll_but_cannot_move_a_wage(client, seller_user, on_august_12):
+def test_a_seller_reads_the_payroll_but_cannot_move_a_wage(client, payroll_seller, on_august_12):
     worker = make_worker()
     holiday = Holiday.objects.first()
-    client.force_login(seller_user)
+    client.force_login(payroll_seller)
 
     assert client.get(reverse("employee_list")).status_code == 200
     detail = client.get(reverse("employee_detail", args=[worker.pk]))
@@ -512,6 +512,47 @@ def test_a_seller_reads_the_payroll_but_cannot_move_a_wage(client, seller_user, 
     assert [r.status_code for r in forbidden] == [403] * len(forbidden)
     assert not Attendance.objects.exists()
     assert Holiday.objects.filter(pk=holiday.pk).exists()
+
+def test_a_seller_without_payroll_access_has_no_way_in(client, seller_user, on_august_12):
+    """«Xodimlar oyligi» is opened account by account: a seller it was not switched on
+    for sees no menu entry and is refused on every page behind it."""
+    worker = make_worker()
+    client.force_login(seller_user)
+
+    home = client.get(reverse("kassa"))
+    assert home.status_code == 200
+    assert reverse("employee_list") not in home.content.decode()
+
+    forbidden = [
+        client.get(reverse("employee_list")),
+        client.get(reverse("employee_export")),
+        client.get(reverse("employee_detail", args=[worker.pk])),
+        client.post(reverse("employee_create"), {
+            "name": "X", "salary": "1000000", "start_month": "2026-08",
+            "is_active": "on",
+        }),
+        client.post(reverse("employee_edit", args=[worker.pk]), {"name": "Y"}),
+        client.post(reverse("employee_edit_field", args=[worker.pk, "oylik"]), {
+            "salary": "1",
+        }),
+        client.post(reverse("employee_delete", args=[worker.pk])),
+    ]
+    assert [r.status_code for r in forbidden] == [403] * len(forbidden)
+    worker.refresh_from_db()
+    assert (worker.name, worker.salary) == ("Ишчи Аваз", WAGE)
+    assert Employee.objects.count() == 1
+
+
+def test_switching_payroll_access_on_opens_the_menu_and_the_page(client, seller_user, admin_user):
+    assert not seller_user.can_see_payroll
+    assert admin_user.can_see_payroll                       # no flag needed for an admin
+    seller_user.payroll_access = True
+    seller_user.save(update_fields=["payroll_access"])
+    client.force_login(seller_user)
+
+    page = client.get(reverse("employee_list"))
+    assert page.status_code == 200
+    assert f'href="{reverse("employee_list")}"' in page.content.decode()
 
 
 def test_the_hr_pages_open_for_an_admin(client, admin_user, on_august_12):

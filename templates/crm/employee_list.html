@@ -65,9 +65,10 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
   </div>
 </div>
 
-{% comment %}Oddiy kpi-grid: to'rtta karta qatorni to'liq egallaydi. Dashboarddagi
---compact yetti ustunga bo'lingan, shu yerda o'ng tomoni bo'sh qolar edi.{% endcomment %}
-<div class="kpi-grid">
+{% comment %}Beshta karta bir qatorda (kassadagi --period bilan bir xil to'r).
+Dashboarddagi --compact yetti ustunga bo'lingan, shu yerda o'ng tomoni bo'sh qolar
+edi.{% endcomment %}
+<div class="kpi-grid kpi-grid--period">
   <div class="kpi kpi--blue">
     <div class="kpi-head">
       <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></svg></span>
@@ -100,8 +101,22 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
       <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/></svg></span>
       <span class="kpi-label">Berilishi kerak</span>
     </div>
-    <div class="kpi-value">{{ totals.remaining|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    {# Faqat olishi kerak bo'lganlar: boshqa xodimning qarzi bu pulni kamaytirmaydi #}
+    <div class="kpi-value">{{ totals.to_pay|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta muted">to'lanmasa kelasi oyga o'tadi</div>
+  </div>
+
+  {% comment %}Ishlab topganidan ortiq olgan xodimlarning jami qarzi (hisob
+  boshlanishidagi eski qarzi ham shu ichida). Alohida kartada doim ko'rinib turadi —
+  qarz yo'q bo'lsa ham (nol bilan). Jadvalning «Jami» qatori esa ikkalasining
+  farqi: berilishi kerak − xodimlar qarzi.{% endcomment %}
+  <div class="kpi kpi--violet">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M19 12l-7-7-7 7"/></svg></span>
+      <span class="kpi-label">Xodimlar qarzi</span>
+    </div>
+    <div class="kpi-value">{{ totals.debt|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{% if totals.debtors %}{{ totals.debtors }} ta xodim qarzdor · {% if is_current_month %}bugungi holat{% else %}{{ month_label }} oxirida{% endif %}{% else %}hech kim ortiqcha olmagan{% endif %}</div>
   </div>
 </div>
 
@@ -176,7 +191,7 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
       <td class="num">{% if r.paid %}<span class="amt-out">{{ r.paid|floatformat:"0g" }}</span>{% else %}<span class="muted">0</span>{% endif %}</td>
       <td class="num wage-due">
         {% if r.remaining > 0 %}<strong class="wage-due-amt amt-debt">{{ r.remaining|floatformat:"0g" }}</strong>{% if not is_current_month %}<span class="cell-sub">keyingi oyga o'tdi</span>{% endif %}
-        {% elif r.remaining < 0 %}<strong class="wage-due-amt amt-in">{{ r.remaining|floatformat:"0g" }}</strong><span class="cell-sub">ortiqcha olgan</span>
+        {% elif r.remaining < 0 %}<strong class="wage-due-amt amt-in">{{ r.remaining|floatformat:"0g" }}</strong><span class="cell-sub">xodimning qarzi</span>
         {% else %}<span class="badge badge-paid">To'liq berildi</span>{% endif %}
       </td>
       {% else %}
@@ -205,7 +220,7 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
       <td class="num"><strong>{{ totals.earned_all|floatformat:"0g" }}</strong></td>
       <td class="num"><strong>{{ totals.carried|floatformat:"0g" }}</strong></td>
       <td class="num">{% if totals.paid %}<strong class="amt-out">{{ totals.paid|floatformat:"0g" }}</strong>{% else %}<span class="muted">0</span>{% endif %}</td>
-      <td class="num wage-due"><strong class="wage-due-amt">{{ totals.remaining|floatformat:"0g" }}</strong></td>
+      <td class="num wage-due"><strong class="wage-due-amt">{{ totals.remaining|floatformat:"0g" }}</strong>{% if totals.debt %}<span class="cell-sub">xodimlar qarzi ayrilgan: {{ totals.debt|floatformat:"0g" }}</span>{% endif %}</td>
       <td></td>
     </tr>
   </table>

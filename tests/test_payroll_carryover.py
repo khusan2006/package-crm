@@ -153,13 +153,13 @@ def test_leaving_stops_the_wage(client, admin_user, seller_user):
     assert worker.balance_through(*month_of(nxt)) == settled_now
 
 
-def test_page_shows_what_rode_in_and_what_rides_on(client, seller_user):
+def test_page_shows_what_rode_in_and_what_rides_on(client, payroll_seller):
     worker = make_worker()
-    pay(worker, seller_user, "500000", on=last_month())   # oylikning bir qismi
-    pay(worker, seller_user, "300000")                    # shu oy avans
-    pay(worker, seller_user, "120000", counts=False)      # benzin — oylikka tegmaydi
+    pay(worker, payroll_seller, "500000", on=last_month())   # oylikning bir qismi
+    pay(worker, payroll_seller, "300000")                    # shu oy avans
+    pay(worker, payroll_seller, "120000", counts=False)      # benzin — oylikka tegmaydi
 
-    client.force_login(seller_user)
+    client.force_login(payroll_seller)
     response = client.get(reverse("employee_list"))
     row = {r["employee"].pk: r for r in response.context["rows"]}[worker.pk]
 
@@ -176,12 +176,31 @@ def test_page_shows_what_rode_in_and_what_rides_on(client, seller_user):
     assert "summa=3200000" in response.content.decode()
 
 
-def test_a_month_before_the_account_opened_shows_no_balance(client, seller_user):
+def test_the_page_adds_up_what_workers_owe_the_firm(client, payroll_seller):
+    """A worker who drew ahead owes the firm. That is totalled on its own: the net
+    «Berilishi kerak» sets it against the workers still owed and so shows neither."""
+    ahead = make_worker()
+    pay(ahead, payroll_seller, "4500000")            # two months earn 4 000 000
+    make_worker(name="Ишчи Собир")                   # nothing paid: 4 000 000 owed
+    client.force_login(payroll_seller)
+
+    totals = client.get(reverse("employee_list")).context["totals"]
+    assert (totals["debt"], totals["debtors"]) == (Decimal("500000"), 1)
+    assert totals["to_pay"] == Decimal("4000000")
+    assert totals["remaining"] == Decimal("3500000")     # the Jami row: 4m − 500k
+
+    detail = client.get(reverse("employee_detail", args=[ahead.pk]))
+    assert (detail.context["balance"], detail.context["debt"]) == (
+        Decimal("-500000"), Decimal("500000"),
+    )
+
+
+def test_a_month_before_the_account_opened_shows_no_balance(client, payroll_seller):
     """The row still reports what the till paid that month — the payout list right
     below it does — but it claims no wage and no remainder for a month it never had."""
     worker = make_worker(start=this_month())
-    pay(worker, seller_user, "400000", on=last_month())
-    client.force_login(seller_user)
+    pay(worker, payroll_seller, "400000", on=last_month())
+    client.force_login(payroll_seller)
     response = client.get(
         reverse("employee_list"), {"oy": last_month().strftime("%Y-%m")}
     )
@@ -192,8 +211,8 @@ def test_a_month_before_the_account_opened_shows_no_balance(client, seller_user)
     assert response.context["totals"]["remaining"] == Decimal("0")
 
 
-def test_seller_can_add_a_worker_and_the_wage_is_dated(client, seller_user):
-    client.force_login(seller_user)
+def test_seller_can_add_a_worker_and_the_wage_is_dated(client, payroll_seller):
+    client.force_login(payroll_seller)
     start = last_month()
     response = client.post(reverse("employee_create"), {
         "name": "Кассир Дилноза", "salary": "1500000",

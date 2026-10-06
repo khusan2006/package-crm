@@ -30,7 +30,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
-from accounts.decorators import role_required
+from accounts.decorators import payroll_required, role_required
 from accounts.models import User
 
 from .forms import (
@@ -4571,7 +4571,7 @@ def _audit_rows(request):
     return logs, filters, reps, actions, active_filters
 
 
-def _audit_links(logs):
+def _audit_links(logs, user):
     """{log.pk: url} — where each trail line leads, for the lines that still have
     somewhere to go.
 
@@ -4627,7 +4627,7 @@ def _audit_links(logs):
         elif kind == "Ombor" and pk in entries:
             # The entry itself has no screen; the product's page is where it shows up.
             url = reverse("product_detail", args=[entries[pk].product_id])
-        elif kind == "Xodim" and pk in employees:
+        elif kind == "Xodim" and pk in employees and user.can_see_payroll:
             url = reverse("employee_detail", args=[pk])
         elif kind == "Chiqim" and pk in expenses:
             url = reverse("kassa_entry_detail", args=["expense", pk])
@@ -4651,7 +4651,7 @@ def audit_list(request):
     page = Paginator(logs, 50).get_page(request.GET.get("page"))
     # Each line's own destination, hung on the row it belongs to. The queryset caches
     # its rows, so these are the very objects the template will iterate.
-    links = _audit_links(list(page.object_list))
+    links = _audit_links(list(page.object_list), request.user)
     for log in page.object_list:
         log.link = links.get(log.pk)
     return render(request, "crm/audit_list.html", {
@@ -6387,15 +6387,16 @@ def _payroll_employees(request):
     return list(employees), {"q": q, "holat": status}
 
 
+@payroll_required
 def employee_list(request):
     """Payroll (Xodimlar oyligi): everyone on the books, the wage in force this month,
     what rode in unpaid from earlier months, what the till has paid out, and what
     carries on to the next month.
 
-    Open to every role. Wages were admin-only, but the sellers are the ones handing the
-    cash over and being asked "how much of mine is left?" — and filing the till outflow
-    that pays a wage was already theirs to do, so the figure it is measured against was
-    the one thing they could not see."""
+    Admins and managers, plus the sellers it was switched on for (`payroll_access`).
+    A seller who hands the cash over is the one asked "how much of mine is left?", so
+    the page can be opened to them — but it is everybody's wage in one table, so it is
+    opened account by account rather than to the whole role."""
     year, month = _payroll_month(request)
     employees, filters = _payroll_employees(request)
     q, status = filters["q"], filters["holat"]
@@ -6415,6 +6416,16 @@ def employee_list(request):
         "carried": sum((r["carried"] for r in counted), Decimal("0")),
         "paid": sum((r["paid"] for r in rows), Decimal("0")),
         "remaining": sum((r["remaining"] for r in counted), Decimal("0")),
+        # `remaining` nets the workers still owed against the ones who have drawn
+        # more than they earned, so on its own it hides both figures. The cards show
+        # them apart: what is to be handed out, and what the workers owe the firm.
+        "to_pay": sum(
+            (r["remaining"] for r in counted if r["remaining"] > 0), Decimal("0")
+        ),
+        "debt": sum(
+            (-r["remaining"] for r in counted if r["remaining"] < 0), Decimal("0")
+        ),
+        "debtors": sum(1 for r in counted if r["remaining"] < 0),
     }
     # The two ledgers below follow the search and the switch as well: a filtered page
     # whose ledgers still listed everybody would not add up to its own KPI cards.
@@ -6476,6 +6487,7 @@ def employee_list(request):
     })
 
 
+@payroll_required
 def employee_export(request):
     """Excel (.xlsx) of the payroll month as filtered — one row per worker, the same
     figures the page shows."""
@@ -6555,6 +6567,7 @@ def _employee_history(employee, today):
     return months, balance
 
 
+@payroll_required
 def employee_detail(request, pk):
     """One worker's whole file: what they are owed now, the month-by-month history
     behind that figure, every payout, and everything they spent for the business.
@@ -6617,6 +6630,9 @@ def employee_detail(request, pk):
         "employee": employee,
         "months": months,
         "balance": balance,
+        # A minus balance is the worker's debt to the firm; the card states it as a
+        # sum owed rather than as a negative "to be paid".
+        "debt": -balance if balance < 0 else Decimal("0"),
         "this_month": this_month,
         "payouts": payouts,
         "errands": errands,
@@ -6669,9 +6685,10 @@ def _set_salary_rate(employee, amount, effective_from, user):
     )
 
 
+@payroll_required
 @transaction.atomic
 def employee_create(request):
-    """Add someone to the payroll. Open to every role, like the rest of this page."""
+    """Add someone to the payroll. Open to whoever may open the page itself."""
     form = EmployeeForm(request.POST or None)
     title = "Yangi xodim"
     if request.method == "POST":
@@ -6701,6 +6718,7 @@ EMPLOYEE_ROW_EDITS = {
 }
 
 
+@payroll_required
 @transaction.atomic
 def employee_edit(request, pk, maydon=None):
     """Edit a payroll worker. A changed wage is dated rather than swapped in: it takes
@@ -6756,6 +6774,7 @@ def employee_edit(request, pk, maydon=None):
     return form_response(request, form, title)
 
 
+@payroll_required
 def employee_delete(request, pk):
     """Remove someone from the payroll. Refused once money has been paid to them —
     erasing the worker would orphan a real till outflow, so they are deactivated

@@ -73,8 +73,8 @@
       <div class="nav-group">
         <div class="nav-group-label">Nazorat</div>
         {% comment %}
-          Oylik hammaga ochiq: naqdni uzatadigan ham, "mendan qancha qoldi?" degan
-          savolga javob beradigan ham sotuvchining o'zi.
+          Oylik — admin/menejerga doim, sotuvchiga esa faqat admin shu hisobga
+          yoqib qo'ygan bo'lsa (Foydalanuvchilar → «Xodimlar oyligini ko'radi»).
         {% endcomment %}
         {% comment %}
           Davomad va Bayramlar — oylik shu ikkisidan hisoblanadi. Ularni nazoratchi
@@ -87,10 +87,12 @@
           <span>Davomad</span>
         </a>
         {% endif %}
+        {% if user.can_see_payroll %}
         <a class="nav-item {% if 'employee' in url_name %}active{% endif %}" href="{% url 'employee_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
           <span>Xodimlar oyligi</span>
         </a>
+        {% endif %}
         {% if user.can_see_all_records %}
         <a class="nav-item {% if 'holiday' in url_name %}active{% endif %}" href="{% url 'holiday_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5.8 11.3 2 22l10.7-3.79"/><path d="M4 3h.01"/><path d="M22 8h.01"/><path d="M15 2h.01"/><path d="M22 20h.01"/><path d="m22 2-2.24.75a2.9 2.9 0 0 0-1.96 3.12c.1.86-.57 1.63-1.45 1.63h-.38c-.86 0-1.6.6-1.76 1.44L14 10"/><path d="m22 13-.82-.33c-.86-.34-1.82.2-1.98 1.11c-.11.7-.72 1.22-1.43 1.22H16"/><path d="M11 2 9.66 2.6a2 2 0 0 0-1.14 2.4l.25.9A1.7 1.7 0 0 1 7.1 8H6"/></svg></span>

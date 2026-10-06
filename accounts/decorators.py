@@ -16,3 +16,16 @@ def role_required(*roles):
         return wrapper
 
     return decorator
+
+
+def payroll_required(view_func):
+    """Allow access only to users who may open «Xodimlar oyligi» — see
+    `User.can_see_payroll`. Assumes login is already enforced."""
+
+    @wraps(view_func)
+    def wrapper(request, *args, **kwargs):
+        if not request.user.can_see_payroll:
+            raise PermissionDenied
+        return view_func(request, *args, **kwargs)
+
+    return wrapper

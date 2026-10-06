@@ -3840,18 +3840,23 @@ class EmployeePayrollTests(BaseSetup):
             response.context["month_value"], f"{self.today.year}-{self.today.month:02d}"
         )
 
-    def test_seller_can_see_and_manage_the_payroll(self):
-        # Payroll used to be admin-only. The sellers are the ones handing the cash
-        # over and being asked "how much of mine is left?", and filing the till
-        # outflow that pays a wage was already theirs to do — so the page they were
-        # kept out of was the one holding the figure it is all measured against.
+    def test_seller_with_payroll_access_can_see_and_manage_the_payroll(self):
+        # A seller who hands the cash over is the one asked "how much of mine is
+        # left?", so the page can be opened to them — account by account, because it
+        # is everybody's wage in one table. sales1 has it switched on, sales2 does not.
+        self.sales1.payroll_access = True
+        self.sales1.save(update_fields=["payroll_access"])
+        pages = [
+            reverse("employee_list"),
+            reverse("employee_create"),
+            reverse("employee_edit", args=[self.worker.pk]),
+        ]
         self.client.force_login(self.sales1)
-        self.assertEqual(self.client.get(reverse("employee_list")).status_code, 200)
-        self.assertEqual(self.client.get(reverse("employee_create")).status_code, 200)
-        self.assertEqual(
-            self.client.get(reverse("employee_edit", args=[self.worker.pk])).status_code,
-            200,
-        )
+        for url in pages:
+            self.assertEqual(self.client.get(url).status_code, 200)
+        self.client.force_login(self.sales2)
+        for url in pages:
+            self.assertEqual(self.client.get(url).status_code, 403)
 
     def test_edit_form_opens_on_the_workers_own_start_month(self):
         # The select used to open on its first option — next month — because the
