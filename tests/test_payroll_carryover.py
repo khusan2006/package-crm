@@ -14,7 +14,8 @@ import pytest
 from django.urls import reverse
 from django.utils import timezone
 
-from crm.models import Employee, Expense, SalaryRate
+from crm.forms import EmployeeBalanceForm, EmployeeForm
+from crm.models import AuditLog, Employee, Expense, SalaryRate
 
 pytestmark = pytest.mark.django_db
 
@@ -225,3 +226,60 @@ def test_seller_can_add_a_worker_and_the_wage_is_dated(client, payroll_seller):
     assert worker.opening_balance == Decimal("250000")
     rate = SalaryRate.objects.get(employee=worker)
     assert (rate.effective_from, rate.amount) == (start, Decimal("1500000"))
+
+
+def test_a_supervisor_corrects_a_months_closing_balance(client, admin_user, payroll_seller):
+    """The figure asked for is the one the boss knows — what was owed at the end of a
+    month. It is written back as a shift of the opening figure, so the wages and the
+    payouts stay as they were and every month moves by the same sum."""
+    worker = make_worker()                             # 2 000 000 a month, from last month
+    pay(worker, payroll_seller, "2450000", on=last_month())
+    assert worker.balance_through(*month_of(last_month())) == Decimal("-450000")
+    url = reverse(
+        "employee_balance_edit", args=[worker.pk, last_month().strftime("%Y-%m")]
+    )
+
+    client.force_login(admin_user)
+    assert client.get(url).context["form"].initial["balance"] == Decimal("-450000")
+    assert client.post(url, {"balance": "-18564000"}).status_code == 302
+    worker.refresh_from_db()
+    assert worker.opening_balance == Decimal("-18114000")       # the −450 000 is inside
+    assert worker.balance_through(*month_of(last_month())) == Decimal("-18564000")
+    assert worker.balance_through(*month_of(this_month())) == Decimal("-16564000")
+    assert "18,564,000" in AuditLog.objects.filter(target_type="Xodim").first().summary
+
+    # Typing the figure on screen back in is a correction of nothing.
+    client.post(url, {"balance": "-18564000"})
+    worker.refresh_from_db()
+    assert worker.opening_balance == Decimal("-18114000")
+    # A month the account never had has no balance to correct.
+    missing = reverse("employee_balance_edit", args=[worker.pk, "2020-01"])
+    assert client.get(missing).status_code == 404
+
+
+def test_only_a_supervisor_may_correct_a_balance(client, payroll_seller):
+    worker = make_worker()
+    url = reverse(
+        "employee_balance_edit", args=[worker.pk, last_month().strftime("%Y-%m")]
+    )
+    client.force_login(payroll_seller)
+
+    assert client.post(url, {"balance": "0"}).status_code == 403
+    worker.refresh_from_db()
+    assert worker.opening_balance == Decimal("0")
+    # …and the page offers them no pencil for it.
+    detail = client.get(reverse("employee_detail", args=[worker.pk]))
+    assert url not in detail.content.decode()
+
+
+def test_debt_fields_keep_their_minus_in_the_browser():
+    """The page's money formatter drops everything but digits unless the input is
+    marked as signed — an opening debt of −500 000 was shown, and saved back, as
+    +500 000. Both boxes that can hold a debt carry the mark."""
+    worker = make_worker(opening="-500000")
+    for field in (
+        EmployeeForm(instance=worker)["opening_balance"],
+        EmployeeBalanceForm()["balance"],
+    ):
+        assert "data-money-signed" in str(field)
+    assert "data-money-signed" not in str(EmployeeForm(instance=worker)["salary"])

@@ -1138,22 +1138,30 @@
   // Live thousands-grouping on money inputs. Renders "1 000 000" as the user
   // types (marked server-side with data-money); the raw numeric value is
   // restored right before submit, so the server always gets a plain number.
+  // A field that may hold a debt is marked data-money-signed as well: only there
+  // is a leading minus kept (typed as "-", "−" or "–"). Everywhere else it is
+  // dropped, as before — a price or a payment is never negative.
   (function () {
-    function toNumeric(value) {
-      var s = String(value).replace(/\s/g, '').replace(',', '.').replace(/[^\d.]/g, '');
+    function isSigned(el) { return el.hasAttribute('data-money-signed'); }
+    function toNumeric(value, signed) {
+      var raw = String(value);
+      var minus = signed && /^\s*[-\u2212\u2013]/.test(raw) ? '-' : '';
+      var s = raw.replace(/\s/g, '').replace(',', '.').replace(/[^\d.]/g, '');
       var dot = s.indexOf('.');
       if (dot !== -1) { s = s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, ''); }
-      return s;
+      return minus + s;
     }
-    function format(value) {
-      var s = toNumeric(value);
-      if (s === '' || s === '.') { return s; }
+    function format(value, signed) {
+      var s = toNumeric(value, signed);
+      var minus = s.charAt(0) === '-' ? '-' : '';
+      s = s.slice(minus.length);
+      if (s === '' || s === '.') { return minus + s; }
       var dot = s.indexOf('.');
       var intPart = dot === -1 ? s : s.slice(0, dot);
       var dec = dot === -1 ? '' : s.slice(dot);
       intPart = intPart.replace(/^0+(?=\d)/, '');
       if (intPart === '') { intPart = '0'; }
-      return intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + dec;
+      return minus + intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + dec;
     }
     function digitsBefore(str, caret) {
       var n = 0;
@@ -1174,7 +1182,7 @@
     function reformat(el) {
       var caret = el.selectionStart;
       var before = caret == null ? null : digitsBefore(el.value, caret);
-      el.value = format(el.value);
+      el.value = format(el.value, isSigned(el));
       if (before != null) {
         var pos = caretForDigits(el.value, before);
         try { el.setSelectionRange(pos, pos); } catch (e) {}
@@ -1187,7 +1195,7 @@
         el.type = 'text';                       // number inputs can't show grouping
         el.setAttribute('inputmode', 'decimal');
         el.autocomplete = 'off';
-        if (el.value) { el.value = format(el.value); }
+        if (el.value) { el.value = format(el.value, isSigned(el)); }
       });
     }
     document.addEventListener('input', function (e) {
@@ -1197,7 +1205,7 @@
     // modal's own submit handler builds its FormData, so the fetch sends clean data.
     document.addEventListener('submit', function (e) {
       if (!e.target.querySelectorAll) { return; }
-      e.target.querySelectorAll('input[data-money]').forEach(function (el) { el.value = toNumeric(el.value); });
+      e.target.querySelectorAll('input[data-money]').forEach(function (el) { el.value = toNumeric(el.value, isSigned(el)); });
     }, true);
     window.enhanceMoneyInputs = enhance;
     if (document.readyState !== 'loading') { enhance(); }

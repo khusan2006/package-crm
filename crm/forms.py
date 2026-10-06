@@ -48,6 +48,16 @@ def _mark_money(*fields):
             field.widget.attrs.update(MONEY_WIDGET_ATTRS)
 
 
+def _mark_signed_money(*fields):
+    """The same, for a figure that may be a debt. The page's money formatter strips
+    everything but digits unless the input says a minus belongs there — without this
+    a balance of −500 000 is shown, and saved back, as +500 000."""
+    _mark_money(*fields)
+    for field in fields:
+        if field is not None:
+            field.widget.attrs["data-money-signed"] = ""
+
+
 def _reject_future(value):
     """Money moves when it moves; it cannot move next month.
 
@@ -809,7 +819,8 @@ class EmployeeForm(forms.ModelForm):
         if not self.instance.pk:
             # Nothing to re-price yet, so the question isn't asked on a new worker.
             del self.fields["salary_from"]
-        _mark_money(self.fields["salary"], self.fields["opening_balance"])
+        _mark_money(self.fields["salary"])
+        _mark_signed_money(self.fields["opening_balance"])
         self.fields["salary"].help_text = (
             "Kunlik narx shundan chiqadi: oylik ÷ o'sha oyning ish kunlari "
             "(yakshanba va dam beriladigan bayramlarsiz)"
@@ -876,6 +887,31 @@ class EmployeeForm(forms.ModelForm):
         if any(existing.casefold() == folded for existing in taken.values_list("name", flat=True)):
             raise forms.ValidationError("Bu ismli xodim allaqachon bor.")
         return name
+
+
+class EmployeeBalanceForm(forms.Form):
+    """One month's closing balance of a worker, typed over to correct it.
+
+    The balance itself is stored nowhere — it is the opening figure plus every
+    month's wage minus everything paid — so the view turns the correction into a
+    shift of the opening figure. The form only takes the number as the boss knows
+    it: the balance at the end of that month."""
+
+    balance = forms.DecimalField(
+        label="Oy oxiridagi qoldiq (so'm)",
+        max_digits=18,
+        decimal_places=2,
+        help_text=(
+            "Xodim ishxonadan qarzdor bo'lsa — minus bilan (masalan −18 564 000), "
+            "ishxona xodimga qarzdor bo'lsa — minussiz. Oylik va berilgan pullar "
+            "o'zgarmaydi: tuzatish boshlang'ich qoldiqqa yoziladi, shuning uchun "
+            "boshqa oylarning qoldig'i ham shu farqqa suriladi."
+        ),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _mark_signed_money(self.fields["balance"])
 
 
 class DayCardForm(forms.Form):

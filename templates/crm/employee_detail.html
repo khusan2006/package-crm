@@ -270,7 +270,7 @@
 
 <div class="card">
   <div class="card-head"><h2 style="margin:0;">Oylar bo'yicha</h2></div>
-  <p class="ledger-hint">Har oyda davomad bo'yicha hisoblangan oylik, o'sha oyda berilgan pul va shundan keyingi qoldiq — eng yangisi yuqorida.</p>
+  <p class="ledger-hint">Har oyda davomad bo'yicha hisoblangan oylik, o'sha oyda berilgan pul va shundan keyingi qoldiq — eng yangisi yuqorida.{% if can_manage %} Qoldiq xato bo'lsa — qatordagi qalamcha bilan tuzatiladi.{% endif %}</p>
   <div class="table-wrap">
   <table class="table--blue-head">
     <tr>
@@ -292,8 +292,14 @@
         {% else %}<span class="badge badge-paid">To'liq berildi</span>{% endif %}
       </td>
       <td class="num">
+        {% comment %}Qoldiqni tuzatish — pul harakatisiz qarzni o'zgartiradi, shuning
+        uchun faqat nazoratchida. Tuzatish boshlang'ich qoldiqqa yoziladi va hamma
+        oyni bir xil summaga suradi (`employee_balance_edit`).{% endcomment %}
+        <span class="ra-cluster ra-cluster--even">
+        {% if can_manage %}<a class="icon-action act-edit" href="{% url 'employee_balance_edit' employee.pk m.value %}" data-modal title="{{ m.label }} oxiridagi qoldiqni tuzatish" aria-label="{{ m.label }} oxiridagi qoldiqni tuzatish">{% include "crm/_ico_edit.html" %}</a>{% endif %}
         <a class="btn btn-sm btn-ghost" href="?oy={{ m.value }}#grafik" title="Shu oyning grafigi va davomadi">Grafik</a>
         <a class="btn btn-sm btn-ghost" href="{% url 'employee_list' %}?oy={{ m.value }}" title="Shu oyning to'liq hisobi">Oylik hisobi</a>
+        </span>
       </td>
     </tr>
     {% empty %}

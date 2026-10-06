@@ -145,6 +145,11 @@ urlpatterns = [
         crm_views.employee_edit,
         name="employee_edit_field",
     ),
+    path(
+        "xodimlar/<int:pk>/qoldiq/<str:oy>/",
+        crm_views.employee_balance_edit,
+        name="employee_balance_edit",
+    ),
     path("xodimlar/<int:pk>/delete/", crm_views.employee_delete, name="employee_delete"),
     path("kassa/topshirish/", crm_views.remittance_create, name="remittance_create"),
     path("kassa/qaytarish/", crm_views.remittance_refund_create, name="remittance_refund_create"),

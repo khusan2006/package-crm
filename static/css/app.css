@@ -2148,6 +2148,19 @@ tbody tr:hover td.sticky-col {
   gap: 4px;
 }
 
+/* An icon beside text buttons: all stretched to one height, so the boxes share a
+   top and a bottom edge instead of the 32px icon standing over shorter buttons. */
+.ra-cluster--even {
+  align-items: stretch;
+}
+
+/* On a phone the buttons grow past 32px; the icon follows them rather than
+   keeping its fixed box. */
+.ra-cluster--even .icon-action {
+  height: auto;
+  min-height: 32px;
+}
+
 .icon-action {
   display: inline-grid;
   place-items: center;

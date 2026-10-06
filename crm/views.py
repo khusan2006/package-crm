@@ -41,6 +41,7 @@ from .forms import (
     ClientForm,
     ClientTransferForm,
     DayCardForm,
+    EmployeeBalanceForm,
     DebtPaymentForm,
     DebtorAddForm,
     EmployeeForm,
@@ -6729,7 +6730,7 @@ def employee_edit(request, pk, maydon=None):
     hours — for the pencil beside it. It is the same form and the same save, so a wage
     changed from that row is dated and logged exactly like one changed here."""
     employee = get_object_or_404(Employee, pk=pk)
-    was = employee.salary
+    was, opened_at = employee.salary, employee.opening_balance
     title, only = "Xodimni tahrirlash", None
     if maydon is not None:
         if maydon not in EMPLOYEE_ROW_EDITS:
@@ -6760,6 +6761,12 @@ def employee_edit(request, pk, maydon=None):
                 )
             if {"work_start", "work_end"} & set(form.changed_data):
                 summary += f"; ish vaqti {employee.work_hours or 'belgilanmagan'}"
+            if employee.opening_balance != opened_at:
+                # It moves every month's balance at once, so the trail names it.
+                summary += (
+                    f"; boshlang'ich qoldiq {opened_at:,.0f} → "
+                    f"{employee.opening_balance:,.0f}"
+                )
             AuditLog.record(
                 request.user, AuditLog.Action.UPDATE, "Xodim", employee.pk, summary
             )
@@ -6770,6 +6777,52 @@ def employee_edit(request, pk, maydon=None):
                     request, reverse("employee_detail", args=[employee.pk])
                 )
             return form_success(request, reverse("employee_list"))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+@transaction.atomic
+def employee_balance_edit(request, pk, oy):
+    """Correct a month's closing balance, from that month's row on the worker's page.
+
+    A balance is stored nowhere: it is the opening figure, plus every month's wage,
+    minus everything the till paid. Wages and payouts have their own screens and are
+    left alone here, so the one thing a correction can move is the opening figure —
+    by exactly the difference. That shifts every other month by the same sum, which
+    is what a wrong starting figure calls for: the months themselves were right.
+
+    The boss knows the figure as "what they owed at the end of August", not as "what
+    they owed on the 1st", so that is the number asked for; the arithmetic back to
+    the opening figure is done here. Supervisors only: it moves a debt without a
+    till entry behind it."""
+    employee = get_object_or_404(Employee, pk=pk)
+    months, _ = _employee_history(employee, timezone.localdate())
+    row = next((m for m in months if m["value"] == oy), None)
+    if row is None:
+        raise Http404
+    # Whole so'm, as the table prints it: typing the figure on screen back in must
+    # be a correction of nothing, not of the fraction a by-the-day wage leaves.
+    current = row["balance"].quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    form = EmployeeBalanceForm(request.POST or None, initial={"balance": current})
+    title = f"{row['label']} oxiridagi qoldiq — {employee.name}"
+    if request.method == "POST":
+        if form.is_valid():
+            new = form.cleaned_data["balance"]
+            if new != current:
+                was = employee.opening_balance
+                employee.opening_balance = was + (new - current)
+                employee.save(update_fields=["opening_balance"])
+                AuditLog.record(
+                    request.user, AuditLog.Action.UPDATE, "Xodim", employee.pk,
+                    f"{employee.name} — {row['label']} oxiridagi qoldiq "
+                    f"{current:,.0f} → {new:,.0f} (boshlang'ich qoldiq "
+                    f"{was:,.0f} → {employee.opening_balance:,.0f})",
+                )
+                messages.success(request, f"{row['label']} oxiridagi qoldiq tuzatildi.")
+            return form_reload(
+                request, reverse("employee_detail", args=[employee.pk])
+            )
         return form_response(request, form, title, invalid=True)
     return form_response(request, form, title)
 
