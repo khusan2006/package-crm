@@ -881,11 +881,13 @@
 
     function openPop() {
       render();
-      pop.classList.remove('is-up');
       pop.hidden = false;
       root.classList.add('is-open');
       trigger.setAttribute('aria-expanded', 'true');
-      if (pop.getBoundingClientRect().bottom > window.innerHeight - 8) { pop.classList.add('is-up'); }
+      // Always downward. Flipping it above the control when it didn't fit sent it off
+      // the top of a phone screen, where no scrolling brings it back; below the fold
+      // it is still within reach — scroll just far enough to show it.
+      pop.scrollIntoView({ block: 'nearest' });
     }
     function closePop() { pop.hidden = true; root.classList.remove('is-open'); trigger.setAttribute('aria-expanded', 'false'); }
 
