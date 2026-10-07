@@ -26,6 +26,22 @@
   </div>
 </section>
 
+{% comment %}Topshiruv bilan yopilgan kunda qolib ketgan pul. Odatda kun yopilgandan
+keyin unga eski sana bilan kirim kiritilganda paydo bo'ladi: pul keyingi kunning
+topshiruviga qo'shib yuborilsa, eski kun qoldiq bilan qolaveradi. Tugma topshiruv
+formasini aynan o'sha kun sanasi va summasi bilan ochadi. Bo'sh kun eslatmasining
+ko'rinishidan foydalanadi — ikkalasi ham «shu yerga qarang» degan bir xil gap.{% endcomment %}
+{% for n in closed_day_notices %}
+<div class="kassa-empty">
+  <span class="ke-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v14"/><path d="M5 9l7-7 7 7"/><rect x="4" y="16" width="16" height="6" rx="2"/></svg></span>
+  <div class="ke-text">
+    <span class="ke-title">{{ n.day|date:"d.m.Y" }} kunida {{ n.amount|floatformat:"0g" }} so'm topshirilmagan</span>
+    <span class="ke-sub">{% if n.seller %}<strong>{{ n.seller }}</strong> · {% endif %}Bu kun topshiruv bilan yopilgan, lekin shu pul kassada qolgan. Uni <strong>{{ n.day|date:"d.m.Y" }}</strong> sanasi bilan topshirsangiz, kun nolga tushadi.{% if n.more_days %} Yana {{ n.more_days }} ta kunda ham qoldiq bor — bunisi yopilgach ko'rinadi.{% endif %}</span>
+  </div>
+  <a class="btn ke-btn" href="{{ n.url }}" data-modal>{{ n.day|date:"d.m" }} sanasi bilan topshirish</a>
+</div>
+{% endfor %}
+
 {% include "crm/_filter_toolbar.html" %}
 
 {% if empty_hint %}

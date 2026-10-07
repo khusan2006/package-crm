@@ -108,6 +108,7 @@ from .models import (
     rest_holidays_in,
     seller_cash_on_hand,
     seller_production_debt,
+    unremitted_closed_days,
 )
 from .context_processors import SESSION_KEY as ACTING_SELLER_KEY
 from .context_processors import current_acting_seller
@@ -3337,7 +3338,7 @@ def client_debt_pay(request, pk):
     if total <= 0:
         return form_reload(request, reverse("debt_client", args=[client.pk]))
     if request.method == "POST":
-        form = DebtPaymentForm(request.POST)
+        form = DebtPaymentForm(request.POST, seller=seller)
         if form.is_valid():
             touched, surplus = _distribute_debt_payment(
                 sales,
@@ -3418,7 +3419,7 @@ def client_advance_pay(request, pk):
     seller = client.owner
     balance = client_advance_balance(client, seller)
     if request.method == "POST":
-        form = AdvanceForm(request.POST)
+        form = AdvanceForm(request.POST, seller=seller)
         if form.is_valid():
             cd = form.cleaned_data
             Payment.objects.create(
@@ -5391,6 +5392,34 @@ def _last_kassa_activity(rep):
     return max([d for d in found if d], default=None)
 
 
+def _closed_day_notices(sellers, named):
+    """The kassa's "money left on a closed day" notices, one per seller that has any.
+
+    Each points at the EARLIEST such day and opens the handover form already dated to
+    it with the sum left there, so one Saqlash puts the day back to zero. Later days
+    wait their turn — clearing the first one brings the next up — but are counted, so
+    nobody takes a single notice for the whole of it. See `unremitted_closed_days`.
+
+    `named` adds whose till it is, for the company view where several are on screen."""
+    notices = []
+    for seller in sellers:
+        days = unremitted_closed_days(seller)
+        if not days:
+            continue
+        day, amount = days[0]
+        params = {"date": day.isoformat(), "amount": f"{amount:.0f}"}
+        if named:
+            params["seller"] = seller.pk
+        notices.append({
+            "day": day,
+            "amount": amount,
+            "more_days": len(days) - 1,
+            "seller": str(seller) if named else "",
+            "url": f"{reverse('remittance_create')}?{urlencode(params)}",
+        })
+    return notices
+
+
 def kassa_view(request):
     """The cash register (Kassa): two till drawers (so'm + dollar) with income by
     method and running balance, per-employee kassa & performance, and the expense
@@ -5447,6 +5476,18 @@ def kassa_view(request):
     if not request.user.can_see_all_records:
         my_row = seller_rows[0] if seller_rows else None
 
+    # Money left on a day already closed with a handover. A standing fact about the
+    # till, not about the window on screen, so the date filter does not narrow it.
+    if rep is not None:
+        notice_sellers = [rep]
+    else:
+        notice_sellers = User.objects.filter(
+            pk__in=[r["uid"] for r in seller_rows]
+        ).order_by("first_name", "username")
+    closed_day_notices = _closed_day_notices(
+        notice_sellers, named=request.user.can_see_all_records
+    )
+
     # Debt corrections for the window. Listed on their own — they move no cash, so
     # putting them in the outflow ledger would stop the drawer reconciling. A seller
     # sees only the ones filed against them.
@@ -5461,6 +5502,7 @@ def kassa_view(request):
     return render(request, "crm/kassa.html", {
         "summary": summary,
         "empty_hint": empty_hint,
+        "closed_day_notices": closed_day_notices,
         "debt_adjustments": adjustments,
         "income_rows": income_rows,
         "outflow_rows": outflow_rows,
@@ -7768,6 +7810,16 @@ def remittance_create(request):
     seller_pk = request.GET.get("seller", "")
     if request.method == "GET" and request.user.can_see_all_records and seller_pk.isdigit():
         initial["seller"] = seller_pk
+    if request.method == "GET":
+        # The kassa's closed-day notice opens the form already pointed at the day the
+        # money was left on and the sum left there — see `_closed_day_notices`. Only a
+        # prefill: the form still checks whatever is finally submitted.
+        day = _parse_date(request.GET.get("date"))
+        amount = _parse_amount(request.GET.get("amount"))
+        if day:
+            initial["date"] = day
+        if amount and amount > 0:
+            initial["amount"] = amount
     form = ProductionRemittanceForm(request.POST or None, user=request.user, initial=initial)
     title = "Ishlab chiqarishga topshirish"
     if request.method == "POST":
@@ -8918,7 +8970,7 @@ def sale_pay(request, pk):
     remaining = sale.debt_remaining
     seller = sale.sales_rep
     if request.method == "POST":
-        form = DebtPaymentForm(request.POST)
+        form = DebtPaymentForm(request.POST, seller=seller)
         if form.is_valid():
             cd = form.cleaned_data
             _, surplus = _distribute_debt_payment(

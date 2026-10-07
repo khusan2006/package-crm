@@ -56,6 +56,22 @@ book states what production was handed, the book wins:
      figures come from that day's kirim less rasxod. With them restored the whole
      month reconciles — no negative day is left.
 
+A sixth stage (October) deals with two old days that show money although the till has
+long been handed over to zero. Neither is a shortfall; both are a date:
+
+ 12. 30.09 was closed with a handover, and eight minutes later three more cash payments
+     were entered under the same date (8 211 700). The money went out with the NEXT
+     day's handover, so the total is right while 30.09 reads 8 211 700 for ever. The sum
+     moves from handover #90 (01.10) to #89 (30.09), the day it belongs to.
+
+ 13. A 3 200 "cash advance" dated 24.07 was typed in on 02.10 for ДОНИЁР КЕЛЕС ФЛАКОН
+     ЦЕХ. No cash came in: it is the credit left by his return of 18.08, whose money
+     arrived inside his payment of 25.07 and was handed over back then. Counted as a
+     second kirim it put 3 200 on every day from 24.07 to 29.09 and was swept into
+     handover #89. The deposit is kept out of the kassa (the client still holds his
+     3 200) and #89 gives the 3 200 back — so the production debt rises by 3 200, the
+     amount that was never actually handed over.
+
 Each stage runs ONCE per its own version (an AuditLog marker records it), so this command
 is safe to run again: an applied stage is a no-op. Every step verifies the row is still
 in the expected state first: the seller keeps editing these same records, so a silent
@@ -93,6 +109,24 @@ FIX_VERSION_2108 = "2026-08-23-2108-1"      # 2-bosqich: 21.08 tozalash
 FIX_VERSION_BOOK = "2026-08-23-prodbook-1"  # 3-bosqich: ishlab chiqarish daftari
 FIX_VERSION_0208 = "2026-08-23-daftar0208-1"  # 4-bosqich: 02.08 daftar raqami
 FIX_VERSION_UNBOOK = "2026-08-24-unbook-1"    # 5-bosqich: 3-bosqichni qaytarish
+FIX_VERSION_CLOSED = "2026-10-07-closed-1"    # 6-bosqich: yopilgan kunlardagi qoldiq
+
+# 02.10 da 24.07 sanasi bilan «naqd avans» qilib kiritilgan. Pul yangi kelmagan: bu
+# mijozning 18.08 dagi qaytarishidan qolgan krediti, puli 25.07 dagi to'lov ichida
+# kelib, o'shanda topshirilgan. Avans mijozda qoladi, faqat kassadan chiqariladi.
+PHANTOM_ADVANCE = (4811, Decimal("3200"), dt_date(2026, 7, 24))
+
+# 30.09 yopilgandan keyin shu sanaga kiritilgan uchta naqd to'lov (5 411 700 +
+# 756 750 + 2 043 250). 01.10 topshiruviga qo'shib yuborilgan.
+LATE_3009 = Decimal("8211700")
+
+# (pk, sana, bazadagi summa, to'g'ri summa). #89 ga 8 211 700 qo'shiladi va undan
+# yuqoridagi 3 200 ayriladi; #90 dan 8 211 700 ayriladi.
+CLOSED_DAY_HANDOVERS = (
+    (89, dt_date(2026, 9, 30), Decimal("114146832"),
+     Decimal("114146832") + LATE_3009 - PHANTOM_ADVANCE[1]),
+    (90, dt_date(2026, 10, 1), Decimal("32130320"), Decimal("32130320") - LATE_3009),
+)
 
 # 3-bosqich qaytariladi. Naqd sanab ko'rilgach ma'lum bo'ldiki, ishlab chiqarish
 # daftaridagi bu ikki raqam kunning o'z hisobidan jami 61 233 ga ko'p — ular ham
@@ -482,6 +516,92 @@ class Command(BaseCommand):
             f"\n5-bosqich qo'llandi: {len(rows)} ta topshiruv CRM hisobiga "
             f"qaytarildi (−{_money(total)} so'm)."))
 
+    # ------------------------------- 6-bosqich: yopilgan kunlardagi qoldiq
+
+    def _stage_closed_days(self, seller, opt):
+        """Takes the money off two old days that were already closed at zero.
+
+        30.09 shows 8 211 700 because three payments were entered under that date
+        after its handover, and left with the next day's. 24.07–29.09 show 3 200
+        because a client's existing credit was typed in as a fresh cash deposit. The
+        first is a handover dated one day late; the second is cash that never
+        existed, so taking it out of the till raises the production debt by 3 200 —
+        the handover it was swept into had recorded it as handed over."""
+        summary = f"yopilgan kunlar qoldig'i v{FIX_VERSION_CLOSED}"
+        if not opt["force"] and AuditLog.objects.filter(
+            target_type=MARKER_TYPE, summary=summary
+        ).exists():
+            self.stdout.write(
+                f"\n6-bosqich (v{FIX_VERSION_CLOSED}) allaqachon qo'llangan — "
+                "o'tkazib yuborildi."
+            )
+            return
+
+        problems, rows = [], []
+        pay_pk, pay_amount, pay_date = PHANTOM_ADVANCE
+        deposit = Payment.objects.filter(pk=pay_pk, created_by=seller).first()
+        if deposit is None:
+            problems.append(f"To'lov #{pay_pk} topilmadi")
+        else:
+            self._expect(problems, f"To'lov #{pay_pk} turi",
+                         deposit.kind, Payment.Kind.ADVANCE_IN)
+            self._expect(problems, f"To'lov #{pay_pk} summasi", deposit.amount, pay_amount)
+            self._expect(problems, f"To'lov #{pay_pk} sanasi", deposit.date, pay_date)
+            self._expect(problems, f"To'lov #{pay_pk} kassaga kirimmi",
+                         deposit.is_opening, False)
+        for pk, on_date, old, new in CLOSED_DAY_HANDOVERS:
+            row = ProductionRemittance.objects.filter(pk=pk, seller=seller).first()
+            if row is None:
+                problems.append(f"Topshiruv #{pk} topilmadi")
+                continue
+            self._expect(problems, f"Topshiruv #{pk} sanasi", row.date, on_date)
+            self._expect(problems, f"Topshiruv #{pk} summasi", row.amount, old)
+            rows.append((row, old, new))
+
+        if problems:
+            self.stdout.write(self.style.ERROR(
+                "\n6-bosqich: yozuvlar kutilgan holatda emas — tegilmadi:"))
+            for line in problems:
+                self.stdout.write(f"  - {line}")
+            raise CommandError("6-bosqich to'xtatildi.")
+
+        if opt["dry_run"]:
+            self.stdout.write(self.style.WARNING(
+                "\n6-bosqich --dry-run: tekshirildi, yozilmadi. Qo'llansa:"))
+            self.stdout.write(
+                f"  - To'lov #{pay_pk} ({deposit.client}, {_money(pay_amount)} so'm, "
+                f"{pay_date:%d.%m}) kassadan chiqariladi, avans mijozda qoladi")
+            for row, old, new in rows:
+                self.stdout.write(
+                    f"  - Topshiruv #{row.pk} ({row.date:%d.%m}): "
+                    f"{_money(old)} -> {_money(new)} so'm")
+            self.stdout.write(
+                f"  - ishlab chiqarish qarzi +{_money(pay_amount)} so'm")
+            return
+
+        with transaction.atomic():
+            deposit.is_opening = True
+            deposit.save(update_fields=["is_opening"])
+            AuditLog.record(
+                seller, AuditLog.Action.UPDATE, "To'lov", deposit.pk,
+                f"{deposit.client} avansi {_money(pay_amount)} so'm ({pay_date:%d.%m}) "
+                f"kassadan chiqarildi — pul yangi kelmagan, qaytarishdan qolgan kredit",
+            )
+            for row, old, new in rows:
+                row.amount = new
+                row.save(update_fields=["amount"])
+                AuditLog.record(
+                    seller, AuditLog.Action.UPDATE, "Topshiruv", row.pk,
+                    f"Yopilgan kun qoldig'i: {_money(old)} -> {_money(new)} so'm "
+                    f"({row.date:%d.%m})",
+                )
+            AuditLog.record(seller, AuditLog.Action.UPDATE, MARKER_TYPE, None, summary)
+
+        self.stdout.write(self.style.SUCCESS(
+            f"\n6-bosqich qo'llandi: {_money(LATE_3009)} so'm 01.10 topshiruvidan "
+            f"30.09 ga ko'chirildi, {_money(pay_amount)} so'mlik avans kassadan "
+            f"chiqarildi (ishlab chiqarish qarzi +{_money(pay_amount)} so'm)."))
+
     # ------------------------------------------------------------------- handle
 
     def handle(self, *args, **opt):
@@ -504,6 +624,7 @@ class Command(BaseCommand):
             self._stage_prod_book(seller, opt)
             self._stage_0208(seller, opt)
             self._stage_unbook(seller, opt)
+            self._stage_closed_days(seller, opt)
             self._report(seller, "KEYIN:")
             return
 
@@ -658,6 +779,7 @@ class Command(BaseCommand):
         self._stage_prod_book(seller, opt)
         self._stage_0208(seller, opt)
         self._stage_unbook(seller, opt)
+        self._stage_closed_days(seller, opt)
         after = self._report(seller, "KEYIN:")
         self.stdout.write("")
         if after == 0:

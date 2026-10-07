@@ -2025,6 +2025,73 @@ def seller_cash_on_hand(
     return income - refunded - expense - remitted - paid_profit
 
 
+def seller_day_balances(seller):
+    """A seller's till at the END of every day it moved on, oldest first:
+    [(day, balance)].
+
+    The same five streams `seller_cash_on_hand` nets, grouped by the date written on
+    each row — so the last balance here is that function's figure, and a row keyed in
+    late lands on the day it was dated to, exactly as the kassa page places it. One
+    grouped query per stream, however long the history runs."""
+    streams = (
+        (Payment.objects.filter(created_by=seller).till_income(), PAYMENT_NET, 1),
+        (Payment.objects.filter(created_by=seller).till_outflow(), F("amount"), -1),
+        (Expense.objects.filter(created_by=seller), F("amount"), -1),
+        (ProductionRemittance.objects.filter(seller=seller), F("amount"), -1),
+        (ProfitPayout.objects.filter(seller=seller), F("amount"), -1),
+    )
+    moved = {}
+    for rows, figure, sign in streams:
+        for row in rows.values("date").annotate(s=Sum(figure)):
+            moved[row["date"]] = (
+                moved.get(row["date"], Decimal("0")) + sign * (row["s"] or Decimal("0"))
+            )
+    balances, running = [], Decimal("0")
+    for day in sorted(moved):
+        running += moved[day]
+        balances.append((day, running))
+    return balances
+
+
+def unremitted_closed_days(seller):
+    """Money still sitting on days the seller has already closed with a handover,
+    oldest first: [(day, whole so'm)].
+
+    A seller keys a day in, hands over what it took and the day reads zero. Then a
+    payment for that day turns up and is entered with the old date: the day now holds
+    money nobody handed over, and the next handover — dated a day later — quietly
+    carries it off. The total is right, but the old day shows a balance for ever.
+    That is how 30.09 came to read 8 211 700 after it had been closed at zero.
+
+    A day counts once a handover is dated on it and it is behind us; today is still
+    being worked. What it holds is the LOWEST the till has stood from that day to now:
+    money that left under a later date is gone, there is nothing to hand over, and
+    the day is not listed. Each day is charged only what the days before it have not
+    already claimed, so the figures add up to what is really in the drawer."""
+    balances = seller_day_balances(seller)
+    today = timezone.localdate()
+    closed = set(
+        ProductionRemittance.objects.filter(seller=seller, amount__gt=0, date__lt=today)
+        .values_list("date", flat=True)
+    ) | set(
+        ProfitPayout.objects.filter(seller=seller, date__lt=today)
+        .values_list("date", flat=True)
+    )
+    lowest_since, floor = {}, None
+    for day, balance in reversed(balances):
+        floor = balance if floor is None else min(floor, balance)
+        lowest_since[day] = floor
+    days, claimed = [], Decimal("0")
+    for day, _ in balances:
+        if day not in closed:
+            continue
+        held = lowest_since[day].quantize(Decimal("1"), ROUND_HALF_UP)
+        if held - claimed >= 1:
+            days.append((day, held - claimed))
+            claimed = held
+    return days
+
+
 def client_advance_balance(client, seller=None):
     """The credit a client holds: money put in (ADVANCE_IN deposits, plus the
     CREDIT_BACK_KINDS owed back from over-returned or price-corrected sales) minus what
