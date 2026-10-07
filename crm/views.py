@@ -3285,6 +3285,16 @@ def _usd_note(cleaned):
     return ""
 
 
+def _date_note(on_date, was=None):
+    """The audit-line tail carrying the payment's OWN date. The trail's Sana column is
+    the day the line was written, which is not the day the money counts for whenever a
+    payment is entered — or fixed — after the fact. An edit that moved it shows both."""
+    on_date = on_date or timezone.localdate()
+    if was and was != on_date:
+        return f" · sanasi: {was:%d.%m.%Y} → {on_date:%d.%m.%Y}"
+    return f" · sanasi: {on_date:%d.%m.%Y}"
+
+
 def _method_label(code):
     """The Uzbek display name for a payment-method code (naqd/karta/o'tkazma)."""
     return dict(Payment.Method.choices).get(code, code)
@@ -3346,7 +3356,8 @@ def client_debt_pay(request, pk):
                 request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
                 f"Mijoz {client.name} qarz to'lovi "
                 f"({_method_label(form.cleaned_data['method'])}){_usd_note(form.cleaned_data)} "
-                f"— {form.cleaned_data['amount']:,.0f} so'm{_on_behalf(request.user, seller)}",
+                f"— {form.cleaned_data['amount']:,.0f} so'm"
+                f"{_date_note(form.cleaned_data['date'])}{_on_behalf(request.user, seller)}",
             )
             msg = f"{form.cleaned_data['amount']:,.0f} so'm {touched} ta chekka taqsimlandi."
             if touched:
@@ -3433,7 +3444,7 @@ def client_advance_pay(request, pk):
                 f"Mijoz {client.name} avans to'lovi "
                 f"({_method_label(cd['method'])}){_usd_note(cd)} "
                 f"— {cd['amount']:,.0f} so'm{_kassa_note(cd['is_opening'])}"
-                f"{_on_behalf(request.user, seller)}",
+                f"{_date_note(cd['date'])}{_on_behalf(request.user, seller)}",
             )
             left = client_advance_balance(client, seller)
             msg = f"Avans qabul qilindi: {cd['amount']:,.0f} so'm."
@@ -3854,7 +3865,7 @@ def advance_edit(request, pk):
         if form.is_valid():
             cd = form.cleaned_data
             mode = cd["diff_mode"]
-            was = payment.amount
+            was, was_date = payment.amount, payment.date
             delta = cd["amount"] - was
             retro = mode == AdvanceEditForm.RETRO or not delta
             payment.is_opening = cd["is_opening"]
@@ -3881,7 +3892,7 @@ def advance_edit(request, pk):
                 f"Mijoz {client.name} avansi o'zgartirildi — "
                 f"{was:,.0f} → {cd['amount']:,.0f} so'm"
                 f"{'' if retro else _diff_note(mode)}"
-                f"{_kassa_note(payment.is_opening)}",
+                f"{_kassa_note(payment.is_opening)}{_date_note(payment.date, was_date)}",
             )
             messages.success(request, _advance_edit_message(retro, delta, mode))
             # A deposit kept out of the till isn't on the kassa page at all, so the
@@ -4012,7 +4023,7 @@ def advance_delete(request, pk):
                 AuditLog.record(
                     request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
                     f"Mijoz {client.name} avansi qaytarildi — "
-                    f"{cd['amount']:,.0f} so'm ({where})",
+                    f"{cd['amount']:,.0f} so'm ({where}){_date_note(cd['date'])}",
                 )
                 messages.success(
                     request,
@@ -4023,7 +4034,7 @@ def advance_delete(request, pk):
                 AuditLog.record(
                     request.user, AuditLog.Action.VOID, "To'lov", client.pk,
                     f"{client.name} — avans {payment.amount:,.0f} so'm o'chirildi "
-                    f"(xato yozuv)",
+                    f"(xato yozuv){_date_note(payment.date)}",
                 )
                 payment.delete()
                 messages.success(request, "Avans o'chirildi.")
@@ -4077,7 +4088,10 @@ def advance_out_delete(request, pk):
     payment = get_object_or_404(qs, pk=pk)
     client, seller = payment.client, payment.created_by
     if request.method == "POST":
-        summary = f"{client.name} — qaytarilgan avans {payment.amount:,.0f} so'm bekor qilindi"
+        summary = (
+            f"{client.name} — qaytarilgan avans {payment.amount:,.0f} so'm bekor qilindi"
+            f"{_date_note(payment.date)}"
+        )
         payment.delete()
         # The freed credit lands back on whatever the client still owes.
         _reconcile_client_advance(client, seller)
@@ -4117,7 +4131,10 @@ def payment_delete(request, pk):
     if request.method == "POST":
         sale_pk = payment.sale_id
         sale = payment.sale
-        summary = f"{payment.sale.client.name} — {payment.amount:,.0f} so'm ({payment.get_method_display()})"
+        summary = (
+            f"{payment.sale.client.name} — {payment.amount:,.0f} so'm "
+            f"({payment.get_method_display()}){_date_note(payment.date)}"
+        )
         payment.delete()
         # The client's deadlines may have been counted from this payment; with it gone
         # the clock falls back to their previous repayment — restoring the old days.
@@ -4152,6 +4169,9 @@ def payment_edit(request, pk):
     # credited, so add that back to get how much this one may cover.
     max_amount = payment.sale.debt_remaining + payment.credited_amount
     title = "To'lovni tahrirlash"
+    # Read before the form validates: a ModelForm writes the posted values onto its
+    # instance while cleaning, so afterwards the date it used to carry is gone.
+    was_date = payment.date
     form = PaymentEditForm(request.POST or None, instance=payment, max_amount=max_amount)
     if request.method == "POST":
         if form.is_valid():
@@ -4161,7 +4181,7 @@ def payment_edit(request, pk):
                 request.user, AuditLog.Action.UPDATE, "To'lov", payment.sale_id,
                 f"Mijoz {payment.sale.client.name} to'lovi "
                 f"({payment.get_method_display()}){_usd_note(form.cleaned_data)} "
-                f"— {payment.amount:,.0f} so'm",
+                f"— {payment.amount:,.0f} so'm{_date_note(payment.date, was_date)}",
             )
             messages.success(request, "To'lov yangilandi.")
             return form_success(request, reverse("kassa"))
@@ -5571,11 +5591,18 @@ def _rate_cell(row):
     return float(row["exchange_rate"]) if row["currency"] == Payment.Currency.USD else ""
 
 
+def _entered_cell(row):
+    """When the row was typed in, as opposed to the date written on it. Last column on
+    both tabs: a backdated row is found by reading the two side by side."""
+    return timezone.localtime(row["created_at"]).strftime("%d.%m.%Y %H:%M")
+
+
 def _income_sheet(income):
     """The Kirim tab: money taken in over the window."""
     headers = [
         "Sana", "Kimdan", "Kirim turi", "Usul", "Valyuta",
         "Kirim summa (so'm)", "Asl summa", "Kurs", "Qarzga ta'sir", "Kim qabul qildi",
+        "Kiritilgan",
     ]
     rows = [
         [
@@ -5591,6 +5618,7 @@ def _income_sheet(income):
             # so it moves no debt — the page shows a dash in this column.
             0 if r.get("is_advance") else float(r["amount_som"]),
             str(r["created_by"]),
+            _entered_cell(r),
         ]
         for r in income
     ]
@@ -5603,7 +5631,7 @@ def _outflow_sheet(outflow):
     fees and cash refunded to clients — everything that left the till."""
     headers = [
         "Sana", "Turi", "Tavsif", "Xodim", "Izoh", "Usul", "Valyuta",
-        "Chiqim summa (so'm)", "Asl summa", "Kurs", "Kim kiritdi",
+        "Chiqim summa (so'm)", "Asl summa", "Kurs", "Kim kiritdi", "Kiritilgan",
     ]
     rows = [
         [
@@ -5618,6 +5646,7 @@ def _outflow_sheet(outflow):
             float(r["amount_original"]),
             _rate_cell(r),
             str(r["created_by"]),
+            _entered_cell(r),
         ]
         for r in outflow
     ]
@@ -8849,6 +8878,7 @@ def sale_mark_paid(request, pk):
             AuditLog.record(
                 request.user, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
                 f"Mijoz {sale.client.name} to'liq to'ladi (Naqd) — {remaining:,.0f} so'm"
+                f"{_date_note(timezone.localdate())}"
                 f"{_on_behalf(request.user, sale.sales_rep)}",
             )
             messages.success(request, "Sotuv to'langan deb belgilandi.")
@@ -8911,7 +8941,8 @@ def sale_pay(request, pk):
                 request.user, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
                 f"Mijoz {sale.client.name} to'lovi "
                 f"({_method_label(cd['method'])}){_usd_note(cd)} "
-                f"— {cd['amount']:,.0f} so'm{_on_behalf(request.user, seller)}",
+                f"— {cd['amount']:,.0f} so'm{_date_note(cd['date'])}"
+                f"{_on_behalf(request.user, seller)}",
             )
             if sale.debt_remaining <= 0:
                 msg = "Qarz to'liq to'landi."

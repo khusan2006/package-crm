@@ -82,8 +82,12 @@
     <p class="ledger-hint">{% if filters.q %}«{{ filters.q }}» bo'yicha {{ income_rows|length }} ta kirim — yuqoridagi summa shularniki.{% else %}Mijozlardan qabul qilingan to'lovlar — eng yangisi yuqorida.{% endif %}</p>
     <div class="table-wrap">
     <table class="ledger-table ledger-in">
+      {% comment %}Sana — pul qaysi kunga yozilgani; Kiritilgan — yozuv tizimga qachon
+      terilgani. Ikkalasi farq qilsa, yozuv orqaga sana bilan kiritilgan: kun topshiruv
+      bilan yopilgandan keyin tushgan bo'lsa, o'sha kunda qoldiq paydo bo'ladi.{% endcomment %}
       <tr>
         <th>Sana</th>
+        <th>Kiritilgan</th>
         <th>Kimdan kirim</th>
         <th>Kirim turi</th>
         <th class="num">Foiz / kurs</th>
@@ -94,6 +98,7 @@
       {% for t in income_rows %}
       <tr>
         <td>{{ t.date|date:"d.m.Y" }}</td>
+        <td class="cell-note" title="Tizimga kiritilgan vaqt">{{ t.created_at|date:"d.m H:i" }}</td>
         <td>{{ t.title }}</td>
         <td>
           {% include "crm/_method_badge.html" with code=t.method_code label=t.method %}
@@ -114,7 +119,7 @@
           </span>
         </td>
       </tr>
-      {% empty %}<tr><td colspan="7" class="muted">{% if filters.q %}«{{ filters.q }}» bo'yicha kirim topilmadi.{% else %}Bu davrda kirim yo'q.{% endif %}</td></tr>{% endfor %}
+      {% empty %}<tr><td colspan="8" class="muted">{% if filters.q %}«{{ filters.q }}» bo'yicha kirim topilmadi.{% else %}Bu davrda kirim yo'q.{% endif %}</td></tr>{% endfor %}
     </table>
     </div>
   </div>
@@ -130,6 +135,7 @@
     <table class="ledger-table ledger-out">
       <tr>
         <th>Sana</th>
+        <th>Kiritilgan</th>
         <th>Tavsif</th>
         <th>Turi</th>
         <th class="num">Kurs</th>
@@ -139,6 +145,7 @@
       {% for t in outflow_rows %}
       <tr>
         <td>{{ t.date|date:"d.m.Y" }}</td>
+        <td class="cell-note" title="Tizimga kiritilgan vaqt">{{ t.created_at|date:"d.m H:i" }}</td>
         <td>{% if t.kind == 'remittance' %}<span class="badge badge-remit">Topshirish</span> {% elif t.kind == 'remittance_back' %}<span class="badge badge-info">I.ch. qaytardi</span> {% elif t.kind == 'profit' %}<span class="badge badge-ok">Foyda</span> {% elif t.kind == 'refund' %}{% if t.is_adjust %}<span class="badge badge-neutral">Narx tuzatildi</span>{% else %}<span class="badge badge-neutral">Qaytarish</span>{% endif %} {% elif t.kind == 'advance_out' %}<span class="badge badge-info">Avans qaytdi</span> {% elif t.kind == 'commission' %}<span class="badge badge-danger">Komissiya</span> {% endif %}{{ t.title }}{% if t.employee %} · <strong>{{ t.employee }}</strong>{% endif %}{% if t.kind == 'expense' or t.kind == 'advance_out' %}{% if t.subtitle %} <span class="cell-note">· {{ t.subtitle }}</span>{% endif %}{% endif %}</td>
         <td>{% include "crm/_method_badge.html" with code=t.method_code label=t.method %}</td>
         <td class="num muted">{% if t.kind == 'commission' %}{{ t.commission_percent|floatformat:"-2g" }}%{% elif t.currency == 'usd' %}{{ t.exchange_rate|floatformat:"0g" }}{% else %}—{% endif %}</td>
@@ -169,7 +176,7 @@
           </span>
         </td>
       </tr>
-      {% empty %}<tr><td colspan="6" class="muted">{% if filters.q %}«{{ filters.q }}» bo'yicha chiqim topilmadi.{% else %}Bu davrda chiqim yo'q.{% endif %}</td></tr>{% endfor %}
+      {% empty %}<tr><td colspan="7" class="muted">{% if filters.q %}«{{ filters.q }}» bo'yicha chiqim topilmadi.{% else %}Bu davrda chiqim yo'q.{% endif %}</td></tr>{% endfor %}
     </table>
     </div>
   </div>

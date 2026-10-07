@@ -1200,7 +1200,7 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
   padding-right: 16px;
 }
 
-/* Fixed action column so Kirim (7 cols) and Chiqim (6 cols) line their icons up
+/* Fixed action column so Kirim (8 cols) and Chiqim (7 cols) line their icons up
    at the same offset — two 28px slots plus their gap, right-aligned, never wraps. */
 .ledger-table th:last-child,
 .ledger-table td:last-child {

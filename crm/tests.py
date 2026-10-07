@@ -2348,6 +2348,44 @@ class AuditLogTests(BaseSetup):
         self.client.post(reverse("payment_delete", args=[payment.pk]))
         self.assertTrue(AuditLog.objects.filter(action="void", target_id=sale.pk).exists())
 
+    def test_payment_line_carries_the_payments_own_date(self):
+        # Typed in today for money that came in last week: the line's own timestamp
+        # says when it was written, so the day the money counts for has to be spelled out.
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        paid_on = timezone.localdate() - timedelta(days=7)
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]),
+            {"amount": "100000", "method": "cash", "date": paid_on.isoformat()},
+        )
+        log = AuditLog.objects.get(action="payment", target_id=sale.pk)
+        self.assertIn(f"sanasi: {paid_on:%d.%m.%Y}", log.summary)
+
+    def test_void_line_keeps_the_date_of_the_payment_it_removed(self):
+        # The payment row is gone after a void — the line is the only place left that
+        # can say which day's kirim just shrank.
+        paid_on = timezone.localdate() - timedelta(days=7)
+        sale = make_sale(self.client1, self.sales1, self.product, date=paid_on)
+        payment = sale.payments.get()
+        self.client.force_login(self.manager)
+        self.client.post(reverse("payment_delete", args=[payment.pk]))
+        log = AuditLog.objects.get(action="void", target_id=sale.pk)
+        self.assertIn(f"sanasi: {paid_on:%d.%m.%Y}", log.summary)
+
+    def test_edit_that_moves_the_payment_shows_both_dates(self):
+        sale = make_sale(self.client1, self.sales1, self.product)  # paid
+        payment = sale.payments.get()
+        was, moved = payment.date, payment.date - timedelta(days=3)
+        self.client.force_login(self.manager)
+        self.client.post(
+            reverse("payment_edit", args=[payment.pk]),
+            {"date": moved.isoformat(), "amount": "240000", "method": "cash"},
+        )
+        payment.refresh_from_db()
+        self.assertEqual(payment.date, moved)
+        log = AuditLog.objects.get(action="update", target_id=sale.pk)
+        self.assertIn(f"sanasi: {was:%d.%m.%Y} → {moved:%d.%m.%Y}", log.summary)
+
     def test_audit_list_open_to_all_but_scoped_for_seller(self):
         # Audit is an "own work" view: a seller may open it but sees only their
         # own actions; admins/managers see everyone's.
@@ -3168,6 +3206,49 @@ class KassaScopingTests(BaseSetup):
         self.client.force_login(self.admin)
         response = self.client.get(reverse("kassa"))
         self.assertContains(response, "Sotuvchilar nazorati")
+
+
+class KassaEntryTimeTests(BaseSetup):
+    """Each ledger row says when it was typed in, next to the date written on it.
+
+    A day is closed by handing the till over. A row backdated onto it afterwards makes
+    money reappear on a day that was left at zero, and the two dates side by side are
+    how that row gets found."""
+
+    def setUp(self):
+        self.day = timezone.localdate() - timedelta(days=5)
+        # auto_now_add stamps "now"; move it to a moment that is neither the rows' own
+        # date nor today, so only the entry time itself can satisfy the assertions.
+        self.entered = timezone.now() - timedelta(days=2)
+        expense = Expense.objects.create(
+            amount=Decimal("30000"), category="Boshqa", method=Payment.Method.CASH,
+            created_by=self.sales1, date=self.day,
+        )
+        Expense.objects.filter(pk=expense.pk).update(created_at=self.entered)
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        payment = Payment.objects.create(
+            sale=sale, amount=Decimal("50000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=self.day, created_by=self.sales1,
+        )
+        Payment.objects.filter(pk=payment.pk).update(created_at=self.entered)
+        self.window = {"dan": self.day.isoformat(), "gacha": self.day.isoformat()}
+        self.client.force_login(self.sales1)
+
+    def _stamp(self, fmt):
+        return timezone.localtime(self.entered).strftime(fmt)
+
+    def test_both_ledgers_show_when_the_row_was_entered(self):
+        response = self.client.get(reverse("kassa"), self.window)
+        self.assertContains(response, "<th>Kiritilgan</th>", count=2)
+        self.assertContains(response, self._stamp("%d.%m %H:%M"), count=2)
+
+    def test_exports_carry_the_entry_time(self):
+        for url_name in ("kassa_income_export", "kassa_outflow_export"):
+            rows = read_xlsx(self.client.get(reverse(url_name), self.window))
+            self.assertEqual(rows[0][-1], "Kiritilgan")
+            self.assertEqual(
+                {row[-1] for row in rows[1:]}, {self._stamp("%d.%m.%Y %H:%M")}
+            )
 
 
 class TransferCommissionKassaTests(BaseSetup):
