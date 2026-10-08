@@ -2108,12 +2108,11 @@ def till_on(days, day):
     return days[at - 1] if at else TillDay(None, Decimal("0"), Decimal("0"))
 
 
-# The first day whose "Kassadagi pul" reads as what is still held. Earlier days keep
-# the plain dated figure, balances and all: the owner wants to clear July–September
-# by hand, with the seller, as a lesson in correcting the books — so the screen must
-# not tidy those days up for them. Once that is done, set this to None (or delete it)
-# and every day follows the one rule.
-TILL_SETTLES_FROM = date(2026, 10, 1)
+# A switch for clearing old days by hand. Give it a date and every day BEFORE it keeps
+# the plain dated figure, balances and all, so the screen does not tidy those days up
+# while somebody corrects them row by row (it stood at 01.10.2026 for an afternoon,
+# for July–September). None — the normal state — puts every day under the one rule.
+TILL_SETTLES_FROM = None
 
 
 def till_cash_on(days, day):

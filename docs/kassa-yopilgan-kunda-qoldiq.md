@@ -20,23 +20,23 @@ qarzida to'lov eng eski chekni yopgani kabi. Shuning uchun:
 - Bir qismi topshirilsa, qolgani eng oxirgi kunlarda ko'rinadi.
 - Bugungi kassa raqami o'zgarmagan. Bazadagi hech bir yozuv o'zgartirilmaydi.
 
-**Qoida 01.10.2026 dan boshlab ishlaydi.** Undan oldingi kunlar (iyul – sentyabr)
-ataylab eskicha, sana bo'yicha qoldiq ko'rsatadi: Sarvar ularni sotuvchi bilan birga
-**qo'lda** tuzatmoqchi — dasturda xatoni qanday to'g'rilashni o'rgatish uchun. Chegara
-`crm/models.py` dagi `TILL_SETTLES_FROM` da. Qo'lda tuzatish tugagach uni `None`
-qilish (yoki o'chirish) kerak — shunda hamma kun bitta qoidaga o'tadi.
+**Qoida hamma kunga ishlaydi**, iyul – sentyabrga ham. Bir muddat (08.10, bitta
+commit) 01.10.2026 dan oldingi kunlar ataylab eskicha qoldirilgan edi — Sarvar ularni
+qo'lda tuzatmoqchi edi; keyin shu kunlarni ham qoidaga o'tkazishni aytdi. Kalit
+`crm/models.py` dagi `TILL_SETTLES_FROM` da qoldi (`None` = hamma kun qoidada). Unga
+sana berilsa, o'sha sanadan oldingi kunlar yana sana bo'yicha qoldiq ko'rsatadi —
+eski kunlarni qo'lda tuzatib ko'rsatish kerak bo'lsa.
 
 Prodning 08.10 nusxasida: Kamolaning 56 kunidan 52 tasi sana bo'yicha 0 emas
-(23.07 – 30.09) — chegara turganicha ular shunday ko'rinaveradi; chegarasiz qoida
-bilan hammasi 0 chiqadi. Umidaning 14 700 so'mi 05.10 dan beri ko'rinadi — u
-haqiqatan topshirilmagan.
+(23.07 – 30.09), qoida bilan hammasi 0. Umidaning 14 700 so'mi 05.10 dan beri
+ko'rinadi — u haqiqatan topshirilmagan.
 
 **Kod** (`stage`):
 
 | Qayerda | Nima |
 |---|---|
 | `till_days`, `till_on` — `crm/models.py` | Har kassa kunma-kun: `at_close` (sana bo'yicha qoldiq) va `still_held` (shundan hozirgacha turgani) |
-| `till_cash_on`, `TILL_SETTLES_FROM` — `crm/models.py` | Ekranga chiqadigan raqam: chegaradan boshlab `still_held`, undan oldin `at_close` |
+| `till_cash_on`, `TILL_SETTLES_FROM` — `crm/models.py` | Ekranga chiqadigan raqam: `still_held`; kalitga sana berilsa, undan oldingi kunlar uchun `at_close` |
 | `_kassa_summary`, `_per_employee_kassa` — `crm/views.py` | «Kassadagi pul» = `till_cash_on`. Sana bo'yicha raqam `cash_at_close` da qoladi |
 | `templates/crm/kassa.html` | Raqam ostida izoh: «30.09.2026 oxirida 8 211 700 so'm bo'lgan — shundan … keyin topshirilgan yoki sarflangan» |
 | `left_after_handover` — `crm/models.py`; `_left_behind_notices` — `crm/views.py` | Kassa eslatmasi: oxirgi (bugungidan oldingi) topshiruv o'sha kungacha yig'ilgan pulni to'liq yopmagan bo'lsa — «14 700 so'm topshirilmay qolgan». Tugma formani shu summa bilan ochadi, sanani sotuvchi tanlaydi |
@@ -48,11 +48,11 @@ kiritilgan to'lov endi zararsiz: u joriy kassada topshirilmagan pul bo'lib ko'ri
 keyingi topshiruv bilan ketadi. `_backdated_warning` (kun ko'tara olmaydigan chiqim)
 o'z joyida.
 
-**`fix_kamola_kassa` 6-bosqichni prodda ishga tushirmang.** U 8 211 700 ni #90 dan
-#89 ga ko'chiradi — bu aynan Sarvar qo'lda qilmoqchi bo'lgan tuzatishlardan biri.
-3 200 so'm (to'lov #4811) masalasi ham ochiq: bu pul aslida bo'lmagan, ya'ni qog'ozda
-ishlab chiqarish qarzi 3 200 so'mga kam. Tuzatish uchun egasining roziligi kerak
-(pastdagi 1-savol).
+**`fix_kamola_kassa` 6-bosqich endi kerak emas** — 8 211 700 ni #90 dan #89 ga
+ko'chirishning hojati yo'q, 30.09 shusiz ham 0. Prodda **ishga tushirmang**. Faqat
+3 200 so'm (to'lov #4811) masalasi ochiq qoladi: u ekranda 0 ko'rinadi, lekin bu pul
+aslida bo'lmagan, ya'ni qog'ozda ishlab chiqarish qarzi 3 200 so'mga kam. Tuzatish
+uchun egasining roziligi kerak (pastdagi 1-savol).
 
 **Ma'lum cheklovlar:**
 
