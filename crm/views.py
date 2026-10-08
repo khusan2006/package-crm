@@ -102,13 +102,16 @@ from .models import (
     SalaryRate,
     StockEntry,
     davomad_start,
+    left_after_handover,
     month_span,
     on_davomad,
     rest_dates_in_month,
     rest_holidays_in,
     seller_cash_on_hand,
     seller_production_debt,
-    unremitted_closed_days,
+    TILL_SETTLES_FROM,
+    till_cash_on,
+    till_days,
 )
 from .context_processors import SESSION_KEY as ACTING_SELLER_KEY
 from .context_processors import current_acting_seller
@@ -3338,7 +3341,7 @@ def client_debt_pay(request, pk):
     if total <= 0:
         return form_reload(request, reverse("debt_client", args=[client.pk]))
     if request.method == "POST":
-        form = DebtPaymentForm(request.POST, seller=seller)
+        form = DebtPaymentForm(request.POST)
         if form.is_valid():
             touched, surplus = _distribute_debt_payment(
                 sales,
@@ -3419,7 +3422,7 @@ def client_advance_pay(request, pk):
     seller = client.owner
     balance = client_advance_balance(client, seller)
     if request.method == "POST":
-        form = AdvanceForm(request.POST, seller=seller)
+        form = AdvanceForm(request.POST)
         if form.is_valid():
             cd = form.cleaned_data
             Payment.objects.create(
@@ -4950,6 +4953,15 @@ def _kassa_summary(date_from, date_to, rep=None):
         .aggregate(s=Sum("commission"))["s"] or Decimal("0")
     )
     cash_on_hand = income_all_cum - refund_cum - expense_cum - remitted_cum - paid_profit_cum
+    # What of that is in the drawer to this day. For a window that ends in the past
+    # the dated rows alone would show money that has long since been handed over —
+    # see `till_days`. Till by till, so one seller's shortfall is never hidden behind
+    # another's. With nothing dated after `date_to` the two figures are the same, and
+    # so they are before `TILL_SETTLES_FROM`, where the dated figure is kept on purpose.
+    cash_still_held = sum(
+        (till_cash_on(days, date_to) for days in till_days(rep).values()),
+        Decimal("0"),
+    )
     return {
         "som": som,
         "usd": _currency_till(
@@ -4963,7 +4975,13 @@ def _kassa_summary(date_from, date_to, rep=None):
         "remitted": remitted,
         "paid_profit": paid_profit,
         "production_debt": opening_debt + cost_cum - remitted_cum + adjusted_cum,
-        "cash": cash_on_hand,
+        "cash": cash_still_held,
+        # The dated-rows figure beside it, and how much of that has gone since, so the
+        # page can say "the day closed on X, later handed over" instead of a bare zero.
+        "cash_at_close": cash_on_hand,
+        "cash_settled_later": _whole_som(cash_on_hand - cash_still_held),
+        "cash_as_of": date_to,
+        "cash_settles_from": TILL_SETTLES_FROM,
         # Profit still sitting in the till, free to hand up: cash beyond the debt.
         "withdrawable_profit": cash_on_hand
         - (opening_debt + cost_cum - remitted_cum + adjusted_cum),
@@ -5101,15 +5119,20 @@ def _per_employee_kassa(date_from, date_to, rep=None):
     for r in refunds.values("created_by").annotate(s=Sum("amount")):
         row(r["created_by"])["refunded"] += r["s"] or Decimal("0")
 
+    tills = till_days(rep)
     result = []
     for rr in rows.values():
-        # Cash left: gross income, less the bank fees that never reached the till, less
-        # money refunded to clients, less expenses, less handed to production, less
-        # profit handed to the boss.
-        rr["cash"] = (
+        # Where the dated rows leave the till on date_to: gross income, less the bank
+        # fees that never reached it, less money refunded to clients, less expenses,
+        # less handed to production, less profit handed to the boss.
+        rr["cash_at_close"] = (
             rr["in_som"] - rr["commission"] - rr["refunded"] - rr["expense_total"]
             - rr["remitted"] - rr["paid_profit"]
         )
+        # What the column shows: how much of that is in the drawer to this day. The
+        # same figure unless date_to is in the past and money has left since — see
+        # `till_days`.
+        rr["cash"] = till_cash_on(tills.get(rr["uid"], []), date_to)
         rr["production_debt"] = (
             rr["opening_debt"] + rr["sold_cost"] - rr["remitted"] + rr["adjusted"]
         )
@@ -5392,28 +5415,28 @@ def _last_kassa_activity(rep):
     return max([d for d in found if d], default=None)
 
 
-def _closed_day_notices(sellers, named):
-    """The kassa's "money left on a closed day" notices, one per seller that has any.
+def _left_behind_notices(sellers, named):
+    """The kassa's "the last handover left money behind" notices, one per seller that
+    has any — see `left_after_handover` for what counts.
 
-    Each points at the EARLIEST such day and opens the handover form already dated to
-    it with the sum left there, so one Saqlash puts the day back to zero. Later days
-    wait their turn — clearing the first one brings the next up — but are counted, so
-    nobody takes a single notice for the whole of it. See `unremitted_closed_days`.
+    Each opens the handover form with the sum already filled in. The date is left to
+    the seller: whichever day the money goes out under, it comes off the oldest
+    takings first, so no old day is left showing it.
 
     `named` adds whose till it is, for the company view where several are on screen."""
+    tills = till_days(sellers[0] if len(sellers) == 1 else None)
     notices = []
     for seller in sellers:
-        days = unremitted_closed_days(seller)
-        if not days:
+        left = left_after_handover(seller, tills.get(seller.pk, []))
+        if not left:
             continue
-        day, amount = days[0]
-        params = {"date": day.isoformat(), "amount": f"{amount:.0f}"}
+        day, amount = left
+        params = {"amount": f"{amount:.0f}"}
         if named:
             params["seller"] = seller.pk
         notices.append({
             "day": day,
             "amount": amount,
-            "more_days": len(days) - 1,
             "seller": str(seller) if named else "",
             "url": f"{reverse('remittance_create')}?{urlencode(params)}",
         })
@@ -5476,15 +5499,15 @@ def kassa_view(request):
     if not request.user.can_see_all_records:
         my_row = seller_rows[0] if seller_rows else None
 
-    # Money left on a day already closed with a handover. A standing fact about the
-    # till, not about the window on screen, so the date filter does not narrow it.
+    # Money the last handover left behind. A standing fact about the till, not about
+    # the window on screen, so the date filter does not narrow it.
     if rep is not None:
         notice_sellers = [rep]
     else:
-        notice_sellers = User.objects.filter(
+        notice_sellers = list(User.objects.filter(
             pk__in=[r["uid"] for r in seller_rows]
-        ).order_by("first_name", "username")
-    closed_day_notices = _closed_day_notices(
+        ).order_by("first_name", "username"))
+    left_behind_notices = _left_behind_notices(
         notice_sellers, named=request.user.can_see_all_records
     )
 
@@ -5502,7 +5525,7 @@ def kassa_view(request):
     return render(request, "crm/kassa.html", {
         "summary": summary,
         "empty_hint": empty_hint,
-        "closed_day_notices": closed_day_notices,
+        "left_behind_notices": left_behind_notices,
         "debt_adjustments": adjustments,
         "income_rows": income_rows,
         "outflow_rows": outflow_rows,
@@ -7811,13 +7834,10 @@ def remittance_create(request):
     if request.method == "GET" and request.user.can_see_all_records and seller_pk.isdigit():
         initial["seller"] = seller_pk
     if request.method == "GET":
-        # The kassa's closed-day notice opens the form already pointed at the day the
-        # money was left on and the sum left there — see `_closed_day_notices`. Only a
-        # prefill: the form still checks whatever is finally submitted.
-        day = _parse_date(request.GET.get("date"))
+        # The kassa's left-behind notice opens the form with the sum already filled in
+        # — see `_left_behind_notices`. Only a prefill: the form still checks whatever
+        # is finally submitted.
         amount = _parse_amount(request.GET.get("amount"))
-        if day:
-            initial["date"] = day
         if amount and amount > 0:
             initial["amount"] = amount
     form = ProductionRemittanceForm(request.POST or None, user=request.user, initial=initial)
@@ -8970,7 +8990,7 @@ def sale_pay(request, pk):
     remaining = sale.debt_remaining
     seller = sale.sales_rep
     if request.method == "POST":
-        form = DebtPaymentForm(request.POST, seller=seller)
+        form = DebtPaymentForm(request.POST)
         if form.is_valid():
             cd = form.cleaned_data
             _, surplus = _distribute_debt_payment(

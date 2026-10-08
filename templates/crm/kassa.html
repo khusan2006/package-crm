@@ -17,6 +17,14 @@
       <div class="balance-cap"><span class="balance-ic balance-ic--cash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><circle cx="12" cy="14" r="1.5"/></svg></span>Kassadagi pul</div>
       <div class="balance-num">{{ summary.cash|floatformat:"0g" }}<span class="unit">so'm</span></div>
       <div class="balance-note">{% if user.can_see_all_records %}sotuvchilar qo'lidagi naqd{% else %}mening qo'limdagi naqd{% endif %}</div>
+      {% comment %}O'tgan sana tanlanganda raqam «o'sha kungacha yig'ilgan puldan hozirgacha
+      topshirilmagani»ni ko'rsatadi: pul keyinroq, boshqa sana bilan topshirilgan bo'lsa
+      ham eski kun nol turadi. Kun aslida qancha bilan yopilgani shu izohda qoladi.{% endcomment %}
+      {% if summary.cash_settled_later > 0 %}
+      <div class="balance-note">{{ summary.cash_as_of|date:"d.m.Y" }} oxirida {{ summary.cash_at_close|floatformat:"0g" }} so'm bo'lgan — shundan {{ summary.cash_settled_later|floatformat:"0g" }} keyin topshirilgan yoki sarflangan</div>
+      {% elif summary.cash_settled_later < 0 %}
+      <div class="balance-note">{{ summary.cash_as_of|date:"d.m.Y" }} oxirida {{ summary.cash_at_close|floatformat:"0g" }} so'm bo'lgan — keyingi kirimlar qoplagan</div>
+      {% endif %}
     </div>
     <div class="balance-cell">
       <div class="balance-cap"><span class="balance-ic balance-ic--debt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20h20"/><path d="M4 20V8l8-5 8 5v12"/></svg></span>Ishlab chiq. qarz</div>
@@ -26,19 +34,19 @@
   </div>
 </section>
 
-{% comment %}Topshiruv bilan yopilgan kunda qolib ketgan pul. Odatda kun yopilgandan
-keyin unga eski sana bilan kirim kiritilganda paydo bo'ladi: pul keyingi kunning
-topshiruviga qo'shib yuborilsa, eski kun qoldiq bilan qolaveradi. Tugma topshiruv
-formasini aynan o'sha kun sanasi va summasi bilan ochadi. Bo'sh kun eslatmasining
-ko'rinishidan foydalanadi — ikkalasi ham «shu yerga qarang» degan bir xil gap.{% endcomment %}
-{% for n in closed_day_notices %}
+{% comment %}Oxirgi topshiruv kassani to'liq yopmagan: o'sha kungacha yig'ilgan pulning
+bir qismi hali qo'lda. Kam sanalgan topshiruv yoki kun yopilgandan keyin eski sana
+bilan kiritilgan to'lov shunday qoldiradi. Tugma topshiruv formasini shu summa bilan
+ochadi; sana muhim emas — topshirilgan pul eng eski kirimni birinchi yopadi. Bo'sh kun
+eslatmasining ko'rinishidan foydalanadi — ikkalasi ham «shu yerga qarang» degan gap.{% endcomment %}
+{% for n in left_behind_notices %}
 <div class="kassa-empty">
   <span class="ke-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v14"/><path d="M5 9l7-7 7 7"/><rect x="4" y="16" width="16" height="6" rx="2"/></svg></span>
   <div class="ke-text">
-    <span class="ke-title">{{ n.day|date:"d.m.Y" }} kunida {{ n.amount|floatformat:"0g" }} so'm topshirilmagan</span>
-    <span class="ke-sub">{% if n.seller %}<strong>{{ n.seller }}</strong> · {% endif %}Bu kun topshiruv bilan yopilgan, lekin shu pul kassada qolgan. Uni <strong>{{ n.day|date:"d.m.Y" }}</strong> sanasi bilan topshirsangiz, kun nolga tushadi.{% if n.more_days %} Yana {{ n.more_days }} ta kunda ham qoldiq bor — bunisi yopilgach ko'rinadi.{% endif %}</span>
+    <span class="ke-title">{{ n.amount|floatformat:"0g" }} so'm topshirilmay qolgan</span>
+    <span class="ke-sub">{% if n.seller %}<strong>{{ n.seller }}</strong> · {% endif %}<strong>{{ n.day|date:"d.m.Y" }}</strong> kungi topshiruvdan keyin ham shu pul kassada turibdi. Keyingi topshiruvga qo'shsangiz kifoya — qaysi sana bilan topshirilsa ham eski kunlar nolga tushadi.</span>
   </div>
-  <a class="btn ke-btn" href="{{ n.url }}" data-modal>{{ n.day|date:"d.m" }} sanasi bilan topshirish</a>
+  <a class="btn ke-btn" href="{{ n.url }}" data-modal>Topshirish</a>
 </div>
 {% endfor %}
 
@@ -222,7 +230,7 @@ ko'rinishidan foydalanadi — ikkalasi ham «shu yerga qarang» degan bir xil ga
     <h2 style="margin:0;">Sotuvchilar nazorati</h2>
     <a class="btn btn-violet btn-sm" href="{% url 'remittance_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M12 2v14"/><path d="M5 9l7-7 7 7"/><rect x="4" y="16" width="16" height="6" rx="2"/></svg>Ishlab chiqarishga topshirish</a>
   </div>
-  <p class="field-hint" style="margin-top:0;">Jami holat — boshidan tanlangan sana oxirigacha (kunlik filtrga bog'liq emas). Kassadagi pul = kirim − bank komissiyasi − chiqim − topshirilgan · Qarz = sotilgan tannarx − topshirilgan · Sof = foyda − rasxot (komissiya foydadan ham ayrilgan).</p>
+  <p class="field-hint" style="margin-top:0;">Jami holat — boshidan tanlangan sana oxirigacha (kunlik filtrga bog'liq emas). Kassadagi pul = kirim − bank komissiyasi − chiqim − topshirilgan; o'tgan sana tanlansa — o'sha kungacha yig'ilgan puldan hozirgacha topshirilmagani{% if summary.cash_settles_from %} ({{ summary.cash_settles_from|date:"d.m.Y" }} dan oldingi kunlar — sana bo'yicha qoldiq, qo'lda tuzatiladi){% endif %} · Qarz = sotilgan tannarx − topshirilgan · Sof = foyda − rasxot (komissiya foydadan ham ayrilgan).</p>
   {% if per_employee %}
   <div class="table-wrap">
   <table class="table--blue-head">

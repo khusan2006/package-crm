@@ -19,7 +19,6 @@ from .forms import (
     AdvanceForm,
     AdvanceRemoveForm,
     ClientForm,
-    DebtPaymentForm,
     EmployeeForm,
     ExpenseForm,
     ProductionRemittanceForm,
@@ -47,11 +46,13 @@ from .models import (
     SaleItem,
     StockEntry,
     client_advance_balance,
+    left_after_handover,
     seller_cash_on_hand,
-    seller_day_balances,
     seller_production_debt,
     seller_withdrawable_profit,
-    unremitted_closed_days,
+    till_cash_on,
+    till_days,
+    till_on,
 )
 from .utils import uz_month
 from .views import (
@@ -7088,28 +7089,36 @@ class BackdatedPayoutWarningTests(BaseSetup):
         self.assertIn("Saqlashni yana bosing", " ".join(form.errors["__all__"]))
 
 
-class ClosedDayIncomeTests(BaseSetup):
-    """Money dated into a day that was already handed over in full.
+class HandedOverLaterTests(BaseSetup):
+    """A past day shows only the money that has not left the till since.
 
     A seller keys a day in, hands over what it took and the day reads zero. Minutes
     later three more payments for that day are entered with the old date, and the
-    money goes out with the NEXT day's handover. The total is right; the old day shows
-    a balance for ever. That is how 30.09 came to read 8 211 700 after it was closed.
+    money goes out with the NEXT day's handover. The sum is right, but by the dates
+    alone the old day holds a balance for ever — that is how 30.09 came to read
+    8 211 700 on a till that had been emptied. Keeping a day's takings overnight and
+    handing them over in the morning leaves the same trail.
 
-    Three things stand in the way now: the payment form says so before saving, the
-    kassa keeps a notice up that opens the handover dated to that very day, and a
-    later handover reaching into that money is questioned."""
+    So what left the till under a later date comes off the oldest money first: a day
+    whose takings have been handed over reads zero whichever date the handover
+    carries, and nothing has to be re-dated or warned about."""
 
     def setUp(self):
         self.today = timezone.localdate()
+        self.yesterday = self.today - timedelta(days=1)
         self.day = self.today - timedelta(days=5)
         # A day keyed in and closed: 100 000 came in on a debt, 100 000 was handed over.
         self.debt = make_sale(
             self.client1, self.sales1, self.product, is_debt=True, date=self.day,
         )
-        self.paid = self._pay(self.day, "100000")
+        self._pay(self.day, "100000")
         self._hand_over(self.day, "100000")
         # BaseSetup's paid sale also leaves 240 000 in the till, dated today.
+        # The rule itself is under test, wherever the calendar stands: the window left
+        # for clearing old days by hand is switched off here and tested on its own.
+        by_hand = mock.patch("crm.models.TILL_SETTLES_FROM", None)
+        by_hand.start()
+        self.addCleanup(by_hand.stop)
 
     def _pay(self, day, amount):
         return Payment.objects.create(
@@ -7122,191 +7131,231 @@ class ClosedDayIncomeTests(BaseSetup):
             seller=self.sales1, date=day, amount=Decimal(amount), created_by=self.sales1,
         )
 
-    def _payment(self, day, amount="50000", form=DebtPaymentForm, **extra):
-        return form(
-            data={
-                "date": day.isoformat(), "amount": amount,
-                "method": Payment.Method.CASH, "currency": Payment.Currency.UZS,
-                **extra,
-            },
-            seller=self.sales1,
-        )
+    def _on(self, day):
+        """(what the dated rows say the day closed on, what of it is still held)."""
+        standing = till_on(till_days(self.sales1).get(self.sales1.pk, []), day)
+        return standing.at_close, standing.still_held
 
-    def _handover(self, day, amount, **extra):
-        return ProductionRemittanceForm(
-            data={
-                "date": day.isoformat(), "seller": self.sales1.pk, "amount": amount,
-                "method": Payment.Method.CASH, "note": "", **extra,
-            },
-            user=self.sales1,
-        )
+    # --- the rule ---------------------------------------------------------------
 
-    # --- the payment form -------------------------------------------------------
-
-    def test_income_dated_into_a_closed_day_warns(self):
-        form = self._payment(self.day)
-        self.assertFalse(form.is_valid())
-        message = " ".join(form.errors["__all__"])
-        self.assertIn(self.day.strftime("%d.%m.%Y"), message)
-        self.assertIn("50,000 so'm topshirilmagan", message)
-        self.assertIn("Saqlashni yana bosing", message)
-
-    def test_the_second_press_goes_through(self):
-        first = self._payment(self.day)
-        self.assertFalse(first.is_valid())
-        self.assertEqual(first.data["confirm_backdated"], "1")
-        self.assertTrue(self._payment(self.day, confirm_backdated="1").is_valid())
-
-    def test_a_day_still_being_handed_over_is_not_questioned(self):
-        # A handover at noon, the rest in the evening: the day holds more than it has
-        # handed over, so the seller is plainly part-way through it.
-        self._pay(self.day, "30000")
-        self.assertTrue(self._payment(self.day).is_valid())
-
-    def test_a_day_with_no_handover_is_not_questioned(self):
-        form = self._payment(self.day - timedelta(days=3))
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_todays_income_is_never_questioned(self):
-        # Today is still being worked, handover or not.
-        self._hand_over(self.today, "240000")
-        self.assertTrue(self._payment(self.today).is_valid())
-
-    def test_putting_back_what_was_taken_off_the_day_is_not_questioned(self):
-        # A payment voided and typed in again under the right client leaves the day
-        # exactly where it was — nothing new to hand over.
-        self.paid.delete()
-        self.assertTrue(self._payment(self.day, amount="100000").is_valid())
-
-    def test_an_advance_kept_out_of_the_kassa_is_not_questioned(self):
-        kept_out = self._payment(self.day, form=AdvanceForm, to_kassa=AdvanceForm.OUT_OF_KASSA)
-        self.assertTrue(kept_out.is_valid(), kept_out.errors)
-        into_till = self._payment(self.day, form=AdvanceForm, to_kassa=AdvanceForm.IN_KASSA)
-        self.assertFalse(into_till.is_valid())
-
-    def test_the_pay_view_warns_first_and_saves_on_the_second_press(self):
-        self.client.force_login(self.sales1)
-        url = reverse("sale_pay", args=[self.debt.pk])
-        data = {
-            "date": self.day.isoformat(), "amount": "50000",
-            "method": Payment.Method.CASH, "currency": Payment.Currency.UZS,
-        }
-        before = Payment.objects.count()
-        response = self.client.post(url, data)
-        self.assertContains(response, "Saqlashni yana bosing")
-        self.assertEqual(Payment.objects.count(), before)
-        # The warning page carries the flag, so the same form submitted again saves.
-        self.assertContains(response, 'name="confirm_backdated" value="1"')
-        response = self.client.post(url, {**data, "confirm_backdated": "1"})
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(Payment.objects.count(), before + 1)
-
-    # --- what is left on closed days --------------------------------------------
-
-    def test_late_income_is_listed_on_the_day_it_was_dated_to(self):
-        self.assertEqual(unremitted_closed_days(self.sales1), [])
+    def test_late_income_shows_on_its_day_until_it_is_handed_over(self):
         self._pay(self.day, "50000")
-        self.assertEqual(
-            unremitted_closed_days(self.sales1), [(self.day, Decimal("50000"))]
-        )
+        self.assertEqual(self._on(self.day), (Decimal("50000"), Decimal("50000")))
 
-    def test_handing_it_over_under_the_days_own_date_clears_it(self):
-        self._pay(self.day, "50000")
-        self._hand_over(self.day, "50000")
-        self.assertEqual(unremitted_closed_days(self.sales1), [])
-
-    def test_money_that_left_under_a_later_date_is_not_listed(self):
-        # Already gone: there is nothing in the drawer to hand over for that day, so
-        # a notice would only send the seller looking for cash that is not there.
+    def test_handed_over_under_a_later_date_the_old_day_reads_zero(self):
+        # The 30.09 case: the late 50 000 goes out with today's handover.
         self._pay(self.day, "50000")
         self._hand_over(self.today, "290000")
-        self.assertEqual(unremitted_closed_days(self.sales1), [])
+        self.assertEqual(self._on(self.day), (Decimal("50000"), Decimal("0")))
+        self.assertEqual(self._on(self.today), (Decimal("0"), Decimal("0")))
 
-    def test_each_day_is_charged_only_its_own_share(self):
+    def test_takings_kept_overnight_read_zero_once_handed_over(self):
+        # Nothing handed over yesterday; one handover today carries both days.
+        self._pay(self.yesterday, "70000")
+        self.assertEqual(self._on(self.yesterday), (Decimal("70000"), Decimal("70000")))
+        self._hand_over(self.today, "310000")
+        self.assertEqual(self._on(self.yesterday), (Decimal("70000"), Decimal("0")))
+
+    def test_a_handover_takes_the_oldest_money_first(self):
+        # 200 000 of the 310 000 goes: yesterday's 70 000 is covered, the rest of the
+        # shortfall sits on today.
+        self._pay(self.yesterday, "70000")
+        self._hand_over(self.today, "200000")
+        self.assertEqual(self._on(self.yesterday)[1], Decimal("0"))
+        self.assertEqual(self._on(self.today), (Decimal("110000"), Decimal("110000")))
+
+    def test_what_a_handover_does_not_reach_stays_on_the_old_day(self):
+        self._pay(self.yesterday, "70000")
+        self._hand_over(self.today, "30000")
+        self.assertEqual(self._on(self.yesterday)[1], Decimal("40000"))
+
+    def test_an_expense_under_a_later_date_counts_as_money_gone(self):
         self._pay(self.day, "50000")
-        later = self.today - timedelta(days=2)
-        self._pay(later, "80000")
-        self._hand_over(later, "70000")  # 10 000 short
-        self.assertEqual(
-            unremitted_closed_days(self.sales1),
-            [(self.day, Decimal("50000")), (later, Decimal("10000"))],
+        Expense.objects.create(
+            date=self.today, amount=Decimal("50000"), amount_original=Decimal("50000"),
+            category="Boshqa", created_by=self.sales1,
         )
+        self.assertEqual(self._on(self.day)[1], Decimal("0"))
 
-    def test_day_balances_end_on_the_cash_on_hand_figure(self):
+    def test_cash_production_hands_back_is_money_in_not_money_gone(self):
+        # A return is a handover with a minus. Read as "money gone" it would ADD to
+        # what the old day holds instead of leaving it alone.
+        self._pay(self.day, "50000")
+        self._hand_over(self.today, "-40000")
+        self.assertEqual(self._on(self.day)[1], Decimal("50000"))
+        self.assertEqual(self._on(self.today)[0], Decimal("330000"))
+
+    def test_an_overdrawn_day_reads_zero_once_later_money_covers_it(self):
+        self._hand_over(self.day, "30000")
+        self.assertEqual(self._on(self.day), (Decimal("-30000"), Decimal("0")))
+
+    def test_an_overdraft_nothing_has_covered_still_shows(self):
+        self._hand_over(self.day, "300000")
+        self.assertEqual(self._on(self.day)[1], Decimal("-60000"))
+        self.assertEqual(self._on(self.today), (Decimal("-60000"), Decimal("-60000")))
+
+    def test_the_days_end_on_the_cash_on_hand_figure(self):
         # Two ways of adding up the same till must never drift apart.
         self._pay(self.day, "50000")
         Expense.objects.create(
-            date=self.today, amount=Decimal("7000"), amount_original=Decimal("7000"),
+            date=self.yesterday, amount=Decimal("7000"), amount_original=Decimal("7000"),
             category="Boshqa", created_by=self.sales1,
         )
-        self.assertEqual(
-            seller_day_balances(self.sales1)[-1][1], seller_cash_on_hand(self.sales1)
-        )
+        days = till_days(self.sales1)[self.sales1.pk]
+        self.assertEqual(days[-1].at_close, seller_cash_on_hand(self.sales1))
+        self.assertEqual(days[-1].still_held, seller_cash_on_hand(self.sales1))
+        for day in days:
+            self.assertEqual(
+                day.at_close, seller_cash_on_hand(self.sales1, through=day.day)
+            )
 
-    # --- the kassa notice -------------------------------------------------------
-
-    def test_the_kassa_points_at_the_closed_day(self):
+    def test_every_till_at_once_matches_each_on_its_own(self):
         self._pay(self.day, "50000")
+        everyone = till_days()
+        for seller in (self.sales1, self.sales2):
+            self.assertEqual(everyone[seller.pk], till_days(seller)[seller.pk])
+
+    def test_a_till_that_had_not_moved_yet_stood_at_nothing(self):
+        before = self.day - timedelta(days=30)
+        self.assertEqual(self._on(before), (Decimal("0"), Decimal("0")))
+
+    # --- the kassa figures ------------------------------------------------------
+
+    def test_the_kassa_figure_for_an_old_day_drops_what_was_handed_over_since(self):
+        self._pay(self.day, "50000")
+        held = _kassa_summary(self.day, self.day, rep=self.sales1)
+        self.assertEqual(held["cash"], Decimal("50000"))
+        self.assertEqual(held["cash_settled_later"], Decimal("0"))
+        self._hand_over(self.today, "290000")
+        settled = _kassa_summary(self.day, self.day, rep=self.sales1)
+        self.assertEqual(settled["cash"], Decimal("0"))
+        self.assertEqual(settled["cash_at_close"], Decimal("50000"))
+        self.assertEqual(settled["cash_settled_later"], Decimal("50000"))
+
+    def test_todays_kassa_figure_is_still_the_cash_on_hand(self):
+        self._pay(self.day, "50000")
+        summary = _kassa_summary(self.today, self.today, rep=self.sales1)
+        self.assertEqual(summary["cash"], seller_cash_on_hand(self.sales1))
+        self.assertEqual(summary["cash"], summary["cash_at_close"])
+
+    def test_the_company_figure_adds_the_tills_up_one_by_one(self):
+        # sales2 holds 240 000 of their own; sales1's settled day must not eat into it.
+        self._pay(self.day, "50000")
+        self._hand_over(self.today, "290000")
+        company = _kassa_summary(self.today, self.today)
+        self.assertEqual(company["cash"], seller_cash_on_hand(self.sales2))
+
+    def test_the_sellers_row_shows_the_same_figure(self):
+        self._pay(self.day, "50000")
+        self._hand_over(self.today, "290000")
+        row = _per_employee_kassa(self.day, self.day, rep=self.sales1)[0]
+        self.assertEqual(row["cash"], Decimal("0"))
+        self.assertEqual(row["cash_at_close"], Decimal("50000"))
+        today = _per_employee_kassa(self.today, self.today, rep=self.sales1)[0]
+        self.assertEqual(today["cash"], today["cash_at_close"])
+
+    def test_the_page_says_what_the_old_day_closed_on(self):
+        self._pay(self.day, "50000")
+        self._hand_over(self.today, "290000")
+        self.client.force_login(self.sales1)
+        window = {"dan": self.day.isoformat(), "gacha": self.day.isoformat()}
+        response = self.client.get(reverse("kassa"), window)
+        self.assertEqual(response.context["summary"]["cash"], Decimal("0"))
+        # The page groups thousands with a non-breaking space.
+        self.assertContains(response, "50\xa0000 so'm bo'lgan")
+        self.assertContains(response, "keyin topshirilgan yoki sarflangan")
+        # Today nothing has left since, so there is nothing to explain.
+        self.assertNotContains(self.client.get(reverse("kassa")), "so'm bo'lgan")
+
+    # --- days left for the owner to clear by hand -------------------------------
+
+    def test_days_before_the_start_date_keep_the_plain_dated_figure(self):
+        # July–September are being corrected by hand, so the screen must not zero
+        # them: before TILL_SETTLES_FROM the old day shows what the rows say.
+        self._pay(self.day, "50000")
+        self._hand_over(self.today, "290000")
+        days = till_days(self.sales1)[self.sales1.pk]
+        with mock.patch("crm.models.TILL_SETTLES_FROM", self.today):
+            self.assertEqual(till_cash_on(days, self.day), Decimal("50000"))
+            self.assertEqual(till_cash_on(days, self.today), Decimal("0"))
+            old_day = _kassa_summary(self.day, self.day, rep=self.sales1)
+            self.assertEqual(old_day["cash"], Decimal("50000"))
+            self.assertEqual(old_day["cash_settled_later"], Decimal("0"))
+            row = _per_employee_kassa(self.day, self.day, rep=self.sales1)[0]
+            self.assertEqual(row["cash"], Decimal("50000"))
+
+    def test_with_no_start_date_every_day_follows_the_rule(self):
+        self._pay(self.day, "50000")
+        self._hand_over(self.today, "290000")
+        days = till_days(self.sales1)[self.sales1.pk]
+        with mock.patch("crm.models.TILL_SETTLES_FROM", None):
+            self.assertEqual(till_cash_on(days, self.day), Decimal("0"))
+
+    # --- the notice -------------------------------------------------------------
+
+    def test_money_the_last_handover_left_behind_is_pointed_out(self):
+        self.assertIsNone(left_after_handover(self.sales1))
+        self._pay(self.day, "50000")
+        self.assertEqual(
+            left_after_handover(self.sales1), (self.day, Decimal("50000"))
+        )
         self.client.force_login(self.sales1)
         response = self.client.get(reverse("kassa"))
-        # The page groups thousands with a non-breaking space.
-        self.assertContains(response, "50\xa0000 so'm topshirilmagan")
-        self.assertContains(response, f"date={self.day.isoformat()}")
+        self.assertContains(response, "50\xa0000 so'm topshirilmay qolgan")
         self.assertContains(response, "amount=50000")
 
-    def test_a_till_with_nothing_left_behind_shows_no_notice(self):
+    def test_once_it_has_gone_under_any_date_there_is_no_notice(self):
+        self._pay(self.day, "50000")
+        self._hand_over(self.today, "290000")
+        self.assertIsNone(left_after_handover(self.sales1))
         self.client.force_login(self.sales1)
-        self.assertNotContains(self.client.get(reverse("kassa")), "topshirilmagan")
+        self.assertNotContains(self.client.get(reverse("kassa")), "topshirilmay qolgan")
+
+    def test_takings_since_the_last_handover_are_not_pointed_out(self):
+        # Yesterday's money waiting for this morning's handover is ordinary.
+        self._pay(self.yesterday, "70000")
+        self.assertIsNone(left_after_handover(self.sales1))
+
+    def test_a_handover_made_today_is_not_judged_yet(self):
+        self._hand_over(self.today, "100000")
+        self.assertIsNone(left_after_handover(self.sales1))
+
+    def test_a_seller_who_never_handed_over_gets_no_notice(self):
+        self.assertIsNone(left_after_handover(self.sales2))
 
     def test_an_admin_is_told_whose_till_it_is(self):
         self._pay(self.day, "50000")
         self.client.force_login(self.admin)
         response = self.client.get(reverse("kassa"))
-        self.assertContains(response, "50\xa0000 so'm topshirilmagan")
+        self.assertContains(response, "50\xa0000 so'm topshirilmay qolgan")
         self.assertContains(response, f"seller={self.sales1.pk}")
 
-    def test_the_notice_opens_the_handover_already_filled_in(self):
+    def test_the_notice_opens_the_handover_with_the_sum_filled_in(self):
         self.client.force_login(self.sales1)
-        response = self.client.get(
-            reverse("remittance_create"),
-            {"date": self.day.isoformat(), "amount": "50000"},
-        )
-        self.assertContains(response, f'value="{self.day.isoformat()}"')
+        response = self.client.get(reverse("remittance_create"), {"amount": "50000"})
         self.assertContains(response, 'value="50000"')
 
-    def test_saving_that_handover_puts_the_day_back_to_zero(self):
-        self._pay(self.day, "50000")
+    # --- nothing is questioned any more -----------------------------------------
+
+    def test_income_dated_into_a_handed_over_day_saves_first_time(self):
         self.client.force_login(self.sales1)
-        response = self.client.post(reverse("remittance_create"), {
+        before = Payment.objects.count()
+        response = self.client.post(reverse("sale_pay", args=[self.debt.pk]), {
             "date": self.day.isoformat(), "amount": "50000",
-            "method": Payment.Method.CASH, "note": "",
+            "method": Payment.Method.CASH, "currency": Payment.Currency.UZS,
         })
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(unremitted_closed_days(self.sales1), [])
-        self.assertEqual(seller_cash_on_hand(self.sales1, through=self.day), Decimal("0"))
+        self.assertEqual(Payment.objects.count(), before + 1)
 
-    # --- the next handover ------------------------------------------------------
-
-    def test_a_later_handover_that_takes_the_leftover_warns(self):
+    def test_a_later_handover_that_takes_the_old_money_saves_first_time(self):
         self._pay(self.day, "50000")
-        form = self._handover(self.today, "290000")
-        self.assertFalse(form.is_valid())
-        message = " ".join(form.errors["__all__"])
-        self.assertIn(self.day.strftime("%d.%m.%Y"), message)
-        self.assertIn("50,000 so'mi", message)
-        self.assertIn("Saqlashni yana bosing", message)
-        self.assertTrue(
-            self._handover(self.today, "290000", confirm_backdated="1").is_valid()
+        form = ProductionRemittanceForm(
+            data={
+                "date": self.today.isoformat(), "seller": self.sales1.pk,
+                "amount": "290000", "method": Payment.Method.CASH, "note": "",
+            },
+            user=self.sales1,
         )
-
-    def test_handing_over_only_todays_own_money_is_not_questioned(self):
-        self._pay(self.day, "50000")
-        form = self._handover(self.today, "240000")
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_the_leftover_handed_over_on_its_own_day_is_not_questioned(self):
-        self._pay(self.day, "50000")
-        form = self._handover(self.day, "50000")
         self.assertTrue(form.is_valid(), form.errors)
 
 

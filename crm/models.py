@@ -1,5 +1,6 @@
 import calendar
 from bisect import bisect_right
+from collections import namedtuple
 from datetime import date, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -11,7 +12,9 @@ from django.db.models import (
     DecimalField,
     ExpressionWrapper,
     F,
+    Max,
     OuterRef,
+    Q,
     Subquery,
     Sum,
     Value,
@@ -2025,71 +2028,130 @@ def seller_cash_on_hand(
     return income - refunded - expense - remitted - paid_profit
 
 
-def seller_day_balances(seller):
-    """A seller's till at the END of every day it moved on, oldest first:
-    [(day, balance)].
+# One day of one till: what its dated rows add up to at the end of the day, and how
+# much of that is in the drawer to this day. See `till_days`.
+TillDay = namedtuple("TillDay", "day at_close still_held")
 
-    The same five streams `seller_cash_on_hand` nets, grouped by the date written on
-    each row — so the last balance here is that function's figure, and a row keyed in
-    late lands on the day it was dated to, exactly as the kassa page places it. One
-    grouped query per stream, however long the history runs."""
+
+def till_days(seller=None):
+    """Every till day by day, oldest first: {user pk: [TillDay, ...]} — one seller's
+    when `seller` is given.
+
+    `at_close` is what the dated rows add up to at the end of the day: the same five
+    streams `seller_cash_on_hand` nets, so a till's last `at_close` is that figure.
+
+    `still_held` is how much of it has not left since. Rows are filed under the date
+    written on them, not the day they were keyed in, and sellers key days late. A
+    payment entered for a day that was already handed over leaves that day holding
+    money; the cash then goes out with a later handover. The sum is right, but the old
+    day reads as if the money were still there for good — which is how 30.09 showed
+    8 211 700 on a till that had long been emptied. A seller who keeps a day's takings
+    overnight and hands them over next morning leaves the same trail.
+
+    So money is counted out oldest first, the way a payment settles the oldest debt:
+    whatever left the till under a LATER date comes off the day's balance before any
+    of it is called held. A day whose money has since been handed over reads zero,
+    whichever date the handover carries, and what was never handed over sits on the
+    latest days. The mirror holds for a day the rows leave overdrawn: money that came
+    in later covers it first, and only what is still short today shows.
+
+    One grouped query per stream, however many tills and however long the history."""
+    def owned(rows, owner):
+        return rows.filter(**{owner: seller}) if seller is not None else rows
+
     streams = (
-        (Payment.objects.filter(created_by=seller).till_income(), PAYMENT_NET, 1),
-        (Payment.objects.filter(created_by=seller).till_outflow(), F("amount"), -1),
-        (Expense.objects.filter(created_by=seller), F("amount"), -1),
-        (ProductionRemittance.objects.filter(seller=seller), F("amount"), -1),
-        (ProfitPayout.objects.filter(seller=seller), F("amount"), -1),
+        # rows, whose till, figure, +1 into the till / −1 out of it
+        (owned(Payment.objects.till_income(), "created_by"), "created_by", PAYMENT_NET, 1),
+        (owned(Payment.objects.till_outflow(), "created_by"), "created_by", F("amount"), -1),
+        (owned(Expense.objects.all(), "created_by"), "created_by", F("amount"), -1),
+        (owned(ProductionRemittance.objects.all(), "seller"), "seller", F("amount"), -1),
+        (owned(ProfitPayout.objects.all(), "seller"), "seller", F("amount"), -1),
     )
+    # {user: {day: [came in, went out]}}. A row's own sign picks the side as much as
+    # its stream does: production handing cash back is a handover with a minus, and
+    # that is money coming IN.
     moved = {}
-    for rows, figure, sign in streams:
-        for row in rows.values("date").annotate(s=Sum(figure)):
-            moved[row["date"]] = (
-                moved.get(row["date"], Decimal("0")) + sign * (row["s"] or Decimal("0"))
+    for rows, owner, figure, sign in streams:
+        grouped = rows.values(owner, "date").annotate(
+            plus=Sum(figure, filter=Q(amount__gt=0)),
+            minus=Sum(figure, filter=Q(amount__lt=0)),
+        )
+        for row in grouped:
+            flows = moved.setdefault(row[owner], {}).setdefault(
+                row["date"], [Decimal("0"), Decimal("0")]
             )
-    balances, running = [], Decimal("0")
-    for day in sorted(moved):
-        running += moved[day]
-        balances.append((day, running))
-    return balances
+            plus, minus = row["plus"] or Decimal("0"), -(row["minus"] or Decimal("0"))
+            flows[0] += plus if sign > 0 else minus
+            flows[1] += minus if sign > 0 else plus
+    tills = {}
+    for user, by_day in moved.items():
+        came_total = sum((flows[0] for flows in by_day.values()), Decimal("0"))
+        went_total = sum((flows[1] for flows in by_day.values()), Decimal("0"))
+        came = went = Decimal("0")
+        days = tills[user] = []
+        for day in sorted(by_day):
+            came += by_day[day][0]
+            went += by_day[day][1]
+            at_close = came - went
+            if at_close > 0:
+                still_held = max(at_close - (went_total - went), Decimal("0"))
+            else:
+                still_held = min(at_close + (came_total - came), Decimal("0"))
+            days.append(TillDay(day, at_close, still_held))
+    return tills
 
 
-def unremitted_closed_days(seller):
-    """Money still sitting on days the seller has already closed with a handover,
-    oldest first: [(day, whole so'm)].
+def till_on(days, day):
+    """Where one till (a `till_days` list) stood at the end of `day` — the last day it
+    moved on or before it. A till that had not moved yet stood at nothing."""
+    at = bisect_right([d.day for d in days], day)
+    return days[at - 1] if at else TillDay(None, Decimal("0"), Decimal("0"))
 
-    A seller keys a day in, hands over what it took and the day reads zero. Then a
-    payment for that day turns up and is entered with the old date: the day now holds
-    money nobody handed over, and the next handover — dated a day later — quietly
-    carries it off. The total is right, but the old day shows a balance for ever.
-    That is how 30.09 came to read 8 211 700 after it had been closed at zero.
 
-    A day counts once a handover is dated on it and it is behind us; today is still
-    being worked. What it holds is the LOWEST the till has stood from that day to now:
-    money that left under a later date is gone, there is nothing to hand over, and
-    the day is not listed. Each day is charged only what the days before it have not
-    already claimed, so the figures add up to what is really in the drawer."""
-    balances = seller_day_balances(seller)
+# The first day whose "Kassadagi pul" reads as what is still held. Earlier days keep
+# the plain dated figure, balances and all: the owner wants to clear July–September
+# by hand, with the seller, as a lesson in correcting the books — so the screen must
+# not tidy those days up for them. Once that is done, set this to None (or delete it)
+# and every day follows the one rule.
+TILL_SETTLES_FROM = date(2026, 10, 1)
+
+
+def till_cash_on(days, day):
+    """The "Kassadagi pul" figure for one till (a `till_days` list) at the end of
+    `day`: what of the day's balance is still held — see `till_days` — or, before
+    `TILL_SETTLES_FROM`, the balance exactly as the dated rows leave it."""
+    standing = till_on(days, day)
+    if TILL_SETTLES_FROM and day < TILL_SETTLES_FROM:
+        return standing.at_close
+    return standing.still_held
+
+
+def left_after_handover(seller, days=None):
+    """Money a seller's latest handover left behind: (handover day, whole so'm), or
+    None when it left nothing.
+
+    The one case worth a nudge on the kassa page. Takings the seller has not got round
+    to handing over are ordinary — yesterday's money often goes in the morning — and
+    the till's own figure already shows them. But a handover that did not empty what
+    had been taken up to its day is either a short count or a payment keyed in after
+    the day was closed, and both are easy to walk past. Today's handovers are left out:
+    the day is still being worked. `days` is the seller's `till_days` list when the
+    caller already has it."""
     today = timezone.localdate()
-    closed = set(
-        ProductionRemittance.objects.filter(seller=seller, amount__gt=0, date__lt=today)
-        .values_list("date", flat=True)
-    ) | set(
-        ProfitPayout.objects.filter(seller=seller, date__lt=today)
-        .values_list("date", flat=True)
-    )
-    lowest_since, floor = {}, None
-    for day, balance in reversed(balances):
-        floor = balance if floor is None else min(floor, balance)
-        lowest_since[day] = floor
-    days, claimed = [], Decimal("0")
-    for day, _ in balances:
-        if day not in closed:
-            continue
-        held = lowest_since[day].quantize(Decimal("1"), ROUND_HALF_UP)
-        if held - claimed >= 1:
-            days.append((day, held - claimed))
-            claimed = held
-    return days
+    handed_over = [
+        rows.aggregate(d=Max("date"))["d"]
+        for rows in (
+            ProductionRemittance.objects.filter(seller=seller, amount__gt=0, date__lt=today),
+            ProfitPayout.objects.filter(seller=seller, amount__gt=0, date__lt=today),
+        )
+    ]
+    last = max((d for d in handed_over if d), default=None)
+    if last is None:
+        return None
+    if days is None:
+        days = till_days(seller).get(seller.pk, [])
+    left = till_on(days, last).still_held.quantize(Decimal("1"), ROUND_HALF_UP)
+    return (last, left) if left >= 1 else None
 
 
 def client_advance_balance(client, seller=None):

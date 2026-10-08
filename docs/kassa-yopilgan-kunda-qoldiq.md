@@ -3,7 +3,70 @@
 Holat sanasi: 07.10.2026 kechqurun. Yozgan: Sarvar (Claude bilan). Ish tugamagan —
 quyida nima qilingani, nima ochiq qolgani va qanday davom ettirish yozilgan.
 
-## Qisqacha
+## 08.10.2026 yangilanish — yo'nalish o'zgardi
+
+Ogohlantirish va «o'sha kun sanasi bilan topshiring» yo'li o'rniga hisob qoidasining
+o'zi o'zgartirildi. Pastdagi «Kodda nima qilindi» va «Ma'lumot tuzatishi» bo'limlari
+endi **tarix** — qaysilari kuchda qolgani shu yerda yozilgan.
+
+**Yangi qoida.** O'tgan kunning «Kassadagi pul»i — o'sha kungacha yig'ilgan puldan
+**hozirgacha topshirilmagani**. Kassadan keyingi sana bilan chiqqan pul (topshiruv,
+foyda topshiruvi, chiqim, mijozga qaytarish) eng eski kirimni birinchi yopadi — mijoz
+qarzida to'lov eng eski chekni yopgani kabi. Shuning uchun:
+
+- Pul topshirilgan bo'lsa, qaysi sana bilan topshirilganidan qat'i nazar, eski kun 0.
+- Bugun topshirilmay, ertaga bitta qilib topshirilsa ham — topshiruvdan keyin ikkala
+  kun 0.
+- Bir qismi topshirilsa, qolgani eng oxirgi kunlarda ko'rinadi.
+- Bugungi kassa raqami o'zgarmagan. Bazadagi hech bir yozuv o'zgartirilmaydi.
+
+**Qoida 01.10.2026 dan boshlab ishlaydi.** Undan oldingi kunlar (iyul – sentyabr)
+ataylab eskicha, sana bo'yicha qoldiq ko'rsatadi: Sarvar ularni sotuvchi bilan birga
+**qo'lda** tuzatmoqchi — dasturda xatoni qanday to'g'rilashni o'rgatish uchun. Chegara
+`crm/models.py` dagi `TILL_SETTLES_FROM` da. Qo'lda tuzatish tugagach uni `None`
+qilish (yoki o'chirish) kerak — shunda hamma kun bitta qoidaga o'tadi.
+
+Prodning 08.10 nusxasida: Kamolaning 56 kunidan 52 tasi sana bo'yicha 0 emas
+(23.07 – 30.09) — chegara turganicha ular shunday ko'rinaveradi; chegarasiz qoida
+bilan hammasi 0 chiqadi. Umidaning 14 700 so'mi 05.10 dan beri ko'rinadi — u
+haqiqatan topshirilmagan.
+
+**Kod** (`stage`):
+
+| Qayerda | Nima |
+|---|---|
+| `till_days`, `till_on` — `crm/models.py` | Har kassa kunma-kun: `at_close` (sana bo'yicha qoldiq) va `still_held` (shundan hozirgacha turgani) |
+| `till_cash_on`, `TILL_SETTLES_FROM` — `crm/models.py` | Ekranga chiqadigan raqam: chegaradan boshlab `still_held`, undan oldin `at_close` |
+| `_kassa_summary`, `_per_employee_kassa` — `crm/views.py` | «Kassadagi pul» = `till_cash_on`. Sana bo'yicha raqam `cash_at_close` da qoladi |
+| `templates/crm/kassa.html` | Raqam ostida izoh: «30.09.2026 oxirida 8 211 700 so'm bo'lgan — shundan … keyin topshirilgan yoki sarflangan» |
+| `left_after_handover` — `crm/models.py`; `_left_behind_notices` — `crm/views.py` | Kassa eslatmasi: oxirgi (bugungidan oldingi) topshiruv o'sha kungacha yig'ilgan pulni to'liq yopmagan bo'lsa — «14 700 so'm topshirilmay qolgan». Tugma formani shu summa bilan ochadi, sanani sotuvchi tanlaydi |
+
+**Olib tashlandi:** to'lov formalaridagi «yopilgan kun» ogohlantirishi
+(`_closed_day_warning`), topshiruv formasidagi «eski kundan qolgan pul» ogohlantirishi
+(`_older_leftover_warning`), `unremitted_closed_days`, `seller_day_balances`. Kech
+kiritilgan to'lov endi zararsiz: u joriy kassada topshirilmagan pul bo'lib ko'rinadi va
+keyingi topshiruv bilan ketadi. `_backdated_warning` (kun ko'tara olmaydigan chiqim)
+o'z joyida.
+
+**`fix_kamola_kassa` 6-bosqichni prodda ishga tushirmang.** U 8 211 700 ni #90 dan
+#89 ga ko'chiradi — bu aynan Sarvar qo'lda qilmoqchi bo'lgan tuzatishlardan biri.
+3 200 so'm (to'lov #4811) masalasi ham ochiq: bu pul aslida bo'lmagan, ya'ni qog'ozda
+ishlab chiqarish qarzi 3 200 so'mga kam. Tuzatish uchun egasining roziligi kerak
+(pastdagi 1-savol).
+
+**Ma'lum cheklovlar:**
+
+- Eski kunning kirimi va topshiruvi alohida qatorlarda baribir farq qiladi (30.09 da
+  kirim topshiruvdan 8,2 mln ko'p). Faqat «Kassadagi pul» raqami va uning izohi
+  buni tushuntiradi.
+- Ekrandagi 0 «pul topshirilgan» degani, «o'sha kuni kechqurun qo'lda pul yo'q edi»
+  degani emas. Kun qancha bilan yopilgani izohda turadi.
+- Dashboarddagi «Kassadagi pul» ham shu qoidaga o'tdi (bitta funksiya).
+
+Testlar: `HandedOverLaterTests` (28 ta), jami 638 ta o'tdi. Brauzerda hali ko'rib
+chiqilmagan.
+
+## Qisqacha (07.10 holati)
 
 | Nima | Holat |
 |---|---|

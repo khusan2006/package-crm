@@ -1,5 +1,5 @@
 import re
-from datetime import date, timedelta
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
 from django import forms
@@ -34,7 +34,6 @@ from .models import (
     seller_cash_on_hand,
     seller_remitted_total,
     seller_withdrawable_profit,
-    unremitted_closed_days,
 )
 
 # Marks an amount field so the frontend groups it as "1 000 000" while typing.
@@ -121,71 +120,6 @@ def _backdated_warning(seller, day, amount, **exclude):
         f"Diqqat: {day:%d.%m.%Y} kuni kassada {_som(held):,.0f} so'm bo'lgan. "
         f"{_som(amount):,.0f} so'm o'sha kunni {after:,.0f} so'mga tushiradi va "
         f"undan keyingi barcha kunlarni ham pastga suradi. Sana to'g'ri bo'lsa, "
-        f"Saqlashni yana bosing."
-    )
-
-
-def _closed_day_warning(seller, day, amount):
-    """Warning text when income is dated into a day already handed over in full, else
-    None. The mirror of `_backdated_warning`: that one guards a day against a payout it
-    cannot carry, this one against money arriving after the day was emptied.
-
-    Nothing is wrong with the entry itself — a payment found late belongs on the day it
-    was made. But the day was closed at zero and now holds money nobody handed over,
-    and the natural next move, adding it to tomorrow's handover, leaves the old day
-    showing a balance for good. So the seller is told before saving, and the kassa
-    keeps a notice up until the money is handed over under the day's own date.
-
-    A day whose own takings are still above what it handed over is left alone: the
-    seller is part-way through it — a handover at noon, the rest in the evening — and
-    questioning every row would only teach them to press Saqlash twice without
-    reading. So is an entry that merely puts back what was just taken off the day."""
-    if seller is None or not amount or not day or day >= timezone.localdate():
-        return None
-    handed_over = (
-        ProductionRemittance.objects.filter(seller=seller, date=day, amount__gt=0).exists()
-        or ProfitPayout.objects.filter(seller=seller, date=day).exists()
-    )
-    if not handed_over:
-        return None
-    held = seller_cash_on_hand(seller, through=day)
-    # What the day itself took in beyond what it handed out, whatever it inherited.
-    own = held - seller_cash_on_hand(seller, through=day - timedelta(days=1))
-    left = _som(held + amount)
-    if _som(own) > 0 or left <= 0:
-        return None
-    return (
-        f"Diqqat: {day:%d.%m.%Y} kuni topshiruv bilan yopilgan. Bu to'lov saqlansa, "
-        f"o'sha kunda {left:,.0f} so'm topshirilmagan pul qoladi — uni ham "
-        f"{day:%d.%m.%Y} sanasi bilan topshirish kerak, kassa sahifasi eslatib "
-        f"turadi. Sana to'g'ri bo'lsa, Saqlashni yana bosing."
-    )
-
-
-def _older_leftover_warning(seller, day, amount):
-    """Warning text when a handover would carry off money left on an EARLIER closed
-    day, else None.
-
-    This is the step that makes an old day keep its balance: the money is handed over
-    all right, but under a later date, so the day it belongs to never comes back to
-    zero. The handover is not refused — if the cash really did leave later, that is
-    what happened — but the seller is pointed at the day it should be dated to."""
-    if seller is None or not amount or not day:
-        return None
-    older = [(d, held) for d, held in unremitted_closed_days(seller) if d < day]
-    if not older:
-        return None
-    owed = sum((held for _, held in older), Decimal("0"))
-    if _som(amount) <= _som(seller_cash_on_hand(seller)) - owed:
-        return None
-    days = ", ".join(f"{d:%d.%m.%Y} — {held:,.0f} so'm" for d, held in older[:3])
-    if len(older) > 3:
-        days += " va boshqalar"
-    return (
-        f"Diqqat: kassadagi pulning {owed:,.0f} so'mi yopilgan kundan qolgan "
-        f"({days}). Uni o'sha kunning sanasi bilan alohida topshiring — kassa "
-        f"sahifasidagi eslatma formani tayyor ochadi. Shu topshiruvga qo'shilsa, "
-        f"eski kunda qoldiq bo'lib ko'rinaveradi. Baribir shunday yozilsin desangiz, "
         f"Saqlashni yana bosing."
     )
 
@@ -452,22 +386,13 @@ class DebtPaymentForm(forms.Form):
         required=False,
         widget=forms.TextInput(attrs={"placeholder": "Ixtiyoriy — qo'shimcha ma'lumot"}),
     )
-    # Set once the seller has seen the closed-day warning; the next submit passes.
-    confirm_backdated = forms.BooleanField(required=False, widget=forms.HiddenInput)
 
-    def __init__(self, *args, seller=None, **kwargs):
-        # Whose till the money lands in. Without it there is no day to check, and the
-        # closed-day warning simply stays silent.
-        self.seller = seller
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         _mark_money(self.fields["amount"], self.fields["exchange_rate"])
 
     def clean_date(self):
         return _reject_future(self.cleaned_data.get("date"))
-
-    def enters_till(self, cleaned):
-        """Whether this money lands in the drawer. A debt payment always does."""
-        return True
 
     def clean(self):
         cleaned = super().clean()
@@ -517,15 +442,6 @@ class DebtPaymentForm(forms.Form):
         cleaned["exchange_rate"] = rate
         cleaned["commission_percent"] = percent
         cleaned["commission"] = commission
-        # Money dated into a day that was already handed over in full — see
-        # _closed_day_warning. Only what actually reaches the drawer counts: the
-        # bank's cut never does.
-        if not self.errors and self.enters_till(cleaned):
-            warning = _needs_second_press(self, _closed_day_warning(
-                self.seller, cleaned["date"], amount - commission,
-            ))
-            if warning:
-                raise forms.ValidationError(warning)
         return cleaned
 
 
@@ -560,10 +476,6 @@ class AdvanceForm(DebtPaymentForm):
             "kirim qilmaslik uchun"
         ),
     )
-
-    def enters_till(self, cleaned):
-        # Kept out of the kassa, the deposit moves no day's balance at all.
-        return cleaned.get("to_kassa") != self.OUT_OF_KASSA
 
     def clean(self):
         cleaned = super().clean()
@@ -1346,16 +1258,10 @@ class ProductionRemittanceForm(forms.ModelForm):
             if problem:
                 raise forms.ValidationError(problem)
             # The total is enough, but the DAY it is dated into may not be.
-            warning = _backdated_warning(
+            warning = _needs_second_press(self, _backdated_warning(
                 seller, cleaned.get("date"), amount,
                 exclude_remittance_pk=self.instance.pk,
-            )
-            # Or the day is fine, but the sum reaches into money that belongs to an
-            # earlier, already closed one. New handovers only: an edit is somebody
-            # correcting a row that is itself part of those balances.
-            if not warning and not self.instance.pk:
-                warning = _older_leftover_warning(seller, cleaned.get("date"), amount)
-            warning = _needs_second_press(self, warning)
+            ))
             if warning:
                 raise forms.ValidationError(warning)
         return cleaned
