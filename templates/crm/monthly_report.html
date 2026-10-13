@@ -20,63 +20,71 @@
 {% endcomment %}
 {% comment %}
   Chop etish — ekrandagi sahifa emas, pastdagi alohida varaq (.print-sheet): bitta
-  A4, qo'lda yuritilgan qog'ozning tartibida. Ekranda u yashirin, chop etishda esa
-  faqat o'zi qoladi. Bir varaqqa sig'ishi uchun chiqimlarning eng kattalari nomi
-  bilan, qolgani bitta «Mayda chiqimlar» qatorida (`expenses_brief`); to'liq ro'yxat
-  ekranda va Excelda. Ranglar qat'iy qora-oq: tungi mavzuda ham qog'oz oq chiqsin.
+  A4, firmaning qo'lda (Word'da) yuritgan oylik hisobot blankasining o'zi — jadvallar
+  joyi, chegaralari, qizil sarlavhalari va kirillcha yozuvlari bilan. Ekranda u
+  yashirin, chop etishda esa faqat o'zi qoladi. Blankada yo'q narsalar (ishlab
+  chiqarish qarzi, ko'chadagi qoldiq) varaqqa chiqmaydi — ular ekranda va Excelda.
+  Chiqimlarning eng kattalari nomi bilan, qolgani blankadagidek bitta «Прочие»
+  qatorida (`expenses_brief`). Ranglar qat'iy: tungi mavzuda ham qog'oz oq chiqsin.
 {% endcomment %}
 <style>
   .print-sheet { display: none; }
   @media print {
-    @page { size: A4 portrait; margin: 12mm 14mm; }
+    @page { size: A4 portrait; margin: 14mm 16mm; }
     html, body { background: #fff !important; }
     .sidebar, .topbar, .fab-stack, .toast-stack, .nav-backdrop,
     .content > :not(.print-sheet) { display: none !important; }
     .app-shell, .main { display: block; min-height: 0; }
     .content { padding: 0; }
     .print-sheet {
-      display: block; color: #000; font-size: 10.5pt; line-height: 1.4;
-      font-variant-numeric: tabular-nums;
+      display: block; color: #000; font-family: "Times New Roman", Times, serif;
+      font-size: 12.5pt; line-height: 1.2;
     }
-    .ps-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12pt; }
-    .ps-title { font-size: 15pt; font-weight: 700; }
-    .ps-lead { font-size: 11.5pt; margin: 3pt 0 7pt; }
-    .ps-table { width: 100%; border-collapse: collapse; table-layout: fixed; background: none; }
-    .ps-table th, .ps-table td {
-      padding: 2pt 0; text-align: right; border: 0; background: none; color: #000;
-      font-size: 10.5pt; height: auto;
+    .ps-firm {
+      text-align: center; font-family: Arial, Helvetica, sans-serif;
+      font-size: 16pt; font-weight: 700;
     }
-    .ps-table th { font-weight: 400; color: #444; border-bottom: 0.75pt solid #000; }
-    .ps-table th:first-child, .ps-table td:first-child { text-align: left; }
-    .ps-table tr.ps-total td { font-weight: 700; border-top: 0.75pt solid #000; }
-    .ps-cols { display: grid; grid-template-columns: 1.1fr 1fr; column-gap: 22pt; margin-top: 4pt; }
-    .ps-h { font-weight: 700; border-bottom: 0.75pt solid #000; padding-bottom: 1pt; margin: 9pt 0 2pt; }
-    .ps-h.ps-gap { margin-top: 14pt; }
-    .ps-r { display: flex; justify-content: space-between; gap: 8pt; padding: 1pt 0; }
-    .ps-r.ps-sum { font-weight: 700; border-top: 0.75pt solid #000; margin-top: 2pt; padding-top: 2pt; }
-    .ps-r.ps-net { font-size: 12.5pt; }
-    .ps-foot {
-      display: flex; justify-content: space-between; margin-top: 16pt;
-      font-size: 8.5pt; color: #555;
+    .ps-sub { text-align: center; font-size: 11pt; margin-top: 1pt; }
+    .ps-date { text-align: right; font-size: 10pt; margin: 10pt 0 1pt; padding-right: 8%; }
+    .ps-grid {
+      width: 100%; border-collapse: collapse; table-layout: fixed; background: none;
+      break-inside: avoid;
     }
+    /* Ikki klass chuqurlikda: app.css `tr:last-child td` bilan oxirgi qatorning pastki
+       chizig'ini olib tashlaydi, blankadagi jadvallar esa to'liq chegaralangan. */
+    .print-sheet .ps-grid th, .print-sheet .ps-grid td {
+      border: 0.75pt solid #000; padding: 1pt 5pt; height: auto; background: none;
+      color: #000; font: inherit; text-align: left; text-transform: none;
+      letter-spacing: 0; white-space: nowrap;
+    }
+    /* Uzun nom (turkum, xodim) ustunidan chiqib ketmasin — raqam esa bo'linmaydi. */
+    .print-sheet .ps-grid td:first-child { white-space: normal; overflow-wrap: anywhere; }
+    .print-sheet .ps-grid th { color: #c00000; text-align: center; }
+    .print-sheet .ps-grid .ps-cap { font-size: 15pt; }
+    .print-sheet .ps-grid .ps-red { color: #c00000; font-weight: 400; }
+    .print-sheet .ps-total td { font-weight: 700; }
+    .ps-block { margin-top: 18pt; break-inside: avoid; }
+    .ps-pair { display: flex; justify-content: space-between; align-items: flex-start; }
+    .ps-spent { width: 49%; }
+    .ps-side { width: 45%; padding-top: 6pt; }
+    .ps-side .ps-grid + .ps-grid { margin-top: 16pt; }
+    .print-sheet .ps-box td { text-align: center; }
+    .ps-wages { width: 56%; }
+    .ps-debts { width: 76%; }
+    .ps-net { width: 70%; font-size: 14pt; }
   }
 </style>
 
 <div class="print-sheet">
-  <div class="ps-head">
-    <div class="ps-title">Oylik hisobot — {{ month_label }}</div>
-    <div>{{ date_from|date:"d.m.Y" }} – {{ date_to|date:"d.m.Y" }}</div>
-  </div>
-  <div class="ps-lead">Sotilgan yuk: <strong>{{ totals.kg|floatformat:"-3g" }} kg</strong></div>
+  <div class="ps-firm">ООО “RISE SERVICE” MCHJ</div>
+  <div class="ps-sub">КАМОЛА ТОШХУЖАЙЕВА&emsp;ОЙЛИК ХИСОБОТИ</div>
+  {% comment %}Blankada sana — oyning oxirgi kuni; oy hali yopilmagan bo'lsa, raqamlar
+  bugungi, sana ham bugungi.{% endcomment %}
+  <div class="ps-date">{% if is_open_month %}{{ today|date:"d.m.Y" }}{% else %}{{ date_to|date:"d.m.Y" }}{% endif %}</div>
 
-  <table class="ps-table">
-    <tr>
-      <th style="width:25%">Mahsulot</th>
-      <th style="width:15%">kg</th>
-      <th>Savdo</th>
-      <th>Tannarx</th>
-      <th>Foyda</th>
-    </tr>
+  {% comment %}Blankada sarlavha qatori yo'q: guruh, kg, savdo, tannarx, foyda.{% endcomment %}
+  <table class="ps-grid">
+    <colgroup><col style="width:16%"><col style="width:19%"><col style="width:22%"><col style="width:22%"><col style="width:21%"></colgroup>
     {% for g in groups %}
     <tr>
       <td>{{ g.label }}</td>
@@ -87,7 +95,7 @@
     </tr>
     {% endfor %}
     <tr class="ps-total">
-      <td>Jami</td>
+      <td class="ps-red">Жами :</td>
       <td>{{ totals.kg|floatformat:"-3g" }}</td>
       <td>{{ totals.revenue|floatformat:"0g" }}</td>
       <td>{{ totals.cost|floatformat:"0g" }}</td>
@@ -95,45 +103,76 @@
     </tr>
   </table>
 
-  <div class="ps-cols">
-    <div>
-      <div class="ps-h">Rasxod</div>
-      {% for e in expenses_brief %}
-      <div class="ps-r"><span>{{ e.label }}</span><span>{{ e.amount|floatformat:"0g" }}</span></div>
-      {% endfor %}
-      <div class="ps-r"><span>Bank foizi (perechisleniye)</span><span>{{ bank_fee|floatformat:"0g" }}</span></div>
-      <div class="ps-h">Oylik</div>
-      {% for w in wages %}{% if w.wage %}
-      <div class="ps-r"><span>{{ w.employee.name }}</span><span>{{ w.wage|floatformat:"0g" }}</span></div>
-      {% endif %}{% endfor %}
-      <div class="ps-r ps-sum"><span>Jami rasxod</span><span>{{ spent|floatformat:"0g" }}</span></div>
-      {% if employee_debtors %}
-      <div class="ps-h ps-gap">Xodimlar qarzi</div>
-      {% for d in employee_debtors %}
-      <div class="ps-r"><span>{{ d.employee.name }}</span><span>{{ d.debt|floatformat:"0g" }}</span></div>
-      {% endfor %}
-      {% endif %}
+  <div class="ps-block ps-pair">
+    <div class="ps-spent">
+      <table class="ps-grid">
+        <colgroup><col style="width:58%"><col style="width:42%"></colgroup>
+        <tr><th colspan="2" class="ps-cap">Расход</th></tr>
+        {% for e in expenses_brief %}
+        <tr><td>{{ e.label }}</td><td>{{ e.amount|floatformat:"0g" }}</td></tr>
+        {% endfor %}
+        {% comment %}Oylik hisobidan oldindan berilgani: pastdagi Ойлик qatorlari shu
+        avans ayirilgandan keyingi qoldiq, ikkalasi birga — hisoblangan oylik.{% endcomment %}
+        {% if advance_total %}
+        <tr><td>Аванс</td><td>{{ advance_total|floatformat:"0g" }}</td></tr>
+        {% endif %}
+        <tr><td>Перечис процент</td><td>{{ bank_fee|floatformat:"0g" }}</td></tr>
+      </table>
     </div>
-    <div>
-      <div class="ps-h">Ishlab chiqarish</div>
-      <div class="ps-r"><span>Oy boshidagi qarz</span><span>{{ production.opening|floatformat:"0g" }}</span></div>
-      <div class="ps-r"><span>Olingan yuk</span><span>{{ production.taken|floatformat:"0g" }}</span></div>
-      <div class="ps-r"><span>Berilgan pul</span><span>{{ production.paid|floatformat:"0g" }}</span></div>
-      {% if production.adjusted %}
-      <div class="ps-r"><span>Qarz tuzatishlari</span><span>{{ production.adjusted|floatformat:"0g" }}</span></div>
-      {% endif %}
-      <div class="ps-r ps-sum"><span>{% if is_open_month %}Bugungi qarz{% else %}Oy oxiridagi qarz{% endif %}</span><span>{{ production.closing|floatformat:"0g" }}</span></div>
-      <div class="ps-h ps-gap">Ko'chadagi qoldiq</div>
-      <div class="ps-r"><span>Oy boshida</span><span>{{ client_debt_opening|floatformat:"0g" }}</span></div>
-      <div class="ps-r ps-sum"><span>{% if is_open_month %}Bugun{% else %}Oy oxirida{% endif %}</span><span>{{ client_debt_closing|floatformat:"0g" }}</span></div>
-      <div class="ps-h ps-gap">Sof foyda</div>
-      <div class="ps-r"><span>Foyda</span><span>{{ totals.profit|floatformat:"0g" }}</span></div>
-      <div class="ps-r"><span>Rasxod</span><span>−{{ spent|floatformat:"0g" }}</span></div>
-      <div class="ps-r ps-sum ps-net"><span>Sof foyda</span><span>{% if net_profit > 0 %}+{% endif %}{{ net_profit|floatformat:"0g" }}</span></div>
+    <div class="ps-side">
+      <table class="ps-grid ps-box">
+        <tr><th>Ахмаджондан олинган юк</th></tr>
+        <tr><td>{{ production.taken|floatformat:"0g" }}</td></tr>
+      </table>
+      <table class="ps-grid ps-box">
+        <tr><th>Ахмаджонга берилган пул</th></tr>
+        <tr><td>{{ production.paid|floatformat:"0g" }}</td></tr>
+      </table>
     </div>
   </div>
 
-  <div class="ps-foot"><span>Paket CRM</span><span>Chop etildi: {{ today|date:"d.m.Y" }}</span></div>
+  {% comment %}Har qatorda xodimning qolgan oladigan summasi: oylikdan shu oy olgan
+  avansi ayirilgan (`due`). Qarzdor xodimda oylik to'liq turadi — olgani pastdagi
+  «Қарз»da. «Жами расход» — yuqoridagi Расход va shu Ойлик birga, blankadagidek
+  bo'sh qator bilan ajratilgan.{% endcomment %}
+  <div class="ps-block ps-wages">
+    <table class="ps-grid">
+      <colgroup><col style="width:56%"><col style="width:44%"></colgroup>
+      <tr><th colspan="2" class="ps-cap">Ойлик</th></tr>
+      {% for w in wages %}{% if w.wage %}
+      <tr><td>{{ w.employee.name }}</td><td>{{ w.due|floatformat:"0g" }}</td></tr>
+      {% endif %}{% endfor %}
+      <tr><td>&nbsp;</td><td></td></tr>
+      <tr class="ps-total"><td>Жами расход</td><td>{{ spent|floatformat:"0g" }}</td></tr>
+    </table>
+  </div>
+
+  {% comment %}Xodim qarzi blankadagidek yig'indi bo'lib yoziladi: oy boshidagi qarz,
+  shu oy qo'shilgani (yoki uzilgani), jami. Qarz shu oyning o'zida paydo bo'lgan yoki
+  o'zgarmagan bo'lsa — faqat jami.{% endcomment %}
+  {% if employee_debtors %}
+  <div class="ps-block ps-debts">
+    <table class="ps-grid">
+      <colgroup><col style="width:36%"><col style="width:64%"></colgroup>
+      <tr><th>Қарз</th><th>Сумма</th></tr>
+      {% for d in employee_debtors %}
+      <tr>
+        <td>{{ d.employee.name }}</td>
+        <td>{% if d.before and d.change %}{{ d.before|floatformat:"0g" }}{% if d.change > 0 %}+{% endif %}{{ d.change|floatformat:"0g" }}={% endif %}<strong>{{ d.debt|floatformat:"0g" }}</strong></td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  <div class="ps-block ps-net">
+    <table class="ps-grid">
+      <colgroup><col style="width:38%"><col style="width:62%"></colgroup>
+      <tr><td>Фойда</td><td>{{ totals.profit|floatformat:"0g" }} сум</td></tr>
+      <tr><td>Расход</td><td>{{ spent|floatformat:"0g" }} сум</td></tr>
+      <tr><td>Соф фойда</td><td><strong>{{ net_profit|floatformat:"0g" }}</strong></td></tr>
+    </table>
+  </div>
 </div>
 
 <div class="table-toolbar">
@@ -254,10 +293,18 @@
         <td>Bank foizi <span class="cell-sub">perechisleniyedan ushlangan, firma zimmasida</span></td>
         <td class="num">{{ bank_fee|floatformat:"0g" }}</td>
       </tr>
+      {% comment %}Oylik ikki qatorda: shu oy oyligi hisobidan berib bo'lingan avans va
+      xodimning qolgan oladigani. Yig'indisi — hisoblangan oylik, rasxod o'zgarmaydi.{% endcomment %}
+      {% if advance_total %}
+      <tr>
+        <td>Avans <span class="cell-sub">shu oy oyligi hisobidan berib bo'lingan</span></td>
+        <td class="num">{{ advance_total|floatformat:"0g" }}</td>
+      </tr>
+      {% endif %}
       {% for w in wages %}{% if w.wage %}
       <tr>
-        <td>Oylik: {{ w.employee.name }}{% if not w.tracked %} <span class="cell-sub">hisobi hali boshlanmagan — berilgan pul olindi</span>{% endif %}</td>
-        <td class="num">{{ w.wage|floatformat:"0g" }}</td>
+        <td>Oylik: {{ w.employee.name }}{% if not w.tracked %} <span class="cell-sub">hisobi hali boshlanmagan — berilgan pul olindi</span>{% elif w.advance %} <span class="cell-sub">{{ w.wage|floatformat:"0g" }} − avans {{ w.advance|floatformat:"0g" }}</span>{% endif %}</td>
+        <td class="num">{{ w.due|floatformat:"0g" }}</td>
       </tr>
       {% endif %}{% endfor %}
       <tr>

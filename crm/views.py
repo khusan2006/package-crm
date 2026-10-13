@@ -8613,12 +8613,13 @@ def _monthly_report(year, month):
     expenses = sorted(by_category.values(), key=lambda r: r["amount"], reverse=True)
     expense_total = sum((r["amount"] for r in expenses), zero)
     # The printed sheet is one page, so only the biggest lines keep their name on it
-    # and the tail is one row. A lone leftover is not worth hiding behind «mayda».
+    # and the tail is one row — «Прочие», as the firm's paper form calls it. A lone
+    # leftover is not worth hiding behind it.
     expenses_brief = expenses
     if len(expenses) > REPORT_PRINT_EXPENSE_LINES + 1:
         tail = expenses[REPORT_PRINT_EXPENSE_LINES:]
         expenses_brief = expenses[:REPORT_PRINT_EXPENSE_LINES] + [{
-            "label": f"Mayda chiqimlar ({len(tail)} ta turkum)",
+            "label": "Прочие",
             "amount": sum((r["amount"] for r in tail), zero),
             "count": sum(r["count"] for r in tail),
         }]
@@ -8636,14 +8637,29 @@ def _monthly_report(year, month):
         # them is then the only cost the month has for them.
         wage = r["earned"] if r["tracked"] else r["paid"]
         if wage or r["paid"] or r["remaining"]:
+            # Avans: what the worker has already drawn against THIS month's wage. A
+            # payout first settles whatever was still owed from earlier months, so
+            # only the money beyond that is an advance; the paper then lists the wage
+            # less the advance — what is left to collect. A worker in debt is kept
+            # the paper's other way: the wage is credited whole and the draws move
+            # the debt («Қарз»), so nothing is split off.
+            advance = zero
+            if r["tracked"] and r["carried"] >= 0 and r["remaining"] >= 0:
+                advance = max(r["paid"] - r["carried"], zero)
             wages.append({
                 "employee": r["employee"],
                 "wage": wage,
+                "advance": advance,
+                "due": wage - advance,
+                "carried": r["carried"],
                 "paid": r["paid"],
                 "remaining": r["remaining"],
                 "tracked": r["tracked"],
             })
     wage_total = sum((r["wage"] for r in wages), zero)
+    # Already inside `wage_total`: the advance and what is left are one wage, shown
+    # as two lines. The month's cost does not move with how much of it was drawn.
+    advance_total = sum((r["advance"] for r in wages), zero)
     spent = expense_total + bank_fee + wage_total
 
     # 4. Ishlab chiqarish — the kassa's own figures, so the debt here is the debt there.
@@ -8659,11 +8675,22 @@ def _monthly_report(year, month):
         "closing": till["production_debt"],
     }
 
-    debtors = [
-        {"employee": r["employee"], "debt": -r["remaining"]}
-        for r in wages
-        if r["tracked"] and r["remaining"] < 0
-    ]
+    # The paper writes a worker's debt out as a sum: what they owed coming into the
+    # month, what this month put on top (or took off), and where that leaves it. Both
+    # in whole so'm, so the printed line adds up.
+    whole = Decimal("1")
+    debtors = []
+    for r in wages:
+        if not r["tracked"] or r["remaining"] >= 0:
+            continue
+        debt = -r["remaining"]
+        before = max(-r["carried"], zero).quantize(whole, ROUND_HALF_UP)
+        debtors.append({
+            "employee": r["employee"],
+            "debt": debt,
+            "before": before,
+            "change": debt.quantize(whole, ROUND_HALF_UP) - before,
+        })
     return {
         "date_from": first,
         "date_to": last,
@@ -8677,6 +8704,7 @@ def _monthly_report(year, month):
         "bank_fee": bank_fee,
         "wages": wages,
         "wage_total": wage_total,
+        "advance_total": advance_total,
         "spent": spent,
         "net_profit": totals["profit"] - spent,
         "production": production,
@@ -8754,7 +8782,11 @@ def monthly_report_export(request):
     by_product.append(["Jami", ""] + jami)
     spent = [["Chiqim", x["label"], float(x["amount"])] for x in r["expenses"]]
     spent.append(["Bank foizi", "Perechisleniye foizi", float(r["bank_fee"])])
-    spent += [["Oylik", x["employee"].name, float(x["wage"])] for x in r["wages"] if x["wage"]]
+    # One wage, two lines: what was drawn ahead of it and what is left to collect.
+    spent += [
+        ["Avans", x["employee"].name, float(x["advance"])] for x in r["wages"] if x["advance"]
+    ]
+    spent += [["Oylik", x["employee"].name, float(x["due"])] for x in r["wages"] if x["wage"]]
     spent.append(["Jami", "", float(r["spent"])])
     workers = [
         [

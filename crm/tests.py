@@ -7812,7 +7812,79 @@ class MonthlyReportTests(BaseSetup):
         (debtor,) = ctx["employee_debtors"]
         self.assertEqual(debtor["employee"], worker)
         self.assertEqual(debtor["debt"], Decimal("500000"))
+        self.assertEqual(debtor["before"], Decimal("0"))     # nothing owed coming in
         self.assertEqual(ctx["employee_debt_total"], Decimal("500000"))
+
+    def test_a_workers_debt_is_spelled_out_as_before_and_the_months_change(self):
+        # The paper's «Қарз» line: 300 000 + 500 000 = 800 000
+        worker = Employee.objects.create(
+            name="Hisobot xodimi", salary=Decimal("2000000"),
+            start_month=date(2020, 3, 1), opening_balance=Decimal("-300000"),
+        )
+        self._spend("2500000", category="Oylik / xodim", employee=worker)
+        response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
+        (debtor,) = response.context["employee_debtors"]
+        self.assertEqual(debtor["before"], Decimal("300000"))
+        self.assertEqual(debtor["change"], Decimal("500000"))
+        self.assertEqual(debtor["debt"], Decimal("800000"))
+        self.assertContains(response, "=<strong>")
+        # April's wage outruns what was drawn: 800 000 − 400 000 = 400 000
+        Expense.objects.create(
+            date=date(2020, 4, 10), amount=Decimal("1600000"), category="Oylik / xodim",
+            method=Payment.Method.CASH, created_by=self.admin, employee=worker,
+        )
+        (debtor,) = self._report("2020-04")["employee_debtors"]
+        self.assertEqual(debtor["before"], Decimal("800000"))
+        self.assertEqual(debtor["change"], Decimal("-400000"))
+        self.assertEqual(debtor["debt"], Decimal("400000"))
+
+    def test_an_advance_comes_off_the_wage_line_but_not_off_the_months_cost(self):
+        # The paper lists what is left to collect: 2 000 000 − 200 000 avans. The first
+        # 300 000 of the payout only settles what was still owed from before.
+        worker = Employee.objects.create(
+            name="Hisobot xodimi", salary=Decimal("2000000"),
+            start_month=date(2020, 3, 1), opening_balance=Decimal("300000"),
+        )
+        self._spend("500000", category="Oylik / xodim", employee=worker)
+        response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
+        ctx = response.context
+        (row,) = ctx["wages"]
+        self.assertEqual(row["advance"], Decimal("200000"))
+        self.assertEqual(row["due"], Decimal("1800000"))
+        self.assertEqual(ctx["advance_total"], Decimal("200000"))
+        self.assertEqual(ctx["wage_total"], Decimal("2000000"))
+        self.assertEqual(ctx["spent"], Decimal("2000000"))       # one wage, two lines
+        self.assertContains(response, "<td>Аванс</td>")
+        export = self.client.get(reverse("monthly_report_export"), {"oy": self.MONTH})
+        rows = list(load_workbook(BytesIO(export.content))["Rasxod"].iter_rows(values_only=True))
+        self.assertIn(("Avans", "Hisobot xodimi", 200000), rows)
+        self.assertIn(("Oylik", "Hisobot xodimi", 1800000), rows)
+        self.assertEqual(rows[-1], ("Jami", None, 2000000))
+
+    def test_a_payout_that_only_settles_earlier_months_is_not_an_advance(self):
+        worker = Employee.objects.create(
+            name="Hisobot xodimi", salary=Decimal("2000000"),
+            start_month=date(2020, 3, 1), opening_balance=Decimal("300000"),
+        )
+        self._spend("100000", category="Oylik / xodim", employee=worker)
+        response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
+        (row,) = response.context["wages"]
+        self.assertEqual(row["advance"], Decimal("0"))
+        self.assertEqual(row["due"], Decimal("2000000"))
+        self.assertNotContains(response, "<td>Аванс</td>")
+
+    def test_a_worker_in_debt_keeps_the_whole_wage_on_the_wage_line(self):
+        # Their draws move the debt («Қарз») instead — as the paper keeps it.
+        worker = Employee.objects.create(
+            name="Hisobot xodimi", salary=Decimal("2000000"),
+            start_month=date(2020, 3, 1), opening_balance=Decimal("-300000"),
+        )
+        self._spend("1500000", category="Oylik / xodim", employee=worker)
+        ctx = self._report()
+        (row,) = ctx["wages"]
+        self.assertEqual(row["advance"], Decimal("0"))
+        self.assertEqual(row["due"], Decimal("2000000"))
+        self.assertEqual(ctx["advance_total"], Decimal("0"))
 
     def test_money_a_worker_spent_for_the_firm_stays_an_expense(self):
         worker = Employee.objects.create(
@@ -7841,7 +7913,7 @@ class MonthlyReportTests(BaseSetup):
         self.assertEqual([r["amount"] for r in brief[:6]], [
             Decimal(n * 1000) for n in (9, 8, 7, 6, 5, 4)
         ])
-        self.assertEqual(brief[6]["label"], "Mayda chiqimlar (3 ta turkum)")
+        self.assertEqual(brief[6]["label"], "Прочие")
         self.assertEqual(brief[6]["amount"], Decimal("6000"))    # 3000 + 2000 + 1000
         self.assertEqual(sum(r["amount"] for r in brief), ctx["expense_total"])
 
@@ -7856,7 +7928,10 @@ class MonthlyReportTests(BaseSetup):
         response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
         self.assertContains(response, 'class="print-sheet"')
         self.assertContains(response, "size: A4 portrait")
-        self.assertContains(response, "Oylik hisobot — Mart 2020")
+        # Laid out as the firm's paper form: its headings, dated the month's last day
+        self.assertContains(response, "ОЙЛИК ХИСОБОТИ")
+        self.assertContains(response, '<div class="ps-date">31.03.2020</div>')
+        self.assertContains(response, "Ахмаджондан олинган юк")
 
     def test_client_debt_is_read_as_of_the_months_last_day(self):
         sale = self._sell(is_debt=True)                      # 200 000 owed from 10.03
