@@ -4569,6 +4569,66 @@ class OmborReportTests(BaseSetup):
         response = self.client.get(reverse("ombor"))
         self.assertEqual(self._row(response)["total_kg"], Decimal("10"))  # sales2 excluded
 
+    def test_list_takes_returned_goods_off_the_sold_total(self):
+        sale = make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        make_sale(self.client1, self.sales1, self.p, weight="5", price="20000")
+        Return.objects.create(
+            sale_item=sale.items.first(), weight=Decimal("4"), created_by=self.sales1,
+        )
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("ombor"))
+        row = self._row(response)
+        self.assertEqual(row["total_kg"], Decimal("15"))  # what left the warehouse
+        self.assertEqual(row["returned_kg"], Decimal("4"))
+        self.assertEqual(row["net_kg"], Decimal("11"))
+        # The header is the net figure — the same one the dashboard shows as «Sotilgan»
+        self.assertEqual(
+            response.context["net_kg"],
+            response.context["total_kg"] - response.context["returned_kg"],
+        )
+        self.assertGreaterEqual(response.context["returned_kg"], Decimal("4"))
+
+    def test_list_has_a_returns_kpi(self):
+        sale = make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        self.client.force_login(self.sales1)
+        self.assertContains(self.client.get(reverse("ombor")), "bu davrda qaytarish yo'q")
+        for kg in ("4", "1"):
+            Return.objects.create(
+                sale_item=sale.items.first(), weight=Decimal(kg), created_by=self.sales1,
+            )
+        response = self.client.get(reverse("ombor"))
+        self.assertEqual(response.context["returned_kg"], Decimal("5"))
+        self.assertEqual(response.context["returned_count"], 2)
+        self.assertEqual(response.context["returned_amount"], Decimal("100000"))  # 5 × 20 000
+        self.assertContains(response, "Qaytgan tovar")
+        self.assertContains(response, "2 ta qaytarish")
+
+    def test_return_follows_its_sale_into_the_window_not_its_own_date(self):
+        # Sold last month, came back today: this month's report must not lose kg it
+        # never sold, and last month's must show the goods as returned.
+        old = date(2020, 3, 10)
+        sale = make_sale(self.client1, self.sales1, self.p, weight="10", price="20000", date=old)
+        Return.objects.create(
+            sale_item=sale.items.first(), weight=Decimal("3"), created_by=self.sales1,
+        )
+        self.client.force_login(self.sales1)
+        then = self.client.get(reverse("ombor"), {"dan": "2020-03-01", "gacha": "2020-03-31"})
+        self.assertEqual(self._row(then)["returned_kg"], Decimal("3"))
+        self.assertEqual(self._row(then)["net_kg"], Decimal("7"))
+        now = self.client.get(reverse("ombor"))
+        self.assertFalse([r for r in now.context["rows"] if r["product"] == self.p.pk])
+
+    def test_seller_does_not_see_another_sellers_returns(self):
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        other = make_sale(self.client2, self.sales2, self.p, weight="7", price="20000")
+        Return.objects.create(
+            sale_item=other.items.first(), weight=Decimal("2"), created_by=self.sales2,
+        )
+        self.client.force_login(self.sales1)
+        row = self._row(self.client.get(reverse("ombor")))
+        self.assertEqual(row["returned_kg"], Decimal("0"))
+        self.assertEqual(row["net_kg"], Decimal("10"))
+
     def test_product_detail_admin_shows_per_seller_breakdown(self):
         make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
         make_sale(self.client2, self.sales2, self.p, weight="7", price="20000")
@@ -5674,10 +5734,23 @@ class OmborExportTests(BaseSetup):
     def test_export_lists_sold_kg_for_every_seller(self):
         self.client.force_login(self.admin)
         rows = read_xlsx(self.client.get(reverse("ombor_export")))
-        self.assertEqual(rows[0], ("Mahsulot", "SKU", "Sotuvlar soni", "Sotilgan (kg)"))
+        self.assertEqual(rows[0], (
+            "Mahsulot", "SKU", "Sotuvlar soni", "Sotilgan (kg)", "Qaytgan (kg)", "Sof sotilgan (kg)",
+        ))
         by_sku = {r[1]: r for r in rows[1:]}
         # BaseSetup sells 10 kg through each of the two sellers
         self.assertEqual(by_sku[self.product.sku][3], 20.0)
+
+    def test_export_carries_returned_and_net_kg(self):
+        sale = Sale.objects.filter(sales_rep=self.sales1, items__product=self.product).first()
+        Return.objects.create(
+            sale_item=sale.items.filter(product=self.product).first(),
+            weight=Decimal("3"), created_by=self.sales1,
+        )
+        self.client.force_login(self.admin)
+        rows = read_xlsx(self.client.get(reverse("ombor_export")))
+        row = {r[1]: r for r in rows[1:]}[self.product.sku]
+        self.assertEqual(row[3:6], (20.0, 3.0, 17.0))
 
     def test_export_is_scoped_to_the_seller_who_downloads_it(self):
         self.client.force_login(self.sales1)

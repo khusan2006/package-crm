@@ -8247,12 +8247,32 @@ def _ombor_items(request, date_from, date_to):
 
 
 def _ombor_rows(items):
-    """One row per product: kg sold, and how many receipts it appeared on."""
-    return list(
+    """One row per product: kg sold, how many receipts it appeared on, and how much of
+    it came back.
+
+    Returns follow their sale line, not their own date — the rule `_sale_totals` uses —
+    so the page's net total is the very figure the dashboard calls «Sotilgan». Without
+    it the two pages disagreed by exactly the returned kg and neither said why."""
+    rows = list(
         items.values("product", "product__name", "product__sku")
         .annotate(total_kg=Sum(ITEM_WEIGHT_KG), sales_count=Count("sale", distinct=True))
         .order_by("-total_kg")
     )
+    returned = {
+        r["product"]: r
+        for r in Return.objects.filter(sale_item__in=items.values("pk"))
+        .values("product")
+        .annotate(kg=Sum(RETURN_WEIGHT_KG), amount=Sum(RETURN_AMOUNT), count=Count("pk"))
+        .order_by()
+    }
+    zero = Decimal("0")
+    for r in rows:
+        back = returned.get(r["product"], {})
+        r["returned_kg"] = back.get("kg") or zero
+        r["returned_amount"] = back.get("amount") or zero
+        r["returned_count"] = back.get("count", 0)
+        r["net_kg"] = (r["total_kg"] or zero) - r["returned_kg"]
+    return rows
 
 
 def ombor_view(request):
@@ -8266,6 +8286,7 @@ def ombor_view(request):
     items, filters, reps, rep_obj = _ombor_items(request, date_from, date_to)
     rows = _ombor_rows(items)
     total_kg = sum((r["total_kg"] or Decimal("0") for r in rows), Decimal("0"))
+    returned_kg = sum((r["returned_kg"] for r in rows), Decimal("0"))
 
     active_filters = _filter_chips(request, [
         {"param": "rep", "label": "Sotuvchi", "value": str(rep_obj) if rep_obj else ""},
@@ -8277,6 +8298,10 @@ def ombor_view(request):
     return render(request, "crm/ombor.html", {
         "rows": rows,
         "total_kg": total_kg,
+        "returned_kg": returned_kg,
+        "returned_amount": sum((r["returned_amount"] for r in rows), Decimal("0")),
+        "returned_count": sum(r["returned_count"] for r in rows),
+        "net_kg": total_kg - returned_kg,
         "product_count": len(rows),
         "q": filters["q"],
         "filters": filters,
@@ -8303,17 +8328,23 @@ def ombor_export(request):
     items, _, _, _ = _ombor_items(request, dates["date_from"], dates["date_to"])
     rows = _ombor_rows(items)
 
-    headers = ["Mahsulot", "SKU", "Sotuvlar soni", "Sotilgan (kg)"]
+    headers = [
+        "Mahsulot", "SKU", "Sotuvlar soni", "Sotilgan (kg)", "Qaytgan (kg)", "Sof sotilgan (kg)",
+    ]
     data = [
         [
             r["product__name"],
             r["product__sku"],
             r["sales_count"],
             float(r["total_kg"] or 0),
+            float(r["returned_kg"]),
+            float(r["net_kg"]),
         ]
         for r in rows
     ]
-    return _xlsx_response("ombor.xlsx", "Ombor", headers, data, {4: "0.000"})
+    return _xlsx_response(
+        "ombor.xlsx", "Ombor", headers, data, {4: "0.000", 5: "0.000", 6: "0.000"}
+    )
 
 
 def _filter_ombor_items(request, items):
