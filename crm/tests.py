@@ -7665,3 +7665,262 @@ class ActingSellerSwitchTests(BaseSetup):
         self.client.force_login(self.admin)
         response = self._switch(self.sales1.pk, next_url="https://evil.example/")
         self.assertRedirects(response, reverse("dashboard"), fetch_redirect_response=False)
+
+
+class MonthlyReportTests(BaseSetup):
+    """Oylik hisobot: the month's closing sheet, counted the way the paper one was —
+    full markup as profit, the wage the month's work was worth as its cost."""
+
+    # A finished month nothing else in the suite writes into, so every figure on the
+    # page is one this class put there.
+    MONTH = "2020-03"
+    DAY = date(2020, 3, 10)
+
+    def setUp(self):
+        self.p = Product.objects.create(
+            name="Hisobot test", sku="HSB-1",
+            cost_price=Decimal("10000"), price=Decimal("20000"),
+        )
+        self.client.force_login(self.admin)
+
+    def _report(self, month=MONTH):
+        return self.client.get(reverse("monthly_report"), {"oy": month}).context
+
+    def _sell(self, weight="10", **kwargs):
+        # 10 kg × 20 000 = 200 000 savdo; tannarx 100 000; foyda 100 000
+        return make_sale(
+            self.client1, self.sales1, self.p, weight=weight, price="20000",
+            date=self.DAY, **kwargs,
+        )
+
+    def _spend(self, amount, category="Benzin / transport", **kwargs):
+        return Expense.objects.create(
+            date=self.DAY, amount=Decimal(amount), category=category,
+            method=Payment.Method.CASH, created_by=self.admin, **kwargs,
+        )
+
+    def test_sold_goods_are_listed_by_product_after_returns(self):
+        sale = self._sell()
+        Return.objects.create(
+            sale_item=sale.items.first(), weight=Decimal("4"), date=self.DAY,
+            created_by=self.sales1,
+        )
+        ctx = self._report()
+        (row,) = ctx["products"]
+        self.assertEqual(row["name"], "Hisobot test")
+        self.assertEqual(row["kg"], Decimal("6"))
+        self.assertEqual(row["revenue"], Decimal("120000"))
+        self.assertEqual(row["cost"], Decimal("60000"))
+        self.assertEqual(row["profit"], Decimal("60000"))
+        self.assertEqual(ctx["totals"]["profit"], Decimal("60000"))
+
+    def test_products_are_added_into_their_report_group(self):
+        # The paper has one line for ОҚ: ОҚ ЯЛТИРОҚ is counted inside it.
+        self.p.report_group = "Guruh A"
+        self.p.save()
+        shiny = Product.objects.create(
+            name="Hisobot test yaltiroq", sku="HSB-2", report_group=" guruh a ",
+            cost_price=Decimal("10000"), price=Decimal("20000"),
+        )
+        alone = Product.objects.create(
+            name="Yakka mahsulot", sku="HSB-3",
+            cost_price=Decimal("10000"), price=Decimal("20000"),
+        )
+        self._sell()                                                       # 10 kg
+        make_sale(self.client1, self.sales1, shiny, weight="4", price="20000", date=self.DAY)
+        make_sale(self.client1, self.sales1, alone, weight="1", price="20000", date=self.DAY)
+        ctx = self._report()
+        self.assertEqual(len(ctx["products"]), 3)                # still known one by one
+        merged, single = ctx["groups"]
+        self.assertEqual(merged["label"], "Guruh A")
+        self.assertEqual(merged["kg"], Decimal("14"))
+        self.assertEqual(merged["revenue"], Decimal("280000"))
+        self.assertEqual(merged["profit"], Decimal("140000"))
+        self.assertEqual(
+            [m["name"] for m in merged["members"]],
+            ["Hisobot test", "Hisobot test yaltiroq"],
+        )
+        self.assertFalse(merged["is_single"])
+        # A product nobody grouped is a line of its own, under its own name
+        self.assertEqual(single["label"], "Yakka mahsulot")
+        self.assertTrue(single["is_single"])
+        self.assertEqual(
+            sum(g["profit"] for g in ctx["groups"]), ctx["totals"]["profit"]
+        )
+
+    def test_report_group_is_set_on_the_product_form(self):
+        data = {
+            "name": self.p.name, "sku": self.p.sku, "description": "",
+            "cost_price": "10000", "price": "20000", "report_group": "КОП",
+            "is_active": "on",
+        }
+        self.client.post(reverse("product_edit", args=[self.p.pk]), data)
+        self.p.refresh_from_db()
+        self.assertEqual(self.p.report_group, "КОП")
+
+    def test_a_written_off_return_keeps_its_tannarx(self):
+        sale = self._sell()
+        Return.objects.create(
+            sale_item=sale.items.first(), weight=Decimal("4"), date=self.DAY,
+            restock=False, created_by=self.sales1,
+        )
+        (row,) = self._report()["products"]
+        self.assertEqual(row["cost"], Decimal("100000"))
+        self.assertEqual(row["profit"], Decimal("20000"))  # 120 000 − 100 000
+
+    def test_profit_is_the_full_markup_even_while_the_sale_is_unpaid(self):
+        # Kassa's «Sof foyda» earns nothing on an unpaid receipt; the paper does.
+        self._sell(is_debt=True)
+        self.assertEqual(self._report()["totals"]["profit"], Decimal("100000"))
+
+    def test_net_profit_is_profit_less_expenses_bank_fee_and_wages(self):
+        sale = self._sell(is_debt=True)
+        self._spend("30000")
+        Payment.objects.create(
+            sale=sale, amount=Decimal("100000"), method=Payment.Method.TRANSFER,
+            kind=Payment.Kind.DEBT, date=self.DAY, created_by=self.sales1,
+            commission=Decimal("4000"), commission_payer=Payment.Payer.SELLER,
+        )
+        Employee.objects.create(
+            name="Hisobot xodimi", salary=Decimal("20000"), start_month=date(2020, 3, 1),
+        )
+        ctx = self._report()
+        self.assertEqual(ctx["expense_total"], Decimal("30000"))
+        self.assertEqual(ctx["bank_fee"], Decimal("4000"))
+        self.assertEqual(ctx["wage_total"], Decimal("20000"))
+        self.assertEqual(ctx["spent"], Decimal("54000"))
+        self.assertEqual(ctx["net_profit"], Decimal("46000"))  # 100 000 − 54 000
+
+    def test_a_fee_the_client_carries_is_not_the_firms_cost(self):
+        sale = self._sell(is_debt=True)
+        Payment.objects.create(
+            sale=sale, amount=Decimal("100000"), method=Payment.Method.TRANSFER,
+            kind=Payment.Kind.DEBT, date=self.DAY, created_by=self.sales1,
+            commission=Decimal("4000"), commission_payer=Payment.Payer.CLIENT,
+        )
+        self.assertEqual(self._report()["bank_fee"], Decimal("0"))
+
+    def test_the_wage_is_what_was_earned_and_an_overdraw_is_the_workers_debt(self):
+        worker = Employee.objects.create(
+            name="Hisobot xodimi", salary=Decimal("2000000"), start_month=date(2020, 3, 1),
+        )
+        self._spend("2500000", category="Oylik / xodim", employee=worker)
+        ctx = self._report()
+        # The payout is not charged on top of the wage it pays
+        self.assertEqual(ctx["expense_total"], Decimal("0"))
+        self.assertEqual(ctx["wage_total"], Decimal("2000000"))
+        (debtor,) = ctx["employee_debtors"]
+        self.assertEqual(debtor["employee"], worker)
+        self.assertEqual(debtor["debt"], Decimal("500000"))
+        self.assertEqual(ctx["employee_debt_total"], Decimal("500000"))
+
+    def test_money_a_worker_spent_for_the_firm_stays_an_expense(self):
+        worker = Employee.objects.create(
+            name="Hisobot xodimi", salary=Decimal("2000000"), start_month=date(2020, 3, 1),
+        )
+        self._spend("70000", employee=worker, counts_against_salary=False)
+        ctx = self._report()
+        self.assertEqual(ctx["expense_total"], Decimal("70000"))
+        self.assertEqual(ctx["employee_debtors"], [])
+
+    def test_a_category_spelled_two_ways_is_one_line(self):
+        self._spend("1000", category="СУВ")
+        self._spend("2000", category=" сув ")
+        self._spend("500", category="МОЙКА")
+        rows = self._report()["expenses"]
+        self.assertEqual([(r["amount"], r["count"]) for r in rows], [
+            (Decimal("3000"), 2), (Decimal("500"), 1),
+        ])
+
+    def test_printed_sheet_names_the_biggest_expenses_and_folds_the_tail(self):
+        for i in range(1, 10):                                   # 9 turkum: 1000 … 9000
+            self._spend(str(i * 1000), category=f"Turkum {i}")
+        ctx = self._report()
+        self.assertEqual(len(ctx["expenses"]), 9)                # the page keeps them all
+        brief = ctx["expenses_brief"]
+        self.assertEqual([r["amount"] for r in brief[:6]], [
+            Decimal(n * 1000) for n in (9, 8, 7, 6, 5, 4)
+        ])
+        self.assertEqual(brief[6]["label"], "Mayda chiqimlar (3 ta turkum)")
+        self.assertEqual(brief[6]["amount"], Decimal("6000"))    # 3000 + 2000 + 1000
+        self.assertEqual(sum(r["amount"] for r in brief), ctx["expense_total"])
+
+    def test_printed_sheet_does_not_fold_a_single_leftover(self):
+        for i in range(1, 8):                                    # 7 turkum
+            self._spend(str(i * 1000), category=f"Turkum {i}")
+        ctx = self._report()
+        self.assertEqual(ctx["expenses_brief"], ctx["expenses"])
+
+    def test_page_carries_the_one_page_print_sheet(self):
+        self._sell()
+        response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
+        self.assertContains(response, 'class="print-sheet"')
+        self.assertContains(response, "size: A4 portrait")
+        self.assertContains(response, "Oylik hisobot — Mart 2020")
+
+    def test_client_debt_is_read_as_of_the_months_last_day(self):
+        sale = self._sell(is_debt=True)                      # 200 000 owed from 10.03
+        Payment.objects.create(
+            sale=sale, amount=Decimal("50000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=date(2020, 4, 5), created_by=self.sales1,
+        )
+        march = self._report()
+        self.assertEqual(march["client_debt_opening"], Decimal("0"))
+        self.assertEqual(march["client_debt_closing"], Decimal("200000"))
+        april = self._report("2020-04")
+        self.assertEqual(april["client_debt_opening"], Decimal("200000"))
+        self.assertEqual(april["client_debt_closing"], Decimal("150000"))
+
+    def test_todays_client_debt_is_the_qarzlar_total(self):
+        self._sell(is_debt=True)
+        make_sale(self.client2, self.sales2, self.p, weight="3", price="20000", is_debt=True)
+        owed = Sale.objects.outstanding().aggregate(s=Sum("remaining"))["s"]
+        today = timezone.localdate()
+        ctx = self._report(f"{today:%Y-%m}")
+        self.assertEqual(ctx["client_debt_closing"], owed)
+        self.assertTrue(ctx["is_open_month"])
+
+    def test_production_block_adds_up_to_the_kassa_debt(self):
+        self._sell()
+        ProductionRemittance.objects.create(
+            seller=self.sales1, amount=Decimal("30000"), method=Payment.Method.CASH,
+            created_by=self.sales1, date=self.DAY,
+        )
+        p = self._report()["production"]
+        self.assertEqual(p["opening"], Decimal("0"))
+        self.assertEqual(p["taken"], Decimal("100000"))
+        self.assertEqual(p["paid"], Decimal("30000"))
+        self.assertEqual(p["closing"], Decimal("70000"))
+        self.assertEqual(
+            p["closing"],
+            _kassa_summary(date(2020, 3, 1), date(2020, 3, 31))["production_debt"],
+        )
+        # ...and the next month opens on what this one closed on
+        self.assertEqual(self._report("2020-04")["production"]["opening"], Decimal("70000"))
+
+    def test_page_is_for_admin_and_manager_only(self):
+        url = reverse("monthly_report")
+        self.assertContains(self.client.get(url, {"oy": self.MONTH}), "Sof foyda")
+        self.client.force_login(self.manager)
+        self.assertEqual(self.client.get(url).status_code, 200)
+        self.client.force_login(self.sales1)
+        self.assertEqual(self.client.get(url).status_code, 403)
+        self.assertEqual(self.client.get(reverse("monthly_report_export")).status_code, 403)
+        self.assertNotContains(self.client.get(reverse("sale_list")), "Oylik hisobot")
+
+    def test_export_carries_the_summary_and_the_tables_behind_it(self):
+        self._sell()
+        self._spend("30000")
+        response = self.client.get(reverse("monthly_report_export"), {"oy": self.MONTH})
+        self.assertEqual(response["Content-Type"], XLSX_CONTENT_TYPE)
+        book = load_workbook(BytesIO(response.content))
+        self.assertEqual(
+            book.sheetnames, ["Xulosa", "Sotilgan yuk", "Mahsulotlar", "Rasxod", "Xodimlar"]
+        )
+        summary = dict(list(book["Xulosa"].iter_rows(values_only=True))[1:])
+        self.assertEqual(summary["Foyda"], 100000)
+        self.assertEqual(summary["Jami rasxod"], 30000)
+        self.assertEqual(summary["Sof foyda"], 70000)
+        sold = list(book["Sotilgan yuk"].iter_rows(values_only=True))
+        self.assertEqual(sold[1], ("Hisobot test", 10, 200000, 100000, 100000))
+        self.assertEqual(sold[-1][0], "Jami")

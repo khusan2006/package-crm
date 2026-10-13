@@ -103,6 +103,9 @@ urlpatterns = [
     path("tolovlar/export/", crm_views.payment_export, name="payment_export"),
     path("payments/<int:pk>/edit/", crm_views.payment_edit, name="payment_edit"),
     path("payments/<int:pk>/delete/", crm_views.payment_delete, name="payment_delete"),
+    # oylik hisobot (the month's closing sheet)
+    path("hisobot/", crm_views.monthly_report, name="monthly_report"),
+    path("hisobot/export/", crm_views.monthly_report_export, name="monthly_report_export"),
     path("audit/", crm_views.audit_list, name="audit_list"),
     path("audit/export/", crm_views.audit_export, name="audit_export"),
     path("kassa/", crm_views.kassa_view, name="kassa"),

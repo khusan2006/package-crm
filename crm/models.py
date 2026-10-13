@@ -220,6 +220,15 @@ class Product(models.Model):
     # The 5 film products have both; the ҚОП (bag) products have neither.
     has_size = models.BooleanField("Razmer bor", default=False)
     has_micron = models.BooleanField("Mikron bor", default=False)
+    # The line this product is added into on the monthly report. The firm closes a
+    # month in four lines — ОҚ, ҚОРА, НОВВОТ, КОП — though it sells eight products:
+    # ОҚ ЯЛТИРОҚ is counted with ОҚ, КЎК with НОВВОТ, every bag with КОП. Free text so
+    # a new line needs no code; empty means the product is a line of its own.
+    report_group = models.CharField(
+        "Hisobot guruhi", max_length=60, blank=True,
+        help_text="Oylik hisobotda shu nom ostida qo'shib ko'rsatiladi (masalan: ОҚ, "
+                  "НОВВОТ, КОП). Bo'sh qolsa — mahsulot o'z nomi bilan chiqadi.",
+    )
     is_active = models.BooleanField("Faol", default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

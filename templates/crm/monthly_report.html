@@ -1,0 +1,357 @@
+{% extends "base.html" %}
+{% load crm_extras %}
+{% block title %}Oylik hisobot · {{ month_label }} · Paket CRM{% endblock %}
+{% block topbar_title %}Oylik hisobot{% endblock %}
+{% block content %}
+
+{% comment %}
+  Oyning yopilish varag'i — ilgari qo'lda, qog'ozda yuritilgan hisobot. Tartibi ham
+  o'sha qog'ozniki: sotilgan yuk → rasxod → sof foyda → ishlab chiqarish bilan
+  hisob-kitob → qarzlar.
+
+  Ikki raqam ataylab Kassadagidan boshqacha hisoblanadi:
+  - Foyda — sotilgan yukning TO'LIQ ustamasi (savdo − tannarx). Kassadagi «Sof
+    foyda» esa faqat qo'lga tushgan foydani sanaydi, shuning uchun ikkalasi teng
+    chiqmaydi.
+  - Oylik — shu oyda HISOBLANGAN oylik (Xodimlar oyligidagi «Hisoblangan»), kassadan
+    berilgan pul emas. Oyligidan ortiq olgani rasxod emas, xodimning qarzi.
+
+  Hisobot jonli: o'tgan oyni qayta ochsangiz bugungi yozuvlardan qayta hisoblanadi.
+{% endcomment %}
+{% comment %}
+  Chop etish — ekrandagi sahifa emas, pastdagi alohida varaq (.print-sheet): bitta
+  A4, qo'lda yuritilgan qog'ozning tartibida. Ekranda u yashirin, chop etishda esa
+  faqat o'zi qoladi. Bir varaqqa sig'ishi uchun chiqimlarning eng kattalari nomi
+  bilan, qolgani bitta «Mayda chiqimlar» qatorida (`expenses_brief`); to'liq ro'yxat
+  ekranda va Excelda. Ranglar qat'iy qora-oq: tungi mavzuda ham qog'oz oq chiqsin.
+{% endcomment %}
+<style>
+  .print-sheet { display: none; }
+  @media print {
+    @page { size: A4 portrait; margin: 12mm 14mm; }
+    html, body { background: #fff !important; }
+    .sidebar, .topbar, .fab-stack, .toast-stack, .nav-backdrop,
+    .content > :not(.print-sheet) { display: none !important; }
+    .app-shell, .main { display: block; min-height: 0; }
+    .content { padding: 0; }
+    .print-sheet {
+      display: block; color: #000; font-size: 10.5pt; line-height: 1.4;
+      font-variant-numeric: tabular-nums;
+    }
+    .ps-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12pt; }
+    .ps-title { font-size: 15pt; font-weight: 700; }
+    .ps-lead { font-size: 11.5pt; margin: 3pt 0 7pt; }
+    .ps-table { width: 100%; border-collapse: collapse; table-layout: fixed; background: none; }
+    .ps-table th, .ps-table td {
+      padding: 2pt 0; text-align: right; border: 0; background: none; color: #000;
+      font-size: 10.5pt; height: auto;
+    }
+    .ps-table th { font-weight: 400; color: #444; border-bottom: 0.75pt solid #000; }
+    .ps-table th:first-child, .ps-table td:first-child { text-align: left; }
+    .ps-table tr.ps-total td { font-weight: 700; border-top: 0.75pt solid #000; }
+    .ps-cols { display: grid; grid-template-columns: 1.1fr 1fr; column-gap: 22pt; margin-top: 4pt; }
+    .ps-h { font-weight: 700; border-bottom: 0.75pt solid #000; padding-bottom: 1pt; margin: 9pt 0 2pt; }
+    .ps-h.ps-gap { margin-top: 14pt; }
+    .ps-r { display: flex; justify-content: space-between; gap: 8pt; padding: 1pt 0; }
+    .ps-r.ps-sum { font-weight: 700; border-top: 0.75pt solid #000; margin-top: 2pt; padding-top: 2pt; }
+    .ps-r.ps-net { font-size: 12.5pt; }
+    .ps-foot {
+      display: flex; justify-content: space-between; margin-top: 16pt;
+      font-size: 8.5pt; color: #555;
+    }
+  }
+</style>
+
+<div class="print-sheet">
+  <div class="ps-head">
+    <div class="ps-title">Oylik hisobot — {{ month_label }}</div>
+    <div>{{ date_from|date:"d.m.Y" }} – {{ date_to|date:"d.m.Y" }}</div>
+  </div>
+  <div class="ps-lead">Sotilgan yuk: <strong>{{ totals.kg|floatformat:"-3g" }} kg</strong></div>
+
+  <table class="ps-table">
+    <tr>
+      <th style="width:25%">Mahsulot</th>
+      <th style="width:15%">kg</th>
+      <th>Savdo</th>
+      <th>Tannarx</th>
+      <th>Foyda</th>
+    </tr>
+    {% for g in groups %}
+    <tr>
+      <td>{{ g.label }}</td>
+      <td>{{ g.kg|floatformat:"-3g" }}</td>
+      <td>{{ g.revenue|floatformat:"0g" }}</td>
+      <td>{{ g.cost|floatformat:"0g" }}</td>
+      <td>{{ g.profit|floatformat:"0g" }}</td>
+    </tr>
+    {% endfor %}
+    <tr class="ps-total">
+      <td>Jami</td>
+      <td>{{ totals.kg|floatformat:"-3g" }}</td>
+      <td>{{ totals.revenue|floatformat:"0g" }}</td>
+      <td>{{ totals.cost|floatformat:"0g" }}</td>
+      <td>{{ totals.profit|floatformat:"0g" }}</td>
+    </tr>
+  </table>
+
+  <div class="ps-cols">
+    <div>
+      <div class="ps-h">Rasxod</div>
+      {% for e in expenses_brief %}
+      <div class="ps-r"><span>{{ e.label }}</span><span>{{ e.amount|floatformat:"0g" }}</span></div>
+      {% endfor %}
+      <div class="ps-r"><span>Bank foizi (perechisleniye)</span><span>{{ bank_fee|floatformat:"0g" }}</span></div>
+      <div class="ps-h">Oylik</div>
+      {% for w in wages %}{% if w.wage %}
+      <div class="ps-r"><span>{{ w.employee.name }}</span><span>{{ w.wage|floatformat:"0g" }}</span></div>
+      {% endif %}{% endfor %}
+      <div class="ps-r ps-sum"><span>Jami rasxod</span><span>{{ spent|floatformat:"0g" }}</span></div>
+      {% if employee_debtors %}
+      <div class="ps-h ps-gap">Xodimlar qarzi</div>
+      {% for d in employee_debtors %}
+      <div class="ps-r"><span>{{ d.employee.name }}</span><span>{{ d.debt|floatformat:"0g" }}</span></div>
+      {% endfor %}
+      {% endif %}
+    </div>
+    <div>
+      <div class="ps-h">Ishlab chiqarish</div>
+      <div class="ps-r"><span>Oy boshidagi qarz</span><span>{{ production.opening|floatformat:"0g" }}</span></div>
+      <div class="ps-r"><span>Olingan yuk</span><span>{{ production.taken|floatformat:"0g" }}</span></div>
+      <div class="ps-r"><span>Berilgan pul</span><span>{{ production.paid|floatformat:"0g" }}</span></div>
+      {% if production.adjusted %}
+      <div class="ps-r"><span>Qarz tuzatishlari</span><span>{{ production.adjusted|floatformat:"0g" }}</span></div>
+      {% endif %}
+      <div class="ps-r ps-sum"><span>{% if is_open_month %}Bugungi qarz{% else %}Oy oxiridagi qarz{% endif %}</span><span>{{ production.closing|floatformat:"0g" }}</span></div>
+      <div class="ps-h ps-gap">Ko'chadagi qoldiq</div>
+      <div class="ps-r"><span>Oy boshida</span><span>{{ client_debt_opening|floatformat:"0g" }}</span></div>
+      <div class="ps-r ps-sum"><span>{% if is_open_month %}Bugun{% else %}Oy oxirida{% endif %}</span><span>{{ client_debt_closing|floatformat:"0g" }}</span></div>
+      <div class="ps-h ps-gap">Sof foyda</div>
+      <div class="ps-r"><span>Foyda</span><span>{{ totals.profit|floatformat:"0g" }}</span></div>
+      <div class="ps-r"><span>Rasxod</span><span>−{{ spent|floatformat:"0g" }}</span></div>
+      <div class="ps-r ps-sum ps-net"><span>Sof foyda</span><span>{% if net_profit > 0 %}+{% endif %}{{ net_profit|floatformat:"0g" }}</span></div>
+    </div>
+  </div>
+
+  <div class="ps-foot"><span>Paket CRM</span><span>Chop etildi: {{ today|date:"d.m.Y" }}</span></div>
+</div>
+
+<div class="table-toolbar">
+  <div class="toolbar-left">
+    <span class="toolbar-label">{{ date_from|date:"d.m.Y" }} – {{ date_to|date:"d.m.Y" }}</span>
+  </div>
+  <div class="toolbar-right">
+    {% if not is_current_month %}<a class="btn btn-sm btn-ghost" href="{% qs_replace oy='' %}">Shu oy</a>{% endif %}
+    <div class="month-pick" role="group" aria-label="Oy tanlash">
+      <a class="datebar-btn" href="{% qs_replace oy=prev_month %}" title="Oldingi oy" aria-label="Oldingi oy">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </a>
+      <form method="get" class="month-pick-form">
+        <select name="oy" class="month-pick-select" aria-label="Oy" onchange="this.form.submit()">
+          {% for o in month_options %}<option value="{{ o.value }}"{% if o.value == month_value %} selected{% endif %}>{{ o.label }}</option>{% endfor %}
+        </select>
+        <noscript><button type="submit" class="btn btn-sm">Ko'rsat</button></noscript>
+      </form>
+      <a class="datebar-btn" href="{% qs_replace oy=next_month %}" title="Keyingi oy" aria-label="Keyingi oy">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </a>
+    </div>
+    <a class="btn btn-sm btn-excel" href="{{ export_url }}" title="Excel yuklab olish">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Excel
+    </a>
+    <button type="button" class="btn btn-sm btn-ghost" onclick="window.print()">Chop etish</button>
+  </div>
+</div>
+
+<div class="kpi-grid">
+  <div class="kpi kpi--blue">
+    <div class="kpi-head"><span class="kpi-label">Sotilgan yuk</span></div>
+    <div class="kpi-value">{{ totals.kg|floatformat:"-3g" }}<span class="unit">kg</span></div>
+    <div class="kpi-meta muted">qaytarilgani ayrilgan</div>
+  </div>
+  <div class="kpi kpi--blue">
+    <div class="kpi-head"><span class="kpi-label">Savdo</span></div>
+    <div class="kpi-value">{{ totals.revenue|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">tannarxi {{ totals.cost|floatformat:"0g" }}</div>
+  </div>
+  <div class="kpi kpi--green">
+    <div class="kpi-head"><span class="kpi-label">Foyda</span></div>
+    <div class="kpi-value">{{ totals.profit|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{{ margin|floatformat:1 }}% foyda ulushi</div>
+  </div>
+  <div class="kpi {% if net_profit < 0 %}kpi--red{% else %}kpi--green{% endif %}">
+    <div class="kpi-head"><span class="kpi-label">Sof foyda</span></div>
+    <div class="kpi-value">{{ net_profit|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">foyda − rasxod ({{ spent|floatformat:"0g" }})</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>1. Sotilgan yuk</h2>
+    <a class="btn btn-sm btn-ghost" href="{% url 'ombor' %}?{{ window_qs }}">Ombor →</a>
+  </div>
+  {% comment %}Qog'ozdagidek guruhlab: ОҚ ЯЛТИРОҚ — ОҚ ichida, КЎК — НОВВОТ ichida,
+  hamma qop — КОП ichida (Mahsulot → «Hisobot guruhi»). Guruh ichidagi mahsulotlar
+  nomi ostida turadi; har biri o'sha oydagi sotuvlariga olib boradi. Mahsulotma-
+  mahsulot raqamlar Excelning «Mahsulotlar» varag'ida.{% endcomment %}
+  {% if groups %}
+  <div class="table-wrap">
+  <table>
+    <tr>
+      <th>Mahsulot</th>
+      <th class="num">Sotilgan</th>
+      <th class="num">Savdo</th>
+      <th class="num">Tannarx</th>
+      <th class="num">Foyda</th>
+    </tr>
+    {% for g in groups %}
+    <tr>
+      <td>
+        {% if g.is_single %}<a href="{% url 'ombor_product' g.members.0.product %}?{{ window_qs }}">{{ g.label }}</a>
+        {% else %}{{ g.label }}
+        <span class="cell-sub">{% for p in g.members %}<a href="{% url 'ombor_product' p.product %}?{{ window_qs }}">{{ p.name }}</a> {{ p.kg|floatformat:"-3g" }} kg{% if not forloop.last %} · {% endif %}{% endfor %}</span>
+        {% endif %}
+      </td>
+      <td class="num">{{ g.kg|floatformat:"-3g" }} kg</td>
+      <td class="num">{{ g.revenue|floatformat:"0g" }}</td>
+      <td class="num">{{ g.cost|floatformat:"0g" }}</td>
+      <td class="num">{{ g.profit|floatformat:"0g" }}</td>
+    </tr>
+    {% endfor %}
+    <tr>
+      <td><strong>Jami</strong></td>
+      <td class="num"><strong>{{ totals.kg|floatformat:"-3g" }} kg</strong></td>
+      <td class="num"><strong>{{ totals.revenue|floatformat:"0g" }}</strong></td>
+      <td class="num"><strong>{{ totals.cost|floatformat:"0g" }}</strong></td>
+      <td class="num"><strong>{{ totals.profit|floatformat:"0g" }}</strong></td>
+    </tr>
+  </table>
+  </div>
+  {% else %}
+  <p class="muted">Bu oyda sotuv yo'q.</p>
+  {% endif %}
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-head">
+      <h2>2. Rasxod</h2>
+      <a class="btn btn-sm btn-ghost" href="{% url 'kassa' %}?{{ window_qs }}">Kassa →</a>
+    </div>
+    <div class="table-wrap">
+    <table>
+      {% for e in expenses %}
+      <tr>
+        <td>{{ e.label }}{% if e.count > 1 %} <span class="cell-sub">{{ e.count }} ta chiqim</span>{% endif %}</td>
+        <td class="num">{{ e.amount|floatformat:"0g" }}</td>
+      </tr>
+      {% endfor %}
+      {% comment %}Bank foizi kassaga yetib kelmaydi, shuning uchun chiqimlar orasida
+      yo'q — qog'ozdagi «перечис процент» qatori.{% endcomment %}
+      <tr>
+        <td>Bank foizi <span class="cell-sub">perechisleniyedan ushlangan, firma zimmasida</span></td>
+        <td class="num">{{ bank_fee|floatformat:"0g" }}</td>
+      </tr>
+      {% for w in wages %}{% if w.wage %}
+      <tr>
+        <td>Oylik: {{ w.employee.name }}{% if not w.tracked %} <span class="cell-sub">hisobi hali boshlanmagan — berilgan pul olindi</span>{% endif %}</td>
+        <td class="num">{{ w.wage|floatformat:"0g" }}</td>
+      </tr>
+      {% endif %}{% endfor %}
+      <tr>
+        <td><strong>Jami rasxod</strong></td>
+        <td class="num"><strong>{{ spent|floatformat:"0g" }}</strong></td>
+      </tr>
+    </table>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>3. Sof foyda</h2>
+      <div class="table-wrap">
+      <table>
+        <tr><td>Foyda</td><td class="num">{{ totals.profit|floatformat:"0g" }}</td></tr>
+        <tr><td>Rasxod</td><td class="num">−{{ spent|floatformat:"0g" }}</td></tr>
+        <tr>
+          <td><strong>Sof foyda</strong></td>
+          <td class="num {% if net_profit < 0 %}amt-out{% else %}amt-in{% endif %}"><strong>{{ net_profit|floatformat:"0g" }}</strong></td>
+        </tr>
+      </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>4. Ishlab chiqarish bilan hisob-kitob</h2>
+      <div class="table-wrap">
+      <table>
+        <tr><td>Oy boshidagi qarz</td><td class="num">{{ production.opening|floatformat:"0g" }}</td></tr>
+        <tr><td>Olingan yuk <span class="cell-sub">sotilgan yukning tannarxi</span></td><td class="num">+{{ production.taken|floatformat:"0g" }}</td></tr>
+        <tr><td>Berilgan pul</td><td class="num">−{{ production.paid|floatformat:"0g" }}</td></tr>
+        {% if production.adjusted %}
+        <tr><td>Qarz tuzatishlari</td><td class="num">{{ production.adjusted|floatformat:"0g" }}</td></tr>
+        {% endif %}
+        <tr>
+          <td><strong>{% if is_open_month %}Bugungi qarz{% else %}Oy oxiridagi qarz{% endif %}</strong></td>
+          <td class="num"><strong>{{ production.closing|floatformat:"0g" }}</strong></td>
+        </tr>
+      </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>5. Qarzlar</h2>
+        <a class="btn btn-sm btn-ghost" href="{% url 'debt_list' %}">Qarzlar →</a>
+      </div>
+      <div class="table-wrap">
+      <table>
+        <tr><td>Mijozlar qarzi — oy boshida</td><td class="num">{{ client_debt_opening|floatformat:"0g" }}</td></tr>
+        <tr>
+          <td><strong>Mijozlar qarzi — {% if is_open_month %}bugun{% else %}oy oxirida{% endif %}</strong> <span class="cell-sub">ko'chadagi qoldiq</span></td>
+          <td class="num"><strong>{{ client_debt_closing|floatformat:"0g" }}</strong></td>
+        </tr>
+        {% for d in employee_debtors %}
+        <tr>
+          <td>Xodim qarzi: <a href="{% url 'employee_detail' d.employee.pk %}">{{ d.employee.name }}</a></td>
+          <td class="num">{{ d.debt|floatformat:"0g" }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>Xodimlar: hisoblangan va berilgan</h2>
+    <a class="btn btn-sm btn-ghost" href="{% url 'employee_list' %}?oy={{ month_value }}">Xodimlar oyligi →</a>
+  </div>
+  {% if wages %}
+  <div class="table-wrap">
+  <table>
+    <tr>
+      <th>Xodim</th>
+      <th class="num">Hisoblangan</th>
+      <th class="num">Berilgan</th>
+      <th class="num">Qoldiq</th>
+    </tr>
+    {% for w in wages %}
+    <tr>
+      <td>{{ w.employee.name }}</td>
+      <td class="num">{% if w.tracked %}{{ w.wage|floatformat:"0g" }}{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td class="num">{{ w.paid|floatformat:"0g" }}</td>
+      <td class="num">{% if not w.tracked %}<span class="muted">—</span>{% elif w.remaining < 0 %}<span class="amt-out">{{ w.remaining|floatformat:"0g" }}</span> <span class="cell-sub">xodim qarzi</span>{% else %}{{ w.remaining|floatformat:"0g" }}{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}
+  <p class="muted">Bu oyda oylik hisoblanmagan.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

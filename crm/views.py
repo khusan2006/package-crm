@@ -79,6 +79,7 @@ from .models import (
     RETURN_COST,
     RETURN_WEIGHT_KG,
     REVENUE,
+    SETTLEMENT_KINDS,
     SUNDAY,
     Attendance,
     AuditLog,
@@ -8487,6 +8488,302 @@ def ombor_product_export(request, pk):
     return _xlsx_response(
         f"mahsulot-{product.pk}-sotuvlar.xlsx", "Sotuvlar", headers, rows, number_formats
     )
+
+
+def _client_debt_on(day):
+    """What clients owed at the close of `day` — the paper report's «ko'chadagi qoldiq».
+
+    The Qarzlar page only knows today's balance; a month's report needs the one its
+    last day closed on. So every receipt dated up to then is re-read with only the
+    movements dated up to then: its goods, less what had come back, less what had been
+    paid in, plus money already handed back. The same arithmetic as
+    `SaleQuerySet.with_balance` — for today it is the same total — and overpaid
+    receipts are left out, as `outstanding()` leaves them out."""
+    zero = Decimal("0")
+    owed = {
+        pk: opening or zero
+        for pk, opening in Sale.objects.filter(date__lte=day).values_list(
+            "pk", "opening_amount"
+        )
+    }
+
+    def move(rows, expr, sign):
+        sums = (
+            rows.filter(sale__date__lte=day)
+            .order_by()
+            .values_list("sale")
+            .annotate(s=Sum(expr))
+        )
+        for pk, amount in sums:
+            owed[pk] += sign * (amount or zero)
+
+    move(SaleItem.objects.all(), REVENUE, 1)
+    move(Return.objects.filter(date__lte=day), RETURN_AMOUNT, -1)
+    move(Payment.objects.filter(date__lte=day, kind__in=PAYING_KINDS), PAYMENT_CREDIT, -1)
+    move(Payment.objects.filter(date__lte=day, kind__in=SETTLEMENT_KINDS), "amount", 1)
+    return sum((v for v in owed.values() if v > 0), zero)
+
+
+# How many chiqim categories the printed sheet names before folding the rest.
+REPORT_PRINT_EXPENSE_LINES = 6
+
+
+def _monthly_report(year, month):
+    """One calendar month the way the firm closes it on paper: goods sold by product,
+    what the month cost, what is left of the profit, and where the money stands with
+    production, the clients and the workers.
+
+    Two figures are deliberately NOT the kassa's. Profit is the full markup of what
+    was sold (`_sale_totals`), not the cost-first «qo'lga tushgan foyda»: the paper
+    counts a sale's profit the day the goods leave. And a wage is what the month's
+    work was worth — the payroll's «hisoblangan» — not what the till happened to hand
+    out: money drawn beyond the wage is the worker's debt, not the month's cost. So
+    this page and Kassa → «Sof foyda» answer different questions and do not agree."""
+    zero = Decimal("0")
+    first = date(year, month, 1)
+    last = date(year, month, calendar.monthrange(year, month)[1])
+    sales = Sale.objects.filter(date__gte=first, date__lte=last)
+
+    # 1. Sotilgan yuk. Returns follow their receipt (as in `_sale_totals`), and only a
+    # restocked one gives its tannarx back.
+    backs = {
+        r["product"]: r
+        for r in Return.objects.filter(sale__in=sales.values("pk"))
+        .order_by()
+        .values("product")
+        .annotate(
+            kg=Sum(RETURN_WEIGHT_KG),
+            amount=Sum(RETURN_AMOUNT),
+            cost=Sum(RETURN_COST, filter=Q(restock=True)),
+        )
+    }
+    products = []
+    for r in (
+        SaleItem.objects.filter(sale__in=sales.values("pk"))
+        .values("product", "product__name", "product__report_group")
+        .annotate(kg=Sum(ITEM_WEIGHT_KG), revenue=Sum(REVENUE), cost=Sum(COST))
+    ):
+        back = backs.get(r["product"], {})
+        revenue = (r["revenue"] or zero) - (back.get("amount") or zero)
+        cost = (r["cost"] or zero) - (back.get("cost") or zero)
+        products.append({
+            "product": r["product"],
+            "name": r["product__name"],
+            # The paper's line for it; a product nobody grouped is a line of its own.
+            "group": " ".join(r["product__report_group"].split()) or r["product__name"],
+            "kg": (r["kg"] or zero) - (back.get("kg") or zero),
+            "revenue": revenue,
+            "cost": cost,
+            "profit": revenue - cost,
+        })
+    products.sort(key=lambda p: p["kg"], reverse=True)
+    figures = ("kg", "revenue", "cost", "profit")
+    totals = {key: sum((p[key] for p in products), zero) for key in figures}
+    # The report's own lines: products added into their `Product.report_group`, the
+    # way the firm closes the month on paper (ОҚ, ҚОРА, НОВВОТ, КОП).
+    by_group = {}
+    for p in products:
+        group = by_group.setdefault(
+            p["group"].casefold(),
+            {"label": p["group"], "members": [], **{key: zero for key in figures}},
+        )
+        group["members"].append(p)
+        for key in figures:
+            group[key] += p[key]
+    groups = sorted(by_group.values(), key=lambda g: g["kg"], reverse=True)
+    for group in groups:
+        # Nothing to spell out when the line is one product under its own name.
+        group["is_single"] = (
+            len(group["members"]) == 1 and group["members"][0]["name"] == group["label"]
+        )
+
+    # 2. Rasxod. A wage or an advance is not this month's cost — the wage further
+    # down is; counting the payout too would charge the month twice for one job.
+    by_category = {}
+    costs = Expense.objects.filter(date__gte=first, date__lte=last).exclude(
+        employee__isnull=False, counts_against_salary=True
+    )
+    for category, amount in costs.values_list("category", "amount"):
+        label = " ".join(category.split()) or "Turkumsiz"
+        row = by_category.setdefault(
+            label.casefold(), {"label": label, "amount": zero, "count": 0}
+        )
+        row["amount"] += amount
+        row["count"] += 1
+    expenses = sorted(by_category.values(), key=lambda r: r["amount"], reverse=True)
+    expense_total = sum((r["amount"] for r in expenses), zero)
+    # The printed sheet is one page, so only the biggest lines keep their name on it
+    # and the tail is one row. A lone leftover is not worth hiding behind «mayda».
+    expenses_brief = expenses
+    if len(expenses) > REPORT_PRINT_EXPENSE_LINES + 1:
+        tail = expenses[REPORT_PRINT_EXPENSE_LINES:]
+        expenses_brief = expenses[:REPORT_PRINT_EXPENSE_LINES] + [{
+            "label": f"Mayda chiqimlar ({len(tail)} ta turkum)",
+            "amount": sum((r["amount"] for r in tail), zero),
+            "count": sum(r["count"] for r in tail),
+        }]
+
+    # The bank's cut on transfers the firm agreed to carry. It never reaches the till,
+    # so no chiqim row holds it — the paper writes it out as «перечис процент».
+    bank_fee = Payment.objects.filter(
+        date__gte=first, date__lte=last,
+        commission__gt=0, commission_payer=Payment.Payer.SELLER,
+    ).aggregate(s=Sum("commission"))["s"] or zero
+
+    wages = []
+    for r in _payroll_rows(list(Employee.objects.order_by("name")), year, month):
+        # A worker whose account opens later accrues nothing yet: what the till paid
+        # them is then the only cost the month has for them.
+        wage = r["earned"] if r["tracked"] else r["paid"]
+        if wage or r["paid"] or r["remaining"]:
+            wages.append({
+                "employee": r["employee"],
+                "wage": wage,
+                "paid": r["paid"],
+                "remaining": r["remaining"],
+                "tracked": r["tracked"],
+            })
+    wage_total = sum((r["wage"] for r in wages), zero)
+    spent = expense_total + bank_fee + wage_total
+
+    # 4. Ishlab chiqarish — the kassa's own figures, so the debt here is the debt there.
+    till = _kassa_summary(first, last)
+    adjusted = ProductionAdjustment.objects.filter(
+        date__gte=first, date__lte=last
+    ).aggregate(s=Sum("amount"))["s"] or zero
+    production = {
+        "opening": till["production_debt"] - till["cost"] + till["remitted"] - adjusted,
+        "taken": till["cost"],
+        "paid": till["remitted"],
+        "adjusted": adjusted,
+        "closing": till["production_debt"],
+    }
+
+    debtors = [
+        {"employee": r["employee"], "debt": -r["remaining"]}
+        for r in wages
+        if r["tracked"] and r["remaining"] < 0
+    ]
+    return {
+        "date_from": first,
+        "date_to": last,
+        "products": products,
+        "groups": groups,
+        "totals": totals,
+        "margin": totals["profit"] / totals["revenue"] * 100 if totals["revenue"] else zero,
+        "expenses": expenses,
+        "expenses_brief": expenses_brief,
+        "expense_total": expense_total,
+        "bank_fee": bank_fee,
+        "wages": wages,
+        "wage_total": wage_total,
+        "spent": spent,
+        "net_profit": totals["profit"] - spent,
+        "production": production,
+        "client_debt_opening": _client_debt_on(first - timedelta(days=1)),
+        "client_debt_closing": _client_debt_on(last),
+        "employee_debtors": debtors,
+        "employee_debt_total": sum((d["debt"] for d in debtors), zero),
+    }
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def monthly_report(request):
+    """Oylik hisobot: the month's closing sheet the firm used to keep by hand — see
+    `_monthly_report`. Live: reopening a past month re-reads today's records, so a late
+    return or a corrected chiqim moves its figures."""
+    year, month = _payroll_month(request)
+    today = timezone.localdate()
+    prev_year, prev_month = _month_shift(year, month, -1)
+    next_year, next_month = _month_shift(year, month, 1)
+    value = f"{year:04d}-{month:02d}"
+    report = _monthly_report(year, month)
+    return render(request, "crm/monthly_report.html", {
+        **report,
+        "month_value": value,
+        "month_label": uz_month(year, month),
+        "month_options": _month_options(year, month, today),
+        "prev_month": f"{prev_year:04d}-{prev_month:02d}",
+        "next_month": f"{next_year:04d}-{next_month:02d}",
+        "is_current_month": (year, month) == (today.year, today.month),
+        # The month is still running (or has not started): its closing figures are
+        # today's, and the page says so rather than dating them to a day yet to come.
+        "is_open_month": report["date_to"] >= today,
+        "today": today,
+        "window_qs": urlencode({
+            "dan": report["date_from"].isoformat(), "gacha": report["date_to"].isoformat(),
+        }),
+        "export_url": f"{reverse('monthly_report_export')}?oy={value}",
+    })
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def monthly_report_export(request):
+    """The month's report as .xlsx — the summary first, then the tables behind it."""
+    year, month = _payroll_month(request)
+    r = _monthly_report(year, month)
+    money = "#,##0"
+    p = r["production"]
+    summary = [
+        ["Sotilgan yuk (kg)", float(r["totals"]["kg"])],
+        ["Savdo", float(r["totals"]["revenue"])],
+        ["Tannarx", float(r["totals"]["cost"])],
+        ["Foyda", float(r["totals"]["profit"])],
+        ["Rasxod: chiqimlar", float(r["expense_total"])],
+        ["Rasxod: bank foizi", float(r["bank_fee"])],
+        ["Rasxod: oylik (hisoblangan)", float(r["wage_total"])],
+        ["Jami rasxod", float(r["spent"])],
+        ["Sof foyda", float(r["net_profit"])],
+        ["Ishlab chiqarish: oy boshidagi qarz", float(p["opening"])],
+        ["Ishlab chiqarish: olingan yuk (tannarx)", float(p["taken"])],
+        ["Ishlab chiqarish: berilgan pul", float(p["paid"])],
+        ["Ishlab chiqarish: qarz tuzatishlari", float(p["adjusted"])],
+        ["Ishlab chiqarish: oy oxiridagi qarz", float(p["closing"])],
+        ["Mijozlar qarzi: oy boshida", float(r["client_debt_opening"])],
+        ["Mijozlar qarzi: oy oxirida", float(r["client_debt_closing"])],
+        ["Xodimlar qarzi", float(r["employee_debt_total"])],
+    ]
+    figures = ("kg", "revenue", "cost", "profit")
+    jami = [float(r["totals"][k]) for k in figures]
+    sold = [[x["label"]] + [float(x[k]) for k in figures] for x in r["groups"]]
+    sold.append(["Jami"] + jami)
+    # The same goods product by product — the lines above are sums of these.
+    by_product = [
+        [x["name"], x["group"]] + [float(x[k]) for k in figures] for x in r["products"]
+    ]
+    by_product.append(["Jami", ""] + jami)
+    spent = [["Chiqim", x["label"], float(x["amount"])] for x in r["expenses"]]
+    spent.append(["Bank foizi", "Perechisleniye foizi", float(r["bank_fee"])])
+    spent += [["Oylik", x["employee"].name, float(x["wage"])] for x in r["wages"] if x["wage"]]
+    spent.append(["Jami", "", float(r["spent"])])
+    workers = [
+        [
+            x["employee"].name,
+            float(x["wage"]),
+            float(x["paid"]),
+            float(x["remaining"]) if x["tracked"] else "",
+        ]
+        for x in r["wages"]
+    ]
+    return _xlsx_book_response(f"oylik-hisobot-{year:04d}-{month:02d}.xlsx", [
+        ("Xulosa", ["Ko'rsatkich", uz_month(year, month)], summary, {2: "#,##0.##"}),
+        (
+            "Sotilgan yuk",
+            ["Guruh", "Sotilgan (kg)", "Savdo", "Tannarx", "Foyda"],
+            sold, {2: "0.000", 3: money, 4: money, 5: money},
+        ),
+        (
+            "Mahsulotlar",
+            ["Mahsulot", "Guruh", "Sotilgan (kg)", "Savdo", "Tannarx", "Foyda"],
+            by_product, {3: "0.000", 4: money, 5: money, 6: money},
+        ),
+        ("Rasxod", ["Turi", "Nomi", "Summa (so'm)"], spent, {3: money}),
+        (
+            "Xodimlar",
+            ["Xodim", "Hisoblangan", "Berilgan", "Qoldiq (minus — xodim qarzi)"],
+            workers, {2: money, 3: money, 4: money},
+        ),
+    ])
 
 
 def sale_export(request):
