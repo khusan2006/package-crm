@@ -52,6 +52,19 @@
       </select>
     </label>
     {% endif %}
+    {% comment %}Payroll workers, several at once (Oylik hisobot: whose wages the month
+    carries) — the same tick-box picker as Turkum, sent as repeated `xodim=`. Nothing
+    ticked is the page's own default, which `employee_hint` spells out.{% endcomment %}
+    {% if employee_options %}
+    <label>Xodimlar
+      <select name="xodim" multiple data-multicheck data-empty="Avtomatik">
+        {% for e in employee_options %}
+        <option value="{{ e.pk }}" {% if e.pk|stringformat:'s' in filters.xodim %}selected{% endif %}>{{ e.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% if employee_hint %}<p class="field-hint">{{ employee_hint }}</p>{% endif %}
+    {% endif %}
     {% if actions %}
     <label>Amal
       <select name="action">

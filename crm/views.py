@@ -8490,8 +8490,9 @@ def ombor_product_export(request, pk):
     )
 
 
-def _client_debt_on(day):
+def _client_debt_on(day, rep=None):
     """What clients owed at the close of `day` — the paper report's «ko'chadagi qoldiq».
+    With `rep`, only that seller's receipts — the Qarzlar page's Sotuvchi filter.
 
     The Qarzlar page only knows today's balance; a month's report needs the one its
     last day closed on. So every receipt dated up to then is re-read with only the
@@ -8500,16 +8501,17 @@ def _client_debt_on(day):
     `SaleQuerySet.with_balance` — for today it is the same total — and overpaid
     receipts are left out, as `outstanding()` leaves them out."""
     zero = Decimal("0")
-    owed = {
-        pk: opening or zero
-        for pk, opening in Sale.objects.filter(date__lte=day).values_list(
-            "pk", "opening_amount"
-        )
-    }
+    sales = Sale.objects.filter(date__lte=day)
+    if rep is not None:
+        sales = sales.filter(sales_rep=rep)
+    owed = {pk: opening or zero for pk, opening in sales.values_list("pk", "opening_amount")}
 
     def move(rows, expr, sign):
+        rows = rows.filter(sale__date__lte=day)
+        if rep is not None:
+            rows = rows.filter(sale__sales_rep=rep)
         sums = (
-            rows.filter(sale__date__lte=day)
+            rows
             .order_by()
             .values_list("sale")
             .annotate(s=Sum(expr))
@@ -8527,11 +8529,40 @@ def _client_debt_on(day):
 # How many chiqim categories the printed sheet names before folding the rest.
 REPORT_PRINT_EXPENSE_LINES = 6
 
+# The seller's name as the firm's paper form spells it, where that is not just the
+# CRM name in Cyrillic letters (`_uz_cyrillic`). Keyed by username, case-insensitive.
+REPORT_PRINT_NAMES = {"kamola": "КАМОЛА ТОШХУЖАЙЕВА"}
 
-def _monthly_report(year, month):
+_UZ_DIGRAPHS = (
+    ("o'", "ў"), ("g'", "ғ"), ("sh", "ш"), ("ch", "ч"),
+    ("yo", "ё"), ("yu", "ю"), ("ya", "я"), ("ye", "е"),
+)
+_UZ_LETTERS = str.maketrans(
+    "abcdefghijklmnopqrstuvwxyz'", "абсдефгҳижклмнопқрстуввхйзъ"
+)
+
+
+def _uz_cyrillic(text):
+    """Uzbek Latin → Cyrillic capitals, for a name on the Cyrillic paper form:
+    "Umida Ismaylova" → "УМИДА ИСМАЙЛОВА"."""
+    words = []
+    for word in re.sub("[\u02bb\u02bc\u2019\u2018`]", "'", text.lower()).split():
+        if word.startswith("e"):
+            word = "э" + word[1:]
+        for latin, cyrillic in _UZ_DIGRAPHS:
+            word = word.replace(latin, cyrillic)
+        words.append(word.translate(_UZ_LETTERS))
+    return " ".join(words).upper()
+
+
+def _monthly_report(year, month, rep=None, employees=None):
     """One calendar month the way the firm closes it on paper: goods sold by product,
     what the month cost, what is left of the profit, and where the money stands with
     production, the clients and the workers.
+
+    `rep` narrows it to one seller — their sales, their till's chiqims and bank fees,
+    their production debt and their clients, the way Kassa's Sotuvchi filter does.
+    `employees` is whose wages the month carries; None is every worker.
 
     Two figures are deliberately NOT the kassa's. Profit is the full markup of what
     was sold (`_sale_totals`), not the cost-first «qo'lga tushgan foyda»: the paper
@@ -8543,6 +8574,8 @@ def _monthly_report(year, month):
     first = date(year, month, 1)
     last = date(year, month, calendar.monthrange(year, month)[1])
     sales = Sale.objects.filter(date__gte=first, date__lte=last)
+    if rep is not None:
+        sales = sales.filter(sales_rep=rep)
 
     # 1. Sotilgan yuk. Returns follow their receipt (as in `_sale_totals`), and only a
     # restocked one gives its tannarx back.
@@ -8603,6 +8636,8 @@ def _monthly_report(year, month):
     costs = Expense.objects.filter(date__gte=first, date__lte=last).exclude(
         employee__isnull=False, counts_against_salary=True
     )
+    if rep is not None:
+        costs = costs.filter(created_by=rep)
     for category, amount in costs.values_list("category", "amount"):
         label = " ".join(category.split()) or "Turkumsiz"
         row = by_category.setdefault(
@@ -8626,13 +8661,18 @@ def _monthly_report(year, month):
 
     # The bank's cut on transfers the firm agreed to carry. It never reaches the till,
     # so no chiqim row holds it — the paper writes it out as «перечис процент».
-    bank_fee = Payment.objects.filter(
+    fees = Payment.objects.filter(
         date__gte=first, date__lte=last,
         commission__gt=0, commission_payer=Payment.Payer.SELLER,
-    ).aggregate(s=Sum("commission"))["s"] or zero
+    )
+    if rep is not None:
+        fees = fees.filter(created_by=rep)
+    bank_fee = fees.aggregate(s=Sum("commission"))["s"] or zero
 
+    if employees is None:
+        employees = list(Employee.objects.order_by("name"))
     wages = []
-    for r in _payroll_rows(list(Employee.objects.order_by("name")), year, month):
+    for r in _payroll_rows(employees, year, month):
         # A worker whose account opens later accrues nothing yet: what the till paid
         # them is then the only cost the month has for them.
         wage = r["earned"] if r["tracked"] else r["paid"]
@@ -8663,10 +8703,11 @@ def _monthly_report(year, month):
     spent = expense_total + bank_fee + wage_total
 
     # 4. Ishlab chiqarish — the kassa's own figures, so the debt here is the debt there.
-    till = _kassa_summary(first, last)
-    adjusted = ProductionAdjustment.objects.filter(
-        date__gte=first, date__lte=last
-    ).aggregate(s=Sum("amount"))["s"] or zero
+    till = _kassa_summary(first, last, rep)
+    adjustments = ProductionAdjustment.objects.filter(date__gte=first, date__lte=last)
+    if rep is not None:
+        adjustments = adjustments.filter(seller=rep)
+    adjusted = adjustments.aggregate(s=Sum("amount"))["s"] or zero
     production = {
         "opening": till["production_debt"] - till["cost"] + till["remitted"] - adjusted,
         "taken": till["cost"],
@@ -8708,10 +8749,66 @@ def _monthly_report(year, month):
         "spent": spent,
         "net_profit": totals["profit"] - spent,
         "production": production,
-        "client_debt_opening": _client_debt_on(first - timedelta(days=1)),
-        "client_debt_closing": _client_debt_on(last),
+        "client_debt_opening": _client_debt_on(first - timedelta(days=1), rep),
+        "client_debt_closing": _client_debt_on(last, rep),
         "employee_debtors": debtors,
         "employee_debt_total": sum((d["debt"] for d in debtors), zero),
+    }
+
+
+def _monthly_report_scope(request):
+    """Whose month the report is: one seller (?rep=) and the workers whose wages it
+    carries (?xodim=, repeated). Neither picked — the whole firm, every worker.
+
+    Workers are not tied to a seller in the CRM, but each is paid out of one seller's
+    till. So with a seller picked and no worker ticked, the report takes the workers
+    that seller's kassa has paid a wage to — Kamola's report does not carry Umida's
+    wage. Ticking workers overrides that. Returns (rep, employees, context)."""
+    reps = (
+        User.objects.filter(
+            Q(role=User.Role.SALES, is_active=True)
+            | Q(pk__in=Sale.objects.values("sales_rep"))
+        )
+        .distinct()
+        .order_by("first_name", "username")
+    )
+    raw_rep = request.GET.get("rep", "")
+    rep = reps.filter(pk=raw_rep).first() if raw_rep.isdigit() else None
+    everyone = list(Employee.objects.order_by("name"))
+    picked_pks = [pk for pk in request.GET.getlist("xodim") if pk.isdigit()]
+    picked = [e for e in everyone if str(e.pk) in picked_pks]
+    note = ""
+    if picked:
+        employees = picked
+    elif rep is not None:
+        paid = set(
+            Expense.objects.filter(
+                created_by=rep, employee__isnull=False, counts_against_salary=True
+            ).values_list("employee", flat=True)
+        )
+        employees = [e for e in everyone if e.pk in paid]
+        note = f"{rep} kassasidan oylik olganlar"
+    else:
+        employees = everyone
+    if not picked:
+        picked_label = ""
+    elif len(picked) <= 2:
+        picked_label = ", ".join(e.name for e in picked)
+    else:
+        picked_label = f"{len(picked)} ta"
+    active_filters = _filter_chips(request, [
+        {"param": "rep", "label": "Sotuvchi", "value": str(rep) if rep else ""},
+        {"param": "xodim", "label": "Xodimlar", "value": picked_label},
+    ])
+    return rep, employees, {
+        "reps": reps,
+        "rep": rep,
+        "employee_options": everyone,
+        "filters": {"rep": str(rep.pk) if rep else "", "xodim": [str(e.pk) for e in picked]},
+        "active_filters": active_filters,
+        "has_filters": bool(active_filters),
+        "filter_count": len(active_filters),
+        "employee_note": note,
     }
 
 
@@ -8725,9 +8822,27 @@ def monthly_report(request):
     prev_year, prev_month = _month_shift(year, month, -1)
     next_year, next_month = _month_shift(year, month, 1)
     value = f"{year:04d}-{month:02d}"
-    report = _monthly_report(year, month)
+    rep, employees, scope = _monthly_report_scope(request)
+    report = _monthly_report(year, month, rep, employees)
+    # Excel downloads what the page shows: the same month, seller and workers.
+    export_qs = request.GET.copy()
+    export_qs["oy"] = value
+    window = {"dan": report["date_from"].isoformat(), "gacha": report["date_to"].isoformat()}
+    if rep is not None:
+        window["rep"] = rep.pk
     return render(request, "crm/monthly_report.html", {
         **report,
+        **scope,
+        # The paper form's heading: the seller's firm and name. The whole firm's
+        # report is no one seller's, so it goes out under neither.
+        "print_firm": rep.firm_name.upper() if rep is not None else "",
+        "print_name": (
+            REPORT_PRINT_NAMES.get(rep.username.casefold()) or _uz_cyrillic(str(rep))
+            if rep is not None else ""
+        ),
+        "filter_url": request.path,
+        "filter_clear_url": f"{request.path}?oy={value}",
+        "drawer_keep": [{"name": "oy", "value": value}],
         "month_value": value,
         "month_label": uz_month(year, month),
         "month_options": _month_options(year, month, today),
@@ -8738,10 +8853,8 @@ def monthly_report(request):
         # today's, and the page says so rather than dating them to a day yet to come.
         "is_open_month": report["date_to"] >= today,
         "today": today,
-        "window_qs": urlencode({
-            "dan": report["date_from"].isoformat(), "gacha": report["date_to"].isoformat(),
-        }),
-        "export_url": f"{reverse('monthly_report_export')}?oy={value}",
+        "window_qs": urlencode(window),
+        "export_url": f"{reverse('monthly_report_export')}?{export_qs.urlencode()}",
     })
 
 
@@ -8749,7 +8862,8 @@ def monthly_report(request):
 def monthly_report_export(request):
     """The month's report as .xlsx — the summary first, then the tables behind it."""
     year, month = _payroll_month(request)
-    r = _monthly_report(year, month)
+    rep, employees, _ = _monthly_report_scope(request)
+    r = _monthly_report(year, month, rep, employees)
     money = "#,##0"
     p = r["production"]
     summary = [
@@ -8797,8 +8911,10 @@ def monthly_report_export(request):
         ]
         for x in r["wages"]
     ]
-    return _xlsx_book_response(f"oylik-hisobot-{year:04d}-{month:02d}.xlsx", [
-        ("Xulosa", ["Ko'rsatkich", uz_month(year, month)], summary, {2: "#,##0.##"}),
+    suffix = f"-{rep.username.lower()}" if rep is not None else ""
+    heading = f"{uz_month(year, month)} · {rep}" if rep is not None else uz_month(year, month)
+    return _xlsx_book_response(f"oylik-hisobot-{year:04d}-{month:02d}{suffix}.xlsx", [
+        ("Xulosa", ["Ko'rsatkich", heading], summary, {2: "#,##0.##"}),
         (
             "Sotilgan yuk",
             ["Guruh", "Sotilgan (kg)", "Savdo", "Tannarx", "Foyda"],

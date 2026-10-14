@@ -6121,3 +6121,303 @@ a.cell-loc--map:hover { color: var(--accent); }
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
+
+/* ============================================================
+   Oylik hisobot — ekrandagi sahifa (chop varag'i shablonning o'zida)
+   ============================================================ */
+
+/* Har bo'lim KPI kartalaridagi rangda: Sotilgan yuk — ko'k, Rasxod — qizil, Sof foyda —
+   yashil (zararda qizil), Qarzlar — sariq, Xodimlar — binafsha. Rang bitta --rep
+   o'zgaruvchisida, KPI'dagi --kpi kabi: chegara, burchakdagi nur, raqam belgisi,
+   jadval sarlavhasi va jami qatori shundan bo'yaladi. */
+.rep-card {
+  --rep: var(--accent);
+  position: relative;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--rep) 26%, var(--border));
+}
+
+.rep-card::after {
+  content: "";
+  position: absolute;
+  top: -70px;
+  right: -40px;
+  width: 180px;
+  height: 180px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--rep), transparent 70%);
+  opacity: 0.12;
+  pointer-events: none;
+}
+
+.rep-card > * {
+  position: relative;
+}
+
+.rep-card--blue {
+  --rep: var(--accent);
+}
+
+.rep-card--green {
+  --rep: var(--success);
+}
+
+.rep-card--red {
+  --rep: var(--danger);
+}
+
+.rep-card--gold {
+  --rep: var(--warning);
+}
+
+.rep-card--violet {
+  --rep: var(--violet);
+}
+
+.rep-card .table-wrap {
+  border-color: color-mix(in srgb, var(--rep) 22%, var(--border));
+}
+
+.rep-card .rep-table th {
+  background: color-mix(in srgb, var(--rep) 10%, var(--table-bg));
+  color: var(--rep);
+  border-bottom-color: color-mix(in srgb, var(--rep) 30%, var(--border));
+}
+
+/* Sotilgan yuk jadvalida ustunlar o'z KPI kartasining rangida: Sotilgan — ko'k,
+   Savdo — binafsha, Foyda — yashil; sarlavhasi ham, jami raqami ham. */
+.rep-card .rep-table .rep-c-blue {
+  color: var(--accent);
+}
+
+.rep-card .rep-table .rep-c-violet {
+  color: var(--violet);
+}
+
+.rep-card .rep-table .rep-c-green {
+  color: var(--success);
+}
+
+.rep-card .rep-table .rep-c-red {
+  color: var(--danger);
+}
+
+.rep-card .rep-table .rep-c-muted {
+  color: var(--text-muted);
+}
+
+/* Bo'lim sarlavhasi oldidagi raqam: hisobot qog'ozdagi tartibda o'qiladi (1 → 5). */
+.rep-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rep-step {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--rep, var(--accent)) 18%, transparent);
+  color: var(--rep, var(--accent));
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hisobot jadvallari: qatorlar zichroq, raqamlar bir tekis. */
+.rep-table td {
+  padding-top: 11px;
+  padding-bottom: 11px;
+}
+
+.rep-table .rep-name {
+  font-weight: 600;
+}
+
+.rep-table a.rep-name {
+  color: var(--text);
+}
+
+.rep-table a.rep-name:hover {
+  color: var(--accent);
+}
+
+.rep-table .rep-muted {
+  color: var(--text-muted);
+}
+
+/* Jami qatori — jadvalning tagi: to'q fon va qalin raqamlar. */
+.rep-table .rep-total td {
+  background: color-mix(in srgb, var(--rep, var(--text-faint)) 9%, var(--table-bg));
+  border-top: 1px solid color-mix(in srgb, var(--rep, var(--text-faint)) 35%, var(--border));
+  font-weight: 750;
+  font-size: 14.5px;
+}
+
+/* Guruhning kg'dagi ulushi — raqam ostida ingichka chiziq. */
+.rep-share {
+  display: block;
+  width: 80px;
+  height: 4px;
+  margin: 7px 0 0 auto;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.rep-share i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--rep, var(--accent));
+}
+
+.is-cards .rep-share {
+  display: none;
+}
+
+/* Rasxod/qarz ro'yxati: guruh qatori o'z yig'indisi bilan, ichidagilari surilib va
+   xiraroq — ko'z avval uchta katta raqamni, keyin tafsilotni ko'radi. */
+.rep-ledger .rep-group td {
+  font-weight: 650;
+  background: color-mix(in srgb, var(--rep, var(--text-faint)) 5%, var(--table-bg));
+}
+
+.rep-ledger .rep-sub td {
+  font-size: 13.5px;
+  color: var(--text-muted);
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.rep-ledger .rep-sub td:first-child {
+  padding-left: 36px;
+}
+
+.rep-ledger .rep-sub a {
+  color: var(--text);
+}
+
+.rep-ledger .rep-sub a:hover {
+  color: var(--accent);
+}
+
+.rep-count {
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* O'ng ustun: uch karta bir-birining ostida, oxirgisi cho'zilib chap karta bilan bir
+   chiziqda tugaydi. */
+.rep-cols > .card {
+  margin-bottom: 0;
+}
+
+.rep-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.rep-stack > .card {
+  margin-bottom: 0;
+}
+
+.rep-stack > .card:last-child {
+  flex: 1 1 auto;
+}
+
+/* Sof foyda — foyda − rasxod = sof foyda, natija katta raqam bilan. */
+.rep-eq-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 0;
+  border-bottom: 1px dashed var(--border);
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.rep-eq-row b {
+  color: var(--text);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rep-eq-row b.amt-out {
+  color: var(--danger);
+}
+
+.rep-eq-result {
+  padding-top: 13px;
+  border-bottom: none;
+  color: var(--text);
+  font-weight: 650;
+}
+
+.rep-eq-result b {
+  font-size: 26px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.rep-eq-result b.amt-in {
+  color: var(--success);
+}
+
+.rep-eq-result b.amt-out {
+  color: var(--danger);
+}
+
+.rep-eq-result .unit {
+  margin-left: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+/* Foydaning qancha qismini rasxod oldi: qizil — rasxod, yashil — qolgani. */
+.rep-meter {
+  display: flex;
+  height: 8px;
+  margin-top: 12px;
+  border-radius: var(--r-pill);
+  background: var(--success);
+  overflow: hidden;
+}
+
+.rep-meter i {
+  display: block;
+  background: var(--danger);
+}
+
+.rep-meter-cap {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.rep-meter-cap > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rep-dot-out {
+  background: var(--danger);
+}

@@ -61,6 +61,7 @@ from .views import (
     _kassa_summary,
     _per_employee_kassa,
     _realized_profit_by_seller,
+    _uz_cyrillic,
 )
 
 
@@ -7999,3 +8000,65 @@ class MonthlyReportTests(BaseSetup):
         sold = list(book["Sotilgan yuk"].iter_rows(values_only=True))
         self.assertEqual(sold[1], ("Hisobot test", 10, 200000, 100000, 100000))
         self.assertEqual(sold[-1][0], "Jami")
+
+    def test_a_seller_filter_narrows_the_month_to_that_seller(self):
+        self._sell()                                                     # sales1, 10 kg
+        make_sale(
+            self.client2, self.sales2, self.p, weight="3", price="20000",
+            date=self.DAY, is_debt=True,
+        )
+        for seller, amount in ((self.sales1, "30000"), (self.sales2, "7000")):
+            Expense.objects.create(
+                date=self.DAY, amount=Decimal(amount), category="Benzin / transport",
+                method=Payment.Method.CASH, created_by=seller,
+            )
+        url = reverse("monthly_report")
+        self.assertEqual(self._report()["totals"]["kg"], Decimal("13"))
+        ctx = self.client.get(url, {"oy": self.MONTH, "rep": self.sales2.pk}).context
+        self.assertEqual(ctx["totals"]["kg"], Decimal("3"))
+        self.assertEqual(ctx["expense_total"], Decimal("7000"))
+        self.assertEqual(ctx["production"]["taken"], Decimal("30000"))
+        self.assertEqual(ctx["client_debt_closing"], Decimal("60000"))
+        ctx = self.client.get(url, {"oy": self.MONTH, "rep": self.sales1.pk}).context
+        self.assertEqual(ctx["totals"]["kg"], Decimal("10"))
+        self.assertEqual(ctx["expense_total"], Decimal("30000"))
+        self.assertEqual(ctx["client_debt_closing"], Decimal("0"))
+
+    def test_a_sellers_report_carries_the_workers_their_till_paid(self):
+        mine = Employee.objects.create(
+            name="Birinchining xodimi", salary=Decimal("2000000"), start_month=date(2020, 3, 1),
+        )
+        theirs = Employee.objects.create(
+            name="Ikkinchining xodimi", salary=Decimal("1000000"), start_month=date(2020, 3, 1),
+        )
+        for worker, seller in ((mine, self.sales1), (theirs, self.sales2)):
+            Expense.objects.create(
+                date=self.DAY, amount=Decimal("100000"), category="Oylik / xodim",
+                method=Payment.Method.CASH, created_by=seller, employee=worker,
+            )
+        url = reverse("monthly_report")
+        ctx = self.client.get(url, {"oy": self.MONTH, "rep": self.sales1.pk}).context
+        self.assertEqual([w["employee"] for w in ctx["wages"]], [mine])
+        self.assertEqual(ctx["wage_total"], Decimal("2000000"))
+        # Ticking workers overrides the guess
+        ctx = self.client.get(
+            url, {"oy": self.MONTH, "rep": self.sales1.pk, "xodim": [theirs.pk]}
+        ).context
+        self.assertEqual([w["employee"] for w in ctx["wages"]], [theirs])
+        # No seller: the whole firm, every worker
+        self.assertEqual(len(self._report()["wages"]), 2)
+
+    def test_the_printed_heading_and_the_export_are_the_sellers(self):
+        self.sales2.first_name, self.sales2.last_name = "Umida", "Ismaylova"
+        self.sales2.firm_name = "Polimer111"
+        self.sales2.save()
+        params = {"oy": self.MONTH, "rep": self.sales2.pk}
+        response = self.client.get(reverse("monthly_report"), params)
+        self.assertContains(response, '<div class="ps-firm">ООО “POLIMER111” MCHJ</div>')
+        self.assertContains(response, "УМИДА ИСМАЙЛОВА&emsp;ОЙЛИК ХИСОБОТИ")
+        export = self.client.get(reverse("monthly_report_export"), params)
+        self.assertIn("oylik-hisobot-2020-03-t_sales2.xlsx", export["Content-Disposition"])
+        # The whole firm's report is no one seller's
+        whole = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
+        self.assertNotContains(whole, 'class="ps-firm"')
+        self.assertEqual(_uz_cyrillic("G'ayrat O'ktamov Eshmatov"), "ҒАЙРАТ ЎКТАМОВ ЭШМАТОВ")
