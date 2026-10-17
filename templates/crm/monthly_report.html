@@ -24,8 +24,8 @@
   joyi, chegaralari, qizil sarlavhalari va kirillcha yozuvlari bilan. Ekranda u
   yashirin, chop etishda esa faqat o'zi qoladi. Blankada yo'q narsalar (ishlab
   chiqarish qarzi, ko'chadagi qoldiq) varaqqa chiqmaydi — ular ekranda va Excelda.
-  Chiqimlarning eng kattalari nomi bilan, qolgani blankadagidek bitta «Прочие»
-  qatorida (`expenses_brief`). Ranglar qat'iy: tungi mavzuda ham qog'oz oq chiqsin.
+  Chiqimlar blankadagi qatorlarga yig'ilgan (`expense_groups`): Бензин, Обед, Прочие,
+  Клиент фойда — bo'shi ham turadi. Ranglar qat'iy: tungi mavzuda ham qog'oz oq chiqsin.
   Sarlavhadagi firma va ism — filtrda tanlangan sotuvchiniki (yuk xatidagi «Firma
   nomi» va ismi kirillchada); butun firma hisobotida ikkalasi ham yo'q.
 {% endcomment %}
@@ -110,8 +110,8 @@
       <table class="ps-grid">
         <colgroup><col style="width:58%"><col style="width:42%"></colgroup>
         <tr><th colspan="2" class="ps-cap">Расход</th></tr>
-        {% for e in expenses_brief %}
-        <tr><td>{{ e.label }}</td><td>{{ e.amount|floatformat:"0g" }}</td></tr>
+        {% for g in expense_groups %}
+        <tr><td>{{ g.label }}</td><td>{{ g.amount|floatformat:"0g" }}</td></tr>
         {% endfor %}
         {% comment %}Oylik hisobidan oldindan berilgani: pastdagi Ойлик qatorlari shu
         avans ayirilgandan keyingi qoldiq, ikkalasi birga — hisoblangan oylik.{% endcomment %}
@@ -331,7 +331,8 @@ raqamga qarab qaysi kartadan kelganini ko'z darrov topadi.{% endcomment %}
       <a class="btn btn-sm btn-ghost" href="{% url 'kassa' %}?{{ window_qs }}">Kassa →</a>
     </div>
     {% comment %}Uch bo'lak, har biri o'z yig'indisi bilan — chiqimlar, bank foizi, oylik;
-    uchalasi birga «Jami rasxod».{% endcomment %}
+    uchalasi birga «Jami rasxod». Chiqimlar blankadagi qatorlarga yig'ilgan (Бензин,
+    Обед, Прочие, Клиент фойда); har qator ostida unga tushgan turkumlar.{% endcomment %}
     <div class="table-wrap">
     <table class="rep-table rep-ledger">
       {% if expenses %}
@@ -339,12 +340,14 @@ raqamga qarab qaysi kartadan kelganini ko'z darrov topadi.{% endcomment %}
         <td>Chiqimlar <span class="rep-count">{{ expenses|length }} turkum</span></td>
         <td class="num">{{ expense_total|floatformat:"0g" }}</td>
       </tr>
-      {% for e in expenses %}
+      {% for g in expense_groups %}{% if g.members %}
       <tr class="rep-sub">
-        <td>{{ e.label }}{% if e.count > 1 %} <span class="rep-count">{{ e.count }} ta</span>{% endif %}</td>
-        <td class="num">{{ e.amount|floatformat:"0g" }}</td>
+        <td>{{ g.label }}{% if g.count > 1 %} <span class="rep-count">{{ g.count }} ta</span>{% endif %}
+          {% if not g.is_single %}<span class="cell-sub">{% for e in g.members %}{{ e.label }} {{ e.amount|floatformat:"0g" }}{% if not forloop.last %} · {% endif %}{% endfor %}</span>{% endif %}
+        </td>
+        <td class="num">{{ g.amount|floatformat:"0g" }}</td>
       </tr>
-      {% endfor %}
+      {% endif %}{% endfor %}
       {% endif %}
       {% comment %}Bank foizi kassaga yetib kelmaydi, shuning uchun chiqimlar orasida
       yo'q — qog'ozdagi «перечис процент» qatori.{% endcomment %}

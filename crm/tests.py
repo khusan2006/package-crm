@@ -7905,24 +7905,35 @@ class MonthlyReportTests(BaseSetup):
             (Decimal("3000"), 2), (Decimal("500"), 1),
         ])
 
-    def test_printed_sheet_names_the_biggest_expenses_and_folds_the_tail(self):
-        for i in range(1, 10):                                   # 9 turkum: 1000 … 9000
-            self._spend(str(i * 1000), category=f"Turkum {i}")
+    def test_expenses_add_into_the_papers_lines(self):
+        self._spend("1000", category="Benzin / transport")
+        self._spend("200", category="С/Т")                       # car costs: Прочие
+        self._spend("100", category="МОЙКА")
+        self._spend("500", category="Ovqat (obed)")
+        self._spend("60", category="СУВ")                        # water rides with lunch
+        self._spend("300", category="СУВ, Ovqat (obed)")
+        self._spend("50", category="Boshqa, СУВ")                # Boshqa gives way: Обед
+        self._spend("20", category="Boshqa")                     # alone it is Прочие
+        self._spend("400", category="констовар")                 # names none of them
+        self._spend("7000", category="ФОАМЛИНЕ ФОЙДА")
         ctx = self._report()
-        self.assertEqual(len(ctx["expenses"]), 9)                # the page keeps them all
-        brief = ctx["expenses_brief"]
-        self.assertEqual([r["amount"] for r in brief[:6]], [
-            Decimal(n * 1000) for n in (9, 8, 7, 6, 5, 4)
+        self.assertEqual(len(ctx["expenses"]), 10)               # the page keeps them all
+        lines = [(g["label"], g["amount"]) for g in ctx["expense_groups"]]
+        self.assertEqual(lines, [
+            ("Бензин", Decimal("1000")),
+            ("Обед", Decimal("910")),
+            ("Прочие", Decimal("720")),
+            ("Клиент фойда", Decimal("7000")),
         ])
-        self.assertEqual(brief[6]["label"], "Прочие")
-        self.assertEqual(brief[6]["amount"], Decimal("6000"))    # 3000 + 2000 + 1000
-        self.assertEqual(sum(r["amount"] for r in brief), ctx["expense_total"])
+        self.assertEqual(sum(a for _, a in lines), ctx["expense_total"])
 
-    def test_printed_sheet_does_not_fold_a_single_leftover(self):
-        for i in range(1, 8):                                    # 7 turkum
-            self._spend(str(i * 1000), category=f"Turkum {i}")
-        ctx = self._report()
-        self.assertEqual(ctx["expenses_brief"], ctx["expenses"])
+    def test_printed_sheet_carries_every_expense_line_even_an_empty_one(self):
+        self._spend("1000", category="Benzin / transport")
+        response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
+        self.assertContains(response, "<tr><td>Бензин</td><td>1\xa0000</td></tr>")
+        self.assertContains(response, "<tr><td>Клиент фойда</td><td>0</td></tr>")
+        # The bank's cut is not a chiqim: its own line, never folded into Прочие
+        self.assertContains(response, "<tr><td>Перечис процент</td><td>0</td></tr>")
 
     def test_page_carries_the_one_page_print_sheet(self):
         self._sell()

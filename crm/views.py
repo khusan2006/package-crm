@@ -8526,8 +8526,37 @@ def _client_debt_on(day, rep=None):
     return sum((v for v in owed.values() if v > 0), zero)
 
 
-# How many chiqim categories the printed sheet names before folding the rest.
-REPORT_PRINT_EXPENSE_LINES = 6
+# The paper's Расход lines, in its order (17.10.2026). A chiqim's free-text category is
+# added into the line whose word it names first — «Ovqat (obed), СУВ» is Обед — and a
+# category none of them names is Прочие, so a newly typed one needs no setting up.
+# «Boshqa» is not a word of any line: ticked beside a real one («Boshqa, СУВ») it gives
+# way to it, and alone it is Прочие anyway. Matched lower-cased, as parts of the name.
+# Бензин is fuel alone — car and road costs (wash, parking, fare) are Прочие; water
+# rides with lunch. The bank's cut is not a chiqim and keeps its own line («Перечис
+# процент»).
+REPORT_EXPENSE_GROUPS = (
+    ("Бензин", ("benzin", "бензин")),
+    ("Обед", ("obed", "ovqat", "обед", "овқат", "сув", "suv")),
+    ("Прочие", (
+        "мошина", "машина", "мойка", "стаянка", "стоянка", "с/т", "су/ст",
+        "йулкира", "йўлкира", "yo'lkira",
+    )),
+    ("Клиент фойда", ("фойда", "foyda")),
+)
+REPORT_EXPENSE_OTHER = "Прочие"
+
+
+def _report_expense_group(category):
+    """The paper's Расход line a chiqim category is added into."""
+    text = category.casefold()
+    group, at = REPORT_EXPENSE_OTHER, len(text)
+    for label, words in REPORT_EXPENSE_GROUPS:
+        for word in words:
+            i = text.find(word)
+            if i != -1 and i < at:
+                group, at = label, i
+    return group
+
 
 # The seller's name as the firm's paper form spells it, where that is not just the
 # CRM name in Cyrillic letters (`_uz_cyrillic`). Keyed by username, case-insensitive.
@@ -8640,24 +8669,31 @@ def _monthly_report(year, month, rep=None, employees=None):
         costs = costs.filter(created_by=rep)
     for category, amount in costs.values_list("category", "amount"):
         label = " ".join(category.split()) or "Turkumsiz"
-        row = by_category.setdefault(
-            label.casefold(), {"label": label, "amount": zero, "count": 0}
-        )
+        row = by_category.setdefault(label.casefold(), {
+            "label": label, "group": _report_expense_group(label), "amount": zero, "count": 0,
+        })
         row["amount"] += amount
         row["count"] += 1
     expenses = sorted(by_category.values(), key=lambda r: r["amount"], reverse=True)
     expense_total = sum((r["amount"] for r in expenses), zero)
-    # The printed sheet is one page, so only the biggest lines keep their name on it
-    # and the tail is one row — «Прочие», as the firm's paper form calls it. A lone
-    # leftover is not worth hiding behind it.
-    expenses_brief = expenses
-    if len(expenses) > REPORT_PRINT_EXPENSE_LINES + 1:
-        tail = expenses[REPORT_PRINT_EXPENSE_LINES:]
-        expenses_brief = expenses[:REPORT_PRINT_EXPENSE_LINES] + [{
-            "label": "Прочие",
-            "amount": sum((r["amount"] for r in tail), zero),
-            "count": sum(r["count"] for r in tail),
-        }]
+    # The paper's Расход: every line it has, in its order, even an empty one — each the
+    # sum of the categories that fall in it (`REPORT_EXPENSE_GROUPS`).
+    expense_groups = [
+        {"label": label, "members": [], "amount": zero, "count": 0}
+        for label, _ in REPORT_EXPENSE_GROUPS
+    ]
+    by_group = {g["label"]: g for g in expense_groups}
+    for r in expenses:
+        group = by_group[r["group"]]
+        group["members"].append(r)
+        group["amount"] += r["amount"]
+        group["count"] += r["count"]
+    for group in expense_groups:
+        # Nothing to spell out when the line is one category under its own name.
+        group["is_single"] = (
+            len(group["members"]) == 1
+            and group["members"][0]["label"].casefold() == group["label"].casefold()
+        )
 
     # The bank's cut on transfers the firm agreed to carry. It never reaches the till,
     # so no chiqim row holds it — the paper writes it out as «перечис процент».
@@ -8740,7 +8776,7 @@ def _monthly_report(year, month, rep=None, employees=None):
         "totals": totals,
         "margin": totals["profit"] / totals["revenue"] * 100 if totals["revenue"] else zero,
         "expenses": expenses,
-        "expenses_brief": expenses_brief,
+        "expense_groups": expense_groups,
         "expense_total": expense_total,
         "bank_fee": bank_fee,
         "wages": wages,
@@ -8894,7 +8930,11 @@ def monthly_report_export(request):
         [x["name"], x["group"]] + [float(x[k]) for k in figures] for x in r["products"]
     ]
     by_product.append(["Jami", ""] + jami)
-    spent = [["Chiqim", x["label"], float(x["amount"])] for x in r["expenses"]]
+    # Each chiqim under the paper's Расход line it is added into, line by line.
+    spent = [
+        [g["label"], x["label"], float(x["amount"])]
+        for g in r["expense_groups"] for x in g["members"]
+    ]
     spent.append(["Bank foizi", "Perechisleniye foizi", float(r["bank_fee"])])
     # One wage, two lines: what was drawn ahead of it and what is left to collect.
     spent += [
