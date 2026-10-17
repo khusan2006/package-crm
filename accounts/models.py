@@ -13,6 +13,9 @@ class User(AbstractUser):
     # The firm a seller trades under, printed before their name in the yuk xati's
     # «Kimdan» line — each seller releases goods under their own firm, not one shared name.
     firm_name = models.CharField("Firma nomi (yuk xati)", max_length=100, blank=True)
+    # Whether that firm goes on the yuk xati at all. The «Oylik hisobot» heading always
+    # carries it; on 2026-10-17 the owner had Umida's yuk xati show her name alone.
+    firm_on_yuk_xati = models.BooleanField("Yuk xatida firma nomi chiqsin", default=True)
     # A carried-over pre-CRM debt this seller owes production at go-live: the tannarx of
     # goods taken before the CRM existed and not yet remitted. It behaves exactly like
     # real production debt — it lifts `seller_production_debt` from day one and is whittled

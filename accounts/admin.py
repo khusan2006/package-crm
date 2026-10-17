@@ -6,6 +6,6 @@ from .models import User
 
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
-    fieldsets = UserAdmin.fieldsets + (("CRM", {"fields": ("role", "phone", "firm_name", "payroll_access")}),)
+    fieldsets = UserAdmin.fieldsets + (("CRM", {"fields": ("role", "phone", "firm_name", "firm_on_yuk_xati", "payroll_access")}),)
     list_display = ["username", "email", "first_name", "last_name", "role", "is_active"]
     list_filter = ["role", "is_active"]

@@ -34,12 +34,25 @@ def test_print_page_carries_the_receipt(client, admin_user, sample_data):
 def test_kimdan_puts_the_sellers_firm_before_their_name(client, admin_user, sample_data):
     """Each seller trades under their own firm — Kamola's is not Umida's."""
     sale = sample_data["sale"]
-    sale.sales_rep.firm_name = "Polimer111"
+    sale.sales_rep.firm_name = "Rise service"
     sale.sales_rep.save(update_fields=["firm_name"])
     client.force_login(admin_user)
 
     body = client.get(f"/sales/{sale.pk}/yuk-xati/").content.decode()
-    assert "Polimer111 Sel Ler" in body
+    assert "Rise service Sel Ler" in body
+
+
+def test_kimdan_can_leave_the_firm_off(client, admin_user, sample_data):
+    """Umida's yuk xati carries her name alone; the firm stays for her monthly report."""
+    sale = sample_data["sale"]
+    sale.sales_rep.firm_name = "Polimer111"
+    sale.sales_rep.firm_on_yuk_xati = False
+    sale.sales_rep.save(update_fields=["firm_name", "firm_on_yuk_xati"])
+    client.force_login(admin_user)
+
+    body = client.get(f"/sales/{sale.pk}/yuk-xati/").content.decode()
+    assert "Sel Ler" in body
+    assert "Polimer111" not in body
 
 
 def test_sheet_holds_two_copies(client, admin_user, sample_data):
