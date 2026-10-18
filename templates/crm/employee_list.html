@@ -253,7 +253,7 @@ edi.{% endcomment %}
       <tr><th>Sana</th><th>Xodim</th><th>Usul</th><th class="num">Summa</th><th>Izoh</th><th>Kim berdi</th><th></th></tr>
       {% for e in payouts %}
       <tr>
-        <td>{{ e.date|date:"d.m.Y" }}</td>
+        <td>{{ e.date|date:"d.m.Y" }}{% if e.wage_month %} <span class="badge badge-violet">{{ e.wage_month_label }}</span>{% endif %}</td>
         <td>
           <span class="cell-user">
             {% include "crm/_avatar.html" with name=e.employee.name %}

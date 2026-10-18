@@ -1014,6 +1014,101 @@
       if (!el) { return 0; }
       return parseFloat(String(el.value).replace(/\s/g, '').replace(',', '.')) || 0;
     }
+    // Chiqim form: where the picked worker's wage stands for the month, and what the
+    // typed sum would do to it. The figures come from the server (`_expense_wage_data`),
+    // the same ones saving checks; this only says it before Saqlash is pressed.
+    function wageData(panel) {
+      if (panel._wage === undefined) {
+        var el = panel.querySelector('script[type="application/json"]');
+        try { panel._wage = el ? JSON.parse(el.textContent) : null; } catch (e) { panel._wage = null; }
+      }
+      return panel._wage;
+    }
+    function wageRow(label, value, cls, fill) {
+      return '<div class="wage-row' + (cls ? ' ' + cls : '') + '"><span>' + label + '</span><strong>'
+        + value + '</strong>'
+        + (fill ? '<button type="button" class="btn btn-sm btn-ghost" data-wage-fill="' + fill
+          + '">Summaga qo\'yish</button>' : '<span></span>')
+        + '</div>';
+    }
+    function wagePanel(root, panel, amount) {
+      var data = wageData(panel);
+      var body = panel.querySelector('[data-wage-body]');
+      var employeeEl = root.querySelector('[name=employee]');
+      var dateEl = root.querySelector('[name=date]');
+      var purposeEl = root.querySelector('[name=purpose]:checked');
+      var purpose = purposeEl ? purposeEl.value : '';
+      var w = data && employeeEl ? data.workers[employeeEl.value] : null;
+      if (!w || !body || purpose === 'xarajat') { panel.hidden = true; return; }
+      panel.hidden = false;
+      if (dateEl && dateEl.value && dateEl.value.slice(0, 7) !== data.month) {
+        body.innerHTML = '<p class="wage-result is-warn">Sana ' + data.this
+          + ' oyidan boshqa oyga o\'zgardi — oylik hisobi saqlashda tekshiriladi.</p>';
+        return;
+      }
+      amount = Math.round(amount);
+      var monthLeft = w.salary - w.paid;
+      var html = '';
+      if (w.carried > 0) {
+        html += wageRow(data.prev + ' oyidan qolgan oyligi', money(w.carried), '', 'carried');
+      } else if (w.carried < 0) {
+        html += wageRow('O\'tgan oylardan qarzi', '−' + money(-w.carried), 'is-debt', '');
+      }
+      html += wageRow(data.this + ' oyligi', money(w.salary), '', '');
+      html += wageRow(data.this + 'da olgani', money(w.paid), '', '');
+      html += wageRow(data.this + ' oyligidan qolgani',
+        (monthLeft < 0 ? '−' : '') + money(Math.abs(monthLeft)), monthLeft < 0 ? 'is-debt' : '',
+        monthLeft > 0 ? 'month' : '');
+      var note = '', cls = 'is-ok';
+      if (amount > 0 && purpose === 'otgan') {
+        if (w.carried <= 0) {
+          cls = 'is-bad'; note = data.prev + ' oyidan qolgan oyligi yo\'q — '
+            + data.this + ' oyligidan bo\'lsa, «' + data.this + ' oyligi»ni tanlang.';
+        } else if (amount < w.carried) {
+          note = data.prev + ' oyligidan ' + money(w.carried - amount) + ' qoladi.';
+        } else if (amount === w.carried) {
+          note = data.prev + ' oyligi to\'liq yopiladi.';
+        } else {
+          cls = 'is-bad'; note = money(amount - w.carried) + ' so\'m ortiqcha — ortig\'ini '
+            + data.this + ' oyligi qilib alohida kiriting.';
+        }
+      } else if (amount > 0 && purpose === 'oylik') {
+        var after = w.carried + monthLeft - amount;
+        if (amount <= monthLeft) {
+          note = amount === monthLeft ? data.this + ' oyligi to\'liq beriladi.'
+            : data.this + ' oyligidan ' + money(monthLeft - amount) + ' qoladi.';
+        } else if (after >= 0) {
+          cls = 'is-warn'; note = data.this + ' oyligidan ' + money(amount - Math.max(monthLeft, 0))
+            + ' ko\'p. ' + data.prev + ' oyidan qolgan pul bo\'lsa, «' + data.prev
+            + ' oyidan qolgan oyligi»ni tanlang.';
+        } else {
+          cls = 'is-bad'; note = 'Oyligidan ko\'p oladi — ' + money(-after) + ' so\'m qarzdor bo\'ladi.';
+        }
+      }
+      if (note) { html += '<p class="wage-result ' + cls + '">' + note + '</p>'; }
+      body.innerHTML = html;
+    }
+    // «Summaga qo'yish»: the figure goes into the amount box and the matching choice
+    // is ticked — last month's remainder, or what this month's wage still pays.
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-wage-fill]');
+      if (!btn) { return; }
+      var root = btn.closest('[data-debt-pay]');
+      var panel = btn.closest('[data-wage-panel]');
+      var data = panel && wageData(panel);
+      var employeeEl = root && root.querySelector('[name=employee]');
+      var w = data && employeeEl ? data.workers[employeeEl.value] : null;
+      var currencyEl = root && root.querySelector('[name=currency]');
+      if (!w || (currencyEl && currencyEl.value === 'usd')) { return; }
+      var fill = btn.getAttribute('data-wage-fill');
+      var value = fill === 'carried' ? w.carried : w.salary - w.paid;
+      var radio = root.querySelector('[name=purpose][value="' + (fill === 'carried' ? 'otgan' : 'oylik') + '"]');
+      if (radio) { radio.checked = true; }
+      var amountEl = root.querySelector('[name=amount]');
+      amountEl.value = String(Math.round(value));
+      amountEl.dispatchEvent(new Event('input', { bubbles: true }));
+      recalc(root);
+    });
     function recalc(root) {
       var amountEl = root.querySelector('[name=amount]');
       var methodEl = root.querySelector('[name=method]');
@@ -1055,6 +1150,8 @@
       Array.prototype.forEach.call(root.querySelectorAll('.employee-only'), function (el) {
         el.hidden = !(employeeEl && employeeEl.value);
       });
+      var wagePanelEl = root.querySelector('[data-wage-panel]');
+      if (wagePanelEl) { wagePanel(root, wagePanelEl, amount); }
       var out = root.querySelector('[data-net]');
       if (!out) { return; }
       var pct = pctEl ? (parseFloat(pctEl.value) || 0) : 0;

@@ -20,8 +20,10 @@ from django.db.models import (
     Value,
     When,
 )
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, TruncMonth
 from django.utils import timezone
+
+from .utils import UZ_MONTH_NAMES
 
 MONEY = DecimalField(max_digits=18, decimal_places=2)
 QTY = DecimalField(max_digits=18, decimal_places=3)
@@ -1139,6 +1141,24 @@ def month_span(start, end):
     return months
 
 
+def payroll_month_of():
+    """An expression for the month's 1st a payout counts against on the payroll — its
+    `wage_month` when it settles an earlier month, else the month it was paid in. The
+    database twin of `Expense.payroll_month`, for annotating and grouping payouts."""
+    return Coalesce(
+        "wage_month", TruncMonth("date", output_field=models.DateField()),
+        output_field=models.DateField(),
+    )
+
+
+def payout_for_month(year, month):
+    """Payouts against that month's wage: settled for it from a later month, or paid
+    in it and not marked as settling an earlier one."""
+    return Q(wage_month=date(year, month, 1)) | Q(
+        wage_month__isnull=True, date__year=year, date__month=month
+    )
+
+
 def davomad_start():
     """The first day of the first month wages are counted off the davomad sheet."""
     return settings.DAVOMAD_START_DATE.replace(day=1)
@@ -1260,11 +1280,12 @@ class Employee(models.Model):
 
         Expenses merely *tagged* with them are excluded: a worker who buys petrol or
         lunch for the business is spending the firm's money, not their own wage, so
-        those rows are `counts_against_salary=False` and only move the till."""
+        those rows are `counts_against_salary=False` and only move the till.
+
+        A month's leftover paid out in a later month counts here, against the month
+        it settles (`Expense.wage_month`), not against the month it was handed over."""
         return (
-            self.expenses.filter(
-                date__year=year, date__month=month, counts_against_salary=True
-            )
+            self.expenses.filter(payout_for_month(year, month), counts_against_salary=True)
             .aggregate(s=Sum("amount"))["s"]
             or Decimal("0")
         )
@@ -1464,6 +1485,34 @@ class Employee(models.Model):
         for y, m in month_span(self.start_month, date(year, month, 1)):
             total += self.accrued_in(y, m) - self.paid_in(y, m)
         return total
+
+    def wage_position(self, year, month, exclude=None):
+        """Where the worker's wage stands for that month, as the chiqim form needs it
+        before money is handed over: what the months before it left unpaid
+        (`carried`; minus — a debt), the wage agreed for it (`salary`, the full rate:
+        mid-month the davomad has not earned it yet, but that is what the month is
+        expected to pay), and what has already been paid against it (`paid`).
+
+        `exclude` is a payout being edited, as stored: it must not stand in its own
+        way. None for a month before the worker's account opened — nothing to say."""
+        first = date(year, month, 1)
+        start = self.start_month.replace(day=1)
+        if first < start:
+            return None
+        before = first - timedelta(days=1)
+        carried = self.balance_through(before.year, before.month)
+        salary = self.salary_for(year, month) if self.accrues_in(year, month) else Decimal("0")
+        paid = self.paid_in(year, month)
+        if (
+            exclude is not None and exclude.pk and exclude.employee_id == self.pk
+            and exclude.counts_against_salary
+        ):
+            settles = exclude.payroll_month
+            if settles == first:
+                paid -= exclude.amount
+            elif start <= settles < first:
+                carried += exclude.amount
+        return {"carried": carried, "salary": salary, "paid": paid}
 
     def __str__(self):
         return self.name
@@ -1784,6 +1833,11 @@ class Expense(models.Model):
     # leaves the till and stops there. `Employee.paid_in` counts only the former,
     # so the worker can still be named on the receipt without losing wage over it.
     counts_against_salary = models.BooleanField("Oyligidan ushlansin", default=True)
+    # Which month's wage a payout settles, when that is NOT the month it was handed
+    # over in: September's unpaid remainder paid on 08.10 leaves the till on 08.10
+    # (`date`), but closes September on the payroll. Always the 1st. Empty — the
+    # date's own month, which is every advance and every wage paid in its month.
+    wage_month = models.DateField("Qaysi oy oyligi", null=True, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -1801,6 +1855,21 @@ class Expense(models.Model):
     def original_amount(self):
         """The dollars for a USD expense, otherwise the so'm figure."""
         return self.amount_original or self.amount
+
+    @property
+    def payroll_month(self):
+        """The month's 1st whose wage this payout counts against (see `wage_month`)."""
+        return self.wage_month or self.date.replace(day=1)
+
+    @property
+    def wage_month_label(self):
+        """«Sentabr oyligi» on a payout that settles an earlier month, else ""."""
+        if not self.wage_month:
+            return ""
+        name = UZ_MONTH_NAMES[self.wage_month.month - 1]
+        if self.wage_month.year != self.date.year:
+            name = f"{name} {self.wage_month.year}"
+        return f"{name} oyligi"
 
     @classmethod
     def used_categories(cls):

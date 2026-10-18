@@ -106,6 +106,8 @@ from .models import (
     left_after_handover,
     month_span,
     on_davomad,
+    payout_for_month,
+    payroll_month_of,
     rest_dates_in_month,
     rest_holidays_in,
     seller_cash_on_hand,
@@ -118,6 +120,7 @@ from .context_processors import SESSION_KEY as ACTING_SELLER_KEY
 from .context_processors import current_acting_seller
 from .geo import LocationError, resolve_location
 from .utils import (
+    UZ_MONTH_NAMES,
     form_changes,
     form_reload,
     form_response,
@@ -5802,13 +5805,49 @@ def kassa_outflow_export(request):
     return _xlsx_response("chiqimlar.xlsx", title, headers, rows, formats)
 
 
+def _expense_wage_note(expense):
+    """What a worker-tagged chiqim did to their wage, in the audit log's words."""
+    if not expense.counts_against_salary:
+        return "oyligidan emas"
+    if expense.wage_month:
+        return f"{expense.wage_month_label}dan qolgani"
+    return "oyligidan"
+
+
+def _expense_wage_data(form):
+    """Each worker the chiqim form offers, with where their wage stands for the
+    month of the form's date — for the panel that shows it before money is handed
+    over. The same figures the form's warnings are worked out from."""
+    day = form.payroll_day()
+    first = day.replace(day=1)
+    before = first - timedelta(days=1)
+    workers = {}
+    for e in form.fields["employee"].queryset:
+        position = e.wage_position(day.year, day.month, exclude=form.original)
+        if position is None:
+            continue
+        # Whole so'm — what the panel prints and what saving compares in.
+        workers[str(e.pk)] = {
+            key: int(value.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            for key, value in position.items()
+        }
+    return {
+        "month": f"{day.year:04d}-{day.month:02d}",
+        "this": UZ_MONTH_NAMES[day.month - 1],
+        "prev": UZ_MONTH_NAMES[before.month - 1],
+        "workers": workers,
+    }
+
+
 def _expense_response(request, form, title, invalid=False):
     """The expense modal, with the categories already in use as datalist
-    suggestions — Turkum is free text, the list is only a shortcut."""
+    suggestions — Turkum is free text, the list is only a shortcut — and each
+    worker's wage standing for the month, so paying one shows what they are owed."""
     return form_response(
         request, form, title, invalid=invalid,
         modal_template="crm/_expense_modal.html",
         category_suggestions=Expense.used_categories(),
+        wage_data=_expense_wage_data(form),
     )
 
 
@@ -5843,7 +5882,7 @@ def expense_create(request):
             # Arriving from a worker's row means a wage or an advance, so the answer
             # is preselected here and nowhere else: picking someone by hand on a
             # plain chiqim leaves it blank on purpose, and the form insists on one.
-            initial["counts_against_salary"] = True
+            initial["purpose"] = ExpenseForm.PURPOSE_WAGE
             # Only ever a suggestion in the amount box — it is still typed over and
             # still validated like any other; nothing is paid until the form is saved.
             owed = _parse_amount(request.GET.get("summa"))
@@ -5864,8 +5903,7 @@ def expense_create(request):
             # Whether it came off the wage is the part an audit actually needs — the
             # same worker and sum mean two different things depending on the flag.
             who = (
-                f" · {expense.employee}"
-                f" ({'oyligidan' if expense.counts_against_salary else 'oyligidan emas'})"
+                f" · {expense.employee} ({_expense_wage_note(expense)})"
                 if expense.employee_id else ""
             )
             AuditLog.record(
@@ -5895,9 +5933,13 @@ def expense_edit(request, pk):
             expense = form.save(commit=False)
             expense.created_by = form.acting_seller()
             expense.save()
+            who = (
+                f" · {expense.employee} ({_expense_wage_note(expense)})"
+                if expense.employee_id else ""
+            )
             AuditLog.record(
                 request.user, AuditLog.Action.UPDATE, "Chiqim", expense.pk,
-                f"{expense.category} chiqimi — {expense.amount:,.0f} so'm"
+                f"{expense.category} chiqimi{who} — {expense.amount:,.0f} so'm"
                 f"{_on_behalf(request.user, expense.created_by)}",
             )
             messages.success(request, "Chiqim yangilandi.")
@@ -6149,8 +6191,12 @@ def _entry_expense(request, pk):
             f"${e.original_amount:,.2f} × {e.exchange_rate:,.0f}".replace(",", " "),
         ))
     if e.employee_id:
-        held = "oyligidan ayrildi" if e.counts_against_salary \
-            else "oyligiga tegmadi — faqat kassadan chiqim"
+        if not e.counts_against_salary:
+            held = "oyligiga tegmadi — faqat kassadan chiqim"
+        elif e.wage_month:
+            held = f"{e.wage_month_label}dan qolgani berildi"
+        else:
+            held = "oyligidan ayrildi"
         rows.append(("Xodim", f"{e.employee.name} — {held}"))
     if e.note:
         rows.append(("Izoh", e.note))
@@ -6374,13 +6420,12 @@ def _payroll_rows(employees, year, month):
     marked = _marked_months(ids)
     closed = {}
     next_year, next_month = _month_shift(year, month, 1)
+    # Grouped by the month each payout settles, not the day it left the till: a
+    # remainder paid on 08.10 for September is September's (`Expense.wage_month`).
     drawn_rows = (
-        Expense.objects.filter(
-            employee_id__in=ids,
-            counts_against_salary=True,
-            date__lt=date(next_year, next_month, 1),
-        )
-        .annotate(m=TruncMonth("date"))
+        Expense.objects.filter(employee_id__in=ids, counts_against_salary=True)
+        .annotate(m=payroll_month_of())
+        .filter(m__lt=date(next_year, next_month, 1))
         .values("employee_id", "m")
         .annotate(total=Sum("amount"))
     )
@@ -6394,8 +6439,8 @@ def _payroll_rows(employees, year, month):
     rows = []
     for e in employees:
         own_rates = rates.get(e.pk, [])
-        # What the till paid in the month on screen — read straight from the payouts,
-        # never from the accumulation. A month before the account opened still shows
+        # What the till paid against the month on screen — read straight from the
+        # payouts, never from the accumulation. A month before the account opened still shows
         # what was handed over in it, or the figure here would contradict the payout
         # list printed directly underneath.
         paid = drawn.get((e.pk, year, month), Decimal("0"))
@@ -6526,17 +6571,21 @@ def employee_list(request):
     # The two ledgers below follow the search and the switch as well: a filtered page
     # whose ledgers still listed everybody would not add up to its own KPI cards.
     tagged = (
-        Expense.objects.filter(
-            employee__in=employees, date__year=year, date__month=month
-        )
+        Expense.objects.filter(employee__in=employees)
         .select_related("employee", "created_by")
         .order_by("-date", "-created_at")
     )
     # Two different things wear the same tag, so they get two tables: money paid TO a
     # worker (wage or advance), and money a worker spent FOR the business. Mixed into
-    # one list, "kim qancha oldi" could not be read off the page at a glance.
-    payouts = [e for e in tagged if e.counts_against_salary]
-    errands = [e for e in tagged if not e.counts_against_salary]
+    # one list, "kim qancha oldi" could not be read off the page at a glance. Payouts
+    # are the month's wage's — a remainder paid in October for September is listed
+    # under September, as the rows above count it; errands are the month's days.
+    payouts = list(
+        tagged.filter(payout_for_month(year, month), counts_against_salary=True)
+    )
+    errands = list(
+        tagged.filter(date__year=year, date__month=month, counts_against_salary=False)
+    )
     today = timezone.localdate()
     prev_year, prev_month = _month_shift(year, month, -1)
     next_year, next_month = _month_shift(year, month, 1)
@@ -6626,7 +6675,7 @@ def _employee_history(employee, today):
     bottom line here and the row on the payroll page can never disagree."""
     drawn_rows = (
         Expense.objects.filter(employee=employee, counts_against_salary=True)
-        .annotate(m=TruncMonth("date"))
+        .annotate(m=payroll_month_of())
         .values("m")
         .annotate(total=Sum("amount"))
     )
@@ -8707,35 +8756,42 @@ def _monthly_report(year, month, rep=None, employees=None):
 
     if employees is None:
         employees = list(Employee.objects.order_by("name"))
+    # This month's wage handed over after the month was out — September's remainder
+    # paid on 08.10 (`Expense.wage_month`). It closes this month, but «Берилди» is
+    # only what the month itself handed over, so it gets a column of its own.
+    later = {
+        row["employee"]: row["s"]
+        for row in Expense.objects.filter(
+            employee__in=employees, counts_against_salary=True,
+            wage_month=first, date__gt=last,
+        )
+        .values("employee")
+        .annotate(s=Sum("amount"))
+    }
     wages = []
     for r in _payroll_rows(employees, year, month):
         # A worker whose account opens later accrues nothing yet: what the till paid
         # them is then the only cost the month has for them.
         wage = r["earned"] if r["tracked"] else r["paid"]
         if wage or r["paid"] or r["remaining"]:
-            # Avans: what the worker has already drawn against THIS month's wage. A
-            # payout first settles whatever was still owed from earlier months, so
-            # only the money beyond that is an advance; the paper then lists the wage
-            # less the advance — what is left to collect. A worker in debt is kept
-            # the paper's other way: the wage is credited whole and the draws move
-            # the debt («Қарз»), so nothing is split off.
-            advance = zero
-            if r["tracked"] and r["carried"] >= 0 and r["remaining"] >= 0:
-                advance = max(r["paid"] - r["carried"], zero)
+            # The paper's «Ойлик» line reads as one sum: what rode in from earlier
+            # months (minus — the worker's debt), plus this month's wage, less what
+            # was paid against it — in the month, then later — is what is left
+            # (minus — still in debt).
+            paid_later = later.get(r["employee"].pk, zero)
             wages.append({
                 "employee": r["employee"],
                 "wage": wage,
-                "advance": advance,
-                "due": wage - advance,
                 "carried": r["carried"],
                 "paid": r["paid"],
+                "paid_now": r["paid"] - paid_later,
+                "paid_later": paid_later,
                 "remaining": r["remaining"],
                 "tracked": r["tracked"],
             })
+    has_paid_later = any(r["paid_later"] for r in wages)
+    # The month's cost is the wage earned, however much of it was paid out yet.
     wage_total = sum((r["wage"] for r in wages), zero)
-    # Already inside `wage_total`: the advance and what is left are one wage, shown
-    # as two lines. The month's cost does not move with how much of it was drawn.
-    advance_total = sum((r["advance"] for r in wages), zero)
     spent = expense_total + bank_fee + wage_total
 
     # 4. Ishlab chiqarish — the kassa's own figures, so the debt here is the debt there.
@@ -8780,8 +8836,8 @@ def _monthly_report(year, month, rep=None, employees=None):
         "expense_total": expense_total,
         "bank_fee": bank_fee,
         "wages": wages,
+        "has_paid_later": has_paid_later,
         "wage_total": wage_total,
-        "advance_total": advance_total,
         "spent": spent,
         "net_profit": totals["profit"] - spent,
         "production": production,
@@ -8936,17 +8992,15 @@ def monthly_report_export(request):
         for g in r["expense_groups"] for x in g["members"]
     ]
     spent.append(["Bank foizi", "Perechisleniye foizi", float(r["bank_fee"])])
-    # One wage, two lines: what was drawn ahead of it and what is left to collect.
-    spent += [
-        ["Avans", x["employee"].name, float(x["advance"])] for x in r["wages"] if x["advance"]
-    ]
-    spent += [["Oylik", x["employee"].name, float(x["due"])] for x in r["wages"] if x["wage"]]
+    spent += [["Oylik", x["employee"].name, float(x["wage"])] for x in r["wages"] if x["wage"]]
     spent.append(["Jami", "", float(r["spent"])])
     workers = [
         [
             x["employee"].name,
+            float(x["carried"]) if x["tracked"] else "",
             float(x["wage"]),
-            float(x["paid"]),
+            float(x["paid_now"]),
+            float(x["paid_later"]),
             float(x["remaining"]) if x["tracked"] else "",
         ]
         for x in r["wages"]
@@ -8968,8 +9022,12 @@ def monthly_report_export(request):
         ("Rasxod", ["Turi", "Nomi", "Summa (so'm)"], spent, {3: money}),
         (
             "Xodimlar",
-            ["Xodim", "Hisoblangan", "Berilgan", "Qoldiq (minus — xodim qarzi)"],
-            workers, {2: money, 3: money, 4: money},
+            [
+                "Xodim", "O'tgan oydan (minus — xodim qarzi)", "Hisoblangan",
+                "Berilgan (shu oyda)", "Keyin berilgan (keyingi oylarda)",
+                "Qoldiq (minus — xodim qarzi)",
+            ],
+            workers, {2: money, 3: money, 4: money, 5: money, 6: money},
         ),
     ])
 

@@ -1,5 +1,5 @@
 import re
-from datetime import date
+from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django import forms
@@ -1055,20 +1055,29 @@ class ExpenseForm(forms.ModelForm):
     `currency` records whether it left the so'm or the dollar till. A dollar expense is
     entered in dollars with a hand-typed rate and converted to a so'm `amount`.
 
-    Tagging an `employee` names who the money went to or who spent it;
-    `counts_against_salary` decides whether it also comes off that month's wage — on
-    for a wage or an advance, off for petrol or lunch the worker bought for the
-    business."""
+    Tagging an `employee` names who the money went to or who spent it; `purpose` says
+    what it was: this month's wage or an advance on it, the remainder of an earlier
+    month's wage paid out now, or petrol or lunch the worker bought for the business.
+    The first two come off the wage (`counts_against_salary`); the second also points
+    the payout at the month it settles (`wage_month`) while the till still loses the
+    money on the day it was handed over."""
 
-    # Two spelled-out options rather than a lone tick box. This answer decides whether
-    # money leaves somebody's wage, and an unticked box looks identical whether it was
-    # answered or simply overlooked — the same reason the bank fee asks who carries it
-    # with a pair of radios instead of a checkbox.
-    counts_against_salary = forms.TypedChoiceField(
-        label="Oylik hisobiga ta'siri",
-        choices=[(True, "Oyligidan ushlansin"), (False, "Oyligidan ushlanmasin")],
-        coerce=lambda value: value == "True",
-        empty_value=None,
+    PURPOSE_WAGE = "oylik"
+    PURPOSE_PREVIOUS = "otgan"
+    PURPOSE_ERRAND = "xarajat"
+
+    # Three spelled-out options rather than a tick box. This answer decides whether
+    # money leaves somebody's wage, and which month's: an unticked box looks identical
+    # whether it was answered or overlooked. «Oyligidan ushlansin / ushlanmasin» was
+    # the old pair, and it was read the wrong way: September's remainder paid on 08.10
+    # went in as «ushlanmasin» — "it is not October's pay" — and so came off nothing.
+    purpose = forms.ChoiceField(
+        label="Bu pul nima uchun berildi",
+        choices=[
+            (PURPOSE_WAGE, "Shu oy oyligi yoki avansi — shu oy oyligidan ushlanadi"),
+            (PURPOSE_PREVIOUS, "O'tgan oydan qolgan oyligi — o'tgan oyni yopadi"),
+            (PURPOSE_ERRAND, "Ish uchun xarajat (benzin, obed…) — oyligiga tegmaydi"),
+        ],
         required=False,  # hidden, and meaningless, while no worker is picked
         widget=forms.RadioSelect,
     )
@@ -1076,7 +1085,7 @@ class ExpenseForm(forms.ModelForm):
     class Meta:
         model = Expense
         fields = ["date", "amount", "currency", "exchange_rate", "category", "method",
-                  "employee", "counts_against_salary", "note"]
+                  "employee", "note"]
         widgets = {
             "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
             "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — nima uchun"}),
@@ -1130,10 +1139,33 @@ class ExpenseForm(forms.ModelForm):
         # (or to clear a mistagged expense).
         self.fields["employee"].empty_label = "— xodimga tegishli emas —"
         self.fields["employee"].help_text = "Kimga berildi yoki kim sarfladi"
-        self.fields["counts_against_salary"].help_text = (
-            "Oylik yoki avans bo'lsa — “ushlansin”. Benzin, obed kabi ish xarajatlarida "
-            "— “ushlanmasin”: kassadan chiqim bo'ladi, xodim oyligiga tegmaydi."
+        # The payout as stored, before this form touches it: an edit must not count
+        # against itself, and an unchanged one is not warned about again.
+        self.original = (
+            Expense.objects.filter(pk=self.instance.pk).first() if self.instance.pk else None
         )
+        if self.original is not None and self.original.employee_id:
+            if not self.original.counts_against_salary:
+                self.initial.setdefault("purpose", self.PURPOSE_ERRAND)
+            elif self.original.wage_month:
+                self.initial.setdefault("purpose", self.PURPOSE_PREVIOUS)
+            else:
+                self.initial.setdefault("purpose", self.PURPOSE_WAGE)
+        # The options name the months, read off the date the form opens with: "this
+        # month" and "last month" are what a seller gets wrong, "Oktabr" is not.
+        day = self.payroll_day()
+        before = day.replace(day=1) - timedelta(days=1)
+        this_name = UZ_MONTH_NAMES[day.month - 1]
+        prev_name = UZ_MONTH_NAMES[before.month - 1]
+        self.fields["purpose"].choices = [
+            (self.PURPOSE_WAGE,
+             f"{this_name} oyligi yoki avansi — {this_name} oyligidan ushlanadi"),
+            (self.PURPOSE_PREVIOUS,
+             f"{prev_name} oyidan qolgan oyligi — {prev_name} oyligini yopadi "
+             f"(kassadan shu kuni chiqadi)"),
+            (self.PURPOSE_ERRAND,
+             "Ish uchun xarajat (benzin, obed…) — oyligiga tegmaydi"),
+        ]
         _mark_money(self.fields["amount"], self.fields["exchange_rate"])
         # Editing a dollar expense: show the original dollars in the amount field
         # (not the stored so'm), so re-saving converts at the rate correctly.
@@ -1171,23 +1203,148 @@ class ExpenseForm(forms.ModelForm):
         # The answer only means anything next to a worker. Clearing it on an untagged
         # expense keeps a stale "yes" from coming back to life if the row is later
         # edited and someone is picked — the choice is hidden while nobody is.
-        if not cleaned.get("employee"):
-            cleaned["counts_against_salary"] = False
-        elif cleaned.get("counts_against_salary") is None:
-            # Someone is named but neither option was picked. Defaulting either way
-            # would quietly decide whose money this is, so the form asks instead.
-            self.add_error(
-                "counts_against_salary",
-                "Tanlang: bu pul xodim oyligidan ushlansinmi yoki yo'q.",
-            )
-        # A payout dated into a day the till could not carry — see _backdated_warning.
-        warning = _needs_second_press(self, _backdated_warning(
-            self.acting_seller(), cleaned.get("date"), som,
-            exclude_expense_pk=self.instance.pk,
-        ))
+        employee = cleaned.get("employee")
+        purpose = cleaned.get("purpose") or ""
+        day = cleaned.get("date")
+        self.instance.counts_against_salary = False
+        self.instance.wage_month = None
+        if employee and not purpose:
+            # Someone is named but no option was picked. Defaulting either way would
+            # quietly decide whose money this is, so the form asks instead.
+            self.add_error("purpose", "Tanlang: bu pul nima uchun berildi.")
+        elif employee and purpose != self.PURPOSE_ERRAND:
+            self.instance.counts_against_salary = True
+            if purpose == self.PURPOSE_PREVIOUS and day:
+                settles = (day.replace(day=1) - timedelta(days=1)).replace(day=1)
+                if settles < employee.start_month.replace(day=1):
+                    self.add_error("purpose", (
+                        f"{employee.name}ning oylik hisobi "
+                        f"{uz_month(employee.start_month.year, employee.start_month.month)}"
+                        f"dan boshlangan — undan oldingi oyga yozib bo'lmaydi."
+                    ))
+                self.instance.wage_month = settles
+        # Each warning is shown once and passes on the next Saqlash: a payout dated
+        # into a day the till could not carry (see _backdated_warning), and a wage
+        # that does not add up against what the worker is owed (see _wage_warning).
+        warnings = [w for w in (
+            _backdated_warning(
+                self.acting_seller(), day, som, exclude_expense_pk=self.instance.pk,
+            ),
+            self._wage_warning(employee, purpose, day, som, cleaned.get("category") or ""),
+        ) if w]
+        warning = _needs_second_press(self, " ".join(warnings))
         if warning:
             raise forms.ValidationError(warning)
         return cleaned
+
+    def payroll_day(self):
+        """The date the form is about, as far as it can be read before validation:
+        what was posted, else what it opened with, else today."""
+        raw = self.data.get("date") if self.is_bound else None
+        if raw:
+            try:
+                return date.fromisoformat(raw)
+            except ValueError:
+                pass
+        initial = self.initial.get("date") or (self.instance.date if self.instance.pk else None)
+        if isinstance(initial, date):
+            return initial
+        return timezone.localdate()
+
+    def _wage_warning(self, employee, purpose, day, amount, category):
+        """Warning text when a payout does not add up against the worker's wage, else
+        None. Warnings, not blocks — the cashier may know better (an agreed loan, a
+        wage agreed above the rate) — but each says what will happen in figures.
+
+        - Last month's remainder larger than what last month left unpaid.
+        - This month's wage beyond what this month still pays: the worker either
+          dips into last month's unpaid remainder (then that is what to pick) or
+          ends up owing the firm — «qarzdor bo'ladi».
+        - A wage category on a payout marked as a work expense, or with no worker
+          picked at all: it would come off nobody's wage."""
+        salaryish = any(w in category.casefold() for w in ("oylik", "ойлик", "avans", "аванс"))
+        if not employee:
+            if salaryish:
+                return (
+                    f"Diqqat: turkum «{category}», lekin xodim tanlanmagan — bu pul hech "
+                    f"kimning oyligidan ushlanmaydi, oddiy xarajat bo'lib qoladi. Xodimni "
+                    f"tanlang; ataylab shunday bo'lsa, Saqlashni yana bosing."
+                )
+            return None
+        if purpose == self.PURPOSE_ERRAND:
+            if salaryish:
+                return (
+                    f"Diqqat: turkum «{category}», lekin «Ish uchun xarajat» tanlangan — "
+                    f"bu pul {employee.name}ning oyligiga tegmaydi va oddiy xarajat bo'lib "
+                    f"hisoblanadi. Oylik bo'lsa, shu oy yoki o'tgan oy oyligini tanlang; "
+                    f"ataylab shunday bo'lsa, Saqlashni yana bosing."
+                )
+            return None
+        if not purpose or not day or not amount:
+            return None
+        before = self.original
+        if (
+            before is not None and before.employee_id == employee.pk
+            and before.counts_against_salary and before.amount == amount
+            and before.date == day
+            and bool(before.wage_month) == (purpose == self.PURPOSE_PREVIOUS)
+        ):
+            return None                       # an edit that leaves the money as it was
+        position = employee.wage_position(day.year, day.month, exclude=before)
+        if position is None:
+            return None                       # the account opens later
+        # Whole so'm, as the panel shows them: a kopek left over from a day-rate wage
+        # must not turn "exactly what is owed" into "1 so'm too much".
+        carried, salary, paid = (
+            _som(position["carried"]), _som(position["salary"]), _som(position["paid"])
+        )
+        amount = _som(amount)
+        name = employee.name
+        this_name = UZ_MONTH_NAMES[day.month - 1]
+        prev_name = UZ_MONTH_NAMES[(day.replace(day=1) - timedelta(days=1)).month - 1]
+        if purpose == self.PURPOSE_PREVIOUS:
+            if amount <= carried:
+                return None
+            if carried <= 0:
+                debt = f" — aksincha, {-carried:,.0f} so'm qarzi bor" if carried < 0 else ""
+                return (
+                    f"Diqqat: {name}ning {prev_name} oyidan qolgan oyligi yo'q{debt}. "
+                    f"{this_name} oyligidan bersangiz, «{this_name} oyligi»ni tanlang. "
+                    f"Baribir {prev_name}ga yozilsin desangiz, Saqlashni yana bosing."
+                )
+            return (
+                f"Diqqat: {name}ning {prev_name} oyidan {carried:,.0f} so'm qolgan, siz "
+                f"{amount:,.0f} so'm kiritdingiz — {amount - carried:,.0f} so'm ortiqcha. "
+                f"Ortig'i {this_name} oyligidan bo'lsa, ikkita chiqim qiling: "
+                f"{carried:,.0f} — {prev_name} oyligi, qolgani — {this_name} oyligi. "
+                f"To'g'ri bo'lsa, Saqlashni yana bosing."
+            )
+        month_left = salary - paid
+        if amount <= month_left:
+            return None
+        excess = amount - max(month_left, Decimal("0"))
+        after = carried + month_left - amount
+        figures = (
+            f"{this_name} oyligi {salary:,.0f}, shu oy olgani {paid:,.0f}"
+        )
+        if after >= 0:
+            return (
+                f"Diqqat: bu summa {name}ning {this_name} oyligidan {excess:,.0f} so'm "
+                f"ko'p ({figures}). {prev_name} oyidan {carried:,.0f} so'm oyligi qolgan — "
+                f"bu o'sha pul bo'lsa, «{prev_name} oyidan qolgan oyligi»ni tanlang. "
+                f"{this_name} hisobidan bo'lsa, Saqlashni yana bosing."
+            )
+        if carried < 0:
+            return (
+                f"Diqqat: {name} oyligidan {excess:,.0f} so'm ko'p oladi ({figures}) — "
+                f"qarzi shuncha oshadi: hozir {-carried:,.0f}, oy oxirida "
+                f"{-after:,.0f} so'm qarzdor bo'ladi. To'g'ri bo'lsa, Saqlashni yana bosing."
+            )
+        left = f", {prev_name} oyidan qolgani {carried:,.0f}" if carried > 0 else ""
+        return (
+            f"Diqqat: {name} oyligidan ko'p oladi ({figures}{left}) — "
+            f"{-after:,.0f} so'm qarzdor bo'ladi. To'g'ri bo'lsa, Saqlashni yana bosing."
+        )
 
     def acting_seller(self):
         """Whose till the chiqim leaves: the seller an admin/manager picked; else

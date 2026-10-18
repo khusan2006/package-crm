@@ -54,7 +54,7 @@ from .models import (
     till_days,
     till_on,
 )
-from .utils import uz_month
+from .utils import UZ_MONTH_NAMES, uz_month
 from .views import (
     XLSX_CONTENT_TYPE,
     _kassa_net_profit,
@@ -3725,10 +3725,11 @@ class EmployeePayrollTests(BaseSetup):
         self.today = timezone.localdate()
 
     def _pay(self, amount, employee=None, category="Oylik / xodim", on=None,
-             from_salary=True):
-        """A till payout tagged with a worker. `from_salary` is the radio pair:
-        "ushlansin" for a wage or an advance, "ushlanmasin" for an errand they paid
-        for out of the till. Pass None to leave it unanswered."""
+             from_salary=True, purpose=None):
+        """A till payout tagged with a worker. `from_salary` picks between this
+        month's wage or advance ("oylik") and an errand they paid for out of the till
+        ("xarajat"); None leaves it unanswered. `purpose` names the choice outright —
+        "otgan" for last month's remainder paid now."""
         self.client.force_login(self.admin)
         data = {
             "date": (on or self.today).isoformat(),
@@ -3738,8 +3739,10 @@ class EmployeePayrollTests(BaseSetup):
             # its own tests, so answer it up front rather than posting twice.
             "confirm_backdated": "1",
         }
-        if from_salary is not None:
-            data["counts_against_salary"] = "True" if from_salary else "False"
+        if purpose is not None:
+            data["purpose"] = purpose
+        elif from_salary is not None:
+            data["purpose"] = "oylik" if from_salary else "xarajat"
         return self.client.post(
             reverse("expense_create"), data,
             headers={"x-requested-with": "XMLHttpRequest"},
@@ -3814,7 +3817,7 @@ class EmployeePayrollTests(BaseSetup):
         self.client.post(
             reverse("expense_create"),
             {"date": self.today.isoformat(), "amount": "150000", "currency": "uzs",
-             "category": "Ijara", "method": "cash", "counts_against_salary": "True"},
+             "category": "Ijara", "method": "cash", "purpose": "oylik"},
             headers={"x-requested-with": "XMLHttpRequest"},
         )
         expense = Expense.objects.get(category="Ijara")
@@ -3846,6 +3849,143 @@ class EmployeePayrollTests(BaseSetup):
             self.worker.balance_through(self.today.year, self.today.month),
             Decimal("2000000"),
         )
+
+    def _open_last_month(self, paid=None):
+        """The worker's account opens last month; `paid` of last month's wage was
+        handed over in it. Returns last month's 1st."""
+        last_month = (self.today.replace(day=1) - timedelta(days=1)).replace(day=1)
+        self.worker.start_month = last_month
+        self.worker.save(update_fields=["start_month"])
+        if paid:
+            self._pay(paid, on=last_month)
+        return last_month
+
+    def _ask(self, amount, purpose="oylik", category="Oylik / xodim", employee=True):
+        """A payout dated today, posted once — no warning answered up front."""
+        self.client.force_login(self.admin)
+        data = {
+            "date": self.today.isoformat(), "amount": amount, "currency": "uzs",
+            "category": category, "method": "cash", "purpose": purpose,
+        }
+        if employee:
+            data["employee"] = self.worker.pk
+        return self.client.post(
+            reverse("expense_create"), data, headers={"x-requested-with": "XMLHttpRequest"},
+        )
+
+    def test_last_months_remainder_paid_now_closes_last_month(self):
+        # «O'tgan oydan qolgan oylik»: handed over today, out of today's till, but it
+        # settles last month's wage — last month ends at 0, this month starts clean.
+        last_month = self._open_last_month(paid="1500000")
+        self._pay("500000", purpose="otgan")
+        payout = Expense.objects.get(amount=Decimal("500000"))
+        self.assertEqual(payout.date, self.today)
+        self.assertEqual(payout.wage_month, last_month)
+        self.assertTrue(payout.counts_against_salary)
+        self.assertEqual(
+            self.worker.remaining_in(last_month.year, last_month.month), Decimal("0")
+        )
+        self.assertEqual(self.worker.paid_in(self.today.year, self.today.month), Decimal("0"))
+        # The payroll pages count it, and list it, under the month it settles
+        before = self.client.get(reverse("employee_list"), {"oy": f"{last_month:%Y-%m}"})
+        (row,) = before.context["rows"]
+        self.assertEqual((row["paid"], row["remaining"]), (Decimal("2000000"), Decimal("0")))
+        self.assertEqual(len(before.context["payouts"]), 2)
+        self.assertContains(before, f"{UZ_MONTH_NAMES[last_month.month - 1]} oyligi")
+        now = self.client.get(reverse("employee_list"))
+        (row,) = now.context["rows"]
+        self.assertEqual((row["carried"], row["paid"]), (Decimal("0"), Decimal("0")))
+        self.assertEqual(now.context["payouts"], [])
+        # …while the till lost it today
+        response = self.client.get(reverse("kassa"))
+        rows = [r for r in response.context["outflow_rows"] if r["kind"] == "expense"]
+        self.assertEqual(sum(r["amount_som"] for r in rows), Decimal("500000"))
+
+    def test_a_mistaken_errand_is_moved_onto_last_months_wage(self):
+        # The 08.10 case: last month's remainder went in as an errand, came off
+        # nothing; editing it to «o'tgan oy» closes last month.
+        last_month = self._open_last_month(paid="1500000")
+        self._pay("500000", from_salary=False)
+        payout = Expense.objects.get(amount=Decimal("500000"))
+        self.client.post(
+            reverse("expense_edit", args=[payout.pk]),
+            {
+                "date": self.today.isoformat(), "amount": "500000", "currency": "uzs",
+                "category": "Oylik / xodim", "method": "cash",
+                "employee": self.worker.pk, "purpose": "otgan",
+            },
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+        payout.refresh_from_db()
+        self.assertEqual(payout.wage_month, last_month)
+        self.assertEqual(
+            self.worker.remaining_in(last_month.year, last_month.month), Decimal("0")
+        )
+
+    def test_drawing_past_the_wage_warns_the_worker_will_owe(self):
+        self._pay("1500000")
+        response = self._ask("1000000")
+        self.assertEqual(response.status_code, 422)
+        self.assertContains(response, "500,000 so&#x27;m qarzdor bo&#x27;ladi", status_code=422)
+        self.assertEqual(Expense.objects.count(), 1)
+        # The refused form carries the answer back: the second Saqlash goes through
+        self.assertContains(response, 'name="confirm_backdated" value="1"', status_code=422)
+
+    def test_a_wage_beyond_this_month_points_at_last_months_remainder(self):
+        self._open_last_month()                      # last month's 2 000 000 unpaid
+        response = self._ask("2500000")
+        self.assertEqual(response.status_code, 422)
+        self.assertContains(response, "oyidan qolgan oyligi»ni tanlang", status_code=422)
+
+    def test_more_than_last_month_left_warns(self):
+        self._open_last_month(paid="1500000")        # 500 000 left
+        response = self._ask("800000", purpose="otgan")
+        self.assertEqual(response.status_code, 422)
+        self.assertContains(response, "300,000 so&#x27;m ortiqcha", status_code=422)
+        self.assertEqual(self._ask("500000", purpose="otgan").status_code, 204)
+
+    def test_a_wage_category_on_an_errand_or_on_nobody_warns(self):
+        response = self._ask("400000", purpose="xarajat")
+        self.assertContains(response, "«Ish uchun xarajat» tanlangan", status_code=422)
+        response = self._ask("400000", employee=False)
+        self.assertContains(response, "xodim tanlanmagan", status_code=422)
+        self.assertFalse(Expense.objects.exists())
+        # A plain errand is no question at all
+        self.assertEqual(self._ask("400000", purpose="xarajat", category="Benzin").status_code, 204)
+
+    def test_last_month_before_the_account_opened_is_refused(self):
+        response = self._pay("100000", purpose="otgan")   # answered warnings, still no
+        self.assertEqual(response.status_code, 422)
+        self.assertContains(response, "undan oldingi oyga yozib bo", status_code=422)
+
+    def test_editing_only_the_note_does_not_warn_again(self):
+        self._pay("2500000")                              # an overdraw, confirmed
+        payout = Expense.objects.get()
+        response = self.client.post(
+            reverse("expense_edit", args=[payout.pk]),
+            {
+                "date": self.today.isoformat(), "amount": "2500000", "currency": "uzs",
+                "category": "Oylik / xodim", "method": "cash",
+                "employee": self.worker.pk, "purpose": "oylik", "note": "kelishilgan",
+            },
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+        self.assertEqual(response.status_code, 204)
+
+    def test_form_shows_where_the_wage_stands(self):
+        self._open_last_month(paid="1500000")
+        self._pay("300000")
+        self.client.force_login(self.admin)
+        response = self.client.get(
+            reverse("expense_create"), {"employee": self.worker.pk},
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+        data = response.context["wage_data"]
+        self.assertEqual(
+            data["workers"][str(self.worker.pk)],
+            {"carried": 500000, "salary": 2000000, "paid": 300000},
+        )
+        self.assertContains(response, "data-wage-panel")
 
     def test_overdraw_shows_as_a_negative_remainder(self):
         self._pay("2500000")
@@ -4003,7 +4143,7 @@ class EmployeePayrollTests(BaseSetup):
             {
                 "date": self.today.isoformat(), "amount": "400000", "currency": "uzs",
                 "category": "Oylik / xodim", "method": "cash",
-                "employee": self.worker.pk, "counts_against_salary": "True",
+                "employee": self.worker.pk, "purpose": "oylik",
             },
         )
         self.assertRedirects(
@@ -7123,7 +7263,7 @@ class BackdatedPayoutWarningTests(BaseSetup):
             data={
                 "date": day.isoformat(), "amount": amount, "category": "Boshqa",
                 "method": Payment.Method.CASH, "currency": Payment.Currency.UZS,
-                "counts_against_salary": "False", **extra,
+                "purpose": "xarajat", **extra,
             },
             user=self.sales1,
         )
@@ -7839,9 +7979,9 @@ class MonthlyReportTests(BaseSetup):
         self.assertEqual(debtor["change"], Decimal("-400000"))
         self.assertEqual(debtor["debt"], Decimal("400000"))
 
-    def test_an_advance_comes_off_the_wage_line_but_not_off_the_months_cost(self):
-        # The paper lists what is left to collect: 2 000 000 − 200 000 avans. The first
-        # 300 000 of the payout only settles what was still owed from before.
+    def test_wage_line_reads_carried_plus_wage_less_paid_is_left(self):
+        # 300 000 still owed from before + 2 000 000 earned − 500 000 paid = 1 800 000.
+        # The month's cost is the wage alone, however much of it was paid out.
         worker = Employee.objects.create(
             name="Hisobot xodimi", salary=Decimal("2000000"),
             start_month=date(2020, 3, 1), opening_balance=Decimal("300000"),
@@ -7850,42 +7990,62 @@ class MonthlyReportTests(BaseSetup):
         response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
         ctx = response.context
         (row,) = ctx["wages"]
-        self.assertEqual(row["advance"], Decimal("200000"))
-        self.assertEqual(row["due"], Decimal("1800000"))
-        self.assertEqual(ctx["advance_total"], Decimal("200000"))
-        self.assertEqual(ctx["wage_total"], Decimal("2000000"))
-        self.assertEqual(ctx["spent"], Decimal("2000000"))       # one wage, two lines
-        self.assertContains(response, "<td>Аванс</td>")
-        export = self.client.get(reverse("monthly_report_export"), {"oy": self.MONTH})
-        rows = list(load_workbook(BytesIO(export.content))["Rasxod"].iter_rows(values_only=True))
-        self.assertIn(("Avans", "Hisobot xodimi", 200000), rows)
-        self.assertIn(("Oylik", "Hisobot xodimi", 1800000), rows)
-        self.assertEqual(rows[-1], ("Jami", None, 2000000))
-
-    def test_a_payout_that_only_settles_earlier_months_is_not_an_advance(self):
-        worker = Employee.objects.create(
-            name="Hisobot xodimi", salary=Decimal("2000000"),
-            start_month=date(2020, 3, 1), opening_balance=Decimal("300000"),
+        self.assertEqual(row["carried"], Decimal("300000"))
+        self.assertEqual(row["wage"], Decimal("2000000"))
+        self.assertEqual(row["paid"], Decimal("500000"))
+        self.assertEqual(row["remaining"], Decimal("1800000"))
+        self.assertEqual(ctx["spent"], Decimal("2000000"))
+        self.assertContains(
+            response,
+            "<tr><td>Hisobot xodimi</td><td>500\xa0000</td></tr>",
         )
-        self._spend("100000", category="Oylik / xodim", employee=worker)
-        response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
-        (row,) = response.context["wages"]
-        self.assertEqual(row["advance"], Decimal("0"))
-        self.assertEqual(row["due"], Decimal("2000000"))
+        self.assertContains(response, "<tr><th>Ходим</th><th>Берилди</th></tr>")
         self.assertNotContains(response, "<td>Аванс</td>")
+        export = self.client.get(reverse("monthly_report_export"), {"oy": self.MONTH})
+        book = load_workbook(BytesIO(export.content))
+        rows = list(book["Rasxod"].iter_rows(values_only=True))
+        self.assertIn(("Oylik", "Hisobot xodimi", 2000000), rows)
+        self.assertEqual(rows[-1], ("Jami", None, 2000000))
+        workers = list(book["Xodimlar"].iter_rows(values_only=True))
+        self.assertIn(("Hisobot xodimi", 300000, 2000000, 500000, 0, 1800000), workers)
 
-    def test_a_worker_in_debt_keeps_the_whole_wage_on_the_wage_line(self):
-        # Their draws move the debt («Қарз») instead — as the paper keeps it.
+    def test_a_worker_in_debt_shows_it_as_minus_on_the_wage_line(self):
+        # −300 000 (the worker's debt) + 2 000 000 earned − 2 500 000 drawn = −800 000
         worker = Employee.objects.create(
             name="Hisobot xodimi", salary=Decimal("2000000"),
             start_month=date(2020, 3, 1), opening_balance=Decimal("-300000"),
         )
+        self._spend("2500000", category="Oylik / xodim", employee=worker)
+        response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
+        self.assertEqual(response.context["spent"], Decimal("2000000"))
+        self.assertContains(
+            response,
+            "<tr><td>Hisobot xodimi</td><td>2\xa0500\xa0000</td></tr>",
+        )
+
+    def test_a_remainder_paid_next_month_closes_the_month_it_settles(self):
+        # March's 500 000 handed over on 05.04: March reads paid in full, April opens
+        # with nothing carried and nothing of it drawn.
+        worker = Employee.objects.create(
+            name="Hisobot xodimi", salary=Decimal("2000000"), start_month=date(2020, 3, 1),
+        )
         self._spend("1500000", category="Oylik / xodim", employee=worker)
-        ctx = self._report()
-        (row,) = ctx["wages"]
-        self.assertEqual(row["advance"], Decimal("0"))
-        self.assertEqual(row["due"], Decimal("2000000"))
-        self.assertEqual(ctx["advance_total"], Decimal("0"))
+        Expense.objects.create(
+            date=date(2020, 4, 5), wage_month=date(2020, 3, 1), amount=Decimal("500000"),
+            category="Oylik / xodim", method=Payment.Method.CASH, created_by=self.admin,
+            employee=worker,
+        )
+        response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
+        (march,) = response.context["wages"]
+        self.assertEqual((march["paid"], march["remaining"]), (Decimal("2000000"), Decimal("0")))
+        # The paper's «Берилди» is only what March itself handed over
+        self.assertEqual(
+            (march["paid_now"], march["paid_later"]), (Decimal("1500000"), Decimal("500000"))
+        )
+        self.assertContains(response, "<tr><td>Hisobot xodimi</td><td>1\xa0500\xa0000</td></tr>")
+        april = self.client.get(reverse("monthly_report"), {"oy": "2020-04"})
+        (row,) = april.context["wages"]
+        self.assertEqual((row["carried"], row["paid"]), (Decimal("0"), Decimal("0")))
 
     def test_money_a_worker_spent_for_the_firm_stays_an_expense(self):
         worker = Employee.objects.create(

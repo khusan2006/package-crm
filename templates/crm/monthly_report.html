@@ -113,11 +113,6 @@
         {% for g in expense_groups %}
         <tr><td>{{ g.label }}</td><td>{{ g.amount|floatformat:"0g" }}</td></tr>
         {% endfor %}
-        {% comment %}Oylik hisobidan oldindan berilgani: pastdagi Ойлик qatorlari shu
-        avans ayirilgandan keyingi qoldiq, ikkalasi birga — hisoblangan oylik.{% endcomment %}
-        {% if advance_total %}
-        <tr><td>Аванс</td><td>{{ advance_total|floatformat:"0g" }}</td></tr>
-        {% endif %}
         <tr><td>Перечис процент</td><td>{{ bank_fee|floatformat:"0g" }}</td></tr>
       </table>
     </div>
@@ -133,17 +128,19 @@
     </div>
   </div>
 
-  {% comment %}Har qatorda xodimning qolgan oladigan summasi: oylikdan shu oy olgan
-  avansi ayirilgan (`due`). Qarzdor xodimda oylik to'liq turadi — olgani pastdagi
-  «Қарз»da. «Жами расход» — yuqoridagi Расход va shu Ойлик birga, blankadagidek
-  bo'sh qator bilan ajratilgan.{% endcomment %}
+  {% comment %}Qog'ozda har xodimga faqat shu oy ichida qo'lga berilgan pul (`paid_now`):
+  keyingi oyda shu oy uchun berilgani ham, o'tgan oydan qolgani, hisoblangan oylik va
+  qoldiq ham bu yerda yo'q — ular ekranda va Excelda. «Жами расход» esa avvalgidek
+  hisoblangan oylik bilan (Расход + Перечис + oylik), blankadagidek bo'sh qator bilan
+  ajratilgan.{% endcomment %}
   <div class="ps-block ps-wages">
     <table class="ps-grid">
       <colgroup><col style="width:56%"><col style="width:44%"></colgroup>
       <tr><th colspan="2" class="ps-cap">Ойлик</th></tr>
-      {% for w in wages %}{% if w.wage %}
-      <tr><td>{{ w.employee.name }}</td><td>{{ w.due|floatformat:"0g" }}</td></tr>
-      {% endif %}{% endfor %}
+      <tr><th>Ходим</th><th>Берилди</th></tr>
+      {% for w in wages %}
+      <tr><td>{{ w.employee.name }}</td><td>{{ w.paid_now|floatformat:"0g" }}</td></tr>
+      {% endfor %}
       <tr><td>&nbsp;</td><td></td></tr>
       <tr class="ps-total"><td>Жами расход</td><td>{{ spent|floatformat:"0g" }}</td></tr>
     </table>
@@ -355,23 +352,17 @@ raqamga qarab qaysi kartadan kelganini ko'z darrov topadi.{% endcomment %}
         <td>Bank foizi <span class="cell-sub">perechisleniyedan ushlangan, firma zimmasida</span></td>
         <td class="num">{{ bank_fee|floatformat:"0g" }}</td>
       </tr>
-      {% comment %}Oylik ikki qatorda: shu oy oyligi hisobidan berib bo'lingan avans va
-      xodimning qolgan oladigani. Yig'indisi — hisoblangan oylik, rasxod o'zgarmaydi.{% endcomment %}
+      {% comment %}Oylik — shu oy hisoblangani, qancha qismi berilganidan qat'i nazar.
+      Berilgani va qolgani pastdagi «Xodimlar» jadvalida.{% endcomment %}
       {% if wage_total %}
       <tr class="rep-group">
         <td>Oylik <span class="rep-count">hisoblangan</span></td>
         <td class="num">{{ wage_total|floatformat:"0g" }}</td>
       </tr>
-      {% if advance_total %}
-      <tr class="rep-sub">
-        <td>Avans <span class="cell-sub">shu oy oyligi hisobidan berib bo'lingan</span></td>
-        <td class="num">{{ advance_total|floatformat:"0g" }}</td>
-      </tr>
-      {% endif %}
       {% for w in wages %}{% if w.wage %}
       <tr class="rep-sub">
-        <td>{{ w.employee.name }}{% if not w.tracked %} <span class="cell-sub">hisobi hali boshlanmagan — berilgan pul olindi</span>{% elif w.advance %} <span class="cell-sub">{{ w.wage|floatformat:"0g" }} − avans {{ w.advance|floatformat:"0g" }}</span>{% endif %}</td>
-        <td class="num">{{ w.due|floatformat:"0g" }}</td>
+        <td>{{ w.employee.name }}{% if not w.tracked %} <span class="cell-sub">hisobi hali boshlanmagan — berilgan pul olindi</span>{% endif %}</td>
+        <td class="num">{{ w.wage|floatformat:"0g" }}</td>
       </tr>
       {% endif %}{% endfor %}
       {% endif %}
@@ -469,8 +460,10 @@ raqamga qarab qaysi kartadan kelganini ko'z darrov topadi.{% endcomment %}
   <table class="rep-table">
     <tr>
       <th>Xodim</th>
+      <th class="num">O'tgan oydan</th>
       <th class="num">Hisoblangan</th>
-      <th class="num">Berilgan</th>
+      <th class="num rep-col-key">Berilgan <span class="cell-sub">shu oyda</span></th>
+      {% if has_paid_later %}<th class="num">Keyin berilgan</th>{% endif %}
       <th class="num">Qoldiq</th>
     </tr>
     {% for w in wages %}
@@ -481,8 +474,10 @@ raqamga qarab qaysi kartadan kelganini ko'z darrov topadi.{% endcomment %}
           <a href="{% url 'employee_detail' w.employee.pk %}?oy={{ month_value }}">{{ w.employee.name }}</a>
         </span>
       </td>
+      <td class="num">{% if not w.tracked %}<span class="muted">—</span>{% elif w.carried < 0 %}<span class="amt-out">{{ w.carried|floatformat:"0g" }}</span> <span class="cell-sub">xodim qarzi</span>{% else %}{{ w.carried|floatformat:"0g" }}{% endif %}</td>
       <td class="num">{% if w.tracked %}{{ w.wage|floatformat:"0g" }}{% else %}<span class="muted">—</span>{% endif %}</td>
-      <td class="num">{{ w.paid|floatformat:"0g" }}</td>
+      <td class="num rep-col-key">{{ w.paid_now|floatformat:"0g" }}</td>
+      {% if has_paid_later %}<td class="num">{% if w.paid_later %}{{ w.paid_later|floatformat:"0g" }}{% else %}<span class="muted">—</span>{% endif %}</td>{% endif %}
       <td class="num">{% if not w.tracked %}<span class="muted">—</span>{% elif w.remaining < 0 %}<span class="amt-out">{{ w.remaining|floatformat:"0g" }}</span> <span class="cell-sub">xodim qarzi</span>{% else %}{{ w.remaining|floatformat:"0g" }}{% endif %}</td>
     </tr>
     {% endfor %}

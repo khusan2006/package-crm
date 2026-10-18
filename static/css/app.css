@@ -1951,7 +1951,8 @@ tbody tr:hover td.sticky-col {
   color: var(--accent);
 }
 
-.badge-transfer {
+.badge-transfer,
+.badge-violet {
   background: var(--violet-soft);
   color: var(--violet);
 }
@@ -2957,6 +2958,64 @@ ul.errorlist li::before {
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
   font-size: 13px;
+}
+
+/* Chiqim formasida tanlangan xodimning oylik holati: o'tgan oydan qolgani, shu oy
+   oyligi, olgani, qolgani — va pastda yozilgan summa unga nima qilishi (yashil — joyida,
+   sariq — tekshiring, qizil — ortiqcha / qarzdor bo'ladi). */
+.wage-panel {
+  margin: 0 0 16px;
+  padding: 8px 14px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: 13px;
+}
+
+.wage-panel[hidden] {
+  display: none;
+}
+
+.wage-row {
+  display: grid;
+  grid-template-columns: 1fr auto 112px;
+  gap: 10px;
+  align-items: center;
+  min-height: 30px;
+}
+
+.wage-row strong {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.wage-row .btn {
+  justify-self: end;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.wage-row.is-debt strong {
+  color: var(--danger);
+}
+
+.wage-result {
+  margin: 8px 0 0;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  font-weight: 600;
+}
+
+.wage-result.is-ok {
+  color: var(--success);
+}
+
+.wage-result.is-warn {
+  color: var(--warning);
+}
+
+.wage-result.is-bad {
+  color: var(--danger);
 }
 
 /* "Qarz qachon olingan" reminder above the payment fields — the open receipts
@@ -6204,6 +6263,24 @@ a.cell-loc--map:hover { color: var(--accent); }
 
 .rep-card .rep-table .rep-c-muted {
   color: var(--text-muted);
+}
+
+/* Jadvalning asosiy ustuni (Xodimlar: «Berilgan») — butun ustun karta rangida och
+   fonli, yon chiziqli, raqami qalin va yirikroq. Fon shaffof: qator hover ko'rinadi. */
+.rep-card .rep-table .rep-col-key {
+  background: color-mix(in srgb, var(--rep) 9%, transparent);
+  box-shadow:
+    inset 1px 0 0 color-mix(in srgb, var(--rep) 28%, transparent),
+    inset -1px 0 0 color-mix(in srgb, var(--rep) 28%, transparent);
+  color: var(--rep);
+  font-weight: 750;
+  font-size: 15px;
+}
+
+.rep-card .rep-table th.rep-col-key {
+  background: color-mix(in srgb, var(--rep) 22%, var(--table-bg));
+  font-size: 12px;
+  font-weight: 800;
 }
 
 /* Bo'lim sarlavhasi oldidagi raqam: hisobot qog'ozdagi tartibda o'qiladi (1 → 5). */

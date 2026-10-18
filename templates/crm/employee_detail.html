@@ -322,7 +322,7 @@
       {% for e in payouts %}
       <tr>
         <td>{{ e.date|date:"d.m.Y" }}</td>
-        <td>{{ e.category }}</td>
+        <td>{{ e.category }}{% if e.wage_month %} <span class="badge badge-violet">{{ e.wage_month_label }}</span>{% endif %}</td>
         <td>{% include "crm/_method_badge.html" with code=e.method label=e.get_method_display %}</td>
         <td class="num amt-out">−{{ e.amount|floatformat:"0g" }}</td>
         <td>{{ e.note|default:"—" }}</td>
