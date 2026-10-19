@@ -128,19 +128,20 @@
     </div>
   </div>
 
-  {% comment %}Qog'ozda har xodimga faqat shu oy ichida qo'lga berilgan pul (`paid_now`):
-  keyingi oyda shu oy uchun berilgani ham, o'tgan oydan qolgani, hisoblangan oylik va
-  qoldiq ham bu yerda yo'q — ular ekranda va Excelda. «Жами расход» esa avvalgidek
-  hisoblangan oylik bilan (Расход + Перечис + oylik), blankadagidek bo'sh qator bilan
-  ajratilgan.{% endcomment %}
+  {% comment %}Qog'ozda har xodimga shu oyning oyligi (`wage`) — qachon va necha bo'lib
+  berilganidan qat'i nazar: 6 mln oylikning bir qismi shu oy, qolgani keyingi oy berilsa
+  ham shu oyga 6 mln. O'tgan oydan qolgan oylik shu oyda berilsa, u o'tgan oy hisobotiga
+  tegishli va bu yerga kirmaydi. «Жами расход» shu summalar bilan qo'shiladi (Расход +
+  Перечис + oylik), blankadagidek bo'sh qator bilan ajratilgan. Qo'lga berilgan pul,
+  qoldiq va o'tgan oydan qolgani — ekranda va Excelda.{% endcomment %}
   <div class="ps-block ps-wages">
     <table class="ps-grid">
       <colgroup><col style="width:56%"><col style="width:44%"></colgroup>
       <tr><th colspan="2" class="ps-cap">Ойлик</th></tr>
-      <tr><th>Ходим</th><th>Берилди</th></tr>
-      {% for w in wages %}
-      <tr><td>{{ w.employee.name }}</td><td>{{ w.paid_now|floatformat:"0g" }}</td></tr>
-      {% endfor %}
+      <tr><th>Ходим</th><th>Сумма</th></tr>
+      {% for w in wages %}{% if w.wage %}
+      <tr><td>{{ w.employee.name }}</td><td>{{ w.wage|floatformat:"0g" }}</td></tr>
+      {% endif %}{% endfor %}
       <tr><td>&nbsp;</td><td></td></tr>
       <tr class="ps-total"><td>Жами расход</td><td>{{ spent|floatformat:"0g" }}</td></tr>
     </table>

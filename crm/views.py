@@ -8757,8 +8757,8 @@ def _monthly_report(year, month, rep=None, employees=None):
     if employees is None:
         employees = list(Employee.objects.order_by("name"))
     # This month's wage handed over after the month was out — September's remainder
-    # paid on 08.10 (`Expense.wage_month`). It closes this month, but «Берилди» is
-    # only what the month itself handed over, so it gets a column of its own.
+    # paid on 08.10 (`Expense.wage_month`). It closes this month, but the screen's
+    # «Berilgan» is only what the month itself handed over, so it gets a column of its own.
     later = {
         row["employee"]: row["s"]
         for row in Expense.objects.filter(
@@ -8774,10 +8774,11 @@ def _monthly_report(year, month, rep=None, employees=None):
         # them is then the only cost the month has for them.
         wage = r["earned"] if r["tracked"] else r["paid"]
         if wage or r["paid"] or r["remaining"]:
-            # The paper's «Ойлик» line reads as one sum: what rode in from earlier
-            # months (minus — the worker's debt), plus this month's wage, less what
-            # was paid against it — in the month, then later — is what is left
-            # (minus — still in debt).
+            # The paper's «Ойлик» shows the wage alone — the month's own, however
+            # and whenever it was paid. The screen spells the rest out as one sum:
+            # what rode in from earlier months (minus — the worker's debt), plus this
+            # month's wage, less what was paid against it — in the month, then
+            # later — is what is left (minus — still in debt).
             paid_later = later.get(r["employee"].pk, zero)
             wages.append({
                 "employee": r["employee"],

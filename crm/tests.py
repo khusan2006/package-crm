@@ -7995,11 +7995,12 @@ class MonthlyReportTests(BaseSetup):
         self.assertEqual(row["paid"], Decimal("500000"))
         self.assertEqual(row["remaining"], Decimal("1800000"))
         self.assertEqual(ctx["spent"], Decimal("2000000"))
+        # The paper shows the month's wage, not what was handed over
         self.assertContains(
             response,
-            "<tr><td>Hisobot xodimi</td><td>500\xa0000</td></tr>",
+            "<tr><td>Hisobot xodimi</td><td>2\xa0000\xa0000</td></tr>",
         )
-        self.assertContains(response, "<tr><th>Ходим</th><th>Берилди</th></tr>")
+        self.assertContains(response, "<tr><th>Ходим</th><th>Сумма</th></tr>")
         self.assertNotContains(response, "<td>Аванс</td>")
         export = self.client.get(reverse("monthly_report_export"), {"oy": self.MONTH})
         book = load_workbook(BytesIO(export.content))
@@ -8020,7 +8021,7 @@ class MonthlyReportTests(BaseSetup):
         self.assertEqual(response.context["spent"], Decimal("2000000"))
         self.assertContains(
             response,
-            "<tr><td>Hisobot xodimi</td><td>2\xa0500\xa0000</td></tr>",
+            "<tr><td>Hisobot xodimi</td><td>2\xa0000\xa0000</td></tr>",
         )
 
     def test_a_remainder_paid_next_month_closes_the_month_it_settles(self):
@@ -8038,14 +8039,17 @@ class MonthlyReportTests(BaseSetup):
         response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
         (march,) = response.context["wages"]
         self.assertEqual((march["paid"], march["remaining"]), (Decimal("2000000"), Decimal("0")))
-        # The paper's «Берилди» is only what March itself handed over
+        # The screen's «Berilgan» is only what March itself handed over
         self.assertEqual(
             (march["paid_now"], march["paid_later"]), (Decimal("1500000"), Decimal("500000"))
         )
-        self.assertContains(response, "<tr><td>Hisobot xodimi</td><td>1\xa0500\xa0000</td></tr>")
+        # The paper reads March's full wage, however it was split between the months
+        self.assertContains(response, "<tr><td>Hisobot xodimi</td><td>2\xa0000\xa0000</td></tr>")
         april = self.client.get(reverse("monthly_report"), {"oy": "2020-04"})
         (row,) = april.context["wages"]
         self.assertEqual((row["carried"], row["paid"]), (Decimal("0"), Decimal("0")))
+        # …and April's paper carries April's wage alone, not March's 500 000 on top
+        self.assertContains(april, "<tr><td>Hisobot xodimi</td><td>2\xa0000\xa0000</td></tr>")
 
     def test_money_a_worker_spent_for_the_firm_stays_an_expense(self):
         worker = Employee.objects.create(
