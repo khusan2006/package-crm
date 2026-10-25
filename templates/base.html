@@ -56,6 +56,10 @@
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg></span>
           <span>{% if user.can_see_all_records %}Mijozlar to'lovlari{% else %}Mening to'lovlarim{% endif %}</span>
         </a>
+        <a class="nav-item {% if url_name == 'return_list' %}active{% endif %}" href="{% url 'return_list' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></span>
+          <span>{% if user.can_see_all_records %}Vazvratlar{% else %}Mening vazvratlarim{% endif %}</span>
+        </a>
         <a class="nav-item {% if 'kassa' in url_name or 'expense' in url_name %}active{% endif %}" href="{% url 'kassa' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4"/><path d="M4 6v12a2 2 0 0 0 2 2h14v-4"/><path d="M18 12a2 2 0 0 0-2 2c0 1.1.9 2 2 2h4v-4Z"/></svg></span>
           <span>{% if user.can_see_all_records %}Kassa{% else %}Mening kassam{% endif %}</span>
@@ -350,6 +354,17 @@
       params.set('dan', from || to);
       params.set('gacha', to || from);
       openModal(url.split('?')[0] + '?' + params.toString());
+    });
+
+    // Yangi vazvrat: picking the mijoz reloads the dialog for them, so the table lists
+    // exactly that client's returnable lines — drawn by the same view that will judge
+    // the save. On the full-page fallback the page itself reloads.
+    document.addEventListener('change', function (e) {
+      var select = e.target.closest('select[data-return-client]');
+      if (!select) { return; }
+      var url = select.getAttribute('data-url');
+      if (select.value) { url += '?client=' + encodeURIComponent(select.value); }
+      if (dlg.contains(select)) { openModal(url); } else { window.location = url; }
     });
 
     // Light-dismiss: close only when the press BOTH started and ended on the
@@ -1353,6 +1368,47 @@
   })();
 
   // Opening-balance form: show what the balance will BECOME while the sum is typed.
+  // Yangi vazvrat: the running line under the table — what the typed rows are worth,
+  // how much of it cancels debt and how much goes back to the client. Split per
+  // receipt (a return cancels its OWN receipt's debt first), the rule the server
+  // applies on save; the advance/cash question only shows once money goes back.
+  (function () {
+    function money(n) {
+      return Math.round(n).toLocaleString('ru-RU').replace(/\s/g, ' ');
+    }
+    function update(root) {
+      var bySale = {}, debts = {}, count = 0;
+      root.querySelectorAll('[data-return-row]').forEach(function (row) {
+        var input = row.querySelector('input');
+        var qty = parseFloat(String(input.value).replace(/\s/g, '').replace(',', '.')) || 0;
+        if (qty <= 0) { return; }
+        count += 1;
+        var sale = row.getAttribute('data-sale');
+        bySale[sale] = (bySale[sale] || 0) + qty * (parseFloat(row.getAttribute('data-price')) || 0);
+        debts[sale] = parseFloat(row.getAttribute('data-debt')) || 0;
+      });
+      var total = 0, toDebt = 0;
+      Object.keys(bySale).forEach(function (sale) {
+        total += bySale[sale];
+        toDebt += Math.min(bySale[sale], debts[sale]);
+      });
+      var back = total - toDebt;
+      var out = root.querySelector('[data-return-summary]');
+      if (out) {
+        out.textContent = count
+          ? 'Jami: ' + count + ' ta qator · ' + money(total) + " so'm — qarzdan " + money(toDebt)
+            + " so'm" + (back >= 0.5 ? ', mijozga qaytadi ' + money(back) + " so'm" : '')
+          : 'Qaytgan miqdorni kerakli qatorlarga yozing.';
+      }
+      var settle = root.querySelector('[data-return-settle]');
+      if (settle) { settle.hidden = back < 0.5; }
+    }
+    document.addEventListener('input', function (e) {
+      var root = e.target.closest('[data-return-batch]');
+      if (root) { update(root); }
+    });
+  })();
+
   // The field holds a delta ("add 1 138 300"), because that is what the seller is
   // told — without this line they would be adding it to the current figure in their
   // head, on a phone, against a number they cannot see while typing.

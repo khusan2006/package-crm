@@ -56,11 +56,13 @@ from .forms import (
     ProductionAdjustForm,
     ProductionRemittanceForm,
     ProfitPayoutForm,
+    ReturnBatchForm,
     ReturnForm,
     SaleForm,
     SaleItemFormSet,
     StockAdjustForm,
     StockEntryForm,
+    parse_return_rows,
     sellers_queryset,
 )
 from .models import (
@@ -2323,7 +2325,9 @@ def _date_range_context(request, default_window="today"):
     }
 
 
-def _windowed_filter_context(request, url_name, filters, has_filters, keep):
+def _windowed_filter_context(
+    request, url_name, filters, has_filters, keep, default_window="today"
+):
     """Toolbar context for a list whose date window and content filters work together
     (sotuvlar, mijozlar to'lovlari): the picker's vars plus what each control must
     carry so that using one never drops another.
@@ -2331,7 +2335,8 @@ def _windowed_filter_context(request, url_name, filters, has_filters, keep):
     A window the user picked rides along with every search and filter. The implicit
     "today" does not: carried along, it would stop a name search at today's rows.
     `keep` names the drawer's filters — the search box is its own form, so it has to
-    take them with it."""
+    take them with it. `default_window` is what an unfiltered page opens on (see
+    `_date_range_context`); it must match the window the page's own filter applies."""
     picked = _picked_date_window(request)
     window_keep = [
         {"name": key, "value": filters[key] if picked else ""}
@@ -2342,7 +2347,7 @@ def _windowed_filter_context(request, url_name, filters, has_filters, keep):
         # Filtered with no window picked, the list spans every date — the picker then
         # reads "Hammasi" instead of a "Bugun" that isn't being applied.
         **_date_range_context(
-            request, default_window="all" if has_filters else "today"
+            request, default_window="all" if has_filters else default_window
         ),
         "allow_all_window": has_filters,
         "window_keep": window_keep,
@@ -4544,6 +4549,419 @@ def payment_export(request):
         ("Mijozlar bo'yicha", client_headers, client_rows,
          {5: money, 6: money, 7: money, 8: money, 9: money}),
     ])
+
+
+# Where the part of a return's value that the open debt did not soak up went — the
+# drawer's "Pul qayerga ketdi" choice. "debt" is a return with no settlement at all:
+# the whole value cancelled debt and no money moved.
+_RETURN_SETTLE_LABELS = {
+    "debt": "Hammasi qarzdan ayirildi",
+    "advance": "Ortig'i avansga o'tdi",
+    "refund": "Ortig'i naqd qaytarildi",
+}
+
+
+def _return_scope(user):
+    """Every return the user may see. A seller sees the returns on their own sales —
+    the same receipts their Sotuvlar page reaches; admins/managers see all."""
+    qs = Return.objects.select_related(
+        "sale", "sale__client", "sale__sales_rep", "sale_item", "product",
+        "settlement", "created_by",
+    )
+    if user.can_see_all_records:
+        return qs
+    return qs.filter(sale__sales_rep=user)
+
+
+def _filter_returns(request):
+    """Returns for the current filters, newest first.
+
+    Dates work as on the sales and payments lists — a picked window always applies, a
+    content filter with none picked searches every date — except for what the bare
+    page opens on: the whole current month rather than today. Goods come back a few
+    times a month, not a few times a day, so a today-default would greet the page
+    empty. Returns (queryset, filters, has_filters)."""
+    qs = _return_scope(request.user)
+    keys = ("client", "product", "rep", "settle")
+    filters = {key: request.GET.get(key, "") for key in keys}
+    filters["q"] = request.GET.get("q", "").strip()
+    if filters["settle"] not in _RETURN_SETTLE_LABELS:
+        filters["settle"] = ""
+
+    has_filters = bool(
+        filters["q"]
+        or filters["client"].isdigit()
+        or filters["product"].isdigit()
+        or filters["settle"]
+        or (filters["rep"].isdigit() and request.user.can_see_all_records)
+    )
+
+    dates = _date_range_context(request, default_window="month")
+    windowed = _picked_date_window(request) or not has_filters
+    # Empty when no window is in force, which is what the picker reads as "Hammasi".
+    filters["dan"] = dates["date_from"].isoformat() if windowed else ""
+    filters["gacha"] = dates["date_to"].isoformat() if windowed else ""
+    if windowed:
+        qs = qs.filter(date__gte=dates["date_from"], date__lte=dates["date_to"])
+
+    if filters["q"]:
+        # A return is looked up by who brought it back or by what came back.
+        qs = _client_search(
+            qs, filters["q"], "sale__client",
+            extra=Q(product__name__icontains=filters["q"])
+            | Q(note__icontains=filters["q"]),
+        )
+    if filters["client"].isdigit():
+        qs = qs.filter(sale__client_id=filters["client"])
+    if filters["product"].isdigit():
+        qs = qs.filter(product_id=filters["product"])
+    if filters["rep"].isdigit() and request.user.can_see_all_records:
+        qs = qs.filter(sale__sales_rep_id=filters["rep"])
+    if filters["settle"] == "debt":
+        qs = qs.filter(settlement__isnull=True)
+    elif filters["settle"] == "advance":
+        qs = qs.filter(settlement__kind=Payment.Kind.RETURN_CREDIT)
+    elif filters["settle"] == "refund":
+        qs = qs.filter(settlement__kind=Payment.Kind.REFUND_OUT)
+    return qs.order_by("-date", "-created_at"), filters, has_filters
+
+
+def _return_totals(returns):
+    """Period totals for the returns shown, split three ways by where the value went.
+
+    A return cancels the receipt's open debt first; only the excess — money the client
+    had already paid — becomes a settlement payment, parked as advance or handed back
+    in cash. So the debt share is what is left of the value once both are taken off,
+    and the three always add back up to the total."""
+    totals = returns.aggregate(
+        total=Sum(RETURN_AMOUNT),
+        weight_kg=Sum(RETURN_WEIGHT_KG),
+        advance=Sum(
+            "settlement__amount", filter=Q(settlement__kind=Payment.Kind.RETURN_CREDIT)
+        ),
+        refund=Sum(
+            "settlement__amount", filter=Q(settlement__kind=Payment.Kind.REFUND_OUT)
+        ),
+        count=Count("pk"),
+        clients=Count("sale__client", distinct=True),
+    )
+    for key in ("total", "weight_kg", "advance", "refund"):
+        if totals[key] is None:
+            totals[key] = Decimal("0")
+    totals["to_debt"] = totals["total"] - totals["advance"] - totals["refund"]
+    return totals
+
+
+def _return_rows(returns):
+    """One display row per return, with its value split the same way as the totals:
+    what cancelled debt, and what went back to the client (and how)."""
+    rows = []
+    for r in returns:
+        settlement = r.settlement
+        back = settlement.amount if settlement else Decimal("0")
+        rows.append({
+            "ret": r,
+            "to_debt": r.amount - back,
+            "back": back,
+            "back_is_refund": (
+                settlement is not None and settlement.kind == Payment.Kind.REFUND_OUT
+            ),
+        })
+    return rows
+
+
+def _return_filter_chips(request, filters, clients, products, reps):
+    client = (
+        clients.filter(pk=filters["client"]).first() if filters["client"].isdigit() else None
+    )
+    product = (
+        products.filter(pk=filters["product"]).first()
+        if filters["product"].isdigit() else None
+    )
+    rep = reps.filter(pk=filters["rep"]).first() if reps and filters["rep"].isdigit() else None
+    return _filter_chips(request, [
+        {"param": "client", "label": "Mijoz", "value": client.name if client else ""},
+        {"param": "product", "label": "Mahsulot", "value": product.name if product else ""},
+        {"param": "rep", "label": "Sotuvchi", "value": str(rep) if rep else ""},
+        {"param": "settle", "label": "Pul",
+         "value": _RETURN_SETTLE_LABELS.get(filters["settle"], "")},
+    ])
+
+
+def return_list(request):
+    """Vazvratlar — every return on one page, instead of one sale page at a time.
+
+    Each row says where the returned value went: the part that cancelled the
+    receipt's open debt, and the part handed back to the client as advance or cash.
+    Returns are still entered from the sale itself (the "Qaytarish" button); this
+    page lists, filters and exports them, and its edit/delete icons are the same
+    ones the sale page shows."""
+    returns, filters, has_filters = _filter_returns(request)
+    totals = _return_totals(returns)
+
+    clients = _visible_clients(request.user).order_by("name")
+    # Only products that have ever come back — the drawer is a filter, not a catalogue.
+    products = Product.objects.filter(
+        pk__in=_return_scope(request.user).values("product")
+    ).order_by("name")
+    reps = (
+        User.objects.filter(is_active=True).order_by("first_name", "username")
+        if request.user.can_see_all_records
+        else None
+    )
+    active_filters = _return_filter_chips(request, filters, clients, products, reps)
+    page = Paginator(returns, 25).get_page(request.GET.get("page"))
+    page.object_list = _return_rows(page.object_list)
+    export_qs = request.GET.urlencode()
+    return render(request, "crm/return_list.html", {
+        "page": page,
+        "totals": totals,
+        "filters": filters,
+        "clients": clients,
+        "products": products,
+        "reps": reps,
+        "settle_options": list(_RETURN_SETTLE_LABELS.items()),
+        "active_filters": active_filters,
+        "filter_count": len(active_filters),
+        "has_filters": has_filters,
+        "filter_url": reverse("return_list"),
+        "search_placeholder": "Mijoz, telefon yoki mahsulot bo'yicha qidirish…",
+        "export_url": reverse("return_export") + (f"?{export_qs}" if export_qs else ""),
+        **_windowed_filter_context(
+            request, "return_list", filters, has_filters,
+            keep=("client", "product", "rep", "settle"),
+            default_window="month",
+        ),
+    })
+
+
+def return_export(request):
+    """Excel (.xlsx) of the returns for the current filters — exactly the rows the
+    page shows. The two ways money went back to the client get a column each, so
+    summing any money column in Excel gives the matching figure on the page."""
+    returns, _, _ = _filter_returns(request)
+    headers = [
+        "Sana", "Mijoz", "Chek", "Mahsulot", "Miqdor", "Birlik", "Narxi", "Qiymati",
+        "Qarzdan ayirildi", "Avansga o'tdi", "Naqd qaytarildi", "Omborga",
+        "Sotuvchi", "Izoh",
+    ]
+    rows = []
+    for row in _return_rows(returns):
+        r = row["ret"]
+        product = r.product.name
+        if r.sale_item.variant_label:
+            product += f" ({r.sale_item.variant_label})"
+        rows.append([
+            r.date.strftime("%d.%m.%Y"),
+            r.sale.client.name,
+            f"#{r.sale_id}",
+            product,
+            float(r.weight),
+            r.dimension,
+            float(r.price),
+            float(r.amount),
+            float(row["to_debt"]),
+            "" if row["back_is_refund"] or not row["back"] else float(row["back"]),
+            float(row["back"]) if row["back_is_refund"] else "",
+            "Ha" if r.restock else "Yo'q",
+            str(r.sale.sales_rep),
+            r.note,
+        ])
+    money = "#,##0.00"
+    return _xlsx_response(
+        "vazvratlar.xlsx", "Vazvratlar", headers, rows,
+        {5: "#,##0.###", 7: money, 8: money, 9: money, 10: money, 11: money},
+    )
+
+
+def _returnable_lines(user, client):
+    """The client's sale lines that still have something left to return — the rows of
+    the vazvrat table, newest receipt first. Only receipts the user may see are read,
+    so a seller never lists a line off someone else's sale.
+
+    Each line carries `left` (still returnable, in its own unit) and its receipt's
+    `open_debt`, the figure the table's running summary splits the typed value
+    against. Returns (lines, can_overpay): the second is True when some return off
+    these lines could exceed its receipt's debt — only then does the form ask whether
+    the excess goes to advance or back in cash (see `ReturnForm.can_overpay`)."""
+    if client is None:
+        return [], False
+    sales = (
+        Sale.objects.visible_to(user).filter(client=client)
+        .select_related("sales_rep")
+        .prefetch_related("items__product", "items__returns", "returns")
+        .order_by("-date", "-created_at")
+    )
+    lines, can_overpay = [], False
+    for sale in sales:
+        items = [item for item in sale.items.all() if ReturnForm.returnable(item) > 0]
+        if not items:
+            continue
+        open_debt = max(Decimal("0"), sale.debt_remaining)
+        value = Decimal("0")
+        for item in items:
+            item.left = ReturnForm.returnable(item)
+            item.open_debt = open_debt
+            value += item.left * item.price
+            lines.append(item)
+        can_overpay = can_overpay or value > open_debt
+    return lines, can_overpay
+
+
+def _return_batch_summary(lines, typed):
+    """What the typed rows come to, split the way saving will split them: each
+    receipt's share cancels that receipt's own open debt first, and only the rest goes
+    back to the client. Drawn under the table; the page script keeps it live."""
+    by_pk = {line.pk: line for line in lines}
+    per_sale = {}
+    count = 0
+    for pk, quantity in typed:
+        line = by_pk.get(pk)
+        if line is None:
+            continue
+        count += 1
+        debt_and_value = per_sale.setdefault(line.sale_id, [line.open_debt, Decimal("0")])
+        debt_and_value[1] += quantity * line.price
+    total = sum((value for _, value in per_sale.values()), Decimal("0"))
+    to_debt = sum((min(value, debt) for debt, value in per_sale.values()), Decimal("0"))
+    return {"count": count, "total": total, "to_debt": to_debt, "back": total - to_debt}
+
+
+def _save_return_rows(form, by_pk):
+    """Write each typed row of a vazvrat as its own Return.
+
+    Every row is judged by `ReturnForm` against a freshly read receipt, so a second
+    line off the same receipt sees the debt the first one already cancelled, and the
+    till check sees the cash an earlier row already handed back. The return is booked
+    to its receipt's own seller, like a single return. Returns (saved, errors) — saved
+    is [(return, to_debt, excess, refunded)]; any error means the caller rolls the
+    whole vazvrat back."""
+    cd = form.cleaned_data
+    saved, errors = [], []
+    for pk, quantity in form.rows:
+        line = by_pk[pk]
+        sale = Sale.objects.prefetch_related("items__product", "returns").get(pk=line.sale_id)
+        seller = sale.sales_rep
+        data = {
+            "sale_item": pk,
+            "weight": str(quantity),
+            "note": cd["note"],
+            "settlement": cd["settlement"],
+        }
+        if cd["restock"]:
+            data["restock"] = "on"
+        row = ReturnForm(data, sale=sale, user=seller)
+        if not row.is_valid():
+            reasons = row.non_field_errors() or [
+                error for field_errors in row.errors.values() for error in field_errors
+            ]
+            errors.append(f"#{sale.pk} · {line.product.name}: {reasons[0]}")
+            continue
+        ret = row.save(commit=False)
+        ret.created_by = seller
+        ret.date = cd["date"]
+        ret.save()
+        saved.append((ret, *_settle_return(ret, row, seller, apply_advance=False)))
+    return saved, errors
+
+
+def return_create(request):
+    """Yangi vazvrat: goods a client brought back, across as many of their receipts as
+    the visit covered, entered in one go.
+
+    Opened bare it asks for the client; picking one reloads it with that client's
+    returnable lines (`?client=`). On save every typed row becomes its own `Return`,
+    judged and settled exactly as a single return from the sale page is — the same
+    quantity cap, the same debt-first split, the same till check. All rows or none:
+    one refused row rolls the whole vazvrat back and the table comes back filled in,
+    with the reason.
+
+    Fresh advance credit is spent on the client's open receipts once, after every row
+    is in (see `_settle_return`)."""
+    clients = _visible_clients(request.user).order_by("name")
+    raw = request.POST.get("client") if request.method == "POST" else request.GET.get("client")
+    client = clients.filter(pk=raw).first() if raw and raw.isdigit() else None
+    form = ReturnBatchForm(
+        request.POST or None, clients=clients,
+        initial={"client": client.pk} if client else None,
+    )
+    # Picking another client reloads the dialog for them (see base.html).
+    form.fields["client"].widget.attrs.update(
+        {"data-return-client": "", "data-url": reverse("return_create")}
+    )
+    lines, can_overpay = _returnable_lines(request.user, client)
+    if not can_overpay:
+        # Nothing returnable here can exceed its debt — the question has no answer.
+        del form.fields["settlement"]
+
+    if request.method == "POST" and form.is_valid():
+        by_pk = {line.pk: line for line in lines}
+        if any(pk not in by_pk for pk, _ in form.rows):
+            form.add_error(
+                None,
+                "Qatorlardan biri bu mijozga tegishli emas yoki undan qaytariladigan "
+                "tovar qolmagan. Oynani qayta oching.",
+            )
+        else:
+            with transaction.atomic():
+                saved, errors = _save_return_rows(form, by_pk)
+                if errors:
+                    transaction.set_rollback(True)
+                else:
+                    # Spend the credit once, now that every receipt's debt is final.
+                    for seller in {
+                        ret.created_by for ret, _, excess, refunded in saved
+                        if excess > 0 and not refunded
+                    }:
+                        _apply_advance_to_open_sales(client, seller)
+                    for ret, to_debt, excess, refunded in saved:
+                        AuditLog.record(
+                            request.user, AuditLog.Action.RETURN, "Qaytarish", ret.sale_id,
+                            f"Mijoz {client.name} qaytardi ({ret.product.name}) — "
+                            f"{ret.amount:,.0f} so'm; qarzdan {to_debt:,.0f}, "
+                            f"ortiqcha {excess:,.0f} "
+                            f"({'naqd berildi' if refunded else 'avansga'})"
+                            f"{_on_behalf(request.user, ret.created_by)}",
+                        )
+            if errors:
+                for error in errors:
+                    form.add_error(None, error)
+            else:
+                refunded = form.cleaned_data["settlement"] == ReturnForm.SETTLE_REFUND
+                messages.success(
+                    request,
+                    f"Vazvrat saqlandi — {len(saved)} ta qator. " + _return_message(
+                        sum((ret.amount for ret, *_ in saved), Decimal("0")),
+                        sum((to_debt for _, to_debt, _, _ in saved), Decimal("0")),
+                        sum((excess for _, _, excess, _ in saved), Decimal("0")),
+                        refunded,
+                    ),
+                )
+                return form_success(request, reverse("return_list"))
+
+    typed = dict(parse_return_rows(request.POST)) if request.method == "POST" else {}
+    for line in lines:
+        quantity = typed.get(line.pk)
+        line.typed = format(quantity.normalize(), "f") if quantity else ""
+    sellers = {line.sale.sales_rep for line in lines}
+    seller = next(iter(sellers)) if len(sellers) == 1 else None
+    context = {
+        "form": form,
+        "title": "Yangi vazvrat",
+        "client": client,
+        "lines": lines,
+        "can_overpay": can_overpay,
+        "summary": _return_batch_summary(lines, list(typed.items())),
+        # Whose till a cash refund leaves — shown only when there is one seller to name.
+        "acting_seller": seller,
+        "cash_on_hand": seller_cash_on_hand(seller) if seller and can_overpay else None,
+    }
+    if is_ajax(request):
+        return render(
+            request, "crm/_return_batch_modal.html", context,
+            status=422 if request.method == "POST" else 200,
+        )
+    return render(request, "crm/_return_batch_page.html", context)
 
 
 def _audit_rows(request):
@@ -9684,13 +10102,16 @@ def sale_return(request, pk):
     return _render_return_form(request, sale, form)
 
 
-def _settle_return(ret, form, user):
+def _settle_return(ret, form, user, apply_advance=True):
     """Post the money side of a just-saved return and link it back to the return.
 
     The return's value cancels open debt first; any excess is money the client had
     already paid and is owed back — parked as advance credit (default) or handed out
-    as cash. Kept in one place so `sale_return` and `return_edit` settle identically.
-    Returns (to_debt, excess, refunded)."""
+    as cash. Kept in one place so `sale_return`, `return_edit` and `return_create`
+    settle identically. `apply_advance=False` leaves fresh credit unspent, for a caller
+    that settles several returns and spends it once at the end — spent after each one,
+    it would pay down a receipt whose own return comes next and dress that return's
+    debt cancellation up as more credit. Returns (to_debt, excess, refunded)."""
     excess = form.excess
     to_debt = form.credited_to_debt
     refunded = form.cleaned_data.get("settlement") == ReturnForm.SETTLE_REFUND
@@ -9711,7 +10132,7 @@ def _settle_return(ret, form, user):
         # Link the payment back to the return so it can be voided/edited as one unit.
         ret.settlement = settlement
         ret.save(update_fields=["settlement"])
-        if not refunded:
+        if not refunded and apply_advance:
             # Spend the fresh credit on whatever else the client still owes.
             _apply_advance_to_open_sales(ret.sale.client, user)
     return to_debt, excess, refunded

@@ -2414,6 +2414,14 @@ tbody tr:hover td.sticky-col {
   max-width: none;
 }
 
+/* Yangi vazvrat: the quantity boxes sit inside a table row, so they keep a narrow
+   fixed width instead of the full-width form field look. */
+.return-batch-table input.return-qty {
+  width: 88px;
+  padding: 6px 8px;
+  text-align: right;
+}
+
 .modal-confirm {
   padding: 14px 22px 22px;
 }

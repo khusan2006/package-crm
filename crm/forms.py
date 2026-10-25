@@ -1989,6 +1989,89 @@ class ReturnForm(forms.ModelForm):
         return cleaned
 
 
+def parse_return_rows(data):
+    """[(sale item pk, quantity)] typed into the vazvrat table — boxes named
+    `ret_<sale item pk>`.
+
+    Read straight off the POST rather than through a formset: the rows are not lines
+    the seller adds and removes, they are a fixed list drawn from the chosen client's
+    receipts. Blanks and zeros are dropped, so returning one line out of forty submits
+    one row. Nothing here is trusted — the view looks every pk up among that client's
+    own returnable lines, so a tampered pk finds nothing."""
+    rows = []
+    for key, value in data.items():
+        if not key.startswith("ret_"):
+            continue
+        value = re.sub(r"\s", "", value or "").replace(",", ".")
+        if not value:
+            continue
+        try:
+            pk = int(key[len("ret_"):])
+            quantity = Decimal(value)
+        except (ValueError, ArithmeticError):
+            continue
+        if quantity > 0:
+            rows.append((pk, quantity))
+    return rows
+
+
+class ReturnBatchForm(forms.Form):
+    """Vazvrat: goods a client brought back in one visit, across any of their receipts.
+
+    The seller picks the CLIENT and types quantities against that client's sale lines
+    — a client comes back with goods, not with "the receipt of the 3rd", and the goods
+    may have gone out on several days at several prices. The line rows are not form
+    fields (their list depends on the client); they are read by `parse_return_rows`.
+
+    Each typed row is still judged by `ReturnForm`, one at a time, in the view: the
+    quantity cap and the debt/excess split live in exactly one place, and a vazvrat
+    of five lines settles exactly like five single returns would."""
+
+    client = forms.ModelChoiceField(
+        label="Mijoz", queryset=Client.objects.none(), widget=ClientSelect
+    )
+    date = forms.DateField(
+        label="Sana",
+        widget=forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+        validators=[_reject_future],
+    )
+    settlement = forms.ChoiceField(
+        label="Mijoz allaqachon to'lagan qismi",
+        choices=ReturnForm.base_fields["settlement"].choices,
+        initial=ReturnForm.SETTLE_ADVANCE,
+        widget=forms.RadioSelect,
+        # Optional for the same reason as on ReturnForm: an unanswered question keeps
+        # the money in the till as advance credit.
+        required=False,
+    )
+    restock = forms.BooleanField(label="Omborga qaytarilsin", required=False, initial=True)
+    note = forms.CharField(
+        label="Izoh", required=False, max_length=255,
+        widget=forms.TextInput(attrs={"placeholder": "Ixtiyoriy"}),
+    )
+
+    def __init__(self, *args, clients=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["client"].queryset = (
+            clients if clients is not None else Client.objects.none()
+        )
+        _searchable_select(self.fields["client"], "Mijozni qidiring yoki tanlang")
+        self.fields["date"].initial = timezone.localdate
+        #: [(sale item pk, quantity)] the seller typed — filled by clean().
+        self.rows = []
+
+    def clean(self):
+        cleaned = super().clean()
+        self.rows = parse_return_rows(self.data)
+        if cleaned.get("client") is not None and not self.rows:
+            raise forms.ValidationError(
+                "Hech bo'lmasa bitta qatorga qaytgan miqdorni kiriting."
+            )
+        if not cleaned.get("settlement"):
+            cleaned["settlement"] = ReturnForm.SETTLE_ADVANCE
+        return cleaned
+
+
 class ClientTransferForm(forms.Form):
     """Reassign a client to another seller. The target list excludes the current
     owner, so transferring to who already owns them is not selectable."""

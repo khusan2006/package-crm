@@ -1,0 +1,56 @@
+{% csrf_token %}
+{% for error in form.non_field_errors %}<div class="flash flash-error">{{ error }}</div>{% endfor %}
+{% include "crm/_acting_seller.html" %}
+<p>{{ form.client.label_tag }}{{ form.client }}{{ form.client.errors }}</p>
+
+{% if client %}
+{% comment %}
+Mijozning hamma cheklaridagi qaytariladigan qatorlar — eng yangi chek tepada. Miqdor
+kerakli qatorlarga yoziladi; narx chekdan olinadi, qo'lda yozilmaydi. data-* qiymatlari
+pastdagi jami hisobini jonli yangilaydigan skript uchun (base.html).
+{% endcomment %}
+<div data-return-batch>
+  <p>{{ form.date.label_tag }}{{ form.date }}{{ form.date.errors }}</p>
+  {% if lines %}
+  <div class="table-wrap">
+  <table class="return-batch-table">
+    <tr>
+      <th>Chek</th>
+      <th>Mahsulot</th>
+      <th class="num">Narxi</th>
+      <th class="num">Qoldi</th>
+      <th class="num">Qaytdi</th>
+    </tr>
+    {% for line in lines %}
+    <tr data-return-row data-sale="{{ line.sale_id }}" data-price="{{ line.price|stringformat:'s' }}" data-debt="{{ line.open_debt|stringformat:'s' }}">
+      <td>#{{ line.sale_id }}<span class="cell-sub">{{ line.sale.date|date:"d.m.Y" }}</span></td>
+      <td>{{ line.product.name }}{% if line.variant_label %}<span class="cell-sub">{{ line.variant_label }}</span>{% endif %}</td>
+      <td class="num">{{ line.price|floatformat:"0g" }}</td>
+      <td class="num">{{ line.left|floatformat:"-3g" }} {{ line.dimension }}{% if line.left != line.weight %}<span class="cell-sub">sotilgan {{ line.weight|floatformat:"-3g" }}</span>{% endif %}</td>
+      <td class="num"><input type="text" class="return-qty" name="ret_{{ line.pk }}" value="{{ line.typed }}" inputmode="decimal" autocomplete="off" placeholder="0" aria-label="#{{ line.sale_id }} {{ line.product.name }} — qaytgan miqdor ({{ line.dimension }})"></td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+
+  {# Saqlashdagi bilan bir xil qoida: har chek avval o'z qarzini yopadi, qolgani mijozga qaytadi. #}
+  <p class="field-hint" data-return-summary>{% if summary.count %}Jami: {{ summary.count }} ta qator · {{ summary.total|floatformat:"0g" }} so'm — qarzdan {{ summary.to_debt|floatformat:"0g" }} so'm{% if summary.back %}, mijozga qaytadi {{ summary.back|floatformat:"0g" }} so'm{% endif %}{% else %}Qaytgan miqdorni kerakli qatorlarga yozing.{% endif %}</p>
+
+  {% if can_overpay %}
+  {# Faqat qarzdan ortgan pul bo'lganda ko'rinadi — to'lanmagan tovar faqat qarzni kamaytiradi. #}
+  <div data-return-settle{% if not summary.back %} hidden{% endif %}>
+    <p>
+      {{ form.settlement.label_tag }}{{ form.settlement }}{{ form.settlement.errors }}
+      {% if cash_on_hand is not None %}<span class="helptext">Kassadagi pul: {{ cash_on_hand|floatformat:"0g" }} so'm.</span>{% endif %}
+    </p>
+  </div>
+  {% endif %}
+  <p>{{ form.restock.label_tag }}{{ form.restock }}</p>
+  <p>{{ form.note.label_tag }}{{ form.note }}{{ form.note.errors }}</p>
+  {% else %}
+  <p class="muted">Bu mijozning cheklarida qaytariladigan tovar qolmagan.</p>
+  {% endif %}
+</div>
+{% else %}
+<p class="field-hint">Avval mijozni tanlang — uning cheklaridagi qaytariladigan qatorlar chiqadi.</p>
+{% endif %}

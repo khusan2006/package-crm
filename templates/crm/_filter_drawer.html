@@ -114,6 +114,14 @@
       </select>
     </label>
     {% endif %}
+    {% if settle_options %}
+    <label>Pul qayerga ketdi
+      <select name="settle">
+        <option value="">Barchasi</option>
+        {% for code, label in settle_options %}<option value="{{ code }}" {% if filters.settle == code %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    {% endif %}
     {% if show_method %}
     <label>To'lov usuli
       <select name="method">
