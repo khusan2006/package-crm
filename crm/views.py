@@ -4742,7 +4742,7 @@ def return_export(request):
     returns, _, _ = _filter_returns(request)
     headers = [
         "Sana", "Mijoz", "Chek", "Mahsulot", "Miqdor", "Birlik", "Narxi", "Qiymati",
-        "Qarzdan ayirildi", "Avansga o'tdi", "Naqd qaytarildi", "Omborga",
+        "Qarzdan ayirildi", "Avansga o'tdi", "Naqd qaytarildi",
         "Sotuvchi", "Izoh",
     ]
     rows = []
@@ -4763,7 +4763,6 @@ def return_export(request):
             float(row["to_debt"]),
             "" if row["back_is_refund"] or not row["back"] else float(row["back"]),
             float(row["back"]) if row["back_is_refund"] else "",
-            "Ha" if r.restock else "Yo'q",
             str(r.sale.sales_rep),
             r.note,
         ])
@@ -4848,8 +4847,6 @@ def _save_return_rows(form, by_pk):
             "note": cd["note"],
             "settlement": cd["settlement"],
         }
-        if cd["restock"]:
-            data["restock"] = "on"
         row = ReturnForm(data, sale=sale, user=seller)
         if not row.is_valid():
             reasons = row.non_field_errors() or [
@@ -10098,7 +10095,7 @@ def sale_return(request, pk):
             messages.success(request, _return_message(ret.amount, to_debt, excess, refunded))
             return form_reload(request, reverse("sale_detail", args=[sale.pk]))
         return _render_return_form(request, sale, form, invalid=True)
-    form = ReturnForm(sale=sale, user=seller, initial={"restock": True})
+    form = ReturnForm(sale=sale, user=seller)
     return _render_return_form(request, sale, form)
 
 
@@ -10155,8 +10152,8 @@ def _reverse_return(ret):
 
 
 def return_edit(request, pk):
-    """Correct a mistaken return — change the line, quantity, restock flag or how the
-    excess was settled. The old return is rolled back in full and the new values are
+    """Correct a mistaken return — change the line, quantity or how the excess was
+    settled. The old return is rolled back in full and the new values are
     applied as a fresh return, so debt, till and advance stay perfectly in sync (a
     return can't be safely edited in place — its settlement is derived from it). A
     seller may edit only their own returns; admins/managers any."""
@@ -10203,7 +10200,6 @@ def return_edit(request, pk):
         initial={
             "sale_item": ret.sale_item_id,
             "weight": ret.weight,
-            "restock": ret.restock,
             "note": ret.note,
             "settlement": settlement_initial,
         },

@@ -2406,11 +2406,9 @@ class AuditLogTests(BaseSetup):
 
 
 class ReturnTests(BaseSetup):
-    def _return(self, sale, weight, restock=True):
+    def _return(self, sale, weight):
         # A return names the sale LINE it reverses; price/tannarx/unit come from there.
         data = {"sale_item": sale.items.first().pk, "weight": weight}
-        if restock:
-            data["restock"] = "on"
         return self.client.post(reverse("sale_return", args=[sale.pk]), data)
 
     def test_return_reduces_debt(self):
@@ -2424,19 +2422,21 @@ class ReturnTests(BaseSetup):
     def _stock(self):
         return Product.objects.get(pk=self.product.pk).current_stock
 
-    def test_restock_return_increases_stock(self):
+    def test_return_increases_stock(self):
         sale = make_sale(self.client1, self.sales1, self.product, is_debt=True, weight="10")
         self.client.force_login(self.sales1)
         before = self._stock()
-        self._return(sale, "3", restock=True)
+        self._return(sale, "3")
         self.assertEqual(self._stock() - before, Decimal("3"))  # 3 kg back in stock
 
-    def test_no_restock_leaves_stock_unchanged(self):
+    def test_return_form_has_no_restock_box(self):
+        # Every return is booked as good goods back — the seller is not asked.
         sale = make_sale(self.client1, self.sales1, self.product, is_debt=True, weight="10")
         self.client.force_login(self.sales1)
-        before = self._stock()
-        self._return(sale, "3", restock=False)
-        self.assertEqual(self._stock() - before, Decimal("0"))  # not restocked
+        response = self.client.get(reverse("sale_return", args=[sale.pk]))
+        self.assertNotContains(response, 'name="restock"')
+        self._return(sale, "3")
+        self.assertTrue(sale.returns.get().restock)
 
     def test_cannot_return_more_than_sold(self):
         sale = make_sale(self.client1, self.sales1, self.product, is_debt=True, weight="10")
@@ -2455,10 +2455,8 @@ class ReturnSettlementTests(BaseSetup):
     """The money side of a return: it cancels open debt first, and any excess — value
     the client had already paid for — is handed back as advance credit or as cash."""
 
-    def _return(self, sale, weight, settlement=None, restock=True, item=None):
+    def _return(self, sale, weight, settlement=None, item=None):
         data = {"sale_item": (item or sale.items.first()).pk, "weight": weight}
-        if restock:
-            data["restock"] = "on"
         if settlement:
             data["settlement"] = settlement
         return self.client.post(reverse("sale_return", args=[sale.pk]), data)
@@ -2538,17 +2536,20 @@ class ReturnSettlementTests(BaseSetup):
         self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("0"))
 
     def test_written_off_return_keeps_production_debt(self):
+        # The form no longer offers a write-off, but a row stored with restock=False
+        # (older data) still leaves the tannarx owed.
         sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
         self.client.force_login(self.sales1)
         before = seller_production_debt(self.sales1)
-        self._return(sale, "4", restock=False)  # goods gone, tannarx still owed
+        self._return(sale, "4")
+        sale.returns.update(restock=False)  # goods gone, tannarx still owed
         self.assertEqual(seller_production_debt(self.sales1), before)
 
     def test_restocked_return_lowers_production_debt(self):
         sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
         self.client.force_login(self.sales1)
         before = seller_production_debt(self.sales1)
-        self._return(sale, "4", restock=True)  # 4 × 18 000 tannarx back
+        self._return(sale, "4")  # 4 × 18 000 tannarx back
         self.assertEqual(before - seller_production_debt(self.sales1), Decimal("72000"))
 
     def test_unpaid_sale_hides_the_settlement_choice(self):

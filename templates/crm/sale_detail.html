@@ -135,17 +135,14 @@
   <h2>Qaytarishlar</h2>
   <div class="table-wrap">
   <table>
-    <tr><th>Sana</th><th>Mahsulot</th><th class="num">Og'irligi</th><th class="num">Narxi</th><th class="num">Summa</th><th>Ombor</th><th>Kim</th></tr>
+    <tr><th>Sana</th><th>Mahsulot</th><th class="num">Og'irligi</th><th class="num">Narxi</th><th class="num">Summa</th><th>Kim</th></tr>
     {% for r in returns %}
     <tr>
       <td>{{ r.date|date:"d.m.Y" }}</td>
-      <td>{{ r.product.name }}</td>
+      <td>{{ r.product.name }}{% if r.note %}<span class="cell-sub">{{ r.note }}</span>{% endif %}</td>
       <td class="num">{{ r.weight|floatformat:"-3g" }} {{ r.dimension }}</td>
       <td class="num">{{ r.price|floatformat:"0g" }}</td>
       <td class="num"><strong>{{ r.amount|floatformat:"0g" }}</strong></td>
-      <td>{% if r.restock %}<span class="badge badge-paid">Qaytarildi</span>{% else %}<span class="badge badge-neutral">Yo'q</span>{% endif %}
-        {% if r.note %}<span class="cell-sub">{{ r.note }}</span>{% endif %}
-      </td>
       <td class="row-actions">{{ r.created_by }}
         {% if user.can_see_all_records or r.created_by == user %}
         <a class="icon-action" href="{% url 'return_edit' r.pk %}" data-modal title="Qaytarishni tahrirlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></a>

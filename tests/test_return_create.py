@@ -40,7 +40,6 @@ def _post(client, customer, rows, **extra):
         "client": customer.pk,
         "date": timezone.localdate().isoformat(),
         "settlement": "advance",
-        "restock": "on",
         "note": "",
     }
     data.update({f"ret_{item.pk}": qty for item, qty in rows})
@@ -159,13 +158,14 @@ def test_refunds_that_together_outrun_the_till_roll_back(
     assert Return.objects.get().settlement.kind == Payment.Kind.REFUND_OUT
 
 
-def test_unchecked_restock_keeps_goods_off_the_shelf(client, admin_user, sample_data):
+def test_every_vazvrat_is_booked_as_good_goods(client, admin_user, sample_data):
+    # There is no "omborga qaytarilsin" box any more: a stale form posting it blank
+    # still books the goods as back, so the tannarx always leaves the seller's debt.
     item = sample_data["sale"].items.first()
     client.force_login(admin_user)
-    data = {"restock": ""}
-    resp = _post(client, sample_data["client"], [(item, "1")], **data)
+    resp = _post(client, sample_data["client"], [(item, "1")], restock="")
     assert resp.status_code == 204
-    assert Return.objects.get().restock is False
+    assert Return.objects.get().restock is True
 
 
 def test_seller_cannot_reach_another_sellers_client(client, seller_user, sample_data):

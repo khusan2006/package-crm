@@ -1882,7 +1882,9 @@ class ReturnForm(forms.ModelForm):
 
     class Meta:
         model = Return
-        fields = ["sale_item", "weight", "restock", "note"]
+        # No `restock` box: every return is booked as good goods back (the model default
+        # True), so its tannarx always comes off the seller's production debt.
+        fields = ["sale_item", "weight", "note"]
         widgets = {"note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy"})}
 
     @staticmethod
@@ -2044,7 +2046,6 @@ class ReturnBatchForm(forms.Form):
         # the money in the till as advance credit.
         required=False,
     )
-    restock = forms.BooleanField(label="Omborga qaytarilsin", required=False, initial=True)
     note = forms.CharField(
         label="Izoh", required=False, max_length=255,
         widget=forms.TextInput(attrs={"placeholder": "Ixtiyoriy"}),

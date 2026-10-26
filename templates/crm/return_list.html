@@ -63,7 +63,6 @@ o'tadi yoki naqd qaytariladi. Uchala karta yig'indisi birinchisiga teng.
     <th class="num">Qiymati</th>
     <th class="num">Qarzdan ayirildi</th>
     <th class="num">Mijozga qaytdi</th>
-    <th>Ombor</th>
     <th>Sotuvchi</th>
     <th></th>
   </tr>
@@ -85,7 +84,6 @@ o'tadi yoki naqd qaytariladi. Uchala karta yig'indisi birinchisiga teng.
       {% else %}{{ row.back|floatformat:"0g" }}<span class="cell-sub"><span class="badge badge-paid">avansga</span></span>{% endif %}
       {% else %}<span class="muted">—</span>{% endif %}
     </td>
-    <td>{% if r.restock %}<span class="badge badge-paid">Qaytarildi</span>{% else %}<span class="badge badge-neutral">Yo'q</span>{% endif %}</td>
     <td>{{ r.sale.sales_rep }}{% if r.note %}<span class="cell-sub">{{ r.note }}</span>{% endif %}</td>
     <td class="row-actions">
       {% if user.can_see_all_records or r.created_by == user %}
