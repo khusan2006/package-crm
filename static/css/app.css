@@ -2422,6 +2422,21 @@ tbody tr:hover td.sticky-col {
   text-align: right;
 }
 
+/* Mijoz tanlanmaguncha oynada faqat bitta maydon bor — u past bo'lib qolar va mijozlar
+   ro'yxati (.combobox-pop, 240px) oyna ichida kesilib, scroll ortiga tushardi. Shuning
+   uchun vazvrat oynasi pastga cho'zilib ochiladi; kichik ekranda max-height chegarasi qoladi.
+   Kengroq ham ochiladi: besh ustunli qatorlar jadvali 560px ga sig'mas edi. */
+.modal:has(select[data-return-client]) {
+  width: min(820px, calc(100vw - var(--sidebar-w) - 32px));
+  min-height: min(620px, calc(100vh - 72px));
+}
+
+@media (max-width: 560px) {
+  .modal:has(select[data-return-client]) {
+    width: min(820px, calc(100vw - 32px));
+  }
+}
+
 .modal-confirm {
   padding: 14px 22px 22px;
 }
