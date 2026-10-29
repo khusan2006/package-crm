@@ -8110,6 +8110,30 @@ class MonthlyReportTests(BaseSetup):
         self.assertContains(response, '<div class="ps-date">31.03.2020</div>')
         self.assertContains(response, "Ахмаджондан олинган юк")
 
+    def test_printed_sheet_carries_the_street_balance_and_the_debt_to_production(self):
+        self._sell(is_debt=True)                             # 200 000 owed; tannarx 100 000
+        ProductionRemittance.objects.create(
+            seller=self.sales1, amount=Decimal("30000"), method=Payment.Method.CASH,
+            created_by=self.sales1, date=self.DAY,
+        )
+        html = self.client.get(reverse("monthly_report"), {"oy": self.MONTH}).content.decode()
+        # The paper's column beside Расход, in its order: goods taken, money given,
+        # what the clients still owe, and what the firm still owes Ahmadjon.
+        boxes = [
+            ("Ахмаджондан олинган юк", "100\xa0000"),
+            ("Ахмаджонга берилган пул", "30\xa0000"),
+            ("Кўчадаги остатка", "200\xa0000"),
+            ("Ахмаджондан қарз", "70\xa0000"),
+        ]
+        for label, amount in boxes:
+            self.assertInHTML(
+                f'<table class="ps-grid ps-box"><tr><th>{label}</th></tr>'
+                f"<tr><td>{amount}</td></tr></table>",
+                html,
+            )
+        at = [html.index(label) for label, _ in boxes]
+        self.assertEqual(at, sorted(at))
+
     def test_client_debt_is_read_as_of_the_months_last_day(self):
         sale = self._sell(is_debt=True)                      # 200 000 owed from 10.03
         Payment.objects.create(

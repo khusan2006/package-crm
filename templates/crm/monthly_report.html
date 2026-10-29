@@ -22,8 +22,10 @@
   Chop etish — ekrandagi sahifa emas, pastdagi alohida varaq (.print-sheet): bitta
   A4, firmaning qo'lda (Word'da) yuritgan oylik hisobot blankasining o'zi — jadvallar
   joyi, chegaralari, qizil sarlavhalari va kirillcha yozuvlari bilan. Ekranda u
-  yashirin, chop etishda esa faqat o'zi qoladi. Blankada yo'q narsalar (ishlab
-  chiqarish qarzi, ko'chadagi qoldiq) varaqqa chiqmaydi — ular ekranda va Excelda.
+  yashirin, chop etishda esa faqat o'zi qoladi. Rasxod yonidagi ustun — Ahmadjon
+  (ishlab chiqarish) bilan hisob-kitob, blankadagi tartibda: olingan yuk, berilgan pul,
+  ko'chadagi ostatka (mijozlar qarzi) va Ahmadjondan qarz (oy oxiridagi ishlab
+  chiqarish qarzi). Oy boshidagi qarz va tuzatishlar varaqqa chiqmaydi — ekranda va Excelda.
   Chiqimlar blankadagi qatorlarga yig'ilgan (`expense_groups`): Бензин, Обед, Прочие,
   Клиент фойда — bo'shi ham turadi. Ranglar qat'iy: tungi mavzuda ham qog'oz oq chiqsin.
   Sarlavhadagi firma va ism — filtrda tanlangan sotuvchiniki (yuk xatidagi «Firma
@@ -124,6 +126,14 @@
       <table class="ps-grid ps-box">
         <tr><th>Ахмаджонга берилган пул</th></tr>
         <tr><td>{{ production.paid|floatformat:"0g" }}</td></tr>
+      </table>
+      <table class="ps-grid ps-box">
+        <tr><th>Кўчадаги остатка</th></tr>
+        <tr><td>{{ client_debt_closing|floatformat:"0g" }}</td></tr>
+      </table>
+      <table class="ps-grid ps-box">
+        <tr><th>Ахмаджондан қарз</th></tr>
+        <tr><td>{{ production.closing|floatformat:"0g" }}</td></tr>
       </table>
     </div>
   </div>
