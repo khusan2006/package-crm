@@ -8134,6 +8134,26 @@ class MonthlyReportTests(BaseSetup):
         at = [html.index(label) for label, _ in boxes]
         self.assertEqual(at, sorted(at))
 
+    def test_page_shows_the_same_column_as_a_table_under_the_production_block(self):
+        self._sell(is_debt=True)
+        ProductionRemittance.objects.create(
+            seller=self.sales1, amount=Decimal("30000"), method=Payment.Method.CASH,
+            created_by=self.sales1, date=self.DAY,
+        )
+        html = self.client.get(reverse("monthly_report"), {"oy": self.MONTH}).content.decode()
+        self.assertInHTML(
+            '<table class="rep-table rep-ledger">'
+            '<tr><td>Ahmadjondan olingan yuk</td><td class="num">100\xa0000</td></tr>'
+            '<tr><td>Ahmadjonga berilgan pul</td><td class="num">30\xa0000</td></tr>'
+            "<tr><td>Ko'chadagi ostatka</td><td class=\"num\">200\xa0000</td></tr>"
+            '<tr class="rep-total"><td>Ahmadjondan qarz</td><td class="num">70\xa0000</td></tr>'
+            "</table>",
+            html,
+        )
+        self.assertLess(
+            html.index("Ishlab chiqarish bilan hisob-kitob"), html.index("Ahmadjondan olingan yuk"),
+        )
+
     def test_client_debt_is_read_as_of_the_months_last_day(self):
         sale = self._sell(is_debt=True)                      # 200 000 owed from 10.03
         Payment.objects.create(

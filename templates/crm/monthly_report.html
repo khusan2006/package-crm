@@ -7,7 +7,7 @@
 {% comment %}
   Oyning yopilish varag'i — ilgari qo'lda, qog'ozda yuritilgan hisobot. Tartibi ham
   o'sha qog'ozniki: sotilgan yuk → rasxod → sof foyda → ishlab chiqarish bilan
-  hisob-kitob → qarzlar.
+  hisob-kitob → Ahmadjon va ko'chadagi ostatka → qarzlar.
 
   Ikki raqam ataylab Kassadagidan boshqacha hisoblanadi:
   - Foyda — sotilgan yukning TO'LIQ ustamasi (savdo − tannarx). Kassadagi «Sof
@@ -431,9 +431,25 @@ raqamga qarab qaysi kartadan kelganini ko'z darrov topadi.{% endcomment %}
       </div>
     </div>
 
+    {% comment %}Blankadagi Rasxod yonidagi ustunning o'zi — o'sha tartibda, o'sha nomlar
+    bilan: Ahmadjon (ishlab chiqarish) bilan hisob-kitob va ko'chadagi ostatka.{% endcomment %}
+    <div class="card rep-card rep-card--blue">
+      <div class="card-head">
+        <h2 class="rep-title"><span class="rep-step">5</span>Ahmadjon va ko'chadagi ostatka</h2>
+      </div>
+      <div class="table-wrap">
+      <table class="rep-table rep-ledger">
+        <tr><td>Ahmadjondan olingan yuk</td><td class="num">{{ production.taken|floatformat:"0g" }}</td></tr>
+        <tr><td>Ahmadjonga berilgan pul</td><td class="num">{{ production.paid|floatformat:"0g" }}</td></tr>
+        <tr><td>Ko'chadagi ostatka</td><td class="num">{{ client_debt_closing|floatformat:"0g" }}</td></tr>
+        <tr class="rep-total"><td>Ahmadjondan qarz</td><td class="num">{{ production.closing|floatformat:"0g" }}</td></tr>
+      </table>
+      </div>
+    </div>
+
     <div class="card rep-card rep-card--gold">
       <div class="card-head">
-        <h2 class="rep-title"><span class="rep-step">5</span>Qarzlar</h2>
+        <h2 class="rep-title"><span class="rep-step">6</span>Qarzlar</h2>
         <a class="btn btn-sm btn-ghost" href="{% url 'debt_list' %}">Qarzlar →</a>
       </div>
       <div class="table-wrap">
