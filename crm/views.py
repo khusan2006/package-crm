@@ -8955,8 +8955,9 @@ def ombor_product_export(request, pk):
 
 
 def _client_debt_on(day, rep=None):
-    """What clients owed at the close of `day` — the paper report's «ko'chadagi qoldiq».
-    With `rep`, only that seller's receipts — the Qarzlar page's Sotuvchi filter.
+    """What clients owed at the close of `day`, before their advances come off it (see
+    `_client_advance_on`). With `rep`, only that seller's receipts — the Qarzlar page's
+    Sotuvchi filter.
 
     The Qarzlar page only knows today's balance; a month's report needs the one its
     last day closed on. So every receipt dated up to then is re-read with only the
@@ -8988,6 +8989,22 @@ def _client_debt_on(day, rep=None):
     move(Payment.objects.filter(date__lte=day, kind__in=PAYING_KINDS), PAYMENT_CREDIT, -1)
     move(Payment.objects.filter(date__lte=day, kind__in=SETTLEMENT_KINDS), "amount", 1)
     return sum((v for v in owed.values() if v > 0), zero)
+
+
+def _client_advance_on(day, rep=None):
+    """The credit clients held at the close of `day` — `client_advance_balance` read as
+    of that day, across every client. The paper's «Кўчадаги остатка» is the debt less
+    this (client's request, 31.10.2026): 1 800 owed with 200 prepaid is 1 600 on the
+    street, whoever of the clients the 200 belongs to. Advance is seller-bound, so `rep`
+    narrows it by who took the money, as `_advance_balance_map` does."""
+    rows = Payment.objects.filter(date__lte=day)
+    if rep is not None:
+        rows = rows.filter(created_by=rep)
+    agg = rows.aggregate(
+        dep=Sum(PAYMENT_CREDIT, filter=Q(kind__in=ADVANCE_DEPOSIT_KINDS)),
+        used=Sum(PAYMENT_CREDIT, filter=Q(kind__in=ADVANCE_SPENT_KINDS)),
+    )
+    return (agg["dep"] or Decimal("0")) - (agg["used"] or Decimal("0"))
 
 
 # The paper's Расход lines, in its order (17.10.2026). A chiqim's free-text category is
@@ -9066,6 +9083,10 @@ def _monthly_report(year, month, rep=None, employees=None):
     zero = Decimal("0")
     first = date(year, month, 1)
     last = date(year, month, calendar.monthrange(year, month)[1])
+    client_debt_opening = _client_debt_on(first - timedelta(days=1), rep)
+    client_debt_closing = _client_debt_on(last, rep)
+    client_advance_opening = _client_advance_on(first - timedelta(days=1), rep)
+    client_advance_closing = _client_advance_on(last, rep)
     sales = Sale.objects.filter(date__gte=first, date__lte=last)
     if rep is not None:
         sales = sales.filter(sales_rep=rep)
@@ -9257,8 +9278,12 @@ def _monthly_report(year, month, rep=None, employees=None):
         "spent": spent,
         "net_profit": totals["profit"] - spent,
         "production": production,
-        "client_debt_opening": _client_debt_on(first - timedelta(days=1), rep),
-        "client_debt_closing": _client_debt_on(last, rep),
+        "client_debt_opening": client_debt_opening,
+        "client_debt_closing": client_debt_closing,
+        "client_advance_opening": client_advance_opening,
+        "client_advance_closing": client_advance_closing,
+        "street_balance_opening": client_debt_opening - client_advance_opening,
+        "street_balance_closing": client_debt_closing - client_advance_closing,
         "employee_debtors": debtors,
         "employee_debt_total": sum((d["debt"] for d in debtors), zero),
     }
@@ -9391,6 +9416,10 @@ def monthly_report_export(request):
         ["Ishlab chiqarish: oy oxiridagi qarz", float(p["closing"])],
         ["Mijozlar qarzi: oy boshida", float(r["client_debt_opening"])],
         ["Mijozlar qarzi: oy oxirida", float(r["client_debt_closing"])],
+        ["Oldindan to'langan: oy boshida", float(r["client_advance_opening"])],
+        ["Oldindan to'langan: oy oxirida", float(r["client_advance_closing"])],
+        ["Ko'chadagi ostatka: oy boshida", float(r["street_balance_opening"])],
+        ["Ko'chadagi ostatka: oy oxirida", float(r["street_balance_closing"])],
         ["Xodimlar qarzi", float(r["employee_debt_total"])],
     ]
     figures = ("kg", "revenue", "cost", "profit")

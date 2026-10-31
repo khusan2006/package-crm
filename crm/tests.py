@@ -8167,6 +8167,66 @@ class MonthlyReportTests(BaseSetup):
         self.assertEqual(april["client_debt_opening"], Decimal("200000"))
         self.assertEqual(april["client_debt_closing"], Decimal("150000"))
 
+    def _prepay(self, client, seller, amount, day):
+        return Payment.objects.create(
+            client=client, amount=Decimal(amount), method=Payment.Method.CASH,
+            kind=Payment.Kind.ADVANCE_IN, date=day, created_by=seller,
+        )
+
+    def test_street_balance_is_the_debt_less_what_clients_prepaid(self):
+        self._sell(is_debt=True)                             # client1 owes 200 000
+        # Someone else's prepayment comes off too: the figure is the whole street's.
+        self._prepay(self.client2, self.sales1, "20000", self.DAY)
+        self._prepay(self.client2, self.sales1, "5000", date(2020, 4, 5))
+        ctx = self._report()
+        self.assertEqual(ctx["client_debt_closing"], Decimal("200000"))
+        self.assertEqual(ctx["client_advance_closing"], Decimal("20000"))
+        self.assertEqual(ctx["street_balance_closing"], Decimal("180000"))
+        html = self.client.get(reverse("monthly_report"), {"oy": self.MONTH}).content.decode()
+        self.assertInHTML(
+            '<table class="ps-grid ps-box"><tr><th>Кўчадаги остатка</th></tr>'
+            "<tr><td>180\xa0000</td></tr></table>",
+            html,
+        )
+        self.assertInHTML("<tr><td>Ko'chadagi ostatka</td><td class=\"num\">180\xa0000</td></tr>", html)
+        # The next month opens on what this one closed on, and takes the April deposit.
+        april = self._report("2020-04")
+        self.assertEqual(april["street_balance_opening"], Decimal("180000"))
+        self.assertEqual(april["street_balance_closing"], Decimal("175000"))
+
+    def test_an_advance_spent_on_a_receipt_comes_off_the_street_balance_only_once(self):
+        sale = self._sell(is_debt=True)                      # 200 000 owed
+        self._prepay(self.client1, self.sales1, "50000", self.DAY)
+        Payment.objects.create(
+            sale=sale, client=self.client1, amount=Decimal("30000"),
+            method=Payment.Method.CASH, kind=Payment.Kind.ADVANCE_USED,
+            date=self.DAY, created_by=self.sales1,
+        )
+        ctx = self._report()
+        self.assertEqual(ctx["client_debt_closing"], Decimal("170000"))
+        self.assertEqual(ctx["client_advance_closing"], Decimal("20000"))
+        self.assertEqual(ctx["street_balance_closing"], Decimal("150000"))
+
+    def test_a_seller_filter_takes_off_only_that_sellers_advances(self):
+        self._sell(is_debt=True)
+        self._prepay(self.client1, self.sales1, "20000", self.DAY)
+        self._prepay(self.client2, self.sales2, "7000", self.DAY)
+        url = reverse("monthly_report")
+        ctx = self.client.get(url, {"oy": self.MONTH, "rep": self.sales1.pk}).context
+        self.assertEqual(ctx["street_balance_closing"], Decimal("180000"))
+        ctx = self.client.get(url, {"oy": self.MONTH, "rep": self.sales2.pk}).context
+        self.assertEqual(ctx["street_balance_closing"], Decimal("-7000"))
+
+    def test_export_shows_the_debt_the_advance_and_the_street_balance(self):
+        self._sell(is_debt=True)
+        self._prepay(self.client2, self.sales1, "20000", self.DAY)
+        response = self.client.get(reverse("monthly_report_export"), {"oy": self.MONTH})
+        book = load_workbook(BytesIO(response.content))
+        summary = dict(list(book["Xulosa"].iter_rows(values_only=True))[1:])
+        self.assertEqual(summary["Mijozlar qarzi: oy oxirida"], 200000)
+        self.assertEqual(summary["Oldindan to'langan: oy oxirida"], 20000)
+        self.assertEqual(summary["Ko'chadagi ostatka: oy oxirida"], 180000)
+
     def test_todays_client_debt_is_the_qarzlar_total(self):
         self._sell(is_debt=True)
         make_sale(self.client2, self.sales2, self.p, weight="3", price="20000", is_debt=True)
