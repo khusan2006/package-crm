@@ -4,6 +4,23 @@
 {% block topbar_title %}{% if user.can_see_all_records %}Mijozlar to'lovlari{% else %}Mening to'lovlarim{% endif %}{% endblock %}
 {% block content %}
 
+<style>
+  .pay-parts summary {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px 4px 10px;
+    border: 1px solid var(--accent-ring); border-radius: 999px; background: var(--accent-soft);
+    color: var(--accent); font-size: 12px; font-weight: 600; white-space: nowrap;
+    cursor: pointer; list-style: none; transition: background .15s, border-color .15s;
+  }
+  .pay-parts summary::-webkit-details-marker { display: none; }
+  .pay-parts summary:hover { border-color: var(--accent); }
+  .pay-parts summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .pay-parts summary svg { width: 14px; height: 14px; flex: none; }
+  .pay-parts .pay-parts-chevron { transition: transform .15s; }
+  .pay-parts[open] .pay-parts-chevron { transform: rotate(180deg); }
+  .pay-parts-list { width: auto; margin-top: 6px; }
+  .pay-parts-list td { padding: 3px 8px 3px 0; border: 0; white-space: nowrap; font-size: 12px; }
+</style>
+
 <div class="kpi-grid">
   <div class="kpi kpi--green">
     <div class="kpi-head">
@@ -106,13 +123,34 @@
       {% else %}<span class="muted">—</span>{% endif %}
     </td>
     <td><span class="badge {{ r.badge }}">{{ r.label }}</span></td>
-    <td>{% if r.sale_pk %}<a href="{% url 'sale_detail' r.sale_pk %}">#{{ r.sale_pk }}</a>{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td>
+      {% if r.parts %}
+      <details class="pay-parts">
+        <summary title="Qaysi chekka qancha tushganini ko'rish">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3v18l2.5-1.5L10 21l2-1.5 2 1.5 2.5-1.5L19 21V3l-2.5 1.5L14 3l-2 1.5L10 3 7.5 4.5Z"/><path d="M9 9h6M9 13h6"/></svg>
+          {{ r.sale_pks|length }} ta chek
+          <svg class="pay-parts-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+        </summary>
+        <table class="pay-parts-list">
+          {% for part in r.parts %}
+          <tr>
+            <td>{% if part.sale_pk %}<a href="{% url 'sale_detail' part.sale_pk %}">#{{ part.sale_pk }}</a>{% else %}<span class="muted">Avans</span>{% endif %}</td>
+            <td class="num">{{ part.amount|floatformat:"0g" }}</td>
+            <td class="row-actions">{% include "crm/_payment_row_actions.html" with r=part %}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </details>
+      {% elif r.sale_pk %}<a href="{% url 'sale_detail' r.sale_pk %}">#{{ r.sale_pk }}</a>
+      {% else %}<span class="muted">—</span>{% endif %}
+    </td>
     <td>{% include "crm/_method_badge.html" with code=r.method_code label=r.method %}</td>
     <td class="num">
       {% if r.counted %}
       <strong class="amt-in">{{ r.amount|floatformat:"0g" }}</strong> so'm
       {% if r.currency == 'usd' %}<span class="cell-sub">${{ r.amount_original|floatformat:"2g" }} × {{ r.exchange_rate|floatformat:"0g" }}</span>{% endif %}
       {% if r.commission %}<span class="cell-sub">bank komissiyasi −{{ r.commission|floatformat:"0g" }}</span>{% endif %}
+      {% if r.to_advance %}<span class="cell-sub">shundan avansga {{ r.to_advance|floatformat:"0g" }}</span>{% endif %}
       {% else %}
       {# Yangi pul emas: bu summa avans olingan kuni hisobga olingan. #}
       <span class="muted">{{ r.amount|floatformat:"0g" }} so'm</span>
@@ -120,23 +158,8 @@
       {% endif %}
     </td>
     <td>{{ r.created_by }}{% if r.note %}<span class="cell-sub">{{ r.note }}</span>{% endif %}</td>
-    <td class="row-actions">
-      {% if user.can_see_all_records or r.created_by == user %}
-      {# Avansdan yechilgan qator tizim yozgani uchun tahrirlanmaydi — faqat ochib ko'riladi. #}
-      {% if not r.counted %}
-        <a class="icon-action act-view" href="{% url 'kassa_entry_detail' 'advance_used' r.pk %}" data-modal title="Ochib ko'rish">{% include "crm/_ico_eye.html" %}</a>
-      {% endif %}
-      {% endif %}
-      {% if r.counted %}{% if user.can_see_all_records or r.created_by == user %}
-        {% if r.is_advance %}
-        <a class="icon-action act-edit" href="{% url 'advance_edit' r.pk %}" data-modal title="Avansni tahrirlash">{% include "crm/_ico_edit.html" %}</a>
-        <a class="icon-action act-view" href="{% url 'kassa_entry_detail' 'advance' r.pk %}" data-modal title="Ochib ko'rish">{% include "crm/_ico_eye.html" %}</a>
-        {% else %}
-        <a class="icon-action act-edit" href="{% url 'payment_edit' r.pk %}" data-modal title="To'lovni tahrirlash">{% include "crm/_ico_edit.html" %}</a>
-        <a class="icon-action act-view" href="{% url 'kassa_entry_detail' 'payment' r.pk %}" data-modal title="Ochib ko'rish">{% include "crm/_ico_eye.html" %}</a>
-        {% endif %}
-      {% endif %}{% endif %}
-    </td>
+    {# Bo'lingan to'lovda tahrirlash har bir chek yonida: o'zgarish pul turgan qatorda qilinadi. #}
+    <td class="row-actions">{% if not r.parts %}{% include "crm/_payment_row_actions.html" %}{% endif %}</td>
   </tr>
   {% endfor %}
 </table>
@@ -153,6 +176,7 @@
   Jami summalar mijoz haqiqatan qo'ldan bergan puldan yig'iladi: sotuvda to'langan, qarz to'lovi va oldindan olingan avans.
   <span class="badge badge-shipped">Avansdan yechildi</span> qatorlari qaysi chek avansdan yopilganini ko'rsatish uchun turadi,
   lekin jamiga qo'shilmaydi — u pul avans olingan kuni allaqachon sanalgan.
+  Bir nechta chekka taqsimlangan to'lov bitta qatorda to'liq summasi bilan turadi — qaysi chekka qancha tushgani «Chek» ustunida ochiladi.
 </p>
 
 {% include "crm/_filter_drawer.html" with show_method=True show_currency=True drawer_keep=window_keep %}

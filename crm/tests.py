@@ -1,8 +1,11 @@
 import calendar
 from datetime import date, timedelta
 from decimal import Decimal
+from importlib import import_module
 from io import BytesIO, StringIO
 from unittest import mock
+
+from django.apps import apps
 
 from django.contrib.messages import get_messages
 from django.core.management import call_command
@@ -57,6 +60,7 @@ from .models import (
 from .utils import UZ_MONTH_NAMES, uz_month
 from .views import (
     XLSX_CONTENT_TYPE,
+    _apply_advance_to_open_sales,
     _kassa_net_profit,
     _kassa_summary,
     _per_employee_kassa,
@@ -897,6 +901,113 @@ class DayViewTests(BaseSetup):
         everything = self.client.get(reverse("payment_list"), {"q": "Mijoz A"})
         sale_pks = {row["sale_pk"] for row in everything.context["page"].object_list}
         self.assertEqual(sale_pks, {inside.pk, before.pk, self.sale1.pk})
+
+
+class LumpPaymentListTests(BaseSetup):
+    """10 mln entered reads as 10 mln on the payments page, whatever receipts it reached."""
+
+    def setUp(self):
+        self.older = make_sale(self.client1, self.sales1, self.product, is_debt=True)  # 240 000
+        self.newer = make_sale(self.client1, self.sales1, self.product, is_debt=True)  # 240 000
+        self.client.force_login(self.sales1)
+
+    def _pay(self, amount, **extra):
+        return self.client.post(
+            reverse("client_debt_pay", args=[self.client1.pk]),
+            {"amount": amount, "method": "cash", **extra},
+        )
+
+    def _rows(self, **params):
+        return self.client.get(
+            reverse("payment_list"), {"client": self.client1.pk, **params}
+        ).context["page"].object_list
+
+    def _lump_row(self, rows=None):
+        return next(r for r in (rows or self._rows()) if r["parts"])
+
+    def test_a_sum_spread_across_receipts_is_one_row_of_the_whole_sum(self):
+        self._pay("300000")
+        self.assertEqual(self.older.payments.get().amount, Decimal("240000"))
+        self.assertEqual(self.newer.payments.get().amount, Decimal("60000"))
+        row = self._lump_row()
+        self.assertEqual(row["amount"], Decimal("300000"))
+        self.assertEqual(row["sale_pks"], [self.older.pk, self.newer.pk])
+        self.assertEqual([p["amount"] for p in row["parts"]], [Decimal("240000"), Decimal("60000")])
+        # Each slice can still be opened and fixed from under the row.
+        response = self.client.get(reverse("payment_list"), {"client": self.client1.pk})
+        self.assertContains(response, "2 ta chek")
+        for part in row["parts"]:
+            self.assertContains(response, reverse("payment_edit", args=[part["pk"]]))
+
+    def test_the_totals_do_not_move_and_the_count_counts_the_sum_once(self):
+        self._pay("300000")
+        totals = self.client.get(
+            reverse("payment_list"), {"client": self.client1.pk}
+        ).context["totals"]
+        # sale1's own 240 000 from BaseSetup, plus the 300 000 given in one go
+        self.assertEqual(totals["total"], Decimal("540000"))
+        self.assertEqual(totals["count"], 2)
+
+    def test_what_was_left_over_stays_inside_the_sum_it_came_with(self):
+        self._pay("500000")
+        row = self._lump_row()
+        self.assertEqual(row["amount"], Decimal("500000"))
+        self.assertEqual(row["to_advance"], Decimal("20000"))
+        self.assertEqual(row["label"], "Qarz to'lovi")
+        self.assertEqual(row["sale_pks"], [self.older.pk, self.newer.pk])
+        self.assertEqual(len(row["parts"]), 3)
+
+    def test_two_payments_stay_two_rows(self):
+        self._pay("100000")
+        self._pay("50000")
+        amounts = [r["amount"] for r in self._rows() if r["sale_pk"] == self.older.pk]
+        self.assertCountEqual(amounts, [Decimal("100000"), Decimal("50000")])
+
+    def test_a_slice_moved_to_another_day_stands_on_its_own(self):
+        self._pay("300000")
+        moved = self.newer.payments.get()
+        Payment.objects.filter(pk=moved.pk).update(date=date(2020, 1, 15))
+        rows = self._rows()
+        self.assertFalse(any(r["parts"] for r in rows))
+        self.assertIn(Decimal("60000"), [r["amount"] for r in rows])
+        self.assertIn(Decimal("240000"), [r["amount"] for r in rows])
+
+    def test_export_has_the_sum_on_one_line_naming_its_receipts(self):
+        self._pay("300000")
+        response = self.client.get(reverse("payment_export"), {"client": self.client1.pk})
+        sheet = list(load_workbook(BytesIO(response.content))["To'lovlar"].iter_rows(values_only=True))
+        lump = next(row for row in sheet[1:] if row[8] == 300000)
+        self.assertEqual(lump[3], f"#{self.older.pk}, #{self.newer.pk}")
+
+    def test_an_advance_spent_across_receipts_is_one_uncounted_row(self):
+        Payment.objects.create(
+            client=self.client1, amount=Decimal("300000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.ADVANCE_IN, created_by=self.sales1,
+        )
+        _apply_advance_to_open_sales(self.client1, self.sales1)
+        rows = self._rows(kind="advance_used")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["amount"], Decimal("300000"))
+        self.assertFalse(rows[0]["counted"])
+
+    def test_old_slices_are_tied_together_only_when_written_at_once(self):
+        self._pay("300000")
+        self._pay("50000")
+        Payment.objects.update(batch=None)
+        slices = list(self.older.payments.order_by("pk")) + list(self.newer.payments.order_by("pk"))
+        # The second payment was typed in a minute after the first.
+        later = slices[0].created_at + timedelta(minutes=1)
+        second = self.newer.payments.get(amount=Decimal("50000"))
+        Payment.objects.filter(pk=second.pk).update(created_at=later)
+
+        import_module("crm.migrations.0050_payment_batch").backfill(apps, None)
+
+        lump = Payment.objects.get(sale=self.older, amount=Decimal("240000"))
+        other = Payment.objects.get(sale=self.newer, amount=Decimal("60000"))
+        second.refresh_from_db()
+        self.assertIsNotNone(lump.batch)
+        self.assertEqual(lump.batch, other.batch)
+        self.assertIsNone(second.batch)
 
 
 class StockTests(BaseSetup):

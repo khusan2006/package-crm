@@ -1,0 +1,12 @@
+{% if user.can_see_all_records or r.created_by == user %}
+{# Avansdan yechilgan qator tizim yozgani uchun tahrirlanmaydi — faqat ochib ko'riladi. #}
+{% if not r.counted %}
+  <a class="icon-action act-view" href="{% url 'kassa_entry_detail' 'advance_used' r.pk %}" data-modal title="Ochib ko'rish">{% include "crm/_ico_eye.html" %}</a>
+{% elif r.is_advance %}
+  <a class="icon-action act-edit" href="{% url 'advance_edit' r.pk %}" data-modal title="Avansni tahrirlash">{% include "crm/_ico_edit.html" %}</a>
+  <a class="icon-action act-view" href="{% url 'kassa_entry_detail' 'advance' r.pk %}" data-modal title="Ochib ko'rish">{% include "crm/_ico_eye.html" %}</a>
+{% else %}
+  <a class="icon-action act-edit" href="{% url 'payment_edit' r.pk %}" data-modal title="To'lovni tahrirlash">{% include "crm/_ico_edit.html" %}</a>
+  <a class="icon-action act-view" href="{% url 'kassa_entry_detail' 'payment' r.pk %}" data-modal title="Ochib ko'rish">{% include "crm/_ico_eye.html" %}</a>
+{% endif %}
+{% endif %}

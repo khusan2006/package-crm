@@ -1,6 +1,7 @@
 import calendar
 import math
 import re
+import uuid
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from urllib.parse import quote, urlencode
@@ -3186,6 +3187,7 @@ def _distribute_debt_payment(
     else:
         left = amount
     touched = 0
+    batch = uuid.uuid4()
 
     def _create(credit, **extra):
         gross, commission, original = _slice_figures(
@@ -3203,6 +3205,7 @@ def _distribute_debt_payment(
             note=note,
             date=on_date,
             created_by=user,
+            batch=batch,
             **extra,
         )
 
@@ -3249,6 +3252,7 @@ def _apply_advance_to_open_sales(client, seller, on_date=None):
         .order_by("date", "created_at")
     )
     applied = Decimal("0")
+    batch = uuid.uuid4()
     with transaction.atomic():
         for sale in sales:
             if balance <= 0:
@@ -3272,6 +3276,7 @@ def _apply_advance_to_open_sales(client, seller, on_date=None):
                 # can't have paid a sale that hadn't happened yet
                 date=max(on_date, sale.date),
                 created_by=seller,
+                batch=batch,
             )
             balance -= use
             applied += use
@@ -4325,7 +4330,11 @@ _PAYMENT_AGGREGATES = {
     "card": Sum("amount", filter=RECEIVED & Q(method=Payment.Method.CARD)),
     "transfer": Sum("amount", filter=RECEIVED & Q(method=Payment.Method.TRANSFER)),
     "commission": Sum("commission", filter=RECEIVED),
-    "count": Count("pk", filter=RECEIVED),
+    # A sum split across receipts is one payment, however many rows it took.
+    "count": (
+        Count("pk", filter=RECEIVED & Q(batch__isnull=True))
+        + Count("batch", filter=RECEIVED, distinct=True)
+    ),
     "from_advance": Sum("amount", filter=Q(kind=Payment.Kind.ADVANCE_USED)),
 }
 
@@ -4351,38 +4360,83 @@ def _payment_totals(payments):
     return totals
 
 
-def _payment_rows(payments):
-    """One display row per payment. The client is resolved here (a sale payment
+def _payment_row(p):
+    """One stored payment as a display row. The client is resolved here (a sale payment
     reaches it through the sale, an advance carries it directly) so the template
     doesn't have to ask twice on every line."""
-    rows = []
+    client = p.sale.client if p.sale else p.client
+    label, badge = _CLIENT_PAYMENT_LABELS[p.kind]
+    return {
+        "pk": p.pk,
+        "date": p.date,
+        "client": client,
+        "label": label,
+        "badge": badge,
+        "is_advance": p.kind == Payment.Kind.ADVANCE_IN,
+        # False on an advance being spent: the row is shown, but no total counts
+        # it, and the page says so on the line itself.
+        "counted": p.kind != Payment.Kind.ADVANCE_USED,
+        "sale_pk": p.sale_id,
+        "sale_pks": [p.sale_id] if p.sale_id else [],
+        "parts": [],
+        "to_advance": Decimal("0"),
+        "method": p.get_method_display(),
+        "method_code": p.method,
+        "currency": p.currency,
+        "amount": p.amount,
+        "amount_original": p.original_amount,
+        "exchange_rate": p.exchange_rate,
+        "commission": p.commission,
+        # The reconciliation stamps its rows with a note that repeats the label
+        # word for word ("Avansdan yechildi"); printing both just says it twice.
+        "note": "" if p.note == label else p.note,
+        "created_by": p.created_by,
+    }
+
+
+def _merged_payment_row(parts):
+    """The row for a sum that reached several receipts: the whole sum on one line, with
+    its slices carried along under `parts` — each receipt's own figure, and the place
+    to fix a slice, since a correction is still made on the row that holds the money."""
+    parts = parts[::-1]  # listed newest first; the slices read in the order they were paid
+    head = next((part for part in parts if not part["is_advance"]), parts[0])
+
+    def total(key):
+        return sum((part[key] for part in parts), Decimal("0"))
+
+    return {
+        **head,
+        "sale_pk": None,
+        "sale_pks": [part["sale_pk"] for part in parts if part["sale_pk"]],
+        "parts": parts,
+        # What was left over once every receipt was settled and went on to their credit.
+        "to_advance": sum(
+            (part["amount"] for part in parts if part["is_advance"]), Decimal("0")
+        ),
+        "amount": total("amount"),
+        "amount_original": total("amount_original"),
+        "commission": total("commission"),
+    }
+
+
+def _payment_rows(payments):
+    """One display row per sum the client handed over (`Payment.batch`): 10 mln entered
+    is 10 mln here, whichever receipts it was spread across. Slices that have since been
+    edited onto another day or method no longer describe the same money, so they stand
+    on their own line rather than be folded into a row that would misreport them."""
+    groups = {}
     for p in payments:
-        client = p.sale.client if p.sale else p.client
-        label, badge = _CLIENT_PAYMENT_LABELS[p.kind]
-        rows.append({
-            "pk": p.pk,
-            "date": p.date,
-            "client": client,
-            "label": label,
-            "badge": badge,
-            "is_advance": p.kind == Payment.Kind.ADVANCE_IN,
-            # False on an advance being spent: the row is shown, but no total counts
-            # it, and the page says so on the line itself.
-            "counted": p.kind != Payment.Kind.ADVANCE_USED,
-            "sale_pk": p.sale_id,
-            "method": p.get_method_display(),
-            "method_code": p.method,
-            "currency": p.currency,
-            "amount": p.amount,
-            "amount_original": p.original_amount,
-            "exchange_rate": p.exchange_rate,
-            "commission": p.commission,
-            # The reconciliation stamps its rows with a note that repeats the label
-            # word for word ("Avansdan yechildi"); printing both just says it twice.
-            "note": "" if p.note == label else p.note,
-            "created_by": p.created_by,
-        })
-    return rows
+        key = p.pk
+        if p.batch:
+            key = (
+                p.batch, p.kind == Payment.Kind.ADVANCE_USED, p.date, p.method, p.currency,
+                p.created_by_id,
+            )
+        groups.setdefault(key, []).append(_payment_row(p))
+    return [
+        _merged_payment_row(parts) if len(parts) > 1 else parts[0]
+        for parts in groups.values()
+    ]
 
 
 def _payment_client_rows(payments):
@@ -4462,8 +4516,7 @@ def payment_list(request):
             request.GET.get("page")
         )
     else:
-        page = Paginator(payments, 25).get_page(request.GET.get("page"))
-        page.object_list = _payment_rows(page.object_list)
+        page = Paginator(_payment_rows(payments), 25).get_page(request.GET.get("page"))
     export_qs = request.GET.urlencode()
     return render(request, "crm/payment_list.html", {
         "page": page,
@@ -4510,7 +4563,7 @@ def payment_export(request):
             r["date"].strftime("%d.%m.%Y"),
             r["client"].name if r["client"] else "",
             r["label"],
-            f"#{r['sale_pk']}" if r["sale_pk"] else "",
+            ", ".join(f"#{pk}" for pk in r["sale_pks"]),
             r["method"],
             dict(Payment.Currency.choices).get(r["currency"], ""),
             float(r["amount_original"]),

@@ -1086,6 +1086,11 @@ class Payment(models.Model):
         related_name="payments",
         verbose_name="Kim qabul qildi",
     )
+    # One sum the client handed over is stored as one row per receipt it reached, since
+    # each receipt's debt is read from its own rows. Those rows share this id, so the
+    # payments page can still show the 10 mln as the 10 mln it was. Empty on a payment
+    # that was never split.
+    batch = models.UUIDField("To'lov guruhi", null=True, blank=True, editable=False, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     objects = PaymentQuerySet.as_manager()
