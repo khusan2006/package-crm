@@ -5,6 +5,16 @@ corrections, the driver's message and map links, and the sellers' read-only view
 of their own stops. Still open: road distances (OSRM), a "deliver first" flag,
 time windows.
 
+**Sales are chosen by hand (decided 2026-11-07).** A day's delivery is not the sales
+dated that day: on Yetkazish the operator ticks sales in «Yetkazilmagan sotuvlar»
+and adds them to the chosen day (`Sale.delivery`). A sale is in at most one
+delivery and can be taken out again.
+
+**Open — to discuss at the end:** which sales the list offers. Provisional rule in
+`_delivery_candidates`: every real sale not yet in any delivery, dated up to the
+chosen day, newest first (200 shown, search for the rest). Options raised: only
+sales made after go-live, or a window of recent days.
+
 Hand corrections use ↑ / ↓ / ⇄ buttons rather than drag-and-drop: HTML5 drag is
 unreliable on phones, and the project has no drag library.
 
