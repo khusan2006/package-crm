@@ -66,8 +66,6 @@ from .forms import (
     StockAdjustForm,
     StockEntryForm,
     LoadForm,
-    LoadItemEditForm,
-    LoadItemForm,
     TruckForm,
     WarehouseForm,
     parse_return_rows,
@@ -10687,45 +10685,108 @@ def load_delete(request, pk):
     )
 
 
+def _whole_rolls(raw):
+    """A rulon count typed into a box: None for an empty box, an int ≥ 1, or
+    ValueError for anything else."""
+    raw = (raw or "").strip().replace(" ", "")
+    if not raw:
+        return None
+    rolls = int(raw)  # ValueError for "3.5", "abc"
+    if rolls < 1:
+        raise ValueError(raw)
+    return rolls
+
+
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
 def load_item_add(request, pk):
-    """Add a client to the load. If the order was already saved, they join the end
-    of it, so the saved route stays as it was."""
+    """Mijoz qo'shish: every client in one list, a rulon box on each row. Typing a
+    number is choosing the client; one save adds them all. A client already in the
+    load is shown but can't be added twice. If the order was already saved, the new
+    clients join the end of it, so the saved route stays as it was."""
     load = get_object_or_404(Load, pk=pk)
-    form = LoadItemForm(request.POST or None, load=load)
-    title = f"Yuk #{load.pk} — mijoz qo'shish"
+    in_load = set(load.items.values_list("client_id", flat=True))
+    clients = list(Client.objects.select_related("owner").order_by("name"))
+    typed, bad = {}, []
+
     if request.method == "POST":
-        if form.is_valid():
-            item = form.save(commit=False)
-            item.load = load
-            if load.ordered_at:
-                last = load.items.aggregate(m=Max("position"))["m"] or 0
-                item.position = last + 1
-            item.save()
-            AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
-                            f"Yuk #{load.pk}: {item.client.name} qo'shildi — {item.rolls} rulon"[:255])
-            messages.success(request, f"“{item.client.name}” qo'shildi.")
-            return form_success(request, _load_url(load))
-        return form_response(request, form, title, invalid=True)
-    return form_response(request, form, title)
+        for c in clients:
+            raw = request.POST.get(f"rolls_{c.pk}", "")
+            if c.pk in in_load or not raw.strip():
+                continue
+            typed[c.pk] = raw
+            try:
+                _whole_rolls(raw)
+            except ValueError:
+                bad.append(c.name)
+        if bad:
+            messages.error(request, "Rulon soni butun son bo'lishi kerak (1 va undan ko'p): "
+                                    + ", ".join(bad))
+        elif not typed:
+            messages.error(request, "Hech bir mijozga rulon soni kiritilmadi.")
+        else:
+            with transaction.atomic():
+                position = (load.items.aggregate(m=Max("position"))["m"] or 0) if load.ordered_at else None
+                added = []
+                for c in clients:
+                    if c.pk not in typed:
+                        continue
+                    if position is not None:
+                        position += 1
+                    LoadItem.objects.create(load=load, client=c, rolls=_whole_rolls(typed[c.pk]),
+                                            position=position)
+                    added.append(f"{c.name} {_whole_rolls(typed[c.pk])}")
+                AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
+                                f"Yuk #{load.pk}: qo'shildi — {', '.join(added)}"[:255])
+            messages.success(request, f"{len(added)} ta mijoz yukka qo'shildi.")
+            return redirect(_load_url(load))
+
+    rows = [{"client": c, "in_load": c.pk in in_load, "typed": typed.get(c.pk, ""),
+             "search": " ".join(filter(None, [c.name, c.company, c.address, c.phone])).lower()}
+            for c in clients]
+    sellers = sorted({c.owner for c in clients}, key=lambda u: str(u).lower())
+    return render(request, "crm/load_pick.html", {
+        "load": load, "rows": rows, "sellers": sellers, "in_load_count": len(in_load),
+    })
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
-def load_item_edit(request, pk, item_pk):
-    item = get_object_or_404(LoadItem.objects.select_related("client", "load"), pk=item_pk, load_id=pk)
-    form = LoadItemEditForm(request.POST or None, instance=item)
-    title = item.client.name
-    if request.method == "POST":
-        if form.is_valid():
-            changes = form_changes(form)
-            form.save()
-            if changes:
-                AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", pk,
-                                f"Yuk #{pk}, {item.client.name}: {changes}"[:255])
-            messages.success(request, "Saqlandi.")
-            return form_success(request, _load_url(item.load))
-        return form_response(request, form, title, invalid=True)
-    return form_response(request, form, title)
+@transaction.atomic
+def _save_load_items(request, load, items):
+    """Save the rulon and kg typed into the load's table, all rows at once. Nothing
+    is saved if any box is wrong — the message names the clients to fix."""
+    changes, bad = [], []
+    for item in items:
+        raw_rolls = request.POST.get(f"rolls_{item.pk}")
+        raw_kg = (request.POST.get(f"kg_{item.pk}") or "").strip().replace(" ", "").replace(",", ".")
+        if raw_rolls is None:  # a row added in another tab since this page was drawn
+            continue
+        try:
+            rolls = _whole_rolls(raw_rolls)
+            if rolls is None:
+                raise ValueError("empty")
+            kg = Decimal(raw_kg).quantize(Decimal("0.001")) if raw_kg else None
+            if kg is not None and kg < 0:
+                raise ValueError(raw_kg)
+        except (ValueError, ArithmeticError):
+            bad.append(item.client.name)
+            continue
+        if (rolls, kg) != (item.rolls, item.kg):
+            changes.append((item, rolls, kg))
+    if bad:
+        messages.error(request, "To'g'rilang — rulon butun son (1 va undan ko'p), kg musbat son: "
+                                + ", ".join(bad))
+        return redirect(_load_url(load))
+    for item, rolls, kg in changes:
+        item.rolls, item.kg = rolls, kg
+        item.save(update_fields=["rolls", "kg"])
+    if changes:
+        AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk, (
+            f"Yuk #{load.pk}: " + ", ".join(
+                f"{i.client.name} {r} rulon" + (f" {k:f} kg" if k is not None else "")
+                for i, r, k in changes))[:255])
+        messages.success(request, f"{len(changes)} ta qator saqlandi.")
+    else:
+        messages.info(request, "O'zgarish yo'q.")
+    return redirect(_load_url(load))
 
 
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
@@ -10851,10 +10912,16 @@ def load_detail(request, pk):
     the route can be drawn. Trucks are chosen by `_load_groups`."""
     load = get_object_or_404(Load.objects.select_related("created_by"), pk=pk)
     items = list(load.items.select_related("client", "client__owner").order_by("created_at"))
+    for item in items:
+        # What the kg box shows: "160", "340.5" — plain, never "160.000000" or "160,000".
+        item.kg_input = f"{item.kg.normalize():f}" if item.kg is not None else ""
 
     if request.method == "POST":
-        if request.POST.get("action") == "reset":
+        action = request.POST.get("action")
+        if action == "reset":
             return _reset_load_order(request, load)
+        if action == "items":
+            return _save_load_items(request, load, items)
         return _save_load_order(request, load, items)
 
     warehouse = Warehouse.load()

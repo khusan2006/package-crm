@@ -32,7 +32,6 @@ from .models import (
     SaleItem,
     StockEntry,
     Load,
-    LoadItem,
     Truck,
     Warehouse,
     seller_cash_on_hand,
@@ -336,42 +335,6 @@ class LoadForm(forms.ModelForm):
             "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
             "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy"}),
         }
-
-
-class LoadItemForm(forms.ModelForm):
-    """A client added to a load, with the rolls going to them. The kg can wait until
-    the goods are weighed."""
-
-    class Meta:
-        model = LoadItem
-        fields = ["client", "rolls", "kg"]
-        widgets = {
-            "rolls": forms.NumberInput(attrs={"min": 1, "inputmode": "numeric"}),
-            "kg": forms.NumberInput(attrs={"min": 0, "step": "0.001", "inputmode": "decimal"}),
-        }
-
-    def __init__(self, *args, load=None, **kwargs):
-        self.load = load
-        super().__init__(*args, **kwargs)
-        self.fields["client"].queryset = Client.objects.order_by("name")
-        _searchable_select(self.fields["client"], "Mijozni tanlang")
-
-    def clean_client(self):
-        client = self.cleaned_data["client"]
-        if self.load and self.load.items.filter(client=client).exclude(pk=self.instance.pk).exists():
-            raise forms.ValidationError(
-                f"«{client.name}» bu yukda allaqachon bor — rulon sonini o'sha qatorda o'zgartiring."
-            )
-        return client
-
-
-class LoadItemEditForm(forms.ModelForm):
-    """Rolls and kg of a client already in the load."""
-
-    class Meta:
-        model = LoadItem
-        fields = ["rolls", "kg"]
-        widgets = LoadItemForm.Meta.widgets
 
 
 class WarehouseForm(forms.ModelForm):

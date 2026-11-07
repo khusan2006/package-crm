@@ -144,47 +144,103 @@ def test_deleting_a_load_takes_its_clients_too(client, admin_user, seller_user, 
 
 # --- clients, rolls, kg -------------------------------------------------------------
 
-def test_adding_a_client_with_rolls_and_no_kg(client, admin_user, seller_user, load):
-    c = make_client(seller_user, "Anvar", 0.01)
-    client.force_login(admin_user)
-    resp = client.post(f"/yetkazish/{load.pk}/mijoz/", {"client": c.pk, "rolls": 12, "kg": ""})
-    assert resp.status_code == 302
-    item = LoadItem.objects.get()
-    assert (item.client, item.rolls, item.kg) == (c, 12, None)
+def pick(client, user, load, **rolls):
+    """Post the Mijoz qo'shish page: rolls_<client pk>=<typed text>."""
+    client.force_login(user)
+    return client.post(f"/yetkazish/{load.pk}/mijoz/",
+                       {f"rolls_{c.pk}": v for c, v in rolls.values()})
 
 
-def test_rolls_must_be_at_least_one(client, admin_user, seller_user, load):
-    c = make_client(seller_user, "Anvar", 0.01)
-    client.force_login(admin_user)
-    resp = client.post(f"/yetkazish/{load.pk}/mijoz/", {"client": c.pk, "rolls": 0})
+def test_the_picker_lists_every_client_and_marks_those_in_the_load(client, admin_user, seller_user,
+                                                                   load):
+    a = make_client(seller_user, "Anvar", 0.01)
+    b = make_client(seller_user, "Botir", 0.02)
+    put(load, a)
+    resp = get(client, admin_user, f"/yetkazish/{load.pk}/mijoz/")
+    rows = {r["client"].name: r["in_load"] for r in resp.context["rows"]}
+    assert rows == {"Anvar": True, "Botir": False}
+    body = resp.content.decode()
+    assert f'name="rolls_{b.pk}"' in body and f'name="rolls_{a.pk}"' not in body
+
+
+def test_several_clients_are_added_in_one_save(client, admin_user, seller_user, load):
+    a = make_client(seller_user, "Anvar", 0.01)
+    b = make_client(seller_user, "Botir", 0.02)
+    c = make_client(seller_user, "Davron", 0.03)
+    resp = pick(client, admin_user, load, a=(a, "12"), b=(b, ""), c=(c, " 3 "))
+    assert resp.status_code == 302 and resp.url == f"/yetkazish/{load.pk}/"
+    assert {(i.client.name, i.rolls, i.kg) for i in load.items.all()} == {
+        ("Anvar", 12, None), ("Davron", 3, None)}
+    assert AuditLog.objects.filter(target_type="Yuk", summary__contains="Anvar 12").exists()
+
+
+@pytest.mark.parametrize("bad", ["0", "-2", "3.5", "abc"])
+def test_a_wrong_rulon_saves_nothing_and_keeps_what_was_typed(client, admin_user, seller_user,
+                                                              load, bad):
+    a = make_client(seller_user, "Anvar", 0.01)
+    b = make_client(seller_user, "Botir", 0.02)
+    resp = pick(client, admin_user, load, a=(a, "12"), b=(b, bad))
+    assert resp.status_code == 200 and not LoadItem.objects.exists()
+    typed = {r["client"].name: r["typed"] for r in resp.context["rows"]}
+    assert typed == {"Anvar": "12", "Botir": bad}
+    assert "Botir" in resp.content.decode()
+
+
+def test_nothing_typed_adds_nothing(client, admin_user, seller_user, load):
+    a = make_client(seller_user, "Anvar", 0.01)
+    resp = pick(client, admin_user, load, a=(a, ""))
     assert resp.status_code == 200 and not LoadItem.objects.exists()
 
 
-def test_the_same_client_twice_is_refused(client, admin_user, seller_user, load):
-    c = make_client(seller_user, "Anvar", 0.01)
-    put(load, c)
-    client.force_login(admin_user)
-    resp = client.post(f"/yetkazish/{load.pk}/mijoz/", {"client": c.pk, "rolls": 3})
-    assert resp.status_code == 200 and "allaqachon bor" in resp.content.decode()
-    assert LoadItem.objects.count() == 1
+def test_a_client_already_in_the_load_is_not_added_twice(client, admin_user, seller_user, load):
+    a = make_client(seller_user, "Anvar", 0.01)
+    put(load, a, rolls=4)
+    pick(client, admin_user, load, a=(a, "9"))  # a stale tab posting it anyway
+    assert [(i.client.name, i.rolls) for i in load.items.all()] == [("Anvar", 4)]
 
 
 def test_the_same_client_can_be_in_another_load(client, admin_user, seller_user, load):
     c = make_client(seller_user, "Anvar", 0.01)
     put(Load.objects.create(date=TODAY()), c)
-    client.force_login(admin_user)
-    client.post(f"/yetkazish/{load.pk}/mijoz/", {"client": c.pk, "rolls": 3})
-    assert load.items.filter(client=c).exists()
+    pick(client, admin_user, load, c=(c, "3"))
+    assert load.items.filter(client=c, rolls=3).exists()
 
 
-def test_kg_is_entered_later(client, admin_user, seller_user, load, warehouse):
-    item = put(load, make_client(seller_user, "Anvar", 0.01), rolls=12)
-    client.force_login(admin_user)
-    client.post(f"/yetkazish/{load.pk}/mijoz/{item.pk}/edit/", {"rolls": 12, "kg": "340.5"})
-    item.refresh_from_db()
-    assert item.kg == Decimal("340.5")
+def save_items(client, user, load, **rows):
+    """Post the Yuk tarkibi table: rows are item=(rolls, kg) as typed."""
+    client.force_login(user)
+    data = {"action": "items"}
+    for item, (rolls, kg) in rows.values():
+        data[f"rolls_{item.pk}"], data[f"kg_{item.pk}"] = rolls, kg
+    return client.post(f"/yetkazish/{load.pk}/", data)
+
+
+def test_rolls_and_kg_are_edited_in_the_table(client, admin_user, seller_user, load, warehouse):
+    a = put(load, make_client(seller_user, "Anvar", 0.01), rolls=12)
+    b = put(load, make_client(seller_user, "Botir", 0.02), rolls=5)
+    resp = save_items(client, admin_user, load, a=(a, ("12", "340,5")), b=(b, ("6", "")))
+    assert resp.status_code == 302
+    a.refresh_from_db()
+    b.refresh_from_db()
+    assert (a.rolls, a.kg, b.rolls, b.kg) == (12, Decimal("340.5"), 6, None)
     resp = detail(client, admin_user, load)
-    assert resp.context["kg_total"] == Decimal("340.5") and resp.context["unweighed"] == 0
+    assert resp.context["kg_total"] == Decimal("340.5") and resp.context["unweighed"] == 1
+
+
+@pytest.mark.parametrize("rolls,kg", [("0", ""), ("", "10"), ("2", "-5"), ("2", "abc")])
+def test_a_wrong_box_in_the_table_saves_nothing(client, admin_user, seller_user, load, rolls, kg):
+    a = put(load, make_client(seller_user, "Anvar", 0.01), rolls=12)
+    b = put(load, make_client(seller_user, "Botir", 0.02), rolls=5)
+    save_items(client, admin_user, load, a=(a, ("20", "100")), b=(b, (rolls, kg)))
+    a.refresh_from_db()
+    assert (a.rolls, a.kg) == (12, None)  # the good row wasn't half-saved either
+
+
+def test_kg_can_be_cleared_again(client, admin_user, seller_user, load):
+    a = put(load, make_client(seller_user, "Anvar", 0.01), rolls=12, kg=300)
+    save_items(client, admin_user, load, a=(a, ("12", "")))
+    a.refresh_from_db()
+    assert a.kg is None
 
 
 def test_removing_a_client(client, admin_user, seller_user, load):
@@ -239,7 +295,7 @@ def test_a_client_added_after_saving_joins_the_end(client, admin_user, seller_us
     client.force_login(admin_user)
     client.post(f"/yetkazish/{load.pk}/", {"action": "save", "stop": [c.pk, a.pk, b.pk]})
     late = make_client(seller_user, "Kechikkan", 0.005)
-    client.post(f"/yetkazish/{load.pk}/mijoz/", {"client": late.pk, "rolls": 2})
+    client.post(f"/yetkazish/{load.pk}/mijoz/", {f"rolls_{late.pk}": "2"})
     assert names(detail(client, admin_user, load)) == ["C", "A", "B", "Kechikkan"]
 
 
@@ -401,3 +457,9 @@ def test_the_saved_order_holds_inside_each_truck(client, admin_user, seller_user
     resp = detail(client, admin_user, load)
     assert resp.context["routes"][0]["truck"] == trucks[0]
     assert names(resp) == ["C", "A", "B"]
+
+
+@pytest.mark.parametrize("kg,shown", [("160", "160"), ("340.5", "340.5"), ("1000", "1000"), ("0.25", "0.25")])
+def test_the_kg_box_shows_plain_numbers(client, admin_user, seller_user, load, kg, shown):
+    put(load, make_client(seller_user, "Anvar", 0.01), kg=kg)
+    assert f'value="{shown}"' in detail(client, admin_user, load).content.decode()

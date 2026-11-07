@@ -46,3 +46,38 @@ def test_reorder_and_save(login, admin_user, live_server, load_of_three):
     assert stop_names(page) == ["Orta", "Yaqin", "Uzoq"]
     saved = list(load_of_three.items.order_by("position").values_list("client__name", flat=True))
     assert saved == ["Orta", "Yaqin", "Uzoq"]
+
+
+def test_pick_clients_by_keyboard_and_add_them(login, admin_user, seller_user, live_server, db):
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    for name in ("Anvar savdo", "Botir paket", "Davron plast"):
+        Client.objects.create(name=name, owner=seller_user, address="Chilonzor")
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/mijoz/")
+    search = page.locator("[data-pick-search]")
+    assert search.evaluate("el => el === document.activeElement")  # ready to type
+
+    # Type a name, Enter jumps to that client's rulon box, Enter goes back to search.
+    search.fill("botir")
+    assert page.locator("[data-pick-row]:visible").count() == 1
+    search.press("Enter")
+    page.keyboard.type("12")
+    page.keyboard.press("Enter")
+    assert search.evaluate("el => el === document.activeElement")
+
+    search.fill("davron")
+    search.press("ArrowDown")
+    page.keyboard.type("3")
+    assert page.locator("[data-pick-count]").inner_text() == "2"
+    assert page.locator("[data-pick-rolls-total]").inner_text() == "15"
+
+    # Clearing the search shows everyone again; typed numbers stay.
+    search.fill("")
+    assert page.locator("[data-pick-row]:visible").count() == 3
+    page.check("[data-pick-chosen]")
+    assert page.locator("[data-pick-row]:visible").count() == 2
+
+    page.click("[data-pick-submit]")
+    page.wait_for_selector("text=2 ta mijoz yukka qo'shildi")
+    assert sorted(load.items.values_list("client__name", "rolls")) == [
+        ("Botir paket", 12), ("Davron plast", 3)]
