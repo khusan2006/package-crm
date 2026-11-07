@@ -6602,7 +6602,7 @@ a.cell-loc--map:hover { color: var(--accent); }
 button.fab { font-family: inherit; }
 /* input.… — the general input[type=text] rule would otherwise stretch these. */
 input.pick-rolls, input.pick-kg {
-  width: 84px; max-width: 84px; text-align: right; padding: 5px 8px;
+  width: 84px; max-width: 84px; height: 32px; text-align: right; padding: 5px 8px;
   border: 1px solid var(--border); border-radius: var(--r-sm);
   background: var(--input); color: var(--text); font: inherit;
 }
@@ -6612,16 +6612,34 @@ input.pick-kg { width: 110px; max-width: 110px; }
 /* Yuk tarkibi: new rows (a client and a rulon each) and the full-width «+». */
 .new-rows { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 .new-row { display: flex; align-items: center; gap: 8px; }
+/* Same height for the three controls of a row: picker, rulon, remove. */
+.new-row input.new-row-rolls {
+  flex: 0 0 120px; width: 120px; max-width: 120px; text-align: center;
+}
+.new-row input.combobox-input, .new-row input.new-row-rolls { height: 40px; }
+.new-row .new-row-remove { flex: 0 0 auto; width: 40px; height: 40px; }
+.new-row .new-row-remove svg { width: 16px; height: 16px; }
 .new-row .combobox, .new-row select { flex: 1 1 auto; min-width: 0; max-width: none; }
 /* The general input rule caps text boxes at 480px; the client picker fills the row. */
 .new-row input.combobox-input { width: 100%; max-width: none; }
 .new-row-add {
-  display: block; width: 100%; margin-top: 8px; padding: 9px 12px;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  width: 100%; margin-top: 8px; padding: 9px 12px;
   border: 1px dashed var(--border-strong); border-radius: var(--r-sm);
   background: transparent; color: var(--accent); font: inherit; font-weight: 600;
   cursor: pointer;
 }
 .new-row-add:hover { background: var(--accent-soft); border-color: var(--accent); }
+.new-row-add svg { width: 15px; height: 15px; }
+/* Load page head: the date and note on the left, edit / delete icons on the right. */
+.load-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-bottom: 16px;
+}
+.load-head-info { display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap; }
+.load-head-date { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.load-head-date svg { width: 16px; height: 16px; color: var(--text-faint); }
+.load-head-note { color: var(--text-muted); overflow-wrap: anywhere; }
 /* Marshrut: the build button, its loading state, and the fetched route. */
 .load-route-start { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .load-route-start h2 { margin: 0 0 4px; }
