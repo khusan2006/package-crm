@@ -10599,12 +10599,12 @@ def warehouse_edit(request):
 # --- Delivery: loads (yuk) and their route ----------------------------------------
 # A load is put together by hand — clients and rolls, kg once weighed — and is not
 # tied to sales. Its route is suggested by crm/routing.py, by road when
-# OpenRouteService is set up (crm/road.py). The truck isn't picked by hand; how the
-# system chooses it is still to be decided, so for now each load is one route.
+# OpenRouteService is set up (crm/road.py). The truck isn't picked by hand: once every
+# client is weighed the system picks one truck, or two with the load split by area.
 
-#: The route's colour on the map and the stop numbers — a CSS custom property, so the
-#: pins follow the light/dark theme like everything else.
-ROUTE_COLOR = "--accent"
+#: Truck 1 / truck 2 colours on the map and the route cards — CSS custom properties,
+#: so the pins follow the light/dark theme like everything else.
+ROUTE_COLORS = ("--accent", "--violet")
 
 
 def _load_url(load):
@@ -10640,20 +10640,16 @@ def load_list(request):
 
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
 def load_create(request):
-    day = _parse_date(request.GET.get("sana")) or timezone.localdate()
-    form = LoadForm(request.POST or None, initial={"date": day})
-    title = "Yangi yuk"
-    if request.method == "POST":
-        if form.is_valid():
-            load = form.save(commit=False)
-            load.created_by = request.user
-            load.save()
-            AuditLog.record(request.user, AuditLog.Action.CREATE, "Yuk", load.pk,
-                            f"Yuk #{load.pk} ({load.date:%d.%m.%Y}) yaratildi")
-            messages.success(request, f"Yuk #{load.pk} yaratildi — endi mijozlarni qo'shing.")
-            return form_success(request, _load_url(load))
-        return form_response(request, form, title, invalid=True)
-    return form_response(request, form, title)
+    """«Yangi yuk»: one click makes an empty load for the day on screen and opens it —
+    there is nothing to ask first (a note can be added later with «Tahrirlash»)."""
+    if request.method != "POST":
+        return redirect(reverse("load_list"))
+    day = _parse_date(request.POST.get("sana")) or timezone.localdate()
+    load = Load.objects.create(date=day, created_by=request.user)
+    AuditLog.record(request.user, AuditLog.Action.CREATE, "Yuk", load.pk,
+                    f"Yuk #{load.pk} ({load.date:%d.%m.%Y}) yaratildi")
+    messages.success(request, f"Yuk #{load.pk} yaratildi — endi mijozlarni qo'shing.")
+    return redirect(_load_url(load))
 
 
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
@@ -10815,6 +10811,35 @@ def _reset_load_order(request, load):
     return redirect(_load_url(load))
 
 
+def _load_groups(load, items, depot, dist):
+    """Split the load's stops into routes: [(truck or None, [Stop, …])] and an error.
+
+    The truck is chosen by the system from the kg, and only once every client is
+    weighed: the smallest active truck that holds the load, or two trucks with the
+    clients split by area (crm/routing.py). Until then — or when the trucks can't take
+    it — the load is one route with no truck. A saved order is kept inside each
+    route; the split itself is always worked out afresh."""
+    by_pk = {i.pk: i for i in items}
+    stops = [routing.Stop(i.pk, *_point(i.client), i.kg or Decimal("0")) for i in items]
+    groups, error = None, ""
+    if all(i.kg is not None for i in items):
+        try:
+            plan = routing.plan_routes(depot, stops, list(Truck.objects.filter(is_active=True)),
+                                       dist=dist)
+            groups = [(r.truck, list(r.stops)) for r in plan.routes]
+        except routing.RoutingError as err:
+            error = str(err)
+    if groups is None:
+        groups = [(None, routing.order_stops(depot, stops, dist=dist)[0])]
+    if load.ordered_at:
+        # The saved order within each route; anyone without a place (added after
+        # saving) keeps the suggested place after the saved ones.
+        groups = [(truck, sorted(group, key=lambda st: (by_pk[st.key].position is None,
+                                                        by_pk[st.key].position or 0)))
+                  for truck, group in groups]
+    return groups, error
+
+
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
 def load_detail(request, pk):
     """One load: its clients with rolls and kg, and the route through them.
@@ -10823,7 +10848,7 @@ def load_detail(request, pk):
     out afresh on every visit; saving fixes it (with any stops moved by hand) and
     «Qayta hisoblash» throws it away for a new suggestion. A client added after
     saving joins the end of the saved order. Every client needs a joylashuv before
-    the route can be drawn."""
+    the route can be drawn. Trucks are chosen by `_load_groups`."""
     load = get_object_or_404(Load.objects.select_related("created_by"), pk=pk)
     items = list(load.items.select_related("client", "client__owner").order_by("created_at"))
 
@@ -10834,46 +10859,48 @@ def load_detail(request, pk):
 
     warehouse = Warehouse.load()
     missing = [i.client for i in items if not i.client.has_location]
-    stops, km, error, by_road, road_note, path = [], 0.0, "", False, "", None
+    routes, error, by_road, road_note = [], "", False, ""
     if not warehouse.has_location:
         error = "Ombor joylashuvi belgilanmagan. Uni Mashinalar sahifasida belgilang."
     elif items and not missing:
         depot = (float(warehouse.latitude), float(warehouse.longitude))
         dist, by_road, road_note = _road_distance([depot] + [_point(i.client) for i in items])
         by_pk = {i.pk: i for i in items}
-        points = [routing.Stop(i.pk, *_point(i.client), i.kg or Decimal("0")) for i in items]
-        if load.ordered_at:
-            # The saved order; anyone without a place (shouldn't happen — added
-            # clients join the end) goes last in the order they were added.
-            points.sort(key=lambda s: (by_pk[s.key].position is None, by_pk[s.key].position or 0))
-        else:
-            points, _ = routing.order_stops(depot, points, dist=dist)
-        km = routing.build_route(None, points, depot, dist=dist).km
-        stops = [{"n": n, "item": by_pk[p.key], "client": by_pk[p.key].client}
-                 for n, p in enumerate(points, start=1)]
-        if by_road:
-            path = road.path([depot] + [_point(s["client"]) for s in stops] + [depot])
+        groups, error = _load_groups(load, items, depot, dist)
+        for n, (truck, group) in enumerate(groups):
+            measured = routing.build_route(truck, group, depot, dist=dist)
+            stops = [{"n": k, "item": by_pk[st.key], "client": by_pk[st.key].client}
+                     for k, st in enumerate(group, start=1)]
+            points = [_point(st["client"]) for st in stops]
+            google = route_share.google_route_links(depot, points)
+            yandex = route_share.yandex_route_link(depot, points)
+            title = f"Yuk #{load.pk} — {load.date:%d.%m.%Y}" + (f" — {truck.name}" if truck else "")
+            text = route_share.driver_message(
+                title, [{"n": st["n"], "name": st["client"].name, "amount": _amount(st["item"]),
+                         "address": st["client"].address, "phone": st["client"].phone,
+                         "map_url": st["client"].google_maps_url} for st in stops],
+                google, yandex,
+            )
+            capacity = truck.capacity_kg if truck else None
+            routes.append({
+                "truck": truck, "stops": stops, "km": measured.km, "kg": measured.kg,
+                "load_pct": min(100, round(measured.kg / capacity * 100)) if capacity else None,
+                "over": bool(capacity) and measured.kg > capacity,
+                "color": ROUTE_COLORS[n % len(ROUTE_COLORS)],
+                "path": road.path([depot] + points + [depot]) if by_road else None,
+                "share": {"text": text, "title": title, "google_links": google,
+                          "yandex_link": yandex,
+                          **route_share.share_urls(text, google[0] if google else yandex)},
+            })
 
-    share = map_data = None
-    if stops:
-        depot = (float(warehouse.latitude), float(warehouse.longitude))
-        google = route_share.google_route_links(depot, [_point(s["client"]) for s in stops])
-        yandex = route_share.yandex_route_link(depot, [_point(s["client"]) for s in stops])
-        title = f"Yuk #{load.pk} — {load.date:%d.%m.%Y}"
-        text = route_share.driver_message(
-            title, [{"n": s["n"], "name": s["client"].name, "amount": _amount(s["item"]),
-                     "address": s["client"].address, "phone": s["client"].phone,
-                     "map_url": s["client"].google_maps_url} for s in stops],
-            google, yandex,
-        )
-        share = {"text": text, "title": title, "google_links": google, "yandex_link": yandex,
-                 **route_share.share_urls(text, google[0] if google else yandex)}
+    map_data = None
+    if routes:
         map_data = {
-            "depot": list(depot),
-            "routes": [{"color": ROUTE_COLOR, "path": path, "stops": [
-                {"n": s["n"], "name": s["client"].name,
-                 "lat": _point(s["client"])[0], "lng": _point(s["client"])[1]}
-                for s in stops]}],
+            "depot": [float(warehouse.latitude), float(warehouse.longitude)],
+            "routes": [{"color": r["color"], "path": r["path"], "stops": [
+                {"n": st["n"], "name": st["client"].name,
+                 "lat": _point(st["client"])[0], "lng": _point(st["client"])[1]}
+                for st in r["stops"]]} for r in routes],
         }
 
     kg_known = [i.kg for i in items if i.kg is not None]
@@ -10886,12 +10913,10 @@ def load_detail(request, pk):
         "kg_total": kg_total,
         "unweighed": len(items) - len(kg_known),
         "missing": missing,
-        "stops": stops,
-        "km": km,
+        "routes": routes,
+        "km": sum(r["km"] for r in routes),
         "by_road": by_road,
         "road_note": road_note,
         "error": error,
-        "share": share,
         "map_data": map_data,
-        "route_color": ROUTE_COLOR,
     })

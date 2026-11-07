@@ -54,15 +54,16 @@ def detail(client, user, load):
     return get(client, user, f"/yetkazish/{load.pk}/")
 
 
-def names(resp):
-    return [s["client"].name for s in resp.context["stops"]]
+def names(resp, route=0):
+    return [s["client"].name for s in resp.context["routes"][route]["stops"]]
 
 
 # --- who ----------------------------------------------------------------------------
 
-@pytest.mark.parametrize("url", ["/yetkazish/", "/yetkazish/yangi/"])
-def test_sellers_cannot_reach_loads(client, seller_user, url):
-    assert get(client, seller_user, url).status_code == 403
+def test_sellers_cannot_reach_loads(client, seller_user):
+    assert get(client, seller_user, "/yetkazish/").status_code == 403
+    assert client.post("/yetkazish/yangi/", {"sana": TODAY().isoformat()}).status_code == 403
+    assert not Load.objects.exists()
 
 
 def test_sellers_cannot_open_or_change_a_load(client, seller_user, load):
@@ -84,19 +85,28 @@ def test_sidebar_shows_yetkazish_to_admins_and_managers_only(client, admin_user,
 
 # --- the day's loads ----------------------------------------------------------------
 
-def test_creating_a_load_opens_it(client, admin_user):
+def test_one_click_makes_a_load_for_the_day_and_opens_it(client, admin_user):
     client.force_login(admin_user)
     tomorrow = TODAY() + timedelta(days=1)
-    resp = client.post("/yetkazish/yangi/", {"date": tomorrow.isoformat(), "note": "1-reys"})
+    resp = client.post("/yetkazish/yangi/", {"sana": tomorrow.isoformat()})
     load = Load.objects.get()
     assert resp.status_code == 302 and resp.url == f"/yetkazish/{load.pk}/"
-    assert (load.date, load.note, load.created_by) == (tomorrow, "1-reys", admin_user)
+    assert (load.date, load.note, load.created_by) == (tomorrow, "", admin_user)
     assert AuditLog.objects.filter(target_type="Yuk", target_id=load.pk).exists()
 
 
-def test_no_truck_is_picked_by_hand(client, admin_user):
-    form = get(client, admin_user, "/yetkazish/yangi/").context["form"]
+def test_no_pop_up_and_no_truck_to_pick(client, admin_user, load):
+    # «Yangi yuk» is a plain form posting the day, not a modal link.
+    body = get(client, admin_user, "/yetkazish/").content.decode()
+    assert 'action="/yetkazish/yangi/"' in body and 'href="/yetkazish/yangi/' not in body
+    # Editing a load later asks for the date and a note — never a truck.
+    form = get(client, admin_user, f"/yetkazish/{load.pk}/edit/").context["form"]
     assert list(form.fields) == ["date", "note"]
+
+
+def test_opening_the_create_address_just_goes_back_to_the_list(client, admin_user):
+    resp = get(client, admin_user, "/yetkazish/yangi/")
+    assert resp.status_code == 302 and resp.url == "/yetkazish/" and not Load.objects.exists()
 
 
 def test_a_day_can_have_several_loads(client, admin_user, seller_user):
@@ -208,7 +218,7 @@ def test_route_is_suggested_from_the_warehouse_outward(client, admin_user, load,
 def test_drivers_message_has_rolls_and_kg_when_known(client, admin_user, load, three):
     three[1].kg = Decimal("250")
     three[1].save()
-    share = detail(client, admin_user, load).context["share"]
+    share = detail(client, admin_user, load).context["routes"][0]["share"]
     assert share["text"].startswith(f"Yuk #{load.pk} — {TODAY():%d.%m.%Y}\n")
     assert "1. B — 10 rulon · 250 kg" in share["text"]
     assert "2. C — 10 rulon\n" in share["text"]
@@ -262,14 +272,14 @@ def test_missing_locations_hold_the_route_back(client, admin_user, seller_user, 
     nowhere = make_client(seller_user, "Joysiz")
     put(load, nowhere)
     resp = detail(client, admin_user, load)
-    assert resp.context["stops"] == [] and resp.context["missing"] == [nowhere]
+    assert resp.context["routes"] == [] and resp.context["missing"] == [nowhere]
     assert f"/clients/{nowhere.pk}/edit/" in resp.content.decode()
 
 
 def test_no_warehouse_location_is_explained(client, admin_user, seller_user, load):
     put(load, make_client(seller_user, "A", 0.01))
     resp = detail(client, admin_user, load)
-    assert resp.context["stops"] == [] and "Ombor joylashuvi" in resp.context["error"]
+    assert resp.context["routes"] == [] and "Ombor joylashuvi" in resp.context["error"]
 
 
 def test_ids_are_written_without_a_thousands_separator(client, admin_user, seller_user, load, warehouse):
@@ -323,5 +333,71 @@ def test_when_the_road_service_fails_the_route_still_comes(client, admin_user, s
 
     monkeypatch.setattr(road, "matrix_km", broken)
     resp = detail(client, admin_user, load)
-    assert not resp.context["by_road"] and len(resp.context["stops"]) == 1
+    assert not resp.context["by_road"] and len(resp.context["routes"][0]["stops"]) == 1
     assert resp.context["road_note"].startswith("Yo'l masofalarini olib bo'lmadi")
+
+
+
+# --- trucks, chosen by the system from kg -----------------------------------------
+
+from crm.models import Truck  # noqa: E402
+
+
+@pytest.fixture
+def trucks(db):
+    return (Truck.objects.create(name="Labo", capacity_kg=1000),
+            Truck.objects.create(name="Isuzu", capacity_kg=3000))
+
+
+def test_no_truck_until_everyone_is_weighed(client, admin_user, seller_user, load, warehouse, trucks):
+    put(load, make_client(seller_user, "A", 0.01), kg=200)
+    put(load, make_client(seller_user, "B", 0.02))  # not weighed yet
+    resp = detail(client, admin_user, load)
+    assert len(resp.context["routes"]) == 1 and resp.context["routes"][0]["truck"] is None
+    assert "Mashina hamma mijoz tortilgach tanlanadi" in resp.content.decode()
+
+
+def test_once_weighed_the_smallest_truck_that_fits_is_chosen(client, admin_user, seller_user, load,
+                                                             warehouse, trucks):
+    labo, isuzu = trucks
+    put(load, make_client(seller_user, "A", 0.01), kg=300)
+    put(load, make_client(seller_user, "B", 0.02), kg=400)
+    routes = detail(client, admin_user, load).context["routes"]
+    assert [r["truck"] for r in routes] == [labo]
+    assert routes[0]["kg"] == Decimal(700) and not routes[0]["over"]
+    assert "Labo" in routes[0]["share"]["title"]
+
+
+def test_too_heavy_for_one_truck_is_split_across_two(client, admin_user, seller_user, load,
+                                                     warehouse, db):
+    Truck.objects.create(name="A", capacity_kg=1000)
+    Truck.objects.create(name="B", capacity_kg=1000)
+    for name, dlng in (("G1", -0.05), ("G2", -0.04), ("S1", 0.04), ("S2", 0.05)):
+        put(load, make_client(seller_user, name, dlng), kg=450)
+    routes = detail(client, admin_user, load).context["routes"]
+    assert len(routes) == 2
+    assert all(r["kg"] <= r["truck"].capacity_kg for r in routes)
+    assert sorted(sorted(s["client"].name[0] for s in r["stops"]) for r in routes) == [
+        ["G", "G"], ["S", "S"]]  # each truck one side of the city
+
+
+def test_more_than_the_trucks_can_take_is_explained(client, admin_user, seller_user, load,
+                                                    warehouse, trucks):
+    put(load, make_client(seller_user, "A", 0.01), kg=2500)
+    put(load, make_client(seller_user, "B", 0.02), kg=2000)
+    resp = detail(client, admin_user, load)
+    assert "ortiqcha" in resp.context["error"]
+    # The route is still drawn, just without a truck.
+    assert len(resp.context["routes"]) == 1 and resp.context["routes"][0]["truck"] is None
+
+
+def test_the_saved_order_holds_inside_each_truck(client, admin_user, seller_user, load,
+                                                 warehouse, trucks):
+    a = put(load, make_client(seller_user, "A", 0.01), kg=100)
+    b = put(load, make_client(seller_user, "B", 0.02), kg=100)
+    c = put(load, make_client(seller_user, "C", 0.03), kg=100)
+    client.force_login(admin_user)
+    client.post(f"/yetkazish/{load.pk}/", {"action": "save", "stop": [c.pk, a.pk, b.pk]})
+    resp = detail(client, admin_user, load)
+    assert resp.context["routes"][0]["truck"] == trucks[0]
+    assert names(resp) == ["C", "A", "B"]

@@ -39,8 +39,8 @@
   </div>
   <div class="kpi kpi--green">
     <div class="kpi-head"><span class="kpi-label">Masofa</span></div>
-    <div class="kpi-value">{% if stops %}≈ {{ km|floatformat:1 }}{% else %}—{% endif %}<span class="unit">km</span></div>
-    <div class="kpi-meta muted">{% if stops %}{% if by_road %}yo'l bo'yicha, omborga qaytish bilan{% else %}to'g'ri chiziq, omborga qaytish bilan{% endif %}{% else %}marshrut hali yo'q{% endif %}</div>
+    <div class="kpi-value">{% if routes %}≈ {{ km|floatformat:1 }}{% else %}—{% endif %}<span class="unit">km</span></div>
+    <div class="kpi-meta muted">{% if routes %}{% if by_road %}yo'l bo'yicha, omborga qaytish bilan{% else %}to'g'ri chiziq, omborga qaytish bilan{% endif %}{% else %}marshrut hali yo'q{% endif %}</div>
   </div>
 </div>
 
@@ -95,7 +95,10 @@
   {% endif %}
 </div>
 
-{% if stops %}
+{% if routes %}
+{% if unweighed %}
+<p class="route-share-stale" role="status">Mashina hamma mijoz tortilgach tanlanadi — hali {{ unweighed }} ta mijozning kg'i kiritilmagan. Hozircha bitta marshrut.</p>
+{% endif %}
 <div class="card route-bar">
   <div>
     {% if load.ordered_at %}
@@ -128,62 +131,75 @@
 <form method="post" id="route-form" action="{% url 'load_detail' load.pk %}" data-route-form>
 {% csrf_token %}
 <input type="hidden" name="action" value="save">
-<section class="card route-card" style="--route: var({{ route_color }});" data-route-truck>
-  <div class="card-head">
-    <h2><span class="route-dot" aria-hidden="true"></span>Marshrut</h2>
-    <span class="muted"><span data-route-count>{{ stops|length }}</span> ta manzil · ≈ {{ km|floatformat:1 }} km</span>
-  </div>
-  <ol class="route-stops">
-    <li class="route-stop route-stop--depot"><span class="route-n">O</span><span>{{ warehouse.name }} — jo'nash</span></li>
-    {% for s in stops %}
-    <li class="route-stop" data-route-stop>
-      <input type="hidden" name="stop" value="{{ s.item.pk|unlocalize }}">
-      <span class="route-n" data-route-n>{{ s.n }}</span>
-      <span class="route-body">
-        <a href="{% url 'client_location' s.client.pk %}" data-modal><strong>{{ s.client.name }}</strong></a>
-        {% if s.client.address %}<span class="cell-sub">{{ s.client.address }}</span>{% endif %}
-        <span class="cell-sub">{% if s.client.phone %}<a href="tel:{{ s.client.phone|cut:' ' }}">{{ s.client.phone }}</a> · {% endif %}{{ s.client.owner }}</span>
-      </span>
-      <span class="route-side">
-        <span class="route-kg">{{ s.item.rolls }} rulon{% if s.item.kg is not None %}<span class="cell-sub">{{ s.item.kg|floatformat:"0g" }} kg</span>{% endif %}</span>
-        <span class="route-moves">
-          <button type="button" class="icon-action" data-move="up" title="Oldinga" aria-label="Oldinga">↑</button>
-          <button type="button" class="icon-action" data-move="down" title="Orqaga" aria-label="Orqaga">↓</button>
-        </span>
-      </span>
-    </li>
-    {% endfor %}
-    <li class="route-stop route-stop--depot" data-route-end><span class="route-n">O</span><span>{{ warehouse.name }} — qaytish</span></li>
-  </ol>
-
-  {% comment %}Haydovchiga: built from the order the server drew — hidden after a move
-  until saved, or the driver would get the old order.{% endcomment %}
-  <div class="route-share" data-route-share>
-    <h3>Haydovchiga</h3>
-    <div class="geo-share" data-geo-share data-share-title="{{ share.title }}" data-share-text="{{ share.text }}" data-share-url="{% firstof share.google_links.0 share.yandex_link %}">
-      <button type="button" class="btn geo-share-main" data-share-native hidden>
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
-        Ulashish
-      </button>
-      <div class="geo-share-row">
-        <a class="btn btn-ghost btn-sm" href="{{ share.telegram_url }}" target="_blank" rel="noopener">Telegram</a>
-        <a class="btn btn-ghost btn-sm" href="{{ share.whatsapp_url }}" target="_blank" rel="noopener">WhatsApp</a>
-        <button type="button" class="btn btn-ghost btn-sm" data-share-copy>Nusxa olish</button>
-      </div>
-      <div class="geo-share-row" title="Marshrutni xaritada ochish">
-        {% for url in share.google_links %}
-        <a class="btn btn-ghost btn-sm" href="{{ url }}" target="_blank" rel="noopener">Google Maps{% if share.google_links|length > 1 %} · {{ forloop.counter }}-qism{% endif %} ↗</a>
-        {% endfor %}
-        {% if share.yandex_link %}<a class="btn btn-ghost btn-sm" href="{{ share.yandex_link }}" target="_blank" rel="noopener">Yandex ↗</a>{% endif %}
-      </div>
-      {% if share.google_links|length > 1 %}<p class="geo-hint">Google bitta havolada 9 tadan ortiq oraliq nuqtani qabul qilmaydi, shuning uchun marshrut qismlarga bo'lingan: birinchisi tugagan joydan ikkinchisi boshlanadi.</p>{% endif %}
-      <span class="geo-status" data-share-status role="status" aria-live="polite"></span>
+<div class="route-grid">
+  {% for r in routes %}
+  <section class="card route-card" style="--route: var({{ r.color }});" data-route-truck>
+    <div class="card-head">
+      <h2><span class="route-dot" aria-hidden="true"></span>{% if r.truck %}{{ r.truck.name }}{% else %}Marshrut{% endif %}</h2>
+      <span class="muted"><span data-route-count>{{ r.stops|length }}</span> ta manzil · ≈ {{ r.km|floatformat:1 }} km</span>
     </div>
-  </div>
-  <p class="muted route-share-stale" data-route-share-stale hidden>Tartib o'zgardi — haydovchiga yuborishdan oldin saqlang.</p>
-</section>
+    {% if r.truck %}
+    <div class="route-load{% if r.over %} is-over{% endif %}" title="Yuk / sig'im">
+      <div class="route-load-bar"><span style="width: {{ r.load_pct }}%"></span></div>
+      <span>{{ r.kg|floatformat:"0g" }} / {{ r.truck.capacity_kg|floatformat:"0g" }} kg</span>
+    </div>
+    {% if r.over %}<p class="route-over-note">Mashina sig'imidan oshib ketdi.</p>{% endif %}
+    {% else %}
+    <p class="muted route-truck-note">Mashina hali tanlanmagan.</p>
+    {% endif %}
+    <ol class="route-stops">
+      <li class="route-stop route-stop--depot"><span class="route-n">O</span><span>{{ warehouse.name }} — jo'nash</span></li>
+      {% for s in r.stops %}
+      <li class="route-stop" data-route-stop>
+        <input type="hidden" name="stop" value="{{ s.item.pk|unlocalize }}">
+        <span class="route-n" data-route-n>{{ s.n }}</span>
+        <span class="route-body">
+          <a href="{% url 'client_location' s.client.pk %}" data-modal><strong>{{ s.client.name }}</strong></a>
+          {% if s.client.address %}<span class="cell-sub">{{ s.client.address }}</span>{% endif %}
+          <span class="cell-sub">{% if s.client.phone %}<a href="tel:{{ s.client.phone|cut:' ' }}">{{ s.client.phone }}</a> · {% endif %}{{ s.client.owner }}</span>
+        </span>
+        <span class="route-side">
+          <span class="route-kg">{{ s.item.rolls }} rulon{% if s.item.kg is not None %}<span class="cell-sub">{{ s.item.kg|floatformat:"0g" }} kg</span>{% endif %}</span>
+          <span class="route-moves">
+            <button type="button" class="icon-action" data-move="up" title="Oldinga" aria-label="Oldinga">↑</button>
+            <button type="button" class="icon-action" data-move="down" title="Orqaga" aria-label="Orqaga">↓</button>
+          </span>
+        </span>
+      </li>
+      {% endfor %}
+      <li class="route-stop route-stop--depot" data-route-end><span class="route-n">O</span><span>{{ warehouse.name }} — qaytish</span></li>
+    </ol>
+
+    {% comment %}Haydovchiga: built from the order the server drew — hidden after a move
+    until saved, or the driver would get the old order.{% endcomment %}
+    <div class="route-share" data-route-share>
+      <h3>Haydovchiga</h3>
+      <div class="geo-share" data-geo-share data-share-title="{{ r.share.title }}" data-share-text="{{ r.share.text }}" data-share-url="{% firstof r.share.google_links.0 r.share.yandex_link %}">
+        <button type="button" class="btn geo-share-main" data-share-native hidden>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          Ulashish
+        </button>
+        <div class="geo-share-row">
+          <a class="btn btn-ghost btn-sm" href="{{ r.share.telegram_url }}" target="_blank" rel="noopener">Telegram</a>
+          <a class="btn btn-ghost btn-sm" href="{{ r.share.whatsapp_url }}" target="_blank" rel="noopener">WhatsApp</a>
+          <button type="button" class="btn btn-ghost btn-sm" data-share-copy>Nusxa olish</button>
+        </div>
+        <div class="geo-share-row" title="Marshrutni xaritada ochish">
+          {% for url in r.share.google_links %}
+          <a class="btn btn-ghost btn-sm" href="{{ url }}" target="_blank" rel="noopener">Google Maps{% if r.share.google_links|length > 1 %} · {{ forloop.counter }}-qism{% endif %} ↗</a>
+          {% endfor %}
+          {% if r.share.yandex_link %}<a class="btn btn-ghost btn-sm" href="{{ r.share.yandex_link }}" target="_blank" rel="noopener">Yandex ↗</a>{% endif %}
+        </div>
+        {% if r.share.google_links|length > 1 %}<p class="geo-hint">Google bitta havolada 9 tadan ortiq oraliq nuqtani qabul qilmaydi, shuning uchun marshrut qismlarga bo'lingan: birinchisi tugagan joydan ikkinchisi boshlanadi.</p>{% endif %}
+        <span class="geo-status" data-share-status role="status" aria-live="polite"></span>
+      </div>
+    </div>
+    <p class="muted route-share-stale" data-route-share-stale hidden>Tartib o'zgardi — haydovchiga yuborishdan oldin saqlang.</p>
+  </section>
+  {% endfor %}
+</div>
 </form>
-<p class="muted route-hint">↑ ↓ — tartibni o'zgartirish. Xarita va km saqlangandan keyin yangilanadi.</p>
+<p class="muted route-hint">↑ ↓ — tartibni o'zgartirish. Qaysi mijoz qaysi mashinada — tizim kg bo'yicha o'zi hal qiladi. Xarita va km saqlangandan keyin yangilanadi.</p>
 <script src="{% static_v 'js/route.js' %}" defer></script>
 {% endif %}
 {% endblock %}

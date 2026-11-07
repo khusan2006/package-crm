@@ -6597,3 +6597,7 @@ a.cell-loc--map:hover { color: var(--accent); }
 .rep-dot-out {
   background: var(--danger);
 }
+.route-truck-note { margin: 0 0 12px; font-size: 13px; }
+/* «Yangi yuk» is a one-click form, not a pop-up link: the form must not add a box. */
+.fab-form { display: contents; }
+button.fab { font-family: inherit; }
