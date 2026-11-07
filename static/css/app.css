@@ -5326,7 +5326,6 @@ a.cell-loc--map:hover { color: var(--accent); }
 .route-load.is-over { color: var(--danger); font-weight: 600; }
 .route-over-note { margin: -8px 0 12px; color: var(--danger); font-size: 13px; }
 .route-over-note[hidden] { display: none; }
-.route-hint { margin-top: 8px; font-size: 13px; }
 /* Haydovchiga: the driver's message and route links under each truck. */
 .route-share { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
 .route-share h3 { margin: 0 0 8px; font-size: 14px; }

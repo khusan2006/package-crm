@@ -30,7 +30,7 @@ belong to rather than as loose lines above it.{% endcomment %}
     <span class="route-summary-label">Mashina</span>
     {% if routes.0.truck %}
     <strong class="route-summary-value">{% for r in routes %}{{ r.truck.name }}{% if not forloop.last %} + {% endif %}{% endfor %}</strong>
-    <span class="route-summary-sub">{% if routes|length > 1 %}yuk sig'madi — {{ routes|length }} mashinaga bo'lindi{% else %}eng kichigi, sig'adigani{% endif %}</span>
+    <span class="route-summary-sub">{% if routes|length > 1 %}yuk sig'madi — {{ routes|length }} mashinaga bo'lindi{% else %}sig'adiganlarning eng kichigi{% endif %}. Tizim kg bo'yicha o'zi tanlaydi.</span>
     {% elif error %}
     <strong class="route-summary-value is-bad-text">Sig'maydi</strong>
     <span class="route-summary-sub is-bad-text">{{ error }}</span>
@@ -48,7 +48,7 @@ belong to rather than as loose lines above it.{% endcomment %}
     <strong class="route-summary-value"><span class="badge badge-warning">Taklif</span></strong>
     <span class="route-summary-sub">kerak bo'lsa ↑ ↓ bilan o'zgartirib, saqlang</span>
     {% endif %}
-    <span class="route-dirty" data-route-dirty hidden>o'zgartirildi, saqlanmagan</span>
+    <span class="route-summary-sub route-dirty" data-route-dirty hidden>O'zgartirildi — saqlang. Xarita va km saqlangach yangilanadi.</span>
   </div>
   <div class="route-summary-actions">
     {% if load.ordered_at %}<button type="submit" class="btn btn-sm btn-ghost" form="route-reset">Qayta hisoblash</button>{% endif %}
@@ -137,6 +137,5 @@ belong to rather than as loose lines above it.{% endcomment %}
   {% endfor %}
 </div>
 </form>
-<p class="muted route-hint">↑ ↓ — tartibni o'zgartirish. Qaysi mijoz qaysi mashinada — tizim kg bo'yicha o'zi hal qiladi. Xarita va km saqlangandan keyin yangilanadi.</p>
 {% endif %}
 </div>
