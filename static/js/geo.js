@@ -384,7 +384,18 @@
         line.push(data.depot);  // trucks drive back to the warehouse
         L.polyline(line, { color: color, weight: 3, opacity: 0.8 }).addTo(map);
       });
-      map.fitBounds(bounds, { padding: [30, 30] });
+      // Leaflet measures its box when the map is made, which can be before the page
+      // has finished laying it out — a fit then frames the route for the wrong size
+      // and cuts pins off. Fit again once the browser has settled the box.
+      function fit() {
+        map.invalidateSize();
+        // No animation: a refit is a correction, not a move the eye should follow,
+        // and an animated zoom left mid-way leaves the lines off the pins.
+        map.fitBounds(bounds, { padding: [34, 34], animate: false });
+      }
+      fit();
+      requestAnimationFrame(fit);
+      setTimeout(fit, 300);
     }).catch(function () { el.hidden = true; });
   }
 
