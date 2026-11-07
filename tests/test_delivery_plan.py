@@ -453,3 +453,10 @@ def test_a_truck_switched_off_after_saving_keeps_its_stops(client, admin_user, t
     Truck.objects.filter(pk=truck.pk).update(is_active=False)
     save(client, admin_user, [(truck, b), (truck, a)])
     assert [s.client.name for s in RouteStop.objects.order_by("position")] == ["B", "A"]
+
+
+def test_sidebar_links_to_it_for_everyone(client, admin_user, seller_user, manager):
+    for user in (admin_user, manager, seller_user):
+        client.force_login(user)
+        body = client.get("/").content.decode()
+        assert 'href="/yetkazish/"' in body and "Yetkazish" in body

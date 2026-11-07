@@ -386,16 +386,25 @@
       });
       // Leaflet measures its box when the map is made, which can be before the page
       // has finished laying it out — a fit then frames the route for the wrong size
-      // and cuts pins off. Fit again once the browser has settled the box.
+      // and cuts pins off. The box also changes later (the window or a side panel
+      // resized), leaving grey, tile-less space. So whenever the box changes size
+      // the map re-measures itself and frames the route again — unless the person
+      // has already moved or zoomed it, which we leave alone.
+      var touched = false;
+      ['mousedown', 'touchstart', 'wheel', 'keydown'].forEach(function (type) {
+        el.addEventListener(type, function () { touched = true; }, { passive: true });
+      });
       function fit() {
         map.invalidateSize();
+        if (touched) { return; }
         // No animation: a refit is a correction, not a move the eye should follow,
         // and an animated zoom left mid-way leaves the lines off the pins.
         map.fitBounds(bounds, { padding: [34, 34], animate: false });
       }
       fit();
       requestAnimationFrame(fit);
-      setTimeout(fit, 300);
+      if (window.ResizeObserver) { new ResizeObserver(fit).observe(el); }
+      else { setTimeout(fit, 300); window.addEventListener('resize', fit); }
     }).catch(function () { el.hidden = true; });
   }
 
