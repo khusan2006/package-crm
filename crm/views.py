@@ -33,6 +33,7 @@ from openpyxl.utils import get_column_letter
 from accounts.decorators import role_required
 from accounts.models import User
 
+from . import routing
 from .forms import (
     DEFAULT_DEBT_DAYS,
     AdvanceEditForm,
@@ -7872,3 +7873,124 @@ def warehouse_edit(request):
             return form_success(request, reverse("truck_list"))
         return form_response(request, form, title, invalid=True)
     return form_response(request, form, title)
+
+
+# --- Delivery: the day's route ------------------------------------------------------
+
+#: Truck 1 / truck 2 colours on the map and the route columns — CSS custom properties,
+#: so the pins follow the light/dark theme like everything else.
+ROUTE_COLORS = ("--accent", "--violet")
+
+
+def _delivery_day(day):
+    """The day's real sales, gathered per client into what the route needs.
+
+    Only the in-stock part of a line goes on the truck: `fulfilled_kg`, capped at the
+    line's weight. A sale with nothing in stock yet (a pure zakaz) waits. Returns
+    (visits, missing, waiting): `visits` maps client pk → {client, sales, kg,
+    pending_kg}, `missing` are clients with goods to deliver but no joylashuv, and
+    `waiting` are the sales with nothing to load."""
+    sales = (
+        Sale.objects.real().filter(date=day)
+        .select_related("client", "sales_rep")
+        .prefetch_related("items")
+        .order_by("created_at")
+    )
+    visits, waiting = {}, []
+    for sale in sales:
+        items = list(sale.items.all())
+        loaded = sum((min(i.fulfilled_kg, i.weight_kg) for i in items), Decimal("0"))
+        pending = sum((i.pending_kg for i in items), Decimal("0"))
+        if loaded <= 0:
+            waiting.append(sale)
+            continue
+        visit = visits.setdefault(sale.client_id, {
+            "client": sale.client, "sales": [], "kg": Decimal("0"), "pending_kg": Decimal("0"),
+        })
+        visit["sales"].append(sale)
+        visit["kg"] += loaded
+        visit["pending_kg"] += pending
+    missing = [v["client"] for v in visits.values() if not v["client"].has_location]
+    return visits, missing, waiting
+
+
+def _route_context(plan, visits):
+    """The plan as the template and the map draw it: numbered stops per truck."""
+    routes = []
+    for n, route in enumerate(plan.routes):
+        stops = []
+        for pos, stop in enumerate(route.stops, start=1):
+            visit = visits[stop.key]
+            stops.append({
+                "n": pos, "client": visit["client"], "kg": visit["kg"],
+                "pending_kg": visit["pending_kg"], "sales": visit["sales"],
+                "sellers": sorted({str(s.sales_rep) for s in visit["sales"]}),
+            })
+        capacity = route.truck.capacity_kg
+        routes.append({
+            "truck": route.truck, "stops": stops, "kg": route.kg, "km": route.km,
+            "load_pct": min(100, round(route.kg / capacity * 100)) if capacity else 0,
+            "color": ROUTE_COLORS[n % len(ROUTE_COLORS)], "index": n + 1,
+        })
+    return routes
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def delivery_plan(request):
+    """Yetkazish: for a chosen day, which truck takes which client and in what order.
+
+    Read-only for now — nothing is saved; the plan is worked out each time the page
+    opens (crm/routing.py). It mixes every seller's sales, since the trucks and the
+    warehouse are shared, which is why it is admins and managers only."""
+    day = _parse_date(request.GET.get("sana")) or timezone.localdate()
+
+    warehouse = Warehouse.load()
+    trucks = list(Truck.objects.filter(is_active=True))
+    visits, missing, waiting = _delivery_day(day)
+    total_kg = sum((v["kg"] for v in visits.values()), Decimal("0"))
+
+    routes, error = [], ""
+    if not warehouse.has_location:
+        error = "Ombor joylashuvi belgilanmagan. Uni Mashinalar sahifasida belgilang."
+    elif visits and not missing:
+        stops = [
+            routing.Stop(pk, float(v["client"].latitude), float(v["client"].longitude), v["kg"])
+            for pk, v in visits.items()
+        ]
+        depot = (float(warehouse.latitude), float(warehouse.longitude))
+        try:
+            routes = _route_context(routing.plan_routes(depot, stops, trucks), visits)
+        except routing.RoutingError as err:
+            error = str(err)
+
+    map_data = None
+    if routes:
+        map_data = {
+            "depot": [float(warehouse.latitude), float(warehouse.longitude)],
+            "routes": [
+                {"color": r["color"], "stops": [
+                    {"n": s["n"], "name": s["client"].name,
+                     "lat": float(s["client"].latitude), "lng": float(s["client"].longitude)}
+                    for s in r["stops"]
+                ]}
+                for r in routes
+            ],
+        }
+
+    return render(request, "crm/delivery_plan.html", {
+        "day": day,
+        "prev_day": (day - timedelta(days=1)).isoformat(),
+        "next_day": (day + timedelta(days=1)).isoformat(),
+        "is_today": day == timezone.localdate(),
+        "warehouse": warehouse,
+        "trucks": trucks,
+        "visit_count": len(visits),
+        "sale_count": sum(len(v["sales"]) for v in visits.values()),
+        "total_kg": total_kg,
+        "missing": missing,
+        "waiting": waiting,
+        "routes": routes,
+        "plan_km": sum(r["km"] for r in routes),
+        "error": error,
+        "map_data": map_data,
+    })

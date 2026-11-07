@@ -110,6 +110,7 @@ urlpatterns = [
     path("mashinalar/<int:pk>/edit/", crm_views.truck_edit, name="truck_edit"),
     path("mashinalar/<int:pk>/delete/", crm_views.truck_delete, name="truck_delete"),
     path("mashinalar/ombor/", crm_views.warehouse_edit, name="warehouse_edit"),
+    path("yetkazish/", crm_views.delivery_plan, name="delivery_plan"),
     path("xodimlar/", crm_views.employee_list, name="employee_list"),
     path("xodimlar/export/", crm_views.employee_export, name="employee_export"),
     path("xodimlar/yangi/", crm_views.employee_create, name="employee_create"),

@@ -341,6 +341,53 @@
     }).catch(function () { el.hidden = true; });
   }
 
+  /* ---------- the day's delivery route (Yetkazish) ---------- */
+
+  // Each truck's colour is a CSS custom property name ("--accent"), so the pins and
+  // lines follow the light/dark theme like the rest of the page.
+  function cssColor(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#2f6fe0';
+  }
+
+  function pin(label, color, extraClass) {
+    return L.divIcon({
+      className: '',
+      html: '<div class="route-pin ' + (extraClass || '') + '" style="background:' + color + '">' + label + '</div>',
+      iconSize: [26, 26], iconAnchor: [13, 13]
+    });
+  }
+
+  function initRoute(el) {
+    if (el.__geo) { return; }
+    el.__geo = true;
+    var source = document.getElementById(el.getAttribute('data-route-json'));
+    if (!source) { el.hidden = true; return; }
+    var data = JSON.parse(source.textContent);
+    loadLeaflet().then(function () {
+      var map = newMap(el, data.depot, HOME_ZOOM);
+      var bounds = L.latLngBounds([data.depot]);
+      L.marker(data.depot, { icon: pin('O', '', 'route-pin--depot'), title: 'Ombor', zIndexOffset: 1000 }).addTo(map);
+      data.routes.forEach(function (route) {
+        var color = cssColor(route.color);
+        var line = [data.depot];
+        route.stops.forEach(function (s) {
+          var at = [s.lat, s.lng];
+          line.push(at);
+          bounds.extend(at);
+          // A text node, not a string: Leaflet would read a string as HTML, and a
+          // mijoz's name is whatever the operator typed.
+          var tip = document.createElement('span');
+          tip.textContent = s.n + '. ' + s.name;
+          L.marker(at, { icon: pin(Number(s.n), color), title: tip.textContent })
+            .bindTooltip(tip).addTo(map);
+        });
+        line.push(data.depot);  // trucks drive back to the warehouse
+        L.polyline(line, { color: color, weight: 3, opacity: 0.8 }).addTo(map);
+      });
+      map.fitBounds(bounds, { padding: [30, 30] });
+    }).catch(function () { el.hidden = true; });
+  }
+
   /* ---------- Ulashish ---------- */
 
   // The textarea goes inside `host`, not <body>: an open modal <dialog> makes
@@ -400,6 +447,7 @@
     scope = scope || document;
     scope.querySelectorAll('[data-geo-picker]').forEach(initPicker);
     scope.querySelectorAll('[data-geo-view]').forEach(initView);
+    scope.querySelectorAll('[data-geo-route]').forEach(initRoute);
     scope.querySelectorAll('[data-geo-share]').forEach(initShare);
   }
 

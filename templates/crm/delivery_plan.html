@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Yetkazish · Paket CRM{% endblock %}
+{% block topbar_title %}Yetkazish{% endblock %}
+{% block content %}
+
+{% comment %}
+  Kunlik yetkazish rejasi: qaysi mashina qaysi mijozga, qaysi tartibda boradi.
+  Reja har safar sahifa ochilganda qaytadan hisoblanadi (crm/routing.py) — hozircha
+  hech narsa saqlanmaydi. Barcha sotuvchilarning sotuvlari birga: ombor va mashinalar
+  umumiy.
+{% endcomment %}
+<div class="table-toolbar">
+  <div class="toolbar-left">
+    <div class="month-pick" role="group" aria-label="Kun tanlash">
+      <a class="datebar-btn" href="?sana={{ prev_day }}" title="Oldingi kun" aria-label="Oldingi kun">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </a>
+      <form method="get" class="month-pick-form">
+        <input type="date" name="sana" value="{{ day|date:'Y-m-d' }}" aria-label="Sana" onchange="this.form.submit()">
+        <noscript><button type="submit" class="btn btn-sm">Ko'rsat</button></noscript>
+      </form>
+      <a class="datebar-btn" href="?sana={{ next_day }}" title="Keyingi kun" aria-label="Keyingi kun">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </a>
+    </div>
+    {% if not is_today %}<a class="btn btn-sm btn-ghost" href="?">Bugun</a>{% endif %}
+  </div>
+  <div class="toolbar-right">
+    {% if user.is_admin_role %}<a class="btn btn-sm btn-ghost" href="{% url 'truck_list' %}">Mashinalar va ombor</a>{% endif %}
+  </div>
+</div>
+
+<div class="kpi-grid">
+  <div class="kpi kpi--blue">
+    <div class="kpi-head"><span class="kpi-label">Manzillar</span></div>
+    <div class="kpi-value">{{ visit_count }}<span class="unit">ta</span></div>
+    <div class="kpi-meta muted">{{ sale_count }} ta sotuv · {{ day|date:"d.m.Y" }}</div>
+  </div>
+  <div class="kpi kpi--gold">
+    <div class="kpi-head"><span class="kpi-label">Jami yuk</span></div>
+    <div class="kpi-value">{{ total_kg|floatformat:"0g" }}<span class="unit">kg</span></div>
+    <div class="kpi-meta muted">faqat omborda bor mahsulot</div>
+  </div>
+  <div class="kpi kpi--green">
+    <div class="kpi-head"><span class="kpi-label">Mashinalar</span></div>
+    <div class="kpi-value">{{ routes|length }}<span class="unit">ta</span></div>
+    <div class="kpi-meta muted">{% if routes %}jami ≈ {{ plan_km|floatformat:1 }} km (to'g'ri chiziq){% else %}{{ trucks|length }} ta faol mashina bor{% endif %}</div>
+  </div>
+</div>
+
+{% if error %}
+<div class="overdue-banner" role="alert">
+  <span class="ob-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+  <span class="ob-text">{{ error }}</span>
+</div>
+{% endif %}
+
+{% if missing %}
+<div class="card">
+  <div class="card-head">
+    <h2>Joylashuvi yo'q mijozlar · {{ missing|length }}</h2>
+  </div>
+  <p class="muted">Marshrut tuzish uchun har bir mijozning joylashuvi kerak. Qo'shib saqlang — sahifa o'zi yangilanadi.</p>
+  <ul class="route-missing">
+    {% for c in missing %}
+    <li>
+      <span><strong>{{ c.name }}</strong>{% if c.address %} <span class="cell-sub">{{ c.address }}</span>{% endif %}{% if c.phone %} <span class="cell-sub">{{ c.phone }}</span>{% endif %}</span>
+      <a class="btn btn-sm" href="{% url 'client_edit' c.pk %}" data-modal>Joylashuv qo'shish</a>
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if not visit_count and not waiting %}
+<div class="card"><p class="muted">{{ day|date:"d.m.Y" }} kuni yetkaziladigan sotuv yo'q.</p></div>
+{% endif %}
+
+{% if routes %}
+<div class="card route-mapcard">
+  <div class="geo-map route-map" data-geo-route data-route-json="route-data" role="img" aria-label="Marshrut xaritasi"></div>
+  {{ map_data|json_script:"route-data" }}
+</div>
+
+<div class="route-grid">
+  {% for r in routes %}
+  <section class="card route-card" style="--route: var({{ r.color }});">
+    <div class="card-head">
+      <h2><span class="route-dot" aria-hidden="true"></span>{{ r.truck.name }}</h2>
+      <span class="muted">{{ r.stops|length }} ta manzil · ≈ {{ r.km|floatformat:1 }} km</span>
+    </div>
+    <div class="route-load" title="Yuk / sig'im">
+      <div class="route-load-bar"><span style="width: {{ r.load_pct }}%"></span></div>
+      <span>{{ r.kg|floatformat:"0g" }} / {{ r.truck.capacity_kg|floatformat:"0g" }} kg</span>
+    </div>
+    <ol class="route-stops">
+      <li class="route-stop route-stop--depot"><span class="route-n">O</span><span>{{ warehouse.name }} — jo'nash</span></li>
+      {% for s in r.stops %}
+      <li class="route-stop">
+        <span class="route-n">{{ s.n }}</span>
+        <span class="route-body">
+          <a href="{% url 'client_location' s.client.pk %}" data-modal><strong>{{ s.client.name }}</strong></a>
+          {% if s.client.address %}<span class="cell-sub">{{ s.client.address }}</span>{% endif %}
+          <span class="cell-sub">
+            {% if s.client.phone %}<a href="tel:{{ s.client.phone|cut:' ' }}">{{ s.client.phone }}</a> · {% endif %}{{ s.sellers|join:", " }}
+          </span>
+          {% if s.pending_kg %}<span class="cell-sub route-pending">+ {{ s.pending_kg|floatformat:"0g" }} kg hali omborda yo'q — keyinroq</span>{% endif %}
+        </span>
+        <span class="route-kg">{{ s.kg|floatformat:"0g" }} kg</span>
+      </li>
+      {% endfor %}
+      <li class="route-stop route-stop--depot"><span class="route-n">O</span><span>{{ warehouse.name }} — qaytish</span></li>
+    </ol>
+  </section>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if waiting %}
+<div class="card">
+  <div class="card-head"><h2>Omborda yo'q — kutilmoqda · {{ waiting|length }}</h2></div>
+  <p class="muted">Bu sotuvlarning mahsuloti hali omborga kelmagan (zakaz), shuning uchun marshrutga qo'shilmadi.</p>
+  <ul class="route-missing">
+    {% for sale in waiting %}
+    <li>
+      <span><strong>{{ sale.client.name }}</strong> <span class="cell-sub">{{ sale.sales_rep }}</span></span>
+      <a class="btn btn-sm btn-ghost" href="{% url 'sale_detail' sale.pk %}">Sotuv</a>
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+{% endblock %}
