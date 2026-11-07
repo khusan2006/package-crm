@@ -424,3 +424,32 @@ def test_seller_is_told_about_their_own_gaps_only(client, seller_user, other_sel
 def test_seller_cannot_reset_the_plan(client, seller_user, mixed_day):
     assert save(client, seller_user, [], action="reset").status_code == 403
     assert DeliveryRoute.objects.exists()
+
+
+def test_reset_stays_reachable_when_every_saved_stop_dropped_out(client, admin_user, seller_user,
+                                                                 product, three):
+    truck, (a, b, c) = three
+    save(client, admin_user, [(truck, a), (truck, b), (truck, c)])
+    for x in (a, b, c):
+        x.sales.all().delete()
+    sell(make_client(seller_user, "Yangi", 0.04), product, 100)
+    resp = page(client, admin_user)
+    assert resp.context["routes"] == [] and resp.context["dropped"] == 3
+    body = resp.content.decode()
+    assert 'id="route-reset"' in body and 'form="route-reset"' in body
+    assert 'form="route-form"' not in body  # nothing to save
+
+
+def test_a_switched_off_truck_gets_no_new_stops(client, admin_user, three):
+    truck, (a, b, c) = three
+    old = Truck.objects.create(name="Eski", capacity_kg=3000, is_active=False)
+    save(client, admin_user, [(old, a)])
+    assert not DeliveryRoute.objects.exists()
+
+
+def test_a_truck_switched_off_after_saving_keeps_its_stops(client, admin_user, three):
+    truck, (a, b, c) = three
+    save(client, admin_user, [(truck, a), (truck, b)])
+    Truck.objects.filter(pk=truck.pk).update(is_active=False)
+    save(client, admin_user, [(truck, b), (truck, a)])
+    assert [s.client.name for s in RouteStop.objects.order_by("position")] == ["B", "A"]

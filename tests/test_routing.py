@@ -134,7 +134,7 @@ def test_over_capacity_says_how_many_kg_do_not_fit():
     with pytest.raises(OverCapacity) as err:
         choose_trucks(Decimal(5000), [FakeTruck("A", 1000), FakeTruck("B", 1500)])
     assert err.value.excess_kg == Decimal(2500)
-    assert "2,500 kg ortiqcha" in str(err.value)
+    assert "2 500 kg ortiqcha" in str(err.value)
 
 
 def test_one_truck_too_small_is_over_capacity():

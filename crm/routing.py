@@ -60,6 +60,11 @@ class Plan:
         return sum(r.km for r in self.routes)
 
 
+def _kg(value):
+    """1 350 — a space between thousands, as the rest of the app writes kg."""
+    return f"{value:,.0f}".replace(",", " ")
+
+
 class RoutingError(Exception):
     """A day that can't be planned automatically. The message is shown to the operator."""
 
@@ -73,7 +78,7 @@ class OverCapacity(RoutingError):
     def __init__(self, excess_kg):
         self.excess_kg = excess_kg
         super().__init__(
-            f"Yuk mashinalarga sig'maydi: {excess_kg:,.0f} kg ortiqcha. "
+            f"Yuk mashinalarga sig'maydi: {_kg(excess_kg)} kg ortiqcha. "
             f"Ba'zi sotuvlarni keyingi kunga qoldiring."
         )
 
@@ -82,7 +87,7 @@ class StopTooHeavy(RoutingError):
     def __init__(self, stops, capacity_kg):
         self.stops = stops
         super().__init__(
-            f"{len(stops)} ta manzilning yuki eng katta mashinadan ({capacity_kg:,} kg) "
+            f"{len(stops)} ta manzilning yuki eng katta mashinadan ({_kg(capacity_kg)} kg) "
             f"og'ir — ularni bo'lib yuborish kerak."
         )
 

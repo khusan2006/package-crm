@@ -89,7 +89,10 @@
 <p class="muted">Saqlangan rejadagi {{ dropped }} ta manzil endi ko'rsatilmaydi: o'sha mijozga bu kun yetkaziladigan yuk qolmagan.</p>
 {% endif %}
 
-{% if routes %}
+{% comment %}The bar shows whenever a plan is saved, even one whose every stop has
+dropped out — otherwise «Qayta hisoblash» would be out of reach and the saved plan
+stuck.{% endcomment %}
+{% if routes or saved %}
 <div class="card route-bar">
   <div>
     {% if saved %}
@@ -103,7 +106,7 @@
   </div>
   <div class="route-bar-actions">
     {% if saved %}<button type="submit" class="btn btn-sm btn-ghost" form="route-reset">Qayta hisoblash</button>{% endif %}
-    <button type="submit" class="btn btn-sm" form="route-form">Saqlash</button>
+    {% if routes %}<button type="submit" class="btn btn-sm" form="route-form">Saqlash</button>{% endif %}
   </div>
 </div>
 {% if saved %}
@@ -114,6 +117,9 @@
   <input type="hidden" name="action" value="reset">
 </form>
 {% endif %}
+{% endif %}
+
+{% if routes %}
 
 <div class="card route-mapcard">
   <div class="geo-map route-map" data-geo-route data-route-json="route-data" role="img" aria-label="Marshrut xaritasi"></div>

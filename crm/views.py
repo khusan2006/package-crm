@@ -8013,7 +8013,10 @@ def _save_delivery_plan(request, day, visits):
     visiting order. Anything the page could not have shown is refused rather than
     guessed at — a stale tab is reloaded, not half-saved."""
     located = {pk for pk, v in visits.items() if v["client"].has_location}
-    trucks = {t.pk: t for t in Truck.objects.all()}
+    # Active trucks, plus any already in this day's plan: a truck switched off since
+    # can keep the stops it has, but a stale tab can't hand it new ones elsewhere.
+    trucks = {t.pk: t for t in Truck.objects.filter(
+        Q(is_active=True) | Q(route_stops__route__date=day)).distinct()}
     rows, seen = [], set()
     for raw in request.POST.getlist("stop"):
         try:
