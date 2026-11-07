@@ -99,3 +99,11 @@ def test_share_urls_carry_the_whole_text():
     assert tg["url"] == ["https://g/1"] and tg["text"] == ["Salom & xayr\n1. Anvar"]
     wa = parse_qs(urlparse(urls["whatsapp_url"]).query)
     assert wa["text"] == ["Salom & xayr\n1. Anvar"]
+
+
+def test_telegram_can_have_its_own_text_and_link():
+    urls = share_urls("google text", "https://g/1", telegram_text="yandex text",
+                      telegram_link="https://y/1")
+    tg = parse_qs(urlparse(urls["telegram_url"]).query)
+    assert tg["url"] == ["https://y/1"] and tg["text"] == ["yandex text"]
+    assert parse_qs(urlparse(urls["whatsapp_url"]).query)["text"] == ["google text"]

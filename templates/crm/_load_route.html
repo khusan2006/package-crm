@@ -4,38 +4,55 @@
   tartib, xarita va haydovchiga xabar. Tartib saqlanmaguncha — taklif.
 {% endcomment %}
 <div class="load-route" data-load-route-content>
-{% if error %}
+{% if error and not routes %}
 <div class="overdue-banner" role="alert">
   <span class="ob-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
   <span class="ob-text">{{ error }}</span>
 </div>
 {% endif %}
-{% if road_note %}<p class="route-share-stale" role="status">{{ road_note }}</p>{% endif %}
-
 {% if missing %}
 <p class="route-share-stale" role="status">Marshrut uchun hamma mijozning joylashuvi kerak — yuqoridagi ro'yxatdan qo'shing.</p>
 {% elif not routes and not error %}
 <p class="muted">Marshrut tuzish uchun yukda mijoz yo'q.</p>
 {% endif %}
 {% if routes %}
-<div class="route-total muted">Jami ≈ {{ km|floatformat:1 }} km {% if by_road %}yo'l bo'yicha{% else %}to'g'ri chiziq bo'yicha{% endif %}, omborga qaytish bilan.</div>
-{% if unweighed %}
-<p class="route-share-stale" role="status">Mashina hamma mijoz tortilgach tanlanadi — hali {{ unweighed }} ta mijozning kg'i kiritilmagan. Hozircha bitta marshrut.</p>
-{% endif %}
-<div class="card route-bar">
-  <div>
-    {% if load.ordered_at %}
-    <span class="badge badge-paid">Saqlangan</span>
-    <span class="muted">{{ load.ordered_at|date:"d.m.Y H:i" }}</span>
-    {% else %}
-    <span class="badge badge-warning">Taklif</span>
-    <span class="muted">tartib hali saqlanmagan — kerak bo'lsa o'zgartiring va saqlang</span>
-    {% endif %}
-    <span class="route-dirty" data-route-dirty hidden>· o'zgartirildi, saqlanmagan</span>
+{% comment %}One summary for the route: distance, truck(s), order — each a labelled
+block — with the order's buttons in the corner. Problems sit in the block they
+belong to rather than as loose lines above it.{% endcomment %}
+<div class="route-summary">
+  <div class="route-summary-item">
+    <span class="route-summary-label">Masofa</span>
+    <strong class="route-summary-value">≈ {{ km|floatformat:1 }} km</strong>
+    <span class="route-summary-sub">{% if by_road %}yo'l bo'yicha{% else %}to'g'ri chiziq bo'yicha{% endif %}, omborga qaytish bilan</span>
+    {% if road_note %}<span class="route-summary-sub is-warn">Yo'l xizmati javob bermadi — hozircha to'g'ri chiziq.</span>{% endif %}
   </div>
-  <div class="route-bar-actions">
+  <div class="route-summary-item">
+    <span class="route-summary-label">Mashina</span>
+    {% if routes.0.truck %}
+    <strong class="route-summary-value">{% for r in routes %}{{ r.truck.name }}{% if not forloop.last %} + {% endif %}{% endfor %}</strong>
+    <span class="route-summary-sub">{% if routes|length > 1 %}yuk sig'madi — {{ routes|length }} mashinaga bo'lindi{% else %}eng kichigi, sig'adigani{% endif %}</span>
+    {% elif error %}
+    <strong class="route-summary-value is-bad-text">Sig'maydi</strong>
+    <span class="route-summary-sub is-bad-text">{{ error }}</span>
+    {% else %}
+    <strong class="route-summary-value is-warn">Hali tanlanmagan</strong>
+    <span class="route-summary-sub">{{ unweighed }} ta mijoz tortilmagan — hammasi tortilgach tanlanadi</span>
+    {% endif %}
+  </div>
+  <div class="route-summary-item">
+    <span class="route-summary-label">Tartib</span>
+    {% if load.ordered_at %}
+    <strong class="route-summary-value"><span class="badge badge-paid">Saqlangan</span></strong>
+    <span class="route-summary-sub">{{ load.ordered_at|date:"d.m.Y H:i" }}</span>
+    {% else %}
+    <strong class="route-summary-value"><span class="badge badge-warning">Taklif</span></strong>
+    <span class="route-summary-sub">kerak bo'lsa ↑ ↓ bilan o'zgartirib, saqlang</span>
+    {% endif %}
+    <span class="route-dirty" data-route-dirty hidden>o'zgartirildi, saqlanmagan</span>
+  </div>
+  <div class="route-summary-actions">
     {% if load.ordered_at %}<button type="submit" class="btn btn-sm btn-ghost" form="route-reset">Qayta hisoblash</button>{% endif %}
-    <button type="submit" class="btn btn-sm" form="route-form">Saqlash</button>
+    <button type="submit" class="btn btn-sm" form="route-form">Tartibni saqlash</button>
   </div>
 </div>
 {% if load.ordered_at %}
@@ -67,8 +84,6 @@
       <span>{{ r.kg|floatformat:"0g" }} / {{ r.truck.capacity_kg|floatformat:"0g" }} kg</span>
     </div>
     {% if r.over %}<p class="route-over-note">Mashina sig'imidan oshib ketdi.</p>{% endif %}
-    {% else %}
-    <p class="muted route-truck-note">Mashina hali tanlanmagan.</p>
     {% endif %}
     <ol class="route-stops">
       <li class="route-stop route-stop--depot"><span class="route-n">O</span><span>{{ warehouse.name }} — jo'nash</span></li>

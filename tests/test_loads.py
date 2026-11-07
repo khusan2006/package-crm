@@ -427,7 +427,8 @@ def test_no_truck_until_everyone_is_weighed(client, admin_user, seller_user, loa
     put(load, make_client(seller_user, "B", 0.02))  # not weighed yet
     resp = route(client, admin_user, load)
     assert len(resp.context["routes"]) == 1 and resp.context["routes"][0]["truck"] is None
-    assert "Mashina hamma mijoz tortilgach tanlanadi" in resp.content.decode()
+    body = resp.content.decode()
+    assert "Hali tanlanmagan" in body and "1 ta mijoz tortilmagan" in body
 
 
 def test_once_weighed_the_smallest_truck_that_fits_is_chosen(client, admin_user, seller_user, load,
@@ -513,3 +514,51 @@ def test_sellers_cannot_fetch_a_route(client, seller_user, load):
 def test_the_day_list_deletes_a_load(client, admin_user, load):
     body = get(client, admin_user, "/yetkazish/").content.decode()
     assert f'href="/yetkazish/{load.pk}/delete/"' in body
+
+
+def test_telegram_sends_yandex_links_only(client, admin_user, seller_user, load, warehouse):
+    from urllib.parse import parse_qs, urlparse
+    put(load, make_client(seller_user, "A", 0.01), rolls=4)
+    share = route(client, admin_user, load).context["routes"][0]["share"]
+    tg = parse_qs(urlparse(share["telegram_url"]).query)
+    assert tg["url"] == [share["yandex_link"]]
+    assert "yandex.uz/maps" in tg["text"][0] and "google" not in tg["text"][0]
+    # WhatsApp and the copied text still carry both.
+    assert "google.com/maps" in share["text"] and "yandex.uz/maps" in share["text"]
+
+
+
+# --- a failed save keeps what was typed ---------------------------------------------
+
+def test_a_failed_save_shows_the_page_again_with_everything_typed(client, admin_user, seller_user, load):
+    a = put(load, make_client(seller_user, "Anvar", 0.01), rolls=12)
+    b = make_client(seller_user, "Botir", 0.02)
+    c = make_client(seller_user, "Davron", 0.03)
+    client.force_login(admin_user)
+    resp = client.post(f"/yetkazish/{load.pk}/", {
+        "action": "items", f"rolls_{a.pk}": "15", f"kg_{a.pk}": "abc",
+        "new_client": [b.pk, c.pk, ""], "new_rolls": ["7", "", ""],
+    })
+    # Not a redirect: the same page, nothing saved, nothing lost.
+    assert resp.status_code == 200
+    a.refresh_from_db()
+    assert (a.rolls, a.kg) == (12, None) and load.items.count() == 1
+    body = resp.content.decode()
+    assert f'name="rolls_{a.pk}" value="15"' in body
+    assert f'name="kg_{a.pk}" value="abc"' in body
+    assert f'<option value="{b.pk}" selected>' in body and f'<option value="{c.pk}" selected>' in body
+    assert 'value="7"' in body
+    # The wrong boxes are marked: the kg here, Davron's missing rulon.
+    rows = resp.context["new_rows"]
+    assert [(r["client"], r["rolls"], r["rolls_bad"]) for r in rows] == [
+        (str(b.pk), "7", False), (str(c.pk), "", True)]
+    assert resp.context["items"][0].kg_bad and body.count('aria-invalid="true"') == 2
+    assert resp.context["failed"] and "data-unsaved" in body
+
+
+def test_a_rulon_typed_without_a_client_comes_back_marked(client, admin_user, seller_user, load):
+    client.force_login(admin_user)
+    resp = client.post(f"/yetkazish/{load.pk}/", {
+        "action": "items", "new_client": [""], "new_rolls": ["5"]})
+    assert resp.status_code == 200
+    assert resp.context["new_rows"] == [{"client": "", "rolls": "5", "client_bad": True, "rolls_bad": False}]

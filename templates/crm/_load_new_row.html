@@ -1,11 +1,12 @@
 {% load l10n %}
-{% comment %}One new row in Yuk tarkibi: a client and a rulon count. Used for the
-first empty row and as the template «+ Yana mijoz» copies.{% endcomment %}
+{% comment %}One new row in Yuk tarkibi: a client and a rulon count. `row` holds what
+was posted when a save failed (client pk as text, rulon as typed, and which box was
+wrong), so the row comes back exactly as it was left; empty for a fresh row.{% endcomment %}
 <div class="new-row" data-new-row>
-  <select name="new_client" data-combobox data-placeholder="Mijozni tanlang" aria-label="Mijoz">
+  <select name="new_client" data-combobox data-placeholder="Mijozni tanlang" aria-label="Mijoz"{% if row.client_bad %} class="is-bad" aria-invalid="true"{% endif %}>
     <option value=""></option>
-    {% for c in clients %}<option value="{{ c.pk|unlocalize }}">{{ c.name }}{% if c.address %} — {{ c.address }}{% endif %}</option>{% endfor %}
+    {% for c in clients %}<option value="{{ c.pk|unlocalize }}"{% if row.client == c.pk|stringformat:"d" %} selected{% endif %}>{{ c.name }}{% if c.address %} — {{ c.address }}{% endif %}</option>{% endfor %}
   </select>
-  <input type="text" name="new_rolls" inputmode="numeric" class="pick-rolls" placeholder="Rulon" aria-label="Rulon soni" autocomplete="off">
+  <input type="text" name="new_rolls" inputmode="numeric" class="pick-rolls{% if row.rolls_bad %} is-bad{% endif %}" placeholder="Rulon" aria-label="Rulon soni" value="{{ row.rolls|default:'' }}"{% if row.rolls_bad %} aria-invalid="true"{% endif %} autocomplete="off">
   <button type="button" class="icon-action" data-new-row-remove title="Qatorni olib tashlash" aria-label="Qatorni olib tashlash">×</button>
 </div>

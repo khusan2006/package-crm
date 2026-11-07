@@ -78,10 +78,12 @@ def driver_message(title, stops, google_links, yandex_link):
     return "\n".join(lines)
 
 
-def share_urls(text, link):
+def share_urls(text, link, telegram_text=None, telegram_link=None):
     """Telegram and WhatsApp share links for `text`. Telegram shows `url` apart from
-    the words, so the route link goes there."""
+    the words, so the route link goes there; it can be given its own words and link
+    (drivers open Telegram's link in Yandex)."""
     return {
-        "telegram_url": "https://t.me/share/url?" + urlencode({"url": link, "text": text}, quote_via=quote),
+        "telegram_url": "https://t.me/share/url?" + urlencode(
+            {"url": telegram_link or link, "text": telegram_text or text}, quote_via=quote),
         "whatsapp_url": "https://wa.me/?" + urlencode({"text": text}, quote_via=quote),
     }

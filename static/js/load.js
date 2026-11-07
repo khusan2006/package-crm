@@ -17,7 +17,8 @@
     var list = items.querySelector('[data-new-rows]');
     var tmpl = items.querySelector('[data-new-row-template]');
     var dirtyNote = items.querySelector('[data-items-dirty]');
-    var changed = false;
+    // After a failed save the page shows what was typed — still unsaved.
+    var changed = items.hasAttribute('data-unsaved');
     var submitting = false;
 
     var markChanged = function () {
@@ -77,7 +78,13 @@
       }
     });
 
-    items.addEventListener('input', markChanged);
+    // A flagged box loses its red mark once it is being fixed.
+    items.addEventListener('input', function (e) {
+      markChanged();
+      var bad = e.target.closest('.is-bad') ||
+        (e.target.closest('.combobox') && e.target.closest('[data-new-row]').querySelector('select.is-bad'));
+      if (bad) { bad.classList.remove('is-bad'); bad.removeAttribute('aria-invalid'); }
+    });
     items.addEventListener('submit', function () { submitting = true; });
     window.addEventListener('beforeunload', function (e) {
       if (changed && !submitting) { e.preventDefault(); e.returnValue = ''; }

@@ -56,7 +56,7 @@
 
 <div class="card">
   <div class="card-head"><h2>Yuk tarkibi</h2></div>
-  <form method="post" action="{% url 'load_detail' load.pk %}" data-load-items>
+  <form method="post" action="{% url 'load_detail' load.pk %}" data-load-items{% if failed %} data-unsaved{% endif %}>
   {% csrf_token %}
   <input type="hidden" name="action" value="items">
   {% if items %}
@@ -67,8 +67,8 @@
     <tr>
       <td class="sticky-col"><strong>{{ item.client.name }}</strong>{% if item.client.address %}<span class="cell-sub">{{ item.client.address }}</span>{% endif %}</td>
       <td>{{ item.client.owner }}</td>
-      <td class="num"><input type="text" inputmode="numeric" class="pick-rolls" name="rolls_{{ item.pk|unlocalize }}" value="{{ item.rolls|unlocalize }}" aria-label="{{ item.client.name }} — rulon soni" autocomplete="off" required></td>
-      <td class="num"><input type="text" inputmode="decimal" class="pick-kg" name="kg_{{ item.pk|unlocalize }}" value="{{ item.kg_input }}" placeholder="tortilmagan" aria-label="{{ item.client.name }} — kg" autocomplete="off"></td>
+      <td class="num"><input type="text" inputmode="numeric" class="pick-rolls{% if item.rolls_bad %} is-bad{% endif %}" name="rolls_{{ item.pk|unlocalize }}" value="{{ item.rolls_input }}" aria-label="{{ item.client.name }} — rulon soni"{% if item.rolls_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
+      <td class="num"><input type="text" inputmode="decimal" class="pick-kg{% if item.kg_bad %} is-bad{% endif %}" name="kg_{{ item.pk|unlocalize }}" value="{{ item.kg_input }}" placeholder="tortilmagan" aria-label="{{ item.client.name }} — kg"{% if item.kg_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
       <td>{% if item.client.has_location %}<a href="{% url 'client_location' item.client.pk %}" data-modal><span class="badge badge-paid">Bor</span></a>{% else %}<span class="badge badge-warning">Yo'q</span>{% endif %}</td>
       <td class="row-actions">
         <span class="ra-slots">
@@ -85,13 +85,13 @@
 
   {% comment %}New rows: a client and a rulon count each. «+» adds another pair.{% endcomment %}
   <div class="new-rows" data-new-rows>
-    {% include "crm/_load_new_row.html" %}
+    {% for row in new_rows %}{% include "crm/_load_new_row.html" with row=row %}{% endfor %}
   </div>
   <button type="button" class="new-row-add" data-new-row-add>+ Yana mijoz</button>
-  <template data-new-row-template>{% include "crm/_load_new_row.html" %}</template>
+  <template data-new-row-template>{% include "crm/_load_new_row.html" with row=None %}</template>
 
   <div class="items-actions">
-    <span class="route-dirty" data-items-dirty hidden>o'zgartirildi, saqlanmagan</span>
+    <span class="route-dirty" data-items-dirty{% if not failed %} hidden{% endif %}>o'zgartirildi, saqlanmagan</span>
     <button type="submit" class="btn">Saqlash</button>
   </div>
   </form>

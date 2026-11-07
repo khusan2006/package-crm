@@ -6597,7 +6597,6 @@ a.cell-loc--map:hover { color: var(--accent); }
 .rep-dot-out {
   background: var(--danger);
 }
-.route-truck-note { margin: 0 0 12px; font-size: 13px; }
 /* «Yangi yuk» is a one-click form, not a pop-up link: the form must not add a box. */
 .fab-form { display: contents; }
 button.fab { font-family: inherit; }
@@ -6636,6 +6635,33 @@ input.pick-kg { width: 110px; max-width: 110px; }
 .btn.is-loading .btn-spinner { display: inline-block; }
 @keyframes btn-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .btn-spinner { animation-duration: 2s; } }
-.route-total { margin-bottom: 12px; }
 .load-route .route-bar, .load-route .route-mapcard, .load-route .route-grid { margin-top: 12px; }
 .load-route-card [data-route-failed][hidden] { display: none; }
+/* A box a failed save flagged: red until it is fixed. The client picker hides its
+   <select>, so the mark is carried over to the visible text box. */
+input.is-bad, .new-row:has(select.is-bad) .combobox-input {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
+}
+/* Marshrut summary: distance, truck(s), order — one panel, not loose lines. */
+.route-summary {
+  display: grid; gap: 16px; align-items: start;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  padding: 16px; margin-bottom: 4px;
+  border: 1px solid var(--border); border-radius: var(--r); background: var(--surface-2);
+}
+.route-summary-item { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.route-summary-label {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-faint);
+}
+.route-summary-value { font-size: 18px; line-height: 1.25; }
+.route-summary-sub { font-size: 13px; color: var(--text-muted); }
+.route-summary .is-warn { color: var(--warning); }
+.route-summary .is-bad-text { color: var(--danger); }
+.route-summary .route-dirty[hidden] { display: none; }
+.route-summary-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 760px) {
+  .route-summary { grid-template-columns: 1fr; }
+  .route-summary-actions { justify-content: flex-start; }
+}

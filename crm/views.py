@@ -10697,56 +10697,82 @@ def _whole_rolls(raw):
     return rolls
 
 
-@transaction.atomic
-def _save_load_items(request, load, items):
-    """One Saqlash for the whole Yuk tarkibi: the rulon and kg typed into the rows
-    already in the load, and the new rows below them (a client picked and a rulon
-    count each). Nothing is saved if any box is wrong — the message says what to fix.
-    New clients join the end of a saved order, so the saved route stays as it was."""
+def _read_load_items(request, items):
+    """Read Yuk tarkibi as posted — the rows already in the load and the new rows
+    below them — without saving anything.
+
+    Every row keeps exactly what was typed (`rolls_input`, `kg_input`, the new rows'
+    client and rulon), and anything wrong is marked on its own box, so a failed save
+    can show the page again as the person left it. Returns (changes, new_rows,
+    posted_new, problems)."""
     changes, problems = [], []
     for item in items:
         raw_rolls = request.POST.get(f"rolls_{item.pk}")
-        raw_kg = (request.POST.get(f"kg_{item.pk}") or "").strip().replace(" ", "").replace(",", ".")
         if raw_rolls is None:  # a row added in another tab since this page was drawn
             continue
+        raw_kg = request.POST.get(f"kg_{item.pk}", "")
+        item.rolls_input, item.kg_input = raw_rolls, raw_kg
         try:
             rolls = _whole_rolls(raw_rolls)
             if rolls is None:
                 raise ValueError("empty")
-            kg = Decimal(raw_kg).quantize(Decimal("0.001")) if raw_kg else None
+        except ValueError:
+            rolls = None
+            item.rolls_bad = True
+            problems.append(f"{item.client.name} — rulon")
+        try:
+            clean = raw_kg.strip().replace(" ", "").replace(",", ".")
+            kg = Decimal(clean).quantize(Decimal("0.001")) if clean else None
             if kg is not None and kg < 0:
                 raise ValueError(raw_kg)
         except (ValueError, ArithmeticError):
-            problems.append(item.client.name)
-            continue
-        if (rolls, kg) != (item.rolls, item.kg):
+            kg = None
+            item.kg_bad = True
+            problems.append(f"{item.client.name} — kg")
+        if not getattr(item, "rolls_bad", False) and not getattr(item, "kg_bad", False) \
+                and (rolls, kg) != (item.rolls, item.kg):
             changes.append((item, rolls, kg))
 
     in_load = {i.client_id for i in items}
-    new_rows = []
+    new_rows, posted_new = [], []
     pairs = zip(request.POST.getlist("new_client"), request.POST.getlist("new_rolls"))
     for n, (raw_client, raw_rolls) in enumerate(pairs, start=1):
-        if not raw_client.strip() and not raw_rolls.strip():
+        row = {"client": raw_client.strip(), "rolls": raw_rolls, "client_bad": False, "rolls_bad": False}
+        posted_new.append(row)
+        if not row["client"] and not raw_rolls.strip():
             continue  # an untouched empty row
-        client = Client.objects.filter(pk=raw_client).first() if raw_client.strip().isdigit() else None
+        client = Client.objects.filter(pk=row["client"]).first() if row["client"].isdigit() else None
         try:
             rolls = _whole_rolls(raw_rolls)
         except ValueError:
-            rolls = 0
+            rolls = None
         if client is None:
-            problems.append(f"{n}-yangi qatorda mijoz tanlanmagan")
-        elif not rolls:
-            problems.append(f"{client.name} — rulon soni")
+            row["client_bad"] = True
+            problems.append(f"{n}-yangi qator — mijoz tanlanmagan")
         elif client.pk in in_load:
+            row["client_bad"] = True
             problems.append(f"{client.name} yukda allaqachon bor")
-        else:
+        if not rolls:
+            row["rolls_bad"] = True
+            problems.append(f"{client.name if client else str(n) + '-yangi qator'} — rulon")
+        if client and rolls and not row["client_bad"]:
             in_load.add(client.pk)
             new_rows.append((client, rolls))
+    return changes, new_rows, posted_new, problems
 
+
+@transaction.atomic
+def _save_load_items(request, load, items):
+    """One Saqlash for the whole Yuk tarkibi: the rulon and kg typed into the rows
+    already in the load, and the new rows below them (a client picked and a rulon
+    count each). Nothing is saved if any box is wrong — the page comes back with
+    everything as typed and the wrong boxes marked. New clients join the end of a
+    saved order, so the saved route stays as it was."""
+    changes, new_rows, posted_new, problems = _read_load_items(request, items)
     if problems:
-        messages.error(request, "Saqlanmadi — to'g'rilang (rulon butun son, kg musbat son): "
-                                + "; ".join(problems))
-        return redirect(_load_url(load))
+        messages.error(request, "Saqlanmadi — qizil kataklarni to'g'rilang (rulon butun son, "
+                                "kg musbat son): " + "; ".join(problems))
+        return _render_load_detail(request, load, items, posted_new=posted_new)
 
     for item, rolls, kg in changes:
         item.rolls, item.kg = rolls, kg
@@ -10886,6 +10912,32 @@ def _load_groups(load, items, depot, dist):
     return groups, error
 
 
+def _render_load_detail(request, load, items, posted_new=None):
+    """The load's page. After a failed save, `items` carry what was typed and
+    `posted_new` the new rows as posted, so nothing the person entered is lost."""
+    for item in items:
+        if not hasattr(item, "rolls_input"):
+            item.rolls_input = str(item.rolls)
+            # "160", "340.5" — plain, never "160.000000" or "160,000".
+            item.kg_input = f"{item.kg.normalize():f}" if item.kg is not None else ""
+    in_load = {i.client_id for i in items}
+    kg_known = [i.kg for i in items if i.kg is not None]
+    new_rows = [r for r in (posted_new or []) if r["client"] or r["rolls"].strip()] or [{}]
+    return render(request, "crm/load_detail.html", {
+        "load": load,
+        "items": items,
+        "roll_total": sum(i.rolls for i in items),
+        "kg_total": sum(kg_known, Decimal("0")),
+        "unweighed": len(items) - len(kg_known),
+        "missing": [i.client for i in items if not i.client.has_location],
+        "clients": [c for c in Client.objects.order_by("name") if c.pk not in in_load],
+        "new_rows": new_rows,
+        "failed": posted_new is not None,
+        "auto_route": bool(items) and posted_new is None
+                      and (bool(load.ordered_at) or bool(request.GET.get("marshrut"))),
+    })
+
+
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
 def load_detail(request, pk):
     """One load: its clients with rulon and kg, edited in place, and new rows added
@@ -10894,9 +10946,6 @@ def load_detail(request, pk):
     lookups; it opens by itself once the order has been saved."""
     load = get_object_or_404(Load.objects.select_related("created_by"), pk=pk)
     items = list(load.items.select_related("client", "client__owner").order_by("created_at"))
-    for item in items:
-        # What the kg box shows: "160", "340.5" — plain, never "160.000000" or "160,000".
-        item.kg_input = f"{item.kg.normalize():f}" if item.kg is not None else ""
 
     if request.method == "POST":
         action = request.POST.get("action")
@@ -10906,18 +10955,7 @@ def load_detail(request, pk):
             return _save_load_items(request, load, items)
         return _save_load_order(request, load, items)
 
-    in_load = {i.client_id for i in items}
-    kg_known = [i.kg for i in items if i.kg is not None]
-    return render(request, "crm/load_detail.html", {
-        "load": load,
-        "items": items,
-        "roll_total": sum(i.rolls for i in items),
-        "kg_total": sum(kg_known, Decimal("0")),
-        "unweighed": len(items) - len(kg_known),
-        "missing": [i.client for i in items if not i.client.has_location],
-        "clients": [c for c in Client.objects.order_by("name") if c.pk not in in_load],
-        "auto_route": bool(items) and (bool(load.ordered_at) or bool(request.GET.get("marshrut"))),
-    })
+    return _render_load_detail(request, load, items)
 
 
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
@@ -10946,12 +10984,17 @@ def load_route(request, pk):
             google = route_share.google_route_links(depot, points)
             yandex = route_share.yandex_route_link(depot, points)
             title = f"Yuk #{load.pk} — {load.date:%d.%m.%Y}" + (f" — {truck.name}" if truck else "")
-            text = route_share.driver_message(
-                title, [{"n": st["n"], "name": st["client"].name, "amount": _amount(st["item"]),
-                         "address": st["client"].address, "phone": st["client"].phone,
-                         "map_url": st["client"].google_maps_url} for st in stops],
-                google, yandex,
-            )
+            def message(map_url, google_links):
+                return route_share.driver_message(
+                    title, [{"n": st["n"], "name": st["client"].name, "amount": _amount(st["item"]),
+                             "address": st["client"].address, "phone": st["client"].phone,
+                             "map_url": map_url(st["client"])} for st in stops],
+                    google_links, yandex,
+                )
+            text = message(lambda c: c.google_maps_url, google)
+            # Telegram goes to drivers who open it in Yandex: Yandex links only —
+            # each stop and the whole route (one link, no Google legs).
+            telegram_text = message(lambda c: c.yandex_maps_url, [])
             capacity = truck.capacity_kg if truck else None
             routes.append({
                 "truck": truck, "stops": stops, "km": measured.km, "kg": measured.kg,
@@ -10961,7 +11004,9 @@ def load_route(request, pk):
                 "path": road.path([depot] + points + [depot]) if by_road else None,
                 "share": {"text": text, "title": title, "google_links": google,
                           "yandex_link": yandex,
-                          **route_share.share_urls(text, google[0] if google else yandex)},
+                          **route_share.share_urls(text, google[0] if google else yandex,
+                                                   telegram_text=telegram_text,
+                                                   telegram_link=yandex)},
             })
 
     map_data = None
