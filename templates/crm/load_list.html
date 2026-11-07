@@ -32,11 +32,10 @@
 {% if loads %}
 <div class="table-wrap">
 <table>
-  <tr><th class="sticky-col">Yuk</th><th>Mashina</th><th class="num">Mijozlar</th><th class="num">Rulon</th><th class="num">Og'irligi</th><th>Tartib</th></tr>
+  <tr><th class="sticky-col">Yuk</th><th class="num">Mijozlar</th><th class="num">Rulon</th><th class="num">Og'irligi</th><th>Tartib</th></tr>
   {% for load in loads %}
   <tr>
     <td class="sticky-col"><a href="{% url 'load_detail' load.pk %}"><strong>Yuk #{{ load.pk }}</strong></a>{% if load.note %}<span class="cell-sub">{{ load.note }}</span>{% endif %}</td>
-    <td>{{ load.truck.name|default:"—" }}</td>
     <td class="num">{{ load.client_count }}</td>
     <td class="num">{{ load.roll_total|default:0 }}</td>
     <td class="num">{% if load.kg_total %}{{ load.kg_total|floatformat:"0g" }} kg{% else %}—{% endif %}{% if load.unweighed and load.client_count %}<span class="cell-sub route-pending">{{ load.unweighed }} tasi tortilmagan</span>{% endif %}</td>

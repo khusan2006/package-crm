@@ -326,23 +326,16 @@ class TruckForm(forms.ModelForm):
 
 
 class LoadForm(forms.ModelForm):
-    """A yuk: its day, the truck it goes on (optional for now), and a note."""
+    """A yuk: its day and a note. The truck isn't picked here — the system decides
+    it from the load."""
 
     class Meta:
         model = Load
-        fields = ["date", "truck", "note"]
+        fields = ["date", "note"]
         widgets = {
             "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
             "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy"}),
         }
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        trucks = Truck.objects.filter(is_active=True)
-        if self.instance.truck_id:  # a truck switched off since keeps its loads
-            trucks = Truck.objects.filter(pk=self.instance.truck_id) | trucks
-        self.fields["truck"].queryset = trucks.order_by("name")
-        self.fields["truck"].required = False
 
 
 class LoadItemForm(forms.ModelForm):

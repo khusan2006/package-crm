@@ -2579,16 +2579,13 @@ class Warehouse(models.Model):
 class Load(models.Model):
     """A yuk: one trip's worth of clients to deliver to, put together by hand by an
     admin or manager. Not tied to sales — each client gets a number of rolls now, and
-    the kg once it's weighed. A day can have several loads (one per truck or trip).
+    the kg once it's weighed. A day can have several loads. Which truck carries it is
+    not picked by hand: the system is to decide it from the load.
 
     The route through its clients is suggested by crm/routing.py (by road when
     OpenRouteService is set up); saving the order writes `LoadItem.position`."""
 
     date = models.DateField("Sana", default=timezone.localdate)
-    truck = models.ForeignKey(
-        Truck, on_delete=models.PROTECT, null=True, blank=True,
-        related_name="loads", verbose_name="Mashina",
-    )
     note = models.CharField("Izoh", max_length=255, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,

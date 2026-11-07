@@ -10549,10 +10549,9 @@ def truck_edit(request, pk):
 
 @role_required(User.Role.ADMIN)
 def truck_delete(request, pk):
-    """Remove a truck. One that a load was put on is switched off instead —
-    deleting it would wipe it out of those loads."""
+    """Remove a truck."""
     truck = get_object_or_404(Truck, pk=pk)
-    used = truck.loads.exists()
+    used = False  # nothing refers to trucks yet; loads don't pick one by hand
     if request.method == "POST":
         if used:
             truck.is_active = False
@@ -10600,8 +10599,8 @@ def warehouse_edit(request):
 # --- Delivery: loads (yuk) and their route ----------------------------------------
 # A load is put together by hand — clients and rolls, kg once weighed — and is not
 # tied to sales. Its route is suggested by crm/routing.py, by road when
-# OpenRouteService is set up (crm/road.py). Capacity and splitting a load across
-# trucks are still to be decided, so each load is one route.
+# OpenRouteService is set up (crm/road.py). The truck isn't picked by hand; how the
+# system chooses it is still to be decided, so for now each load is one route.
 
 #: The route's colour on the map and the stop numbers — a CSS custom property, so the
 #: pins follow the light/dark theme like everything else.
@@ -10621,7 +10620,7 @@ def load_list(request):
     """Yetkazish: the day's loads, each with its clients, rolls and known kg."""
     day = _parse_date(request.GET.get("sana")) or timezone.localdate()
     loads = (
-        Load.objects.filter(date=day).select_related("truck", "created_by")
+        Load.objects.filter(date=day).select_related("created_by")
         .annotate(
             client_count=Count("items"),
             roll_total=Sum("items__rolls"),
@@ -10825,7 +10824,7 @@ def load_detail(request, pk):
     «Qayta hisoblash» throws it away for a new suggestion. A client added after
     saving joins the end of the saved order. Every client needs a joylashuv before
     the route can be drawn."""
-    load = get_object_or_404(Load.objects.select_related("truck", "created_by"), pk=pk)
+    load = get_object_or_404(Load.objects.select_related("created_by"), pk=pk)
     items = list(load.items.select_related("client", "client__owner").order_by("created_at"))
 
     if request.method == "POST":
@@ -10849,7 +10848,7 @@ def load_detail(request, pk):
             points.sort(key=lambda s: (by_pk[s.key].position is None, by_pk[s.key].position or 0))
         else:
             points, _ = routing.order_stops(depot, points, dist=dist)
-        km = routing.build_route(load.truck, points, depot, dist=dist).km
+        km = routing.build_route(None, points, depot, dist=dist).km
         stops = [{"n": n, "item": by_pk[p.key], "client": by_pk[p.key].client}
                  for n, p in enumerate(points, start=1)]
         if by_road:
@@ -10860,7 +10859,7 @@ def load_detail(request, pk):
         depot = (float(warehouse.latitude), float(warehouse.longitude))
         google = route_share.google_route_links(depot, [_point(s["client"]) for s in stops])
         yandex = route_share.yandex_route_link(depot, [_point(s["client"]) for s in stops])
-        title = f"Yuk #{load.pk} — {load.date:%d.%m.%Y}" + (f" — {load.truck.name}" if load.truck else "")
+        title = f"Yuk #{load.pk} — {load.date:%d.%m.%Y}"
         text = route_share.driver_message(
             title, [{"n": s["n"], "name": s["client"].name, "amount": _amount(s["item"]),
                      "address": s["client"].address, "phone": s["client"].phone,
@@ -10879,7 +10878,6 @@ def load_detail(request, pk):
 
     kg_known = [i.kg for i in items if i.kg is not None]
     kg_total = sum(kg_known, Decimal("0"))
-    capacity = load.truck.capacity_kg if load.truck else None
     return render(request, "crm/load_detail.html", {
         "load": load,
         "items": items,
@@ -10887,8 +10885,6 @@ def load_detail(request, pk):
         "roll_total": sum(i.rolls for i in items),
         "kg_total": kg_total,
         "unweighed": len(items) - len(kg_known),
-        "load_pct": min(100, round(kg_total / capacity * 100)) if capacity else None,
-        "over": bool(capacity) and kg_total > capacity,
         "missing": missing,
         "stops": stops,
         "km": km,

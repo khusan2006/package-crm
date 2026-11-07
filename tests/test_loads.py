@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from accounts.models import User
 from crm import road
-from crm.models import AuditLog, Client, Load, LoadItem, Truck, Warehouse
+from crm.models import AuditLog, Client, Load, LoadItem, Warehouse
 
 TODAY = timezone.localdate
 
@@ -29,11 +29,6 @@ def manager(db):
     return User.objects.create_user(username="mgr", password="x", role=User.Role.MANAGER)
 
 
-@pytest.fixture
-def truck(db):
-    return Truck.objects.create(name="Isuzu", capacity_kg=1000)
-
-
 def make_client(owner, name, dlng=None):
     loc = {} if dlng is None else {"latitude": Decimal("41.300000"),
                                    "longitude": Decimal("69.240000") + Decimal(str(dlng))}
@@ -41,8 +36,8 @@ def make_client(owner, name, dlng=None):
 
 
 @pytest.fixture
-def load(db, admin_user, truck):
-    return Load.objects.create(date=TODAY(), truck=truck, created_by=admin_user)
+def load(db, admin_user):
+    return Load.objects.create(date=TODAY(), created_by=admin_user)
 
 
 def put(load, client, rolls=10, kg=None):
@@ -89,24 +84,23 @@ def test_sidebar_shows_yetkazish_to_admins_and_managers_only(client, admin_user,
 
 # --- the day's loads ----------------------------------------------------------------
 
-def test_creating_a_load_opens_it(client, admin_user, truck):
+def test_creating_a_load_opens_it(client, admin_user):
     client.force_login(admin_user)
     tomorrow = TODAY() + timedelta(days=1)
-    resp = client.post("/yetkazish/yangi/", {"date": tomorrow.isoformat(), "truck": truck.pk, "note": "1-reys"})
+    resp = client.post("/yetkazish/yangi/", {"date": tomorrow.isoformat(), "note": "1-reys"})
     load = Load.objects.get()
     assert resp.status_code == 302 and resp.url == f"/yetkazish/{load.pk}/"
-    assert (load.date, load.truck, load.note, load.created_by) == (tomorrow, truck, "1-reys", admin_user)
+    assert (load.date, load.note, load.created_by) == (tomorrow, "1-reys", admin_user)
     assert AuditLog.objects.filter(target_type="Yuk", target_id=load.pk).exists()
 
 
-def test_a_load_needs_no_truck_yet(client, admin_user):
-    client.force_login(admin_user)
-    client.post("/yetkazish/yangi/", {"date": TODAY().isoformat(), "truck": "", "note": ""})
-    assert Load.objects.get().truck is None
+def test_no_truck_is_picked_by_hand(client, admin_user):
+    form = get(client, admin_user, "/yetkazish/yangi/").context["form"]
+    assert list(form.fields) == ["date", "note"]
 
 
-def test_a_day_can_have_several_loads(client, admin_user, seller_user, truck):
-    a = Load.objects.create(date=TODAY(), truck=truck)
+def test_a_day_can_have_several_loads(client, admin_user, seller_user):
+    a = Load.objects.create(date=TODAY())
     b = Load.objects.create(date=TODAY())
     Load.objects.create(date=TODAY() - timedelta(days=1))
     put(a, make_client(seller_user, "X", 0.01), rolls=4, kg=100)
@@ -125,9 +119,9 @@ def test_an_empty_day_says_so(client, admin_user):
 
 def test_editing_a_load(client, admin_user, load):
     client.force_login(admin_user)
-    client.post(f"/yetkazish/{load.pk}/edit/", {"date": TODAY().isoformat(), "truck": "", "note": "kech"})
+    client.post(f"/yetkazish/{load.pk}/edit/", {"date": TODAY().isoformat(), "note": "kech"})
     load.refresh_from_db()
-    assert load.truck is None and load.note == "kech"
+    assert load.note == "kech"
 
 
 def test_deleting_a_load_takes_its_clients_too(client, admin_user, seller_user, load):
@@ -183,14 +177,6 @@ def test_kg_is_entered_later(client, admin_user, seller_user, load, warehouse):
     assert resp.context["kg_total"] == Decimal("340.5") and resp.context["unweighed"] == 0
 
 
-def test_kg_against_the_trucks_capacity(client, admin_user, seller_user, load, warehouse):
-    put(load, make_client(seller_user, "A", 0.01), kg=700)
-    put(load, make_client(seller_user, "B", 0.02), kg=500)
-    resp = detail(client, admin_user, load)
-    assert resp.context["over"] and resp.context["load_pct"] == 100
-    assert "imidan oshib ketdi" in resp.content.decode()
-
-
 def test_removing_a_client(client, admin_user, seller_user, load):
     item = put(load, make_client(seller_user, "Anvar", 0.01))
     client.force_login(admin_user)
@@ -223,7 +209,7 @@ def test_drivers_message_has_rolls_and_kg_when_known(client, admin_user, load, t
     three[1].kg = Decimal("250")
     three[1].save()
     share = detail(client, admin_user, load).context["share"]
-    assert share["text"].startswith(f"Yuk #{load.pk} — {TODAY():%d.%m.%Y} — Isuzu")
+    assert share["text"].startswith(f"Yuk #{load.pk} — {TODAY():%d.%m.%Y}\n")
     assert "1. B — 10 rulon · 250 kg" in share["text"]
     assert "2. C — 10 rulon\n" in share["text"]
 
@@ -339,18 +325,3 @@ def test_when_the_road_service_fails_the_route_still_comes(client, admin_user, s
     resp = detail(client, admin_user, load)
     assert not resp.context["by_road"] and len(resp.context["stops"]) == 1
     assert resp.context["road_note"].startswith("Yo'l masofalarini olib bo'lmadi")
-
-
-# --- trucks -------------------------------------------------------------------------
-
-def test_a_truck_used_by_a_load_is_switched_off_not_deleted(client, admin_user, load, truck):
-    client.force_login(admin_user)
-    client.post(f"/mashinalar/{truck.pk}/delete/")
-    truck.refresh_from_db()
-    assert not truck.is_active and Load.objects.filter(truck=truck).exists()
-
-
-def test_a_switched_off_truck_stays_on_its_load_form(client, admin_user, load, truck):
-    Truck.objects.filter(pk=truck.pk).update(is_active=False)
-    form = get(client, admin_user, f"/yetkazish/{load.pk}/edit/").context["form"]
-    assert truck in form.fields["truck"].queryset

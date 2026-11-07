@@ -12,7 +12,7 @@
 <div class="table-toolbar">
   <div class="toolbar-left">
     <a class="btn btn-sm btn-ghost" href="{% url 'load_list' %}?sana={{ load.date|date:'Y-m-d' }}">← {{ load.date|date:"d.m.Y" }} yuklari</a>
-    <span class="muted">{% if load.truck %}{{ load.truck.name }}{% else %}Mashina tanlanmagan{% endif %}{% if load.note %} · {{ load.note }}{% endif %}</span>
+    {% if load.note %}<span class="muted">{{ load.note }}</span>{% endif %}
   </div>
   <div class="toolbar-right">
     <a class="btn btn-sm btn-ghost" href="{% url 'load_edit' load.pk %}" data-modal>Tahrirlash</a>
@@ -43,16 +43,6 @@
     <div class="kpi-meta muted">{% if stops %}{% if by_road %}yo'l bo'yicha, omborga qaytish bilan{% else %}to'g'ri chiziq, omborga qaytish bilan{% endif %}{% else %}marshrut hali yo'q{% endif %}</div>
   </div>
 </div>
-
-{% if load.truck and load_pct is not None and kg_total %}
-<div class="card route-loadcard{% if over %} is-over{% endif %}" style="--route: var({{ route_color }});">
-  <div class="route-load{% if over %} is-over{% endif %}" title="Yuk / sig'im">
-    <div class="route-load-bar"><span style="width: {{ load_pct }}%"></span></div>
-    <span>{{ kg_total|floatformat:"0g" }} / {{ load.truck.capacity_kg|floatformat:"0g" }} kg{% if unweighed %} (tortilganlari){% endif %}</span>
-  </div>
-  {% if over %}<p class="route-over-note">Mashina sig'imidan oshib ketdi.</p>{% endif %}
-</div>
-{% endif %}
 
 {% if error %}
 <div class="overdue-banner" role="alert">
