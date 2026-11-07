@@ -483,6 +483,13 @@ class Sale(models.Model):
         "Qarz muddati (kun)", null=True, blank=True
     )
     note = models.CharField("Izoh", max_length=255, blank=True)
+    # Which day's delivery (Yetkazish) the operator put this sale into — chosen by
+    # hand on the Yetkazish page, never from the sale date. Empty until then; a
+    # sale is in at most one delivery, so it can't be sent twice.
+    delivery = models.ForeignKey(
+        "DeliveryRoute", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="sales", verbose_name="Yetkazish",
+    )
     # An opening balance carried over from before go-live: a client's old debt that
     # was never a CRM sale. Such a "sale" has NO line items — the debt is this amount
     # alone, and it flows into `debt_remaining`/`remaining` only. Because it has no
@@ -1912,10 +1919,11 @@ class Warehouse(models.Model):
 
 
 class DeliveryRoute(models.Model):
-    """A day's saved delivery plan — one for the whole company, since the trucks and
-    the warehouse are shared. Until it is saved, the Yetkazish page only shows the
-    plan crm/routing.py suggests; saving fixes the order (and any hand corrections)
-    so it no longer shifts as the page is reopened."""
+    """A day's delivery — one for the whole company, since the trucks and the
+    warehouse are shared. The operator chooses its sales by hand (`Sale.delivery`).
+    Its `stops` are the saved order: until they exist, the Yetkazish page shows the
+    order crm/routing.py suggests; saving fixes it (with any hand corrections) so it
+    no longer shifts as the page is reopened."""
 
     date = models.DateField("Sana", unique=True)
     created_by = models.ForeignKey(

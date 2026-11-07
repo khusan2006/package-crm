@@ -9,7 +9,9 @@ import pytest
 from django.utils import timezone
 
 from accounts.models import User
-from crm.models import Client, Product, Sale, SaleItem, Truck, Warehouse
+from crm.models import (
+    AuditLog, Client, DeliveryRoute, Product, RouteStop, Sale, SaleItem, Truck, Warehouse,
+)
 
 TODAY = timezone.localdate
 
@@ -44,8 +46,13 @@ def make_client(owner, name, dlng=None):
     return Client.objects.create(name=name, owner=owner, address=f"{name} ko'chasi", **loc)
 
 
-def sell(client, product, kg, fulfilled=None, day=None, dimension="kg", **extra):
-    sale = Sale.objects.create(client=client, sales_rep=client.owner, date=day or TODAY(), **extra)
+def sell(client, product, kg, fulfilled=None, day=None, dimension="kg", deliver=True, **extra):
+    """A sale — by default already put into that day's delivery, as the operator
+    would on the Yetkazish page."""
+    day = day or TODAY()
+    if deliver:
+        extra["delivery"] = DeliveryRoute.objects.get_or_create(date=day)[0]
+    sale = Sale.objects.create(client=client, sales_rep=client.owner, date=day, **extra)
     weight = Decimal(str(kg))
     in_kg = weight / 1000 if dimension == "g" else weight
     SaleItem.objects.create(
@@ -118,7 +125,7 @@ def test_only_in_stock_goods_are_loaded(client, admin_user, seller_user, product
     stop = resp.context["routes"][0]["stops"][0]
     assert (stop["client"].name, stop["kg"], stop["pending_kg"]) == ("Qisman", Decimal(40), Decimal(60))
     assert resp.context["waiting"] == [zakaz]
-    assert "Omborda yo'q" in resp.content.decode()
+    assert "omborda yo'q (zakaz)" in resp.content.decode()
 
 
 def test_grams_count_as_kg(client, admin_user, seller_user, product, warehouse):
@@ -127,18 +134,20 @@ def test_grams_count_as_kg(client, admin_user, seller_user, product, warehouse):
     assert page(client, admin_user).context["total_kg"] == Decimal("0.5")
 
 
-def test_other_days_and_opening_balances_are_left_out(client, admin_user, seller_user,
-                                                      product, warehouse):
+def test_only_the_chosen_sales_are_planned(client, admin_user, seller_user, product, warehouse):
     Truck.objects.create(name="Isuzu", capacity_kg=3000)
-    c = make_client(seller_user, "Anvar", 0.01)
-    sell(c, product, 100, day=TODAY() - timedelta(days=1))
-    Sale.objects.create(client=c, sales_rep=seller_user, is_opening=True,
-                        opening_amount=Decimal("1000"))
+    sell(make_client(seller_user, "Tanlangan", 0.01), product, 100)
+    sell(make_client(seller_user, "Tanlanmagan", 0.02), product, 100, deliver=False)
+    resp = page(client, admin_user)
+    assert [s["client"].name for s in resp.context["routes"][0]["stops"]] == ["Tanlangan"]
+    assert [r["sale"].client.name for r in resp.context["candidates"]] == ["Tanlanmagan"]
+
+
+def test_a_day_with_nothing_chosen_says_so(client, admin_user, seller_user, product, warehouse):
+    sell(make_client(seller_user, "Anvar", 0.01), product, 100, deliver=False)
     resp = page(client, admin_user)
     assert resp.context["visit_count"] == 0 and resp.context["routes"] == []
-    assert "yetkaziladigan sotuv yo'q" in resp.content.decode()
-    # ...and the day before shows it.
-    assert page(client, admin_user, TODAY() - timedelta(days=1)).context["visit_count"] == 1
+    assert "hali sotuv tanlanmagan" in resp.content.decode()
 
 
 def test_missing_locations_block_the_plan(client, admin_user, seller_user, product, warehouse):
@@ -192,7 +201,6 @@ def test_sotuvlar_links_to_it_for_everyone(client, admin_user, seller_user):
 
 # --- saving and hand corrections ----------------------------------------------------
 
-from crm.models import AuditLog, DeliveryRoute, RouteStop  # noqa: E402
 
 
 def save(client, user, stops, day=None, action="save"):
@@ -286,7 +294,7 @@ def test_a_stale_or_broken_post_saves_nothing(client, admin_user, seller_user, t
     }[bad]
     resp = client.post("/yetkazish/", {"sana": TODAY().isoformat(), "action": "save", "stop": stops})
     assert resp.status_code == 302
-    assert not DeliveryRoute.objects.exists()
+    assert not RouteStop.objects.exists()
 
 
 def test_a_sale_after_saving_is_flagged_not_slipped_in(client, admin_user, seller_user,
@@ -323,14 +331,16 @@ def test_reset_throws_the_saved_plan_away(client, admin_user, three):
     save(client, admin_user, [(truck, c), (truck, b), (truck, a)])
     resp = save(client, admin_user, [], action="reset")
     assert resp.status_code == 302
-    assert not DeliveryRoute.objects.exists() and not RouteStop.objects.exists()
+    assert not RouteStop.objects.exists()
+    # The chosen sales stay chosen; only the order is worked out again.
+    assert DeliveryRoute.objects.get().sales.count() == 3
     assert page(client, admin_user).context["saved"] is None
 
 
 def test_sellers_cannot_save(client, seller_user, three):
     truck, (a, b, c) = three
     assert save(client, seller_user, [(truck, a)]).status_code == 403
-    assert not DeliveryRoute.objects.exists()
+    assert not RouteStop.objects.exists()
 
 
 def test_a_truck_in_a_saved_plan_is_switched_off_not_deleted(client, admin_user, three):
@@ -378,7 +388,7 @@ def mixed_day(db, seller_user, other_seller, product, warehouse):
     mine2 = make_client(seller_user, "Meniki-2", 0.03)
     for c in (mine1, theirs, mine2):
         sell(c, product, 100)
-    route = DeliveryRoute.objects.create(date=TODAY())
+    route = DeliveryRoute.objects.get(date=TODAY())
     for pos, c in enumerate((mine1, theirs, mine2), start=1):
         RouteStop.objects.create(route=route, client=c, truck=truck, position=pos)
     return truck, mine1, theirs, mine2
@@ -423,7 +433,7 @@ def test_seller_is_told_about_their_own_gaps_only(client, seller_user, other_sel
 
 def test_seller_cannot_reset_the_plan(client, seller_user, mixed_day):
     assert save(client, seller_user, [], action="reset").status_code == 403
-    assert DeliveryRoute.objects.exists()
+    assert RouteStop.objects.count() == 3
 
 
 def test_reset_stays_reachable_when_every_saved_stop_dropped_out(client, admin_user, seller_user,
@@ -444,7 +454,7 @@ def test_a_switched_off_truck_gets_no_new_stops(client, admin_user, three):
     truck, (a, b, c) = three
     old = Truck.objects.create(name="Eski", capacity_kg=3000, is_active=False)
     save(client, admin_user, [(old, a)])
-    assert not DeliveryRoute.objects.exists()
+    assert not RouteStop.objects.exists()
 
 
 def test_a_truck_switched_off_after_saving_keeps_its_stops(client, admin_user, three):
@@ -460,3 +470,91 @@ def test_sidebar_links_to_it_for_everyone(client, admin_user, seller_user, manag
         client.force_login(user)
         body = client.get("/").content.decode()
         assert 'href="/yetkazish/"' in body and "Yetkazish" in body
+
+
+# --- choosing the day's sales by hand ----------------------------------------------
+
+def post(client, user, action, day=None, **data):
+    client.force_login(user)
+    return client.post("/yetkazish/", {"sana": (day or TODAY()).isoformat(), "action": action, **data})
+
+
+def test_ticked_sales_are_added_to_the_day(client, admin_user, seller_user, product, warehouse):
+    tomorrow = TODAY() + timedelta(days=1)
+    a = sell(make_client(seller_user, "A", 0.01), product, 100, deliver=False)
+    b = sell(make_client(seller_user, "B", 0.02), product, 100, deliver=False)
+    c = sell(make_client(seller_user, "C", 0.03), product, 100, deliver=False)
+    resp = post(client, admin_user, "add", day=tomorrow, sale=[a.pk, c.pk])
+    assert resp.status_code == 302
+    route = DeliveryRoute.objects.get(date=tomorrow)
+    assert set(route.sales.values_list("pk", flat=True)) == {a.pk, c.pk}
+    b.refresh_from_db()
+    assert b.delivery is None
+    assert AuditLog.objects.filter(target_type="Yetkazish", target_id=route.pk).exists()
+    # Tomorrow's page plans A and C; B is still offered.
+    Truck.objects.create(name="Isuzu", capacity_kg=3000)
+    resp = page(client, admin_user, tomorrow)
+    assert sorted(s["client"].name for s in resp.context["routes"][0]["stops"]) == ["A", "C"]
+    assert [r["sale"].pk for r in resp.context["candidates"]] == [b.pk]
+
+
+def test_a_sale_goes_into_one_delivery_only(client, admin_user, seller_user, product, warehouse):
+    tomorrow = TODAY() + timedelta(days=1)
+    a = sell(make_client(seller_user, "A", 0.01), product, 100)  # already in today's
+    post(client, admin_user, "add", day=tomorrow, sale=[a.pk])
+    a.refresh_from_db()
+    assert a.delivery.date == TODAY()
+    assert not DeliveryRoute.objects.filter(date=tomorrow).exists()
+    assert a.pk not in [r["sale"].pk for r in page(client, admin_user, tomorrow).context["candidates"]]
+
+
+def test_nothing_ticked_adds_nothing(client, admin_user):
+    post(client, admin_user, "add")
+    assert not DeliveryRoute.objects.exists()
+
+
+def test_removing_a_sale_puts_it_back_to_choose(client, admin_user, seller_user, product, three):
+    truck, (a, b, c) = three
+    save(client, admin_user, [(truck, a), (truck, b), (truck, c)])
+    sale_b = b.sales.get()
+    resp = post(client, admin_user, "remove", sale=sale_b.pk)
+    assert resp.status_code == 302
+    sale_b.refresh_from_db()
+    assert sale_b.delivery is None
+    # Its stop leaves the saved order; the rest keep theirs.
+    assert [s.client.name for s in RouteStop.objects.order_by("position")] == ["A", "C"]
+    resp = page(client, admin_user)
+    assert [s["client"].name for s in resp.context["routes"][0]["stops"]] == ["A", "C"]
+    assert sale_b.pk in [r["sale"].pk for r in resp.context["candidates"]]
+
+
+def test_removing_one_of_two_sales_keeps_the_clients_stop(client, admin_user, seller_user,
+                                                          product, three):
+    truck, (a, b, c) = three
+    extra = sell(a, product, 50)
+    save(client, admin_user, [(truck, a), (truck, b), (truck, c)])
+    post(client, admin_user, "remove", sale=extra.pk)
+    assert RouteStop.objects.filter(client=a).exists()
+
+
+def test_candidates_can_be_searched(client, admin_user, seller_user, other_seller, product):
+    sell(make_client(seller_user, "Olmazor savdo", 0.01), product, 100, deliver=False)
+    sell(make_client(other_seller, "Chilonzor", 0.02), product, 100, deliver=False)
+    client.force_login(admin_user)
+    resp = client.get("/yetkazish/", {"q": "olmazor"})
+    assert [r["sale"].client.name for r in resp.context["candidates"]] == ["Olmazor savdo"]
+    resp = client.get("/yetkazish/", {"q": "Ikkinchi"})  # seller's first name
+    assert [r["sale"].client.name for r in resp.context["candidates"]] == ["Chilonzor"]
+
+
+def test_later_sales_are_not_offered_for_an_earlier_day(client, admin_user, seller_user, product):
+    sell(make_client(seller_user, "Ertangi", 0.01), product, 100,
+         day=TODAY() + timedelta(days=1), deliver=False)
+    assert page(client, admin_user).context["candidates"] == []
+
+
+def test_sellers_cannot_add_or_remove(client, seller_user, product, warehouse):
+    a = sell(make_client(seller_user, "A", 0.01), product, 100, deliver=False)
+    assert post(client, seller_user, "add", sale=[a.pk]).status_code == 403
+    a.refresh_from_db()
+    assert a.delivery is None

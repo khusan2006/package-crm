@@ -9,6 +9,17 @@
 (function () {
   'use strict';
 
+  // "Yetkazilmagan sotuvlar": the header checkbox ticks every row.
+  var pick = document.querySelector('[data-route-pick]');
+  if (pick) {
+    var all = pick.querySelector('[data-pick-all]');
+    if (all) {
+      all.addEventListener('change', function () {
+        pick.querySelectorAll('input[name=sale]').forEach(function (b) { b.checked = all.checked; });
+      });
+    }
+  }
+
   var form = document.querySelector('[data-route-form]');
   if (!form) { return; }
   var dirty = document.querySelector('[data-route-dirty]');

@@ -6,7 +6,9 @@ from decimal import Decimal
 import pytest
 from django.utils import timezone
 
-from crm.models import Client, Product, RouteStop, Sale, SaleItem, Truck, Warehouse
+from crm.models import (
+    Client, DeliveryRoute, Product, RouteStop, Sale, SaleItem, Truck, Warehouse,
+)
 
 pytestmark = pytest.mark.e2e
 
@@ -19,11 +21,13 @@ def day_with_two_trucks(db, seller_user):
     Truck.objects.create(name="Birinchi", capacity_kg=1000)
     Truck.objects.create(name="Ikkinchi", capacity_kg=1000)
     product = Product.objects.create(name="Paket", sku="P", cost_price=1, price=2)
+    route = DeliveryRoute.objects.create(date=timezone.localdate())
     # Two clients west of the warehouse, two east: one side per truck.
     for name, dlng in (("G1", "-0.05"), ("G2", "-0.04"), ("S1", "0.04"), ("S2", "0.05")):
         c = Client.objects.create(name=name, owner=seller_user, latitude=Decimal("41.3"),
                                   longitude=Decimal("69.24") + Decimal(dlng))
-        sale = Sale.objects.create(client=c, sales_rep=seller_user, date=timezone.localdate())
+        sale = Sale.objects.create(client=c, sales_rep=seller_user, date=timezone.localdate(),
+                                   delivery=route)
         SaleItem.objects.create(sale=sale, product=product, weight=Decimal("450"),
                                 price=2, cost_price=1, fulfilled_kg=Decimal("450"),
                                 fulfilled_at=timezone.localdate())
@@ -68,3 +72,21 @@ def test_reorder_move_and_save(login, admin_user, live_server, day_with_two_truc
     second_truck = Truck.objects.get(pk=int(second.get_attribute("data-route-truck")))
     saved = list(RouteStop.objects.filter(truck=second_truck).values_list("client__name", flat=True))
     assert len(saved) == 3 and saved[-1] == moved
+
+
+def test_tick_sales_and_add_them_to_a_day(login, admin_user, seller_user, live_server, db):
+    product = Product.objects.create(name="Paket", sku="P", cost_price=1, price=2)
+    for name in ("Birinchi mijoz", "Ikkinchi mijoz"):
+        c = Client.objects.create(name=name, owner=seller_user)
+        sale = Sale.objects.create(client=c, sales_rep=seller_user, date=timezone.localdate())
+        SaleItem.objects.create(sale=sale, product=product, weight=Decimal("10"),
+                                price=2, cost_price=1, fulfilled_kg=Decimal("10"),
+                                fulfilled_at=timezone.localdate())
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/")
+    page.check("[data-pick-all]")  # the header box ticks both rows
+    assert page.locator("[data-route-pick] input[name=sale]:checked").count() == 2
+    page.click("[data-route-pick] button[type=submit]")
+    page.wait_for_selector("text=2 ta sotuv")
+    assert DeliveryRoute.objects.get(date=timezone.localdate()).sales.count() == 2
+    assert page.locator("text=Shu kunning sotuvlari · 2").is_visible()

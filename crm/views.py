@@ -7899,25 +7899,32 @@ def warehouse_edit(request):
 ROUTE_COLORS = ("--accent", "--violet")
 
 
-def _delivery_day(day):
-    """The day's real sales, gathered per client into what the route needs.
+def _sale_load(sale):
+    """(kg that can go on the truck, kg still waiting for stock) for one sale.
+    Only the in-stock part of a line goes: `fulfilled_kg`, capped at the line's weight."""
+    items = list(sale.items.all())
+    loaded = sum((min(i.fulfilled_kg, i.weight_kg) for i in items), Decimal("0"))
+    pending = sum((i.pending_kg for i in items), Decimal("0"))
+    return loaded, pending
 
-    Only the in-stock part of a line goes on the truck: `fulfilled_kg`, capped at the
-    line's weight. A sale with nothing in stock yet (a pure zakaz) waits. Returns
-    (visits, missing, waiting): `visits` maps client pk → {client, sales, kg,
+
+def _delivery_day(route):
+    """The sales the operator put into this day's delivery, gathered per client into
+    what the route needs. A sale with nothing in stock yet (a pure zakaz) waits.
+    Returns (visits, missing, waiting): `visits` maps client pk → {client, sales, kg,
     pending_kg}, `missing` are clients with goods to deliver but no joylashuv, and
-    `waiting` are the sales with nothing to load."""
+    `waiting` are the chosen sales with nothing to load."""
+    if route is None:
+        return {}, [], []
     sales = (
-        Sale.objects.real().filter(date=day)
+        route.sales.real()
         .select_related("client", "sales_rep")
         .prefetch_related("items")
         .order_by("created_at")
     )
     visits, waiting = {}, []
     for sale in sales:
-        items = list(sale.items.all())
-        loaded = sum((min(i.fulfilled_kg, i.weight_kg) for i in items), Decimal("0"))
-        pending = sum((i.pending_kg for i in items), Decimal("0"))
+        loaded, pending = _sale_load(sale)
         if loaded <= 0:
             waiting.append(sale)
             continue
@@ -7929,6 +7936,36 @@ def _delivery_day(day):
         visit["pending_kg"] += pending
     missing = [v["client"] for v in visits.values() if not v["client"].has_location]
     return visits, missing, waiting
+
+
+#: How many not-yet-chosen sales the Yetkazish page lists at once.
+CANDIDATE_LIMIT = 200
+
+
+def _delivery_candidates(day, q=""):
+    """Sales the operator can still put into a delivery.
+
+    PROVISIONAL — which sales belong in this list is still to be decided (only
+    those made after go-live? a window of days?). For now: every real sale not yet
+    in any delivery, dated up to the chosen day, newest first."""
+    sales = (
+        Sale.objects.real().filter(delivery__isnull=True, date__lte=day)
+        .select_related("client", "sales_rep")
+        .prefetch_related("items")
+        .order_by("-date", "-created_at")
+    )
+    if q:
+        sales = sales.filter(
+            Q(client__name__icontains=q) | Q(client__company__icontains=q)
+            | Q(sales_rep__first_name__icontains=q) | Q(sales_rep__last_name__icontains=q)
+            | Q(sales_rep__username__icontains=q)
+        )
+    total = sales.count()
+    rows = []
+    for sale in sales[:CANDIDATE_LIMIT]:
+        loaded, pending = _sale_load(sale)
+        rows.append({"sale": sale, "kg": loaded, "pending_kg": pending})
+    return rows, total
 
 
 def _route_context(plan, visits):
@@ -8032,9 +8069,9 @@ def _save_delivery_plan(request, day, visits):
         messages.error(request, "Saqlash uchun rejada manzil yo'q.")
         return redirect(_delivery_url(day))
 
-    route, _ = DeliveryRoute.objects.update_or_create(
-        date=day, defaults={"created_by": request.user}
-    )
+    route = DeliveryRoute.objects.get(date=day)
+    route.created_by = request.user
+    route.save(update_fields=["created_by", "updated_at"])
     route.stops.all().delete()
     positions = {}
     stops = []
@@ -8052,15 +8089,63 @@ def _save_delivery_plan(request, day, visits):
 
 
 def _reset_delivery_plan(request, day):
+    """Forget the saved order; the chosen sales stay in the day's delivery."""
     route = DeliveryRoute.objects.filter(date=day).first()
-    if route:
-        pk = route.pk
-        route.delete()
+    if route and route.stops.exists():
+        route.stops.all().delete()
         AuditLog.record(
-            request.user, AuditLog.Action.DELETE, "Yetkazish", pk,
-            f"{day:%d.%m.%Y} rejasi o'chirildi — qaytadan hisoblanadi",
+            request.user, AuditLog.Action.UPDATE, "Yetkazish", route.pk,
+            f"{day:%d.%m.%Y} tartibi o'chirildi — qaytadan hisoblanadi",
         )
-        messages.success(request, "Reja qaytadan hisoblandi. Ma'qul bo'lsa, saqlang.")
+        messages.success(request, "Tartib qaytadan hisoblandi. Ma'qul bo'lsa, saqlang.")
+    return redirect(_delivery_url(day))
+
+
+@transaction.atomic
+def _add_to_delivery(request, day):
+    """Put the ticked sales into this day's delivery. Only sales still in no delivery
+    are taken — a sale added to another day in the meantime is left where it is."""
+    try:
+        pks = {int(pk) for pk in request.POST.getlist("sale")}
+    except ValueError:
+        pks = set()
+    free = Sale.objects.real().filter(pk__in=pks, delivery__isnull=True)
+    if not pks or not free.exists():
+        messages.error(request, "Qo'shish uchun sotuv tanlanmagan.")
+        return redirect(_delivery_url(day))
+    route, _ = DeliveryRoute.objects.get_or_create(date=day, defaults={"created_by": request.user})
+    names = list(free.values_list("client__name", flat=True))
+    added = free.update(delivery=route)
+    AuditLog.record(
+        request.user, AuditLog.Action.UPDATE, "Yetkazish", route.pk,
+        f"{day:%d.%m.%Y} yetkazishiga {added} ta sotuv qo'shildi: {', '.join(names)}"[:255],
+    )
+    skipped = len(pks) - added
+    msg = f"{added} ta sotuv {day:%d.%m.%Y} yetkazishiga qo'shildi."
+    if skipped:
+        msg += f" {skipped} tasi allaqachon boshqa yetkazishda edi."
+    messages.success(request, msg)
+    return redirect(_delivery_url(day))
+
+
+@transaction.atomic
+def _remove_from_delivery(request, day):
+    """Take one sale out of the day's delivery, back to the list to choose from. If
+    it was the client's last sale that day, their stop leaves the saved order too."""
+    route = DeliveryRoute.objects.filter(date=day).first()
+    sale = Sale.objects.filter(pk=request.POST.get("sale") or 0, delivery=route).first() if route else None
+    if sale is None:
+        messages.error(request, "Bu sotuv shu kungi yetkazishda emas — sahifa yangilandi.")
+        return redirect(_delivery_url(day))
+    sale.delivery = None
+    sale.save(update_fields=["delivery"])
+    if not route.sales.filter(client_id=sale.client_id).exists():
+        route.stops.filter(client_id=sale.client_id).delete()
+    AuditLog.record(
+        request.user, AuditLog.Action.UPDATE, "Yetkazish", route.pk,
+        f"{day:%d.%m.%Y} yetkazishidan olib tashlandi: {sale.client.name} (sotuv #{sale.pk})"[:255],
+    )
+    messages.success(request, f"“{sale.client.name}” sotuvi olib tashlandi.")
     return redirect(_delivery_url(day))
 
 
@@ -8071,7 +8156,8 @@ def _delivery_for_seller(request, day, warehouse, visits, missing, waiting):
     seller = request.user
     mine = {pk: v for pk, v in visits.items()
             if any(s.sales_rep_id == seller.pk for s in v["sales"])}
-    saved = DeliveryRoute.objects.filter(date=day).first()
+    route = DeliveryRoute.objects.filter(date=day).first()
+    saved = route if route and route.stops.exists() else None
     rows, placed = [], set()
     if saved and warehouse.has_location:
         depot = (float(warehouse.latitude), float(warehouse.longitude))
@@ -8102,8 +8188,9 @@ def _delivery_for_seller(request, day, warehouse, visits, missing, waiting):
 def delivery_plan(request):
     """Yetkazish: for a chosen day, which truck takes which client and in what order.
 
-    Until the day's plan is saved, the page shows the one crm/routing.py suggests,
-    worked out afresh on every visit. Saving fixes it — with any stops the operator
+    The operator chooses the day's sales by hand ("Shu kunga qo'shish"); only those
+    are planned. Until the order is saved, the page shows the one crm/routing.py
+    suggests, worked out afresh on every visit. Saving fixes it — with any stops the operator
     moved by hand — and "Qayta hisoblash" throws the saved plan away for a new
     suggestion. It mixes every seller's sales, since the trucks and the warehouse are
     shared, which is why only admins and managers plan it. A seller gets a
@@ -8115,18 +8202,37 @@ def delivery_plan(request):
 
     warehouse = Warehouse.load()
     trucks = list(Truck.objects.filter(is_active=True))
-    visits, missing, waiting = _delivery_day(day)
+    route = DeliveryRoute.objects.filter(date=day).select_related("created_by").first()
+    visits, missing, waiting = _delivery_day(route)
 
     if not request.user.can_see_all_records:
         return _delivery_for_seller(request, day, warehouse, visits, missing, waiting)
 
     if request.method == "POST":
-        if source.get("action") == "reset":
+        action = source.get("action")
+        if action == "add":
+            return _add_to_delivery(request, day)
+        if action == "remove":
+            return _remove_from_delivery(request, day)
+        if action == "reset":
             return _reset_delivery_plan(request, day)
+        if route is None:
+            messages.error(request, "Bu kunga hali sotuv qo'shilmagan.")
+            return redirect(_delivery_url(day))
         return _save_delivery_plan(request, day, visits)
 
     total_kg = sum((v["kg"] for v in visits.values()), Decimal("0"))
-    saved = DeliveryRoute.objects.filter(date=day).select_related("created_by").first()
+    # "Saved" means the order is saved; a delivery with chosen sales but no saved
+    # order still shows the suggested one.
+    saved = route if route and route.stops.exists() else None
+    q = request.GET.get("q", "").strip()
+    candidates, candidate_total = _delivery_candidates(day, q)
+    chosen = []
+    if route:
+        for sale in (route.sales.real().select_related("client", "sales_rep")
+                     .prefetch_related("items").order_by("client__name", "created_at")):
+            loaded, pending = _sale_load(sale)
+            chosen.append({"sale": sale, "kg": loaded, "pending_kg": pending})
 
     routes, error, unplanned, dropped = [], "", [], 0
     if not warehouse.has_location:
@@ -8177,4 +8283,9 @@ def delivery_plan(request):
         "saved": saved,
         "unplanned": unplanned,
         "dropped": dropped,
+        "chosen": chosen,
+        "candidates": candidates,
+        "candidate_total": candidate_total,
+        "candidate_limit": CANDIDATE_LIMIT,
+        "q": q,
     })

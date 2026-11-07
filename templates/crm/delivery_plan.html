@@ -74,7 +74,7 @@
 {% endif %}
 
 {% if not visit_count and not waiting %}
-<div class="card"><p class="muted">{{ day|date:"d.m.Y" }} kuni yetkaziladigan sotuv yo'q.</p></div>
+<div class="card"><p class="muted">{{ day|date:"d.m.Y" }} kuni uchun hali sotuv tanlanmagan. Pastdagi «Yetkazilmagan sotuvlar» ro'yxatidan belgilab, «Shu kunga qo'shish»ni bosing.</p></div>
 {% endif %}
 
 {% if saved and unplanned %}
@@ -202,21 +202,79 @@ stuck.{% endcomment %}
 </div>
 </form>
 <p class="muted route-hint">↑ ↓ — tartibni o'zgartirish, ⇄ — boshqa mashinaga o'tkazish. Xarita va km saqlangandan keyin yangilanadi.</p>
-<script src="{% static_v 'js/route.js' %}" defer></script>
 {% endif %}
 
-{% if waiting %}
+{% comment %}The day's chosen sales, one row per sale — each can be taken out again,
+back to the list below.{% endcomment %}
+{% if chosen %}
 <div class="card">
-  <div class="card-head"><h2>Omborda yo'q — kutilmoqda · {{ waiting|length }}</h2></div>
-  <p class="muted">Bu sotuvlarning mahsuloti hali omborga kelmagan (zakaz), shuning uchun marshrutga qo'shilmadi.</p>
+  <div class="card-head"><h2>Shu kunning sotuvlari · {{ chosen|length }}</h2></div>
   <ul class="route-missing">
-    {% for sale in waiting %}
+    {% for row in chosen %}
     <li>
-      <span><strong>{{ sale.client.name }}</strong> <span class="cell-sub">{{ sale.sales_rep }}</span></span>
-      <a class="btn btn-sm btn-ghost" href="{% url 'sale_detail' sale.pk %}">Sotuv</a>
+      <span>
+        <strong>{{ row.sale.client.name }}</strong>
+        <span class="cell-sub">{{ row.sale.sales_rep }} · <a href="{% url 'sale_detail' row.sale.pk %}">sotuv {{ row.sale.date|date:"d.m.Y" }}</a> · {{ row.kg|floatformat:"0g" }} kg</span>
+        {% if not row.kg %}<span class="cell-sub route-pending">omborda yo'q (zakaz) — marshrutga kirmaydi</span>
+        {% elif row.pending_kg %}<span class="cell-sub route-pending">+ {{ row.pending_kg|floatformat:"0g" }} kg hali omborda yo'q</span>{% endif %}
+        {% if not row.sale.client.has_location %}<span class="cell-sub route-pending">joylashuvi yo'q</span>{% endif %}
+      </span>
+      <form method="post" action="{% url 'delivery_plan' %}">
+        {% csrf_token %}
+        <input type="hidden" name="sana" value="{{ day|date:'Y-m-d' }}">
+        <input type="hidden" name="action" value="remove">
+        <input type="hidden" name="sale" value="{{ row.sale.pk|unlocalize }}">
+        <button type="submit" class="btn btn-sm btn-ghost">Olib tashlash</button>
+      </form>
     </li>
     {% endfor %}
   </ul>
 </div>
 {% endif %}
+
+{% comment %}Sales not yet in any delivery: tick and add to this day. Which sales belong
+here is still provisional — see `_delivery_candidates`.{% endcomment %}
+<div class="card" id="tanlash">
+  <div class="card-head">
+    <h2>Yetkazilmagan sotuvlar · {{ candidate_total }}</h2>
+  </div>
+  <form method="get" class="toolbar-search{% if q %} is-active{% endif %} route-search" role="search" action="#tanlash">
+    <svg class="toolbar-search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input type="hidden" name="sana" value="{{ day|date:'Y-m-d' }}">
+    <input type="search" name="q" value="{{ q }}" placeholder="Mijoz yoki sotuvchi bo'yicha qidirish…" autocomplete="off" aria-label="Sotuv qidirish">
+    {% if q %}<a href="?sana={{ day|date:'Y-m-d' }}#tanlash" class="toolbar-search-x" title="Qidiruvni tozalash" aria-label="Qidiruvni tozalash">&times;</a>{% endif %}
+  </form>
+  {% if candidates %}
+  <form method="post" action="{% url 'delivery_plan' %}" data-route-pick>
+    {% csrf_token %}
+    <input type="hidden" name="sana" value="{{ day|date:'Y-m-d' }}">
+    <input type="hidden" name="action" value="add">
+    <div class="table-wrap">
+    <table>
+      <tr>
+        <th><input type="checkbox" data-pick-all aria-label="Hammasini belgilash"></th>
+        <th>Mijoz</th><th>Sotuvchi</th><th>Sotuv sanasi</th><th class="num">Yuk</th><th>Joylashuv</th>
+      </tr>
+      {% for row in candidates %}
+      <tr>
+        <td><input type="checkbox" name="sale" value="{{ row.sale.pk|unlocalize }}" aria-label="{{ row.sale.client.name }}"></td>
+        <td><a href="{% url 'sale_detail' row.sale.pk %}">{{ row.sale.client.name }}</a>{% if row.sale.client.address %}<span class="cell-sub">{{ row.sale.client.address }}</span>{% endif %}</td>
+        <td>{{ row.sale.sales_rep }}</td>
+        <td>{{ row.sale.date|date:"d.m.Y" }}</td>
+        <td class="num">{{ row.kg|floatformat:"0g" }} kg{% if row.pending_kg %}<span class="cell-sub route-pending">+ {{ row.pending_kg|floatformat:"0g" }} kg kutilmoqda</span>{% endif %}</td>
+        <td>{% if row.sale.client.has_location %}<span class="badge badge-paid">Bor</span>{% else %}<span class="badge badge-warning">Yo'q</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    </div>
+    {% if candidate_total > candidate_limit %}<p class="muted">Eng yangi {{ candidate_limit }} tasi ko'rsatilgan — qolganini qidiruv bilan toping.</p>{% endif %}
+    <div class="route-pick-actions">
+      <button type="submit" class="btn">{{ day|date:"d.m.Y" }} kuniga qo'shish</button>
+    </div>
+  </form>
+  {% else %}
+  <p class="muted">{% if q %}Qidiruv bo'yicha sotuv topilmadi.{% else %}Tanlanmagan sotuv qolmagan.{% endif %}</p>
+  {% endif %}
+</div>
+<script src="{% static_v 'js/route.js' %}" defer></script>
 {% endblock %}
