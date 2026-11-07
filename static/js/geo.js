@@ -382,7 +382,11 @@
             .bindTooltip(tip).addTo(map);
         });
         line.push(data.depot);  // trucks drive back to the warehouse
-        L.polyline(line, { color: color, weight: 3, opacity: 0.8 }).addTo(map);
+        // Along the streets when the server got the road path; straight lines between
+        // the pins otherwise.
+        var drawn = route.path && route.path.length > 1 ? route.path : line;
+        drawn.forEach(function (at) { bounds.extend(at); });
+        L.polyline(drawn, { color: color, weight: 4, opacity: 0.75 }).addTo(map);
       });
       // Leaflet measures its box when the map is made, which can be before the page
       // has finished laying it out — a fit then frames the route for the wrong size

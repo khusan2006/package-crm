@@ -558,3 +558,71 @@ def test_sellers_cannot_add_or_remove(client, seller_user, product, warehouse):
     assert post(client, seller_user, "add", sale=[a.pk]).status_code == 403
     a.refresh_from_db()
     assert a.delivery is None
+
+
+# --- planning by road ---------------------------------------------------------------
+
+from django.core.cache import cache  # noqa: E402
+
+from crm import road  # noqa: E402
+
+
+@pytest.fixture
+def road_key(settings):
+    cache.clear()
+    settings.OPEN_ROUTE_API_KEY = "test-key"
+    yield
+    cache.clear()
+
+
+def test_by_road_the_order_follows_road_distance(client, admin_user, seller_user, product,
+                                                 warehouse, road_key, monkeypatch):
+    # In a straight line "Yaqin" is nearer the warehouse, but by road "Uzoq" is
+    # (say "Yaqin" is across a canal). The plan should go to "Uzoq" first.
+    Truck.objects.create(name="Isuzu", capacity_kg=3000)
+    near = make_client(seller_user, "Yaqin", 0.01)
+    far = make_client(seller_user, "Uzoq", 0.03)
+    sell(near, product, 100)
+    sell(far, product, 100)
+    road_km = {("W", "Yaqin"): 9.0, ("W", "Uzoq"): 2.0, ("Yaqin", "Uzoq"): 3.0}
+
+    def fake_matrix(points):
+        names = {(41.3, 69.24): "W", (41.3, 69.25): "Yaqin", (41.3, 69.27): "Uzoq"}
+        labels = [names[(round(p[0], 4), round(p[1], 4))] for p in points]
+        return [[0 if a == b else road_km.get((a, b), road_km.get((b, a))) for b in labels]
+                for a in labels]
+
+    monkeypatch.setattr(road, "matrix_km", fake_matrix)
+    monkeypatch.setattr(road, "path", lambda points: [[41.3, 69.24], [41.31, 69.26], [41.3, 69.24]])
+    resp = page(client, admin_user)
+    assert resp.context["by_road"]
+    assert [s["client"].name for s in resp.context["routes"][0]["stops"]] == ["Uzoq", "Yaqin"]
+    assert resp.context["routes"][0]["km"] == pytest.approx(2 + 3 + 9)
+    assert resp.context["map_data"]["routes"][0]["path"][1] == [41.31, 69.26]
+    assert "(yo'l bo'yicha)" in resp.content.decode()
+
+
+def test_when_the_road_service_fails_the_plan_still_comes(client, admin_user, seller_user,
+                                                          product, warehouse, road_key,
+                                                          monkeypatch):
+    Truck.objects.create(name="Isuzu", capacity_kg=3000)
+    sell(make_client(seller_user, "A", 0.01), product, 100)
+
+    def broken(points):
+        raise road.RoadError("down")
+
+    monkeypatch.setattr(road, "matrix_km", broken)
+    resp = page(client, admin_user)
+    assert not resp.context["by_road"] and len(resp.context["routes"]) == 1
+    assert resp.context["map_data"]["routes"][0]["path"] is None
+    assert resp.context["road_note"].startswith("Yo'l masofalarini olib bo'lmadi")
+    body = resp.content.decode()
+    assert "masofalarini olib" in body and "chiziq)" in body
+
+
+def test_without_a_key_it_plans_by_straight_line_quietly(client, admin_user, seller_user,
+                                                         product, warehouse):
+    Truck.objects.create(name="Isuzu", capacity_kg=3000)
+    sell(make_client(seller_user, "A", 0.01), product, 100)
+    resp = page(client, admin_user)
+    assert not resp.context["by_road"] and resp.context["road_note"] == ""

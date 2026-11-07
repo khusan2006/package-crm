@@ -126,6 +126,10 @@ OMBOR_START_DATE = date(
     *(int(p) for p in os.environ.get("OMBOR_START_DATE", "2026-07-20").split("-"))
 )
 
+# OpenRouteService key for delivery routes by road (crm/road.py). Without it the
+# Yetkazish page plans with straight-line distances.
+OPEN_ROUTE_API_KEY = os.environ.get("OPEN_ROUTE", "")
+
 USE_I18N = True
 
 USE_THOUSAND_SEPARATOR = True

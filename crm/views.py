@@ -34,7 +34,7 @@ from openpyxl.utils import get_column_letter
 from accounts.decorators import role_required
 from accounts.models import User
 
-from . import route_share, routing
+from . import road, route_share, routing
 from .forms import (
     DEFAULT_DEBT_DAYS,
     AdvanceEditForm,
@@ -8012,12 +8012,29 @@ def _attach_driver_share(routes, day, warehouse):
         }
 
 
+def _delivery_distance(depot, visits):
+    """The distance the day is planned with: by road when OpenRouteService answers,
+    straight lines otherwise. Returns (dist, by_road, note) — `note` says why it fell
+    back, when a key is set but the roads couldn't be had."""
+    points = [depot] + [
+        (float(v["client"].latitude), float(v["client"].longitude))
+        for v in visits.values() if v["client"].has_location
+    ]
+    if not road.enabled():
+        return routing.distance_km, False, ""
+    try:
+        return road.distance_for(points), True, ""
+    except road.RoadError:
+        return (routing.distance_km, False,
+                "Yo'l masofalarini olib bo'lmadi — reja to'g'ri chiziq bo'yicha tuzildi.")
+
+
 def _stop_for(client_pk, visit):
     c = visit["client"]
     return routing.Stop(client_pk, float(c.latitude), float(c.longitude), visit["kg"])
 
 
-def _saved_plan(saved, visits, depot):
+def _saved_plan(saved, visits, depot, dist=routing.distance_km):
     """A saved plan read against the day's sales as they are now.
 
     The order and the trucks come from what was saved; the kg comes from the sales,
@@ -8036,7 +8053,7 @@ def _saved_plan(saved, visits, depot):
     unplanned = [v["client"] for pk, v in visits.items()
                  if pk not in planned and v["client"].has_location]
     trucks = sorted(groups, key=lambda t: (-t.capacity_kg, t.pk))  # bigger truck first
-    plan = routing.Plan([routing.build_route(t, groups[t], depot) for t in trucks])
+    plan = routing.Plan([routing.build_route(t, groups[t], depot, dist=dist) for t in trucks])
     return plan, unplanned, dropped
 
 
@@ -8235,19 +8252,21 @@ def delivery_plan(request):
             chosen.append({"sale": sale, "kg": loaded, "pending_kg": pending})
 
     routes, error, unplanned, dropped = [], "", [], 0
+    by_road, road_note = False, ""
     if not warehouse.has_location:
         error = "Ombor joylashuvi belgilanmagan. Uni Mashinalar sahifasida belgilang."
-    elif saved:
+    elif saved or (visits and not missing):
         depot = (float(warehouse.latitude), float(warehouse.longitude))
-        plan, unplanned, dropped = _saved_plan(saved, visits, depot)
-        routes = _route_context(plan, visits)
-    elif visits and not missing:
-        stops = [_stop_for(pk, v) for pk, v in visits.items()]
-        depot = (float(warehouse.latitude), float(warehouse.longitude))
-        try:
-            routes = _route_context(routing.plan_routes(depot, stops, trucks), visits)
-        except routing.RoutingError as err:
-            error = str(err)
+        dist, by_road, road_note = _delivery_distance(depot, visits)
+        if saved:
+            plan, unplanned, dropped = _saved_plan(saved, visits, depot, dist)
+            routes = _route_context(plan, visits)
+        else:
+            stops = [_stop_for(pk, v) for pk, v in visits.items()]
+            try:
+                routes = _route_context(routing.plan_routes(depot, stops, trucks, dist=dist), visits)
+            except routing.RoutingError as err:
+                error = str(err)
 
     map_data = None
     if routes:
@@ -8255,7 +8274,13 @@ def delivery_plan(request):
         map_data = {
             "depot": [float(warehouse.latitude), float(warehouse.longitude)],
             "routes": [
-                {"color": r["color"], "stops": [
+                {"color": r["color"],
+                 # The road the truck drives, when OpenRouteService gave one; the
+                 # map draws straight lines between the pins otherwise.
+                 "path": road.path([depot] + [
+                     (float(s["client"].latitude), float(s["client"].longitude))
+                     for s in r["stops"]] + [depot]) if by_road else None,
+                 "stops": [
                     {"n": s["n"], "name": s["client"].name,
                      "lat": float(s["client"].latitude), "lng": float(s["client"].longitude)}
                     for s in r["stops"]
@@ -8283,6 +8308,8 @@ def delivery_plan(request):
         "saved": saved,
         "unplanned": unplanned,
         "dropped": dropped,
+        "by_road": by_road,
+        "road_note": road_note,
         "chosen": chosen,
         "candidates": candidates,
         "candidate_total": candidate_total,

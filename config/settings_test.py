@@ -27,3 +27,7 @@ PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 
 # The Playwright live server binds to an ephemeral host/port; allow anything.
 ALLOWED_HOSTS = ["*"]
+
+# Never call OpenRouteService from tests, whatever .env holds: road distances are
+# mocked where a test needs them, and everything else plans with straight lines.
+OPEN_ROUTE_API_KEY = ""
