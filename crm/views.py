@@ -58,6 +58,8 @@ from .forms import (
     SaleItemFormSet,
     StockAdjustForm,
     StockEntryForm,
+    TruckForm,
+    WarehouseForm,
     sellers_queryset,
 )
 from .models import (
@@ -92,6 +94,8 @@ from .models import (
     SaleItem,
     SalaryRate,
     StockEntry,
+    Truck,
+    Warehouse,
     month_span,
     seller_cash_on_hand,
     seller_production_debt,
@@ -7781,3 +7785,90 @@ def production_adjust_delete(request, pk):
         "Ha, bekor qilish",
         confirm_class="btn-danger",
     )
+
+
+# --- Delivery: trucks and the shared warehouse --------------------------------------
+# Admin-only setup for delivery route planning (docs/specs/2026-11-07-delivery-route-design.md).
+
+
+@role_required(User.Role.ADMIN)
+def truck_list(request):
+    """The Mashinalar page: every truck with its capacity, and the one shared ombor
+    every route starts from."""
+    return render(request, "crm/truck_list.html", {
+        "trucks": Truck.objects.all(),
+        "warehouse": Warehouse.load(),
+    })
+
+
+@role_required(User.Role.ADMIN)
+def truck_create(request):
+    form = TruckForm(request.POST or None)
+    title = "Yangi mashina"
+    if request.method == "POST":
+        if form.is_valid():
+            truck = form.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Mashina", truck.pk,
+                f"{truck.name} qo'shildi — sig'imi {truck.capacity_kg} kg",
+            )
+            messages.success(request, f"“{truck.name}” qo'shildi.")
+            return form_success(request, reverse("truck_list"))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
+
+
+@role_required(User.Role.ADMIN)
+def truck_edit(request, pk):
+    truck = get_object_or_404(Truck, pk=pk)
+    form = TruckForm(request.POST or None, instance=truck)
+    title = "Mashinani tahrirlash"
+    if request.method == "POST":
+        if form.is_valid():
+            changes = form_changes(form)
+            form.save()
+            if changes:
+                AuditLog.record(
+                    request.user, AuditLog.Action.UPDATE, "Mashina", truck.pk,
+                    f"{truck.name}: {changes}"[:255],
+                )
+            messages.success(request, "Mashina yangilandi.")
+            return form_success(request, reverse("truck_list"))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
+
+
+@role_required(User.Role.ADMIN)
+def truck_delete(request, pk):
+    truck = get_object_or_404(Truck, pk=pk)
+    if request.method == "POST":
+        name = truck.name
+        truck.delete()
+        AuditLog.record(request.user, AuditLog.Action.DELETE, "Mashina", pk, f"{name} o'chirildi")
+        messages.success(request, f"“{name}” o'chirildi.")
+        return form_reload(request, reverse("truck_list"))
+    return render_confirm(
+        request, "Mashinani o'chirish",
+        f"“{truck.name}” ro'yxatdan o'chiriladi. Davom etasizmi?",
+        "Ha, o'chirish", confirm_class="btn-danger",
+    )
+
+
+@role_required(User.Role.ADMIN)
+def warehouse_edit(request):
+    warehouse = Warehouse.load()
+    form = WarehouseForm(request.POST or None, instance=warehouse)
+    title = "Ombor joylashuvi"
+    if request.method == "POST":
+        if form.is_valid():
+            changes = form_changes(form)
+            form.save()
+            if changes:
+                AuditLog.record(
+                    request.user, AuditLog.Action.UPDATE, "Ombor", warehouse.pk,
+                    f"Ombor: {changes}"[:255],
+                )
+            messages.success(request, "Ombor joylashuvi saqlandi.")
+            return form_success(request, reverse("truck_list"))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)

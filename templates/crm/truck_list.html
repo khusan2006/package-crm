@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Mashinalar · Paket CRM{% endblock %}
+{% block topbar_title %}Mashinalar{% endblock %}
+{% block fab %}<a class="fab" href="{% url 'truck_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi mashina</a>{% endblock %}
+{% block content %}
+
+{% comment %}
+  Yetkazib berish marshruti uchun sozlamalar: bitta umumiy ombor (har bir marshrut
+  shu yerdan boshlanadi) va mashinalar sig'imi. Kunlik yuk bitta mashinaga sig'sa —
+  bitta mashina, sig'masa — ikkita.
+{% endcomment %}
+<div class="card">
+  <div class="card-head">
+    <h2>{{ warehouse.name }}</h2>
+    <a class="btn btn-sm" href="{% url 'warehouse_edit' %}" data-modal>{% if warehouse.has_location %}O'zgartirish{% else %}Joylashuvni belgilash{% endif %}</a>
+  </div>
+  {% if warehouse.has_location %}
+  <p>
+    Marshrutlar shu yerdan boshlanadi:
+    <a href="https://www.google.com/maps?q={{ warehouse.coordinates|cut:' ' }}" target="_blank" rel="noopener">{{ warehouse.coordinates }}</a>
+  </p>
+  {% else %}
+  <p class="muted">Ombor joylashuvi hali belgilanmagan. Marshrut tuzish uchun u kerak bo'ladi.</p>
+  {% endif %}
+</div>
+
+<div class="table-wrap">
+<table>
+  <tr><th class="sticky-col">Mashina</th><th class="num">Sig'imi</th><th>Holati</th><th></th></tr>
+  {% for truck in trucks %}
+  <tr>
+    <td class="sticky-col"><a href="{% url 'truck_edit' truck.pk %}" data-modal>{{ truck.name }}</a></td>
+    <td class="num">{{ truck.capacity_kg|floatformat:"0g" }} kg</td>
+    <td>{% if truck.is_active %}<span class="badge badge-paid">Faol</span>{% else %}<span class="badge badge-cancelled">Faol emas</span>{% endif %}</td>
+    <td class="row-actions">
+      <span class="ra-slots">
+        <a class="icon-action act-edit" href="{% url 'truck_edit' truck.pk %}" data-modal title="Tahrirlash">{% include "crm/_ico_edit.html" %}</a>
+        <a class="icon-action danger" href="{% url 'truck_delete' truck.pk %}" data-modal title="O'chirish">{% include "crm/_ico_trash.html" %}</a>
+      </span>
+    </td>
+  </tr>
+  {% empty %}
+  <tr><td colspan="4" class="muted">Hali mashina qo'shilmagan.</td></tr>
+  {% endfor %}
+</table>
+</div>
+{% endblock %}

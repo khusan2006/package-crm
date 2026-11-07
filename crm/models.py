@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import (
     Case,
@@ -1843,3 +1844,68 @@ class AuditLog(models.Model):
 
     def __str__(self):
         return f"{self.get_action_display()} · {self.target_type} · {self.summary}"
+
+
+class Truck(models.Model):
+    """A delivery truck (Mashina) and how many kg it can carry. Trucks belong to the
+    company, not to a seller: one truck can carry several sellers' goods on a trip.
+    The capacity decides whether a day's load goes in one truck or is split across
+    two (see docs/specs/2026-11-07-delivery-route-design.md)."""
+
+    name = models.CharField("Nomi", max_length=100)
+    capacity_kg = models.PositiveIntegerField(
+        "Sig'imi (kg)", validators=[MinValueValidator(1)],
+        help_text="Bir qatnovda ko'tara oladigan eng ko'p yuk, kg",
+    )
+    is_active = models.BooleanField(
+        "Faol", default=True,
+        help_text="Faol bo'lmagan mashina marshrutga qo'shilmaydi",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Mashina"
+        verbose_name_plural = "Mashinalar"
+
+    def __str__(self):
+        return f"{self.name} ({self.capacity_kg} kg)"
+
+
+class Warehouse(models.Model):
+    """The one shared ombor every delivery route starts from (and returns to).
+
+    A single row, edited from the Mashinalar page. Kept in the database rather than
+    in settings so an admin can move it without a deploy. Per-seller ombor stock is
+    bookkeeping only — physically there is one warehouse."""
+
+    name = models.CharField("Nomi", max_length=100, default="Ombor")
+    # Both or neither, like Client — WarehouseForm writes the pair together.
+    latitude = models.DecimalField("Kenglik", max_digits=9, decimal_places=6,
+                                   null=True, blank=True)
+    longitude = models.DecimalField("Uzunlik", max_digits=9, decimal_places=6,
+                                    null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Ombor joylashuvi"
+        verbose_name_plural = "Ombor joylashuvi"
+
+    @classmethod
+    def load(cls):
+        """The single warehouse row, created empty on first use."""
+        return cls.objects.order_by("pk").first() or cls.objects.create()
+
+    @property
+    def has_location(self):
+        return self.latitude is not None and self.longitude is not None
+
+    @property
+    def coordinates(self):
+        """"41.311081, 69.240562", or "" when no point is set yet."""
+        if not self.has_location:
+            return ""
+        return f"{self.latitude.normalize():f}, {self.longitude.normalize():f}"
+
+    def __str__(self):
+        return self.name

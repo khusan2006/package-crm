@@ -30,6 +30,8 @@ from .models import (
     Sale,
     SaleItem,
     StockEntry,
+    Truck,
+    Warehouse,
     seller_cash_on_hand,
     seller_remitted_total,
     seller_withdrawable_profit,
@@ -213,6 +215,20 @@ class LocationPickerWidget(forms.TextInput):
         return render_to_string(self.template_name, self.get_context(name, value, attrs))
 
 
+def _read_location(value):
+    """Whatever was pasted into a joylashuv box, read down to (point, "lat, lng") —
+    or (None, "") for an empty box, which is how a location is taken off. The text
+    form keeps audit lines reading as coordinates, not as a pair of Decimals."""
+    try:
+        point = resolve_location(value)
+    except LocationError as err:
+        raise forms.ValidationError(str(err)) from err
+    if point is None:
+        return None, ""
+    lat, lng = point
+    return point, f"{lat.normalize():f}, {lng.normalize():f}"
+
+
 class ClientForm(forms.ModelForm):
     allow_duplicate = forms.BooleanField(
         label="Bir xil nomli mijoz bo'lsa ham, baribir qo'shilsin",
@@ -276,17 +292,48 @@ class ClientForm(forms.ModelForm):
         return cleaned
 
     def clean_location(self):
-        """Whatever was pasted, read down to a point — or nothing for an empty box,
-        which is how a joylashuv is taken off a mijoz. Returned as "lat, lng" text so
-        the audit line reads as coordinates, not as a pair of Decimals."""
-        try:
-            self._point = resolve_location(self.cleaned_data.get("location"))
-        except LocationError as err:
-            raise forms.ValidationError(str(err)) from err
-        if self._point is None:
-            return ""
-        lat, lng = self._point
-        return f"{lat.normalize():f}, {lng.normalize():f}"
+        self._point, text = _read_location(self.cleaned_data.get("location"))
+        return text
+
+    def save(self, commit=True):
+        self.instance.latitude, self.instance.longitude = self._point or (None, None)
+        return super().save(commit)
+
+
+class TruckForm(forms.ModelForm):
+    """A delivery truck and its capacity in kg."""
+
+    class Meta:
+        model = Truck
+        fields = ["name", "capacity_kg", "is_active"]
+        widgets = {
+            "name": forms.TextInput(attrs={"placeholder": "Masalan: Isuzu 01 A 123 BC"}),
+            "capacity_kg": forms.NumberInput(attrs={"min": 1, "inputmode": "numeric"}),
+        }
+
+
+class WarehouseForm(forms.ModelForm):
+    """Where the shared ombor is — the start (and end) of every delivery route."""
+
+    location = forms.CharField(
+        label="Joylashuv", required=False, max_length=2000,
+        help_text="Google Maps, Yandex, 2GIS havolasi yoki koordinata — "
+                  "qaysi biri qulay bo'lsa.",
+        widget=LocationPickerWidget())
+
+    class Meta:
+        model = Warehouse
+        fields = ["name", "location"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # On the form's initial, so form_changes shows the old point in the audit line.
+        self.initial.setdefault("location", self.instance.coordinates)
+        self._point = None
+
+    def clean_location(self):
+        self._point, text = _read_location(self.cleaned_data.get("location"))
+        return text
 
     def save(self, commit=True):
         self.instance.latitude, self.instance.longitude = self._point or (None, None)

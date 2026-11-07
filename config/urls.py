@@ -104,6 +104,12 @@ urlpatterns = [
     path("kassa/chiqim/<int:pk>/edit/", crm_views.expense_edit, name="expense_edit"),
     path("kassa/chiqim/<int:pk>/delete/", crm_views.expense_delete, name="expense_delete"),
     path("kassa/amal/<str:kind>/<int:pk>/", crm_views.kassa_entry_detail, name="kassa_entry_detail"),
+    # delivery setup (admin only)
+    path("mashinalar/", crm_views.truck_list, name="truck_list"),
+    path("mashinalar/yangi/", crm_views.truck_create, name="truck_create"),
+    path("mashinalar/<int:pk>/edit/", crm_views.truck_edit, name="truck_edit"),
+    path("mashinalar/<int:pk>/delete/", crm_views.truck_delete, name="truck_delete"),
+    path("mashinalar/ombor/", crm_views.warehouse_edit, name="warehouse_edit"),
     path("xodimlar/", crm_views.employee_list, name="employee_list"),
     path("xodimlar/export/", crm_views.employee_export, name="employee_export"),
     path("xodimlar/yangi/", crm_views.employee_create, name="employee_create"),
