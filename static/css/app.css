@@ -6601,12 +6601,6 @@ a.cell-loc--map:hover { color: var(--accent); }
 /* «Yangi yuk» is a one-click form, not a pop-up link: the form must not add a box. */
 .fab-form { display: contents; }
 button.fab { font-family: inherit; }
-/* Mijoz qo'shish: the whole client list with a rulon box on each row. */
-.pick-search { min-width: 260px; }
-.pick-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
-.pick-table tr[hidden] { display: none; }
-.pick-table tr.is-chosen td { background: var(--accent-soft); }
-.pick-table tr.is-in-load td { color: var(--text-muted); }
 /* input.… — the general input[type=text] rule would otherwise stretch these. */
 input.pick-rolls, input.pick-kg {
   width: 84px; max-width: 84px; text-align: right; padding: 5px 8px;
@@ -6614,13 +6608,34 @@ input.pick-rolls, input.pick-kg {
   background: var(--input); color: var(--text); font: inherit;
 }
 input.pick-kg { width: 110px; max-width: 110px; }
-/* Stays in view while scrolling the list: the count and the one save button. */
-.pick-bar {
-  position: sticky; bottom: 0; z-index: 5;
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  margin-top: 12px; padding: 12px 16px;
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r);
-  box-shadow: var(--shadow-lg);
-}
 .items-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 12px; }
 .items-actions .route-dirty[hidden] { display: none; }
+/* Yuk tarkibi: new rows (a client and a rulon each) and the full-width «+». */
+.new-rows { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.new-row { display: flex; align-items: center; gap: 8px; }
+.new-row .combobox, .new-row select { flex: 1 1 auto; min-width: 0; max-width: none; }
+/* The general input rule caps text boxes at 480px; the client picker fills the row. */
+.new-row input.combobox-input { width: 100%; max-width: none; }
+.new-row-add {
+  display: block; width: 100%; margin-top: 8px; padding: 9px 12px;
+  border: 1px dashed var(--border-strong); border-radius: var(--r-sm);
+  background: transparent; color: var(--accent); font: inherit; font-weight: 600;
+  cursor: pointer;
+}
+.new-row-add:hover { background: var(--accent-soft); border-color: var(--accent); }
+/* Marshrut: the build button, its loading state, and the fetched route. */
+.load-route-start { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.load-route-start h2 { margin: 0 0 4px; }
+.load-route-start p { margin: 0; }
+.load-route-start[hidden] { display: none; }
+.btn-spinner {
+  display: none; width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid currentColor; border-right-color: transparent;
+  animation: btn-spin 0.7s linear infinite;
+}
+.btn.is-loading .btn-spinner { display: inline-block; }
+@keyframes btn-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .btn-spinner { animation-duration: 2s; } }
+.route-total { margin-bottom: 12px; }
+.load-route .route-bar, .load-route .route-mapcard, .load-route .route-grid { margin-top: 12px; }
+.load-route-card [data-route-failed][hidden] { display: none; }

@@ -407,9 +407,14 @@
       }
       fit();
       requestAnimationFrame(fit);
+      // Tell whoever is waiting (the «Marshrut tuzish» button) that the map is up.
+      el.dispatchEvent(new CustomEvent('route:map-ready', { bubbles: true }));
       if (window.ResizeObserver) { new ResizeObserver(fit).observe(el); }
       else { setTimeout(fit, 300); window.addEventListener('resize', fit); }
-    }).catch(function () { el.hidden = true; });
+    }).catch(function () {
+      el.hidden = true;
+      el.dispatchEvent(new CustomEvent('route:map-ready', { bubbles: true }));
+    });
   }
 
   /* ---------- Ulashish ---------- */
@@ -479,6 +484,8 @@
     document.addEventListener('DOMContentLoaded', function () { enhance(); });
   } else { enhance(); }
   document.addEventListener('modal:loaded', function (e) { enhance(e.detail || document); });
+  // A load's route arrives after the page has loaded («Marshrut tuzish»).
+  document.addEventListener('route:loaded', function (e) { enhance(e.detail || document); });
 
   // A form that comes back with errors is swapped into the modal WITHOUT a
   // modal:loaded (base.html's bindForm), so a bad link would leave the picker's

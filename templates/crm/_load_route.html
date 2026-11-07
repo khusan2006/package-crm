@@ -1,0 +1,127 @@
+{% load crm_extras l10n %}
+{% comment %}
+  «Marshrut tuzish» natijasi — sahifaga JS bilan qo'yiladi (load.js). Mashina(lar),
+  tartib, xarita va haydovchiga xabar. Tartib saqlanmaguncha — taklif.
+{% endcomment %}
+<div class="load-route" data-load-route-content>
+{% if error %}
+<div class="overdue-banner" role="alert">
+  <span class="ob-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+  <span class="ob-text">{{ error }}</span>
+</div>
+{% endif %}
+{% if road_note %}<p class="route-share-stale" role="status">{{ road_note }}</p>{% endif %}
+
+{% if missing %}
+<p class="route-share-stale" role="status">Marshrut uchun hamma mijozning joylashuvi kerak — yuqoridagi ro'yxatdan qo'shing.</p>
+{% elif not routes and not error %}
+<p class="muted">Marshrut tuzish uchun yukda mijoz yo'q.</p>
+{% endif %}
+{% if routes %}
+<div class="route-total muted">Jami ≈ {{ km|floatformat:1 }} km {% if by_road %}yo'l bo'yicha{% else %}to'g'ri chiziq bo'yicha{% endif %}, omborga qaytish bilan.</div>
+{% if unweighed %}
+<p class="route-share-stale" role="status">Mashina hamma mijoz tortilgach tanlanadi — hali {{ unweighed }} ta mijozning kg'i kiritilmagan. Hozircha bitta marshrut.</p>
+{% endif %}
+<div class="card route-bar">
+  <div>
+    {% if load.ordered_at %}
+    <span class="badge badge-paid">Saqlangan</span>
+    <span class="muted">{{ load.ordered_at|date:"d.m.Y H:i" }}</span>
+    {% else %}
+    <span class="badge badge-warning">Taklif</span>
+    <span class="muted">tartib hali saqlanmagan — kerak bo'lsa o'zgartiring va saqlang</span>
+    {% endif %}
+    <span class="route-dirty" data-route-dirty hidden>· o'zgartirildi, saqlanmagan</span>
+  </div>
+  <div class="route-bar-actions">
+    {% if load.ordered_at %}<button type="submit" class="btn btn-sm btn-ghost" form="route-reset">Qayta hisoblash</button>{% endif %}
+    <button type="submit" class="btn btn-sm" form="route-form">Saqlash</button>
+  </div>
+</div>
+{% if load.ordered_at %}
+<form method="post" id="route-reset" action="{% url 'load_detail' load.pk %}"
+      onsubmit="return confirm('Saqlangan tartib o\'chirilib, qaytadan hisoblanadi. Davom etasizmi?')">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="reset">
+</form>
+{% endif %}
+
+<div class="card route-mapcard">
+  <div class="geo-map route-map" data-geo-route data-route-json="route-data" role="img" aria-label="Marshrut xaritasi"></div>
+  {{ map_data|json_script:"route-data" }}
+</div>
+
+<form method="post" id="route-form" action="{% url 'load_detail' load.pk %}" data-route-form>
+{% csrf_token %}
+<input type="hidden" name="action" value="save">
+<div class="route-grid">
+  {% for r in routes %}
+  <section class="card route-card" style="--route: var({{ r.color }});" data-route-truck>
+    <div class="card-head">
+      <h2><span class="route-dot" aria-hidden="true"></span>{% if r.truck %}{{ r.truck.name }}{% else %}Marshrut{% endif %}</h2>
+      <span class="muted"><span data-route-count>{{ r.stops|length }}</span> ta manzil · ≈ {{ r.km|floatformat:1 }} km</span>
+    </div>
+    {% if r.truck %}
+    <div class="route-load{% if r.over %} is-over{% endif %}" title="Yuk / sig'im">
+      <div class="route-load-bar"><span style="width: {{ r.load_pct }}%"></span></div>
+      <span>{{ r.kg|floatformat:"0g" }} / {{ r.truck.capacity_kg|floatformat:"0g" }} kg</span>
+    </div>
+    {% if r.over %}<p class="route-over-note">Mashina sig'imidan oshib ketdi.</p>{% endif %}
+    {% else %}
+    <p class="muted route-truck-note">Mashina hali tanlanmagan.</p>
+    {% endif %}
+    <ol class="route-stops">
+      <li class="route-stop route-stop--depot"><span class="route-n">O</span><span>{{ warehouse.name }} — jo'nash</span></li>
+      {% for s in r.stops %}
+      <li class="route-stop" data-route-stop>
+        <input type="hidden" name="stop" value="{{ s.item.pk|unlocalize }}">
+        <span class="route-n" data-route-n>{{ s.n }}</span>
+        <span class="route-body">
+          <a href="{% url 'client_location' s.client.pk %}" data-modal><strong>{{ s.client.name }}</strong></a>
+          {% if s.client.address %}<span class="cell-sub">{{ s.client.address }}</span>{% endif %}
+          <span class="cell-sub">{% if s.client.phone %}<a href="tel:{{ s.client.phone|cut:' ' }}">{{ s.client.phone }}</a> · {% endif %}{{ s.client.owner }}</span>
+        </span>
+        <span class="route-side">
+          <span class="route-kg">{{ s.item.rolls }} rulon{% if s.item.kg is not None %}<span class="cell-sub">{{ s.item.kg|floatformat:"0g" }} kg</span>{% endif %}</span>
+          <span class="route-moves">
+            <button type="button" class="icon-action" data-move="up" title="Oldinga" aria-label="Oldinga">↑</button>
+            <button type="button" class="icon-action" data-move="down" title="Orqaga" aria-label="Orqaga">↓</button>
+          </span>
+        </span>
+      </li>
+      {% endfor %}
+      <li class="route-stop route-stop--depot" data-route-end><span class="route-n">O</span><span>{{ warehouse.name }} — qaytish</span></li>
+    </ol>
+
+    {% comment %}Haydovchiga: built from the order the server drew — hidden after a move
+    until saved, or the driver would get the old order.{% endcomment %}
+    <div class="route-share" data-route-share>
+      <h3>Haydovchiga</h3>
+      <div class="geo-share" data-geo-share data-share-title="{{ r.share.title }}" data-share-text="{{ r.share.text }}" data-share-url="{% firstof r.share.google_links.0 r.share.yandex_link %}">
+        <button type="button" class="btn geo-share-main" data-share-native hidden>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          Ulashish
+        </button>
+        <div class="geo-share-row">
+          <a class="btn btn-ghost btn-sm" href="{{ r.share.telegram_url }}" target="_blank" rel="noopener">Telegram</a>
+          <a class="btn btn-ghost btn-sm" href="{{ r.share.whatsapp_url }}" target="_blank" rel="noopener">WhatsApp</a>
+          <button type="button" class="btn btn-ghost btn-sm" data-share-copy>Nusxa olish</button>
+        </div>
+        <div class="geo-share-row" title="Marshrutni xaritada ochish">
+          {% for url in r.share.google_links %}
+          <a class="btn btn-ghost btn-sm" href="{{ url }}" target="_blank" rel="noopener">Google Maps{% if r.share.google_links|length > 1 %} · {{ forloop.counter }}-qism{% endif %} ↗</a>
+          {% endfor %}
+          {% if r.share.yandex_link %}<a class="btn btn-ghost btn-sm" href="{{ r.share.yandex_link }}" target="_blank" rel="noopener">Yandex ↗</a>{% endif %}
+        </div>
+        {% if r.share.google_links|length > 1 %}<p class="geo-hint">Google bitta havolada 9 tadan ortiq oraliq nuqtani qabul qilmaydi, shuning uchun marshrut qismlarga bo'lingan: birinchisi tugagan joydan ikkinchisi boshlanadi.</p>{% endif %}
+        <span class="geo-status" data-share-status role="status" aria-live="polite"></span>
+      </div>
+    </div>
+    <p class="muted route-share-stale" data-route-share-stale hidden>Tartib o'zgardi — haydovchiga yuborishdan oldin saqlang.</p>
+  </section>
+  {% endfor %}
+</div>
+</form>
+<p class="muted route-hint">↑ ↓ — tartibni o'zgartirish. Qaysi mijoz qaysi mashinada — tizim kg bo'yicha o'zi hal qiladi. Xarita va km saqlangandan keyin yangilanadi.</p>
+{% endif %}
+</div>

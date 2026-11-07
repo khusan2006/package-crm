@@ -1,124 +1,135 @@
-/* Yetkazish loads: choosing clients fast, and editing rulon / kg in the table.
+/* Yetkazish — one load's page.
  *
- * Mijoz qo'shish (data-load-pick): every client is a row with a rulon box; typing a
- * number is choosing them. The search, seller and "only chosen" filters just hide
- * rows — nothing typed is lost — and the bar keeps a running count. Keyboard: in the
- * search, ↓ or Enter jumps to the first visible rulon box; in a box, Enter goes back
- * to the search (it never submits by accident) and ↑ / ↓ move between rows.
+ * Yuk tarkibi (data-load-items): new rows are a client picker and a rulon box;
+ * «+ Yana mijoz» adds another pair, × drops one. Picking a client moves to its
+ * rulon box; Enter in the last rulon box adds the next row. Nothing submits by
+ * accident, and leaving with unsaved changes asks first.
  *
- * Yuk tarkibi (data-load-items): marks the table as changed and warns before
- * leaving with unsaved rulon / kg.
+ * Marshrut (data-load-route): «Marshrut tuzish» fetches the route fragment and
+ * shows a loading state until it is on the page and its map is drawn.
  */
 (function () {
   'use strict';
 
-  function rollsOf(input) {
-    var n = parseInt(input.value.replace(/\s/g, ''), 10);
-    return n > 0 ? n : 0;
-  }
-
-  function warnOnLeave(form, isDirty) {
-    var submitting = false;
-    form.addEventListener('submit', function () { submitting = true; });
-    window.addEventListener('beforeunload', function (e) {
-      if (!submitting && isDirty()) { e.preventDefault(); e.returnValue = ''; }
-    });
-  }
-
-  /* ---------- Mijoz qo'shish ---------- */
-  var pick = document.querySelector('[data-load-pick]');
-  if (pick) {
-    var search = pick.querySelector('[data-pick-search]');
-    var seller = pick.querySelector('[data-pick-seller]');
-    var chosenOnly = pick.querySelector('[data-pick-chosen]');
-    var rows = Array.prototype.slice.call(pick.querySelectorAll('[data-pick-row]'));
-    var empty = pick.querySelector('[data-pick-empty]');
-    var count = pick.querySelector('[data-pick-count]');
-    var total = pick.querySelector('[data-pick-rolls-total]');
-    var submit = pick.querySelector('[data-pick-submit]');
-
-    var visibleBoxes = function () {
-      return rows.filter(function (r) { return !r.hidden; })
-        .map(function (r) { return r.querySelector('[data-pick-rolls]'); })
-        .filter(Boolean);
-    };
-
-    var filter = function () {
-      var words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
-      var who = seller.value;
-      var shown = 0;
-      rows.forEach(function (r) {
-        var box = r.querySelector('[data-pick-rolls]');
-        var text = r.getAttribute('data-search');
-        var ok = words.every(function (w) { return text.indexOf(w) !== -1; }) &&
-          (!who || r.getAttribute('data-seller') === who) &&
-          (!chosenOnly.checked || (box && rollsOf(box) > 0));
-        r.hidden = !ok;
-        if (ok) { shown++; }
-      });
-      empty.hidden = shown > 0;
-    };
-
-    var tally = function () {
-      var n = 0, sum = 0;
-      rows.forEach(function (r) {
-        var box = r.querySelector('[data-pick-rolls]');
-        var v = box ? rollsOf(box) : 0;
-        r.classList.toggle('is-chosen', v > 0);
-        if (v > 0) { n++; sum += v; }
-      });
-      count.textContent = n;
-      total.textContent = sum;
-      submit.disabled = n === 0;
-    };
-
-    search.addEventListener('input', filter);
-    seller.addEventListener('change', filter);
-    chosenOnly.addEventListener('change', filter);
-    pick.addEventListener('input', function (e) {
-      if (e.target.matches('[data-pick-rolls]')) { tally(); }
-    });
-
-    search.addEventListener('keydown', function (e) {
-      if (e.key === 'ArrowDown' || e.key === 'Enter') {
-        e.preventDefault();
-        var first = visibleBoxes()[0];
-        if (first) { first.focus(); first.select(); }
-      }
-    });
-    pick.addEventListener('keydown', function (e) {
-      if (!e.target.matches('[data-pick-rolls]')) { return; }
-      var boxes = visibleBoxes();
-      var i = boxes.indexOf(e.target);
-      if (e.key === 'Enter') {
-        // Back to the search for the next client — never a surprise submit.
-        e.preventDefault();
-        search.focus();
-        search.select();
-      } else if (e.key === 'ArrowDown' && boxes[i + 1]) {
-        e.preventDefault();
-        boxes[i + 1].focus();
-        boxes[i + 1].select();
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        if (boxes[i - 1]) { boxes[i - 1].focus(); boxes[i - 1].select(); } else { search.focus(); }
-      }
-    });
-
-    warnOnLeave(pick, function () { return count.textContent !== '0'; });
-    filter();
-    tally();
-  }
-
   /* ---------- Yuk tarkibi ---------- */
   var items = document.querySelector('[data-load-items]');
   if (items) {
+    var list = items.querySelector('[data-new-rows]');
+    var tmpl = items.querySelector('[data-new-row-template]');
     var dirtyNote = items.querySelector('[data-items-dirty]');
     var changed = false;
-    items.addEventListener('input', function () {
+    var submitting = false;
+
+    var markChanged = function () {
       changed = true;
       if (dirtyNote) { dirtyNote.hidden = false; }
+    };
+
+    var focusClient = function (row) {
+      // The picker turns the <select> into a text box; fall back to the select.
+      var box = row.querySelector('.combobox-input') || row.querySelector('select');
+      if (box) { box.focus(); }
+    };
+
+    var addRow = function () {
+      var row = tmpl.content.firstElementChild.cloneNode(true);
+      list.appendChild(row);
+      if (window.enhanceComboboxes) { window.enhanceComboboxes(row); }
+      focusClient(row);
+      return row;
+    };
+
+    items.querySelector('[data-new-row-add]').addEventListener('click', addRow);
+
+    items.addEventListener('click', function (e) {
+      var remove = e.target.closest('[data-new-row-remove]');
+      if (!remove) { return; }
+      var row = remove.closest('[data-new-row]');
+      if (list.querySelectorAll('[data-new-row]').length > 1) {
+        row.remove();
+      } else {
+        // Keep one empty pair to type into.
+        row.querySelector('select').value = '';
+        var box = row.querySelector('.combobox-input');
+        if (box) { box.value = ''; }
+        row.querySelector('[name=new_rolls]').value = '';
+      }
     });
-    warnOnLeave(items, function () { return changed; });
+
+    // A client picked: straight on to their rulon.
+    items.addEventListener('change', function (e) {
+      if (e.target.matches('select[name=new_client]') && e.target.value) {
+        var rolls = e.target.closest('[data-new-row]').querySelector('[name=new_rolls]');
+        rolls.focus();
+        rolls.select();
+      }
+      markChanged();
+    });
+
+    items.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' || !e.target.matches('input')) { return; }
+      if (e.target.closest('.combobox')) { return; }  // the picker uses Enter to choose
+      e.preventDefault();  // never a surprise submit
+      if (e.target.matches('[name=new_rolls]')) {
+        var row = e.target.closest('[data-new-row]');
+        var next = row.nextElementSibling;
+        if (next) { focusClient(next); } else { addRow(); }
+      }
+    });
+
+    items.addEventListener('input', markChanged);
+    items.addEventListener('submit', function () { submitting = true; });
+    window.addEventListener('beforeunload', function (e) {
+      if (changed && !submitting) { e.preventDefault(); e.returnValue = ''; }
+    });
+  }
+
+  /* ---------- Marshrut tuzish ---------- */
+  var card = document.querySelector('[data-load-route]');
+  if (card) {
+    var button = card.querySelector('[data-route-build]');
+    var label = card.querySelector('[data-route-build-label]');
+    var start = card.querySelector('[data-route-start]');
+    var failed = card.querySelector('[data-route-failed]');
+    var slot = card.querySelector('[data-route-slot]');
+
+    var busy = function (on) {
+      button.disabled = on;
+      button.classList.toggle('is-loading', on);
+      label.textContent = on ? 'Marshrut tuzilmoqda…' : 'Marshrut tuzish';
+    };
+
+    var build = function () {
+      busy(true);
+      failed.hidden = true;
+      fetch(card.getAttribute('data-url'), {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin'
+      }).then(function (r) {
+        if (!r.ok) { throw new Error(r.status); }
+        return r.text();
+      }).then(function (html) {
+        slot.innerHTML = html;
+        var map = slot.querySelector('[data-geo-route]');
+        var done = function () {
+          busy(false);
+          start.hidden = true;
+        };
+        if (map) {
+          // Loading lasts until the map is drawn (or 20 s, if the tiles stall).
+          var timer = setTimeout(done, 20000);
+          map.addEventListener('route:map-ready', function () { clearTimeout(timer); done(); },
+            { once: true });
+        }
+        document.dispatchEvent(new CustomEvent('route:loaded', { detail: slot }));
+        if (!map) { done(); }
+      }).catch(function () {
+        busy(false);
+        failed.hidden = false;
+      });
+    };
+
+    button.addEventListener('click', build);
+    if (card.hasAttribute('data-auto')) { build(); }
   }
 })();

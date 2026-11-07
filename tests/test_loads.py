@@ -54,6 +54,12 @@ def detail(client, user, load):
     return get(client, user, f"/yetkazish/{load.pk}/")
 
 
+def route(client, user, load):
+    """The «Marshrut tuzish» fragment for the load."""
+    client.force_login(user)
+    return client.get(f"/yetkazish/{load.pk}/marshrut/")
+
+
 def names(resp, route=0):
     return [s["client"].name for s in resp.context["routes"][route]["stops"]]
 
@@ -144,66 +150,77 @@ def test_deleting_a_load_takes_its_clients_too(client, admin_user, seller_user, 
 
 # --- clients, rolls, kg -------------------------------------------------------------
 
-def pick(client, user, load, **rolls):
-    """Post the Mijoz qo'shish page: rolls_<client pk>=<typed text>."""
+def add_rows(client, user, load, *rows):
+    """Post Yuk tarkibi with new rows only: (client or "", rulon as typed)."""
     client.force_login(user)
-    return client.post(f"/yetkazish/{load.pk}/mijoz/",
-                       {f"rolls_{c.pk}": v for c, v in rolls.values()})
+    return client.post(f"/yetkazish/{load.pk}/", {
+        "action": "items",
+        "new_client": [c.pk if c else "" for c, _ in rows],
+        "new_rolls": [r for _, r in rows],
+    })
 
 
-def test_the_picker_lists_every_client_and_marks_those_in_the_load(client, admin_user, seller_user,
-                                                                   load):
+def test_the_page_offers_only_clients_not_yet_in_the_load(client, admin_user, seller_user, load):
     a = make_client(seller_user, "Anvar", 0.01)
     b = make_client(seller_user, "Botir", 0.02)
     put(load, a)
-    resp = get(client, admin_user, f"/yetkazish/{load.pk}/mijoz/")
-    rows = {r["client"].name: r["in_load"] for r in resp.context["rows"]}
-    assert rows == {"Anvar": True, "Botir": False}
+    resp = detail(client, admin_user, load)
+    assert resp.context["clients"] == [b]
     body = resp.content.decode()
-    assert f'name="rolls_{b.pk}"' in body and f'name="rolls_{a.pk}"' not in body
+    assert 'name="new_client"' in body and 'name="new_rolls"' in body
+    assert "data-new-row-add" in body and "<template data-new-row-template>" in body
 
 
-def test_several_clients_are_added_in_one_save(client, admin_user, seller_user, load):
+def test_several_new_rows_are_added_in_one_save(client, admin_user, seller_user, load):
     a = make_client(seller_user, "Anvar", 0.01)
-    b = make_client(seller_user, "Botir", 0.02)
     c = make_client(seller_user, "Davron", 0.03)
-    resp = pick(client, admin_user, load, a=(a, "12"), b=(b, ""), c=(c, " 3 "))
+    resp = add_rows(client, admin_user, load, (a, "12"), (None, ""), (c, " 3 "))
     assert resp.status_code == 302 and resp.url == f"/yetkazish/{load.pk}/"
     assert {(i.client.name, i.rolls, i.kg) for i in load.items.all()} == {
         ("Anvar", 12, None), ("Davron", 3, None)}
-    assert AuditLog.objects.filter(target_type="Yuk", summary__contains="Anvar 12").exists()
+    assert AuditLog.objects.filter(target_type="Yuk", summary__contains="+ Anvar 12").exists()
 
 
-@pytest.mark.parametrize("bad", ["0", "-2", "3.5", "abc"])
-def test_a_wrong_rulon_saves_nothing_and_keeps_what_was_typed(client, admin_user, seller_user,
-                                                              load, bad):
+@pytest.mark.parametrize("bad", ["", "0", "-2", "3.5", "abc"])
+def test_a_new_row_without_a_good_rulon_saves_nothing(client, admin_user, seller_user, load, bad):
     a = make_client(seller_user, "Anvar", 0.01)
     b = make_client(seller_user, "Botir", 0.02)
-    resp = pick(client, admin_user, load, a=(a, "12"), b=(b, bad))
-    assert resp.status_code == 200 and not LoadItem.objects.exists()
-    typed = {r["client"].name: r["typed"] for r in resp.context["rows"]}
-    assert typed == {"Anvar": "12", "Botir": bad}
-    assert "Botir" in resp.content.decode()
+    add_rows(client, admin_user, load, (a, "12"), (b, bad))
+    assert not LoadItem.objects.exists()
 
 
-def test_nothing_typed_adds_nothing(client, admin_user, seller_user, load):
+def test_a_rulon_without_a_client_saves_nothing(client, admin_user, seller_user, load):
     a = make_client(seller_user, "Anvar", 0.01)
-    resp = pick(client, admin_user, load, a=(a, ""))
-    assert resp.status_code == 200 and not LoadItem.objects.exists()
+    add_rows(client, admin_user, load, (a, "12"), (None, "5"))
+    assert not LoadItem.objects.exists()
 
 
-def test_a_client_already_in_the_load_is_not_added_twice(client, admin_user, seller_user, load):
+def test_the_same_client_twice_saves_nothing(client, admin_user, seller_user, load):
     a = make_client(seller_user, "Anvar", 0.01)
+    add_rows(client, admin_user, load, (a, "12"), (a, "3"))
+    assert not LoadItem.objects.exists()
     put(load, a, rolls=4)
-    pick(client, admin_user, load, a=(a, "9"))  # a stale tab posting it anyway
+    add_rows(client, admin_user, load, (a, "9"))  # a stale tab posting it again
     assert [(i.client.name, i.rolls) for i in load.items.all()] == [("Anvar", 4)]
 
 
 def test_the_same_client_can_be_in_another_load(client, admin_user, seller_user, load):
     c = make_client(seller_user, "Anvar", 0.01)
     put(Load.objects.create(date=TODAY()), c)
-    pick(client, admin_user, load, c=(c, "3"))
+    add_rows(client, admin_user, load, (c, "3"))
     assert load.items.filter(client=c, rolls=3).exists()
+
+
+def test_new_rows_and_edits_are_saved_together(client, admin_user, seller_user, load):
+    a = put(load, make_client(seller_user, "Anvar", 0.01), rolls=12)
+    b = make_client(seller_user, "Botir", 0.02)
+    client.force_login(admin_user)
+    client.post(f"/yetkazish/{load.pk}/", {
+        "action": "items", f"rolls_{a.pk}": "12", f"kg_{a.pk}": "300",
+        "new_client": [b.pk], "new_rolls": ["7"],
+    })
+    a.refresh_from_db()
+    assert a.kg == Decimal("300") and load.items.get(client=b).rolls == 7
 
 
 def save_items(client, user, load, **rows):
@@ -265,7 +282,7 @@ def three(load, seller_user, warehouse):
 
 
 def test_route_is_suggested_from_the_warehouse_outward(client, admin_user, load, three):
-    resp = detail(client, admin_user, load)
+    resp = route(client, admin_user, load)
     assert names(resp) == ["B", "C", "A"]
     assert resp.context["km"] > 0 and resp.context["map_data"]["depot"] == [41.3, 69.24]
     assert "Taklif" in resp.content.decode()
@@ -274,7 +291,7 @@ def test_route_is_suggested_from_the_warehouse_outward(client, admin_user, load,
 def test_drivers_message_has_rolls_and_kg_when_known(client, admin_user, load, three):
     three[1].kg = Decimal("250")
     three[1].save()
-    share = detail(client, admin_user, load).context["routes"][0]["share"]
+    share = route(client, admin_user, load).context["routes"][0]["share"]
     assert share["text"].startswith(f"Yuk #{load.pk} — {TODAY():%d.%m.%Y}\n")
     assert "1. B — 10 rulon · 250 kg" in share["text"]
     assert "2. C — 10 rulon\n" in share["text"]
@@ -287,7 +304,7 @@ def test_saving_the_order(client, admin_user, load, three):
     assert resp.status_code == 302
     load.refresh_from_db()
     assert load.ordered_at is not None
-    assert names(detail(client, admin_user, load)) == ["C", "A", "B"]
+    assert names(route(client, admin_user, load)) == ["C", "A", "B"]
 
 
 def test_a_client_added_after_saving_joins_the_end(client, admin_user, seller_user, load, three):
@@ -295,8 +312,8 @@ def test_a_client_added_after_saving_joins_the_end(client, admin_user, seller_us
     client.force_login(admin_user)
     client.post(f"/yetkazish/{load.pk}/", {"action": "save", "stop": [c.pk, a.pk, b.pk]})
     late = make_client(seller_user, "Kechikkan", 0.005)
-    client.post(f"/yetkazish/{load.pk}/mijoz/", {f"rolls_{late.pk}": "2"})
-    assert names(detail(client, admin_user, load)) == ["C", "A", "B", "Kechikkan"]
+    add_rows(client, admin_user, load, (late, "2"))
+    assert names(route(client, admin_user, load)) == ["C", "A", "B", "Kechikkan"]
 
 
 @pytest.mark.parametrize("stops", [["999999"], ["abc"], []])
@@ -321,32 +338,32 @@ def test_reset_gives_a_fresh_suggestion(client, admin_user, load, three):
     client.post(f"/yetkazish/{load.pk}/", {"action": "reset"})
     load.refresh_from_db()
     assert load.ordered_at is None and not load.items.exclude(position=None).exists()
-    assert names(detail(client, admin_user, load)) == ["B", "C", "A"]
+    assert names(route(client, admin_user, load)) == ["B", "C", "A"]
 
 
 def test_missing_locations_hold_the_route_back(client, admin_user, seller_user, load, three):
     nowhere = make_client(seller_user, "Joysiz")
     put(load, nowhere)
-    resp = detail(client, admin_user, load)
+    resp = route(client, admin_user, load)
     assert resp.context["routes"] == [] and resp.context["missing"] == [nowhere]
-    assert f"/clients/{nowhere.pk}/edit/" in resp.content.decode()
+    assert f"/clients/{nowhere.pk}/edit/" in detail(client, admin_user, load).content.decode()
 
 
 def test_no_warehouse_location_is_explained(client, admin_user, seller_user, load):
     put(load, make_client(seller_user, "A", 0.01))
-    resp = detail(client, admin_user, load)
+    resp = route(client, admin_user, load)
     assert resp.context["routes"] == [] and "Ombor joylashuvi" in resp.context["error"]
 
 
 def test_ids_are_written_without_a_thousands_separator(client, admin_user, seller_user, load, warehouse):
     c = make_client(seller_user, "Katta", 0.01)
     LoadItem.objects.create(pk=1500, load=load, client=c, rolls=1)
-    assert 'name="stop" value="1500"' in detail(client, admin_user, load).content.decode()
+    assert 'name="stop" value="1500"' in route(client, admin_user, load).content.decode()
 
 
 def test_client_names_cannot_break_out_of_the_map_data(client, admin_user, seller_user, load, warehouse):
     put(load, make_client(seller_user, "</script><b>x", 0.01))
-    assert "</script><b>x" not in detail(client, admin_user, load).content.decode()
+    assert "</script><b>x" not in route(client, admin_user, load).content.decode()
 
 
 # --- by road ------------------------------------------------------------------------
@@ -374,7 +391,7 @@ def test_by_road_the_order_follows_road_distance(client, admin_user, seller_user
 
     monkeypatch.setattr(road, "matrix_km", fake_matrix)
     monkeypatch.setattr(road, "path", lambda points: [[41.3, 69.24], [41.31, 69.26], [41.3, 69.24]])
-    resp = detail(client, admin_user, load)
+    resp = route(client, admin_user, load)
     assert resp.context["by_road"] and names(resp) == ["Uzoq", "Yaqin"]
     assert resp.context["km"] == pytest.approx(2 + 3 + 9)
     assert resp.context["map_data"]["routes"][0]["path"][1] == [41.31, 69.26]
@@ -388,7 +405,7 @@ def test_when_the_road_service_fails_the_route_still_comes(client, admin_user, s
         raise road.RoadError("down")
 
     monkeypatch.setattr(road, "matrix_km", broken)
-    resp = detail(client, admin_user, load)
+    resp = route(client, admin_user, load)
     assert not resp.context["by_road"] and len(resp.context["routes"][0]["stops"]) == 1
     assert resp.context["road_note"].startswith("Yo'l masofalarini olib bo'lmadi")
 
@@ -408,7 +425,7 @@ def trucks(db):
 def test_no_truck_until_everyone_is_weighed(client, admin_user, seller_user, load, warehouse, trucks):
     put(load, make_client(seller_user, "A", 0.01), kg=200)
     put(load, make_client(seller_user, "B", 0.02))  # not weighed yet
-    resp = detail(client, admin_user, load)
+    resp = route(client, admin_user, load)
     assert len(resp.context["routes"]) == 1 and resp.context["routes"][0]["truck"] is None
     assert "Mashina hamma mijoz tortilgach tanlanadi" in resp.content.decode()
 
@@ -418,7 +435,7 @@ def test_once_weighed_the_smallest_truck_that_fits_is_chosen(client, admin_user,
     labo, isuzu = trucks
     put(load, make_client(seller_user, "A", 0.01), kg=300)
     put(load, make_client(seller_user, "B", 0.02), kg=400)
-    routes = detail(client, admin_user, load).context["routes"]
+    routes = route(client, admin_user, load).context["routes"]
     assert [r["truck"] for r in routes] == [labo]
     assert routes[0]["kg"] == Decimal(700) and not routes[0]["over"]
     assert "Labo" in routes[0]["share"]["title"]
@@ -430,7 +447,7 @@ def test_too_heavy_for_one_truck_is_split_across_two(client, admin_user, seller_
     Truck.objects.create(name="B", capacity_kg=1000)
     for name, dlng in (("G1", -0.05), ("G2", -0.04), ("S1", 0.04), ("S2", 0.05)):
         put(load, make_client(seller_user, name, dlng), kg=450)
-    routes = detail(client, admin_user, load).context["routes"]
+    routes = route(client, admin_user, load).context["routes"]
     assert len(routes) == 2
     assert all(r["kg"] <= r["truck"].capacity_kg for r in routes)
     assert sorted(sorted(s["client"].name[0] for s in r["stops"]) for r in routes) == [
@@ -441,7 +458,7 @@ def test_more_than_the_trucks_can_take_is_explained(client, admin_user, seller_u
                                                     warehouse, trucks):
     put(load, make_client(seller_user, "A", 0.01), kg=2500)
     put(load, make_client(seller_user, "B", 0.02), kg=2000)
-    resp = detail(client, admin_user, load)
+    resp = route(client, admin_user, load)
     assert "ortiqcha" in resp.context["error"]
     # The route is still drawn, just without a truck.
     assert len(resp.context["routes"]) == 1 and resp.context["routes"][0]["truck"] is None
@@ -454,7 +471,7 @@ def test_the_saved_order_holds_inside_each_truck(client, admin_user, seller_user
     c = put(load, make_client(seller_user, "C", 0.03), kg=100)
     client.force_login(admin_user)
     client.post(f"/yetkazish/{load.pk}/", {"action": "save", "stop": [c.pk, a.pk, b.pk]})
-    resp = detail(client, admin_user, load)
+    resp = route(client, admin_user, load)
     assert resp.context["routes"][0]["truck"] == trucks[0]
     assert names(resp) == ["C", "A", "B"]
 
@@ -463,3 +480,36 @@ def test_the_saved_order_holds_inside_each_truck(client, admin_user, seller_user
 def test_the_kg_box_shows_plain_numbers(client, admin_user, seller_user, load, kg, shown):
     put(load, make_client(seller_user, "Anvar", 0.01), kg=kg)
     assert f'value="{shown}"' in detail(client, admin_user, load).content.decode()
+
+
+
+# --- «Marshrut tuzish» --------------------------------------------------------------
+
+def test_the_page_itself_asks_no_route(client, admin_user, seller_user, load, warehouse, monkeypatch):
+    put(load, make_client(seller_user, "A", 0.01))
+    called = []
+    monkeypatch.setattr("crm.routing.order_stops", lambda *a, **k: called.append(1))
+    resp = detail(client, admin_user, load)
+    assert called == [] and "data-route-build" in resp.content.decode()
+    assert "data-auto" not in resp.content.decode()  # nothing saved yet: wait for the button
+
+
+def test_a_saved_order_opens_the_route_by_itself(client, admin_user, seller_user, load, warehouse):
+    a = put(load, make_client(seller_user, "A", 0.01))
+    client.force_login(admin_user)
+    resp = client.post(f"/yetkazish/{load.pk}/", {"action": "save", "stop": [a.pk]})
+    assert resp.url == f"/yetkazish/{load.pk}/?marshrut=1"
+    assert "data-auto" in detail(client, admin_user, load).content.decode()
+
+
+def test_an_empty_load_has_no_route_button(client, admin_user, load):
+    assert "data-route-build" not in detail(client, admin_user, load).content.decode()
+
+
+def test_sellers_cannot_fetch_a_route(client, seller_user, load):
+    assert route(client, seller_user, load).status_code == 403
+
+
+def test_the_day_list_deletes_a_load(client, admin_user, load):
+    body = get(client, admin_user, "/yetkazish/").content.decode()
+    assert f'href="/yetkazish/{load.pk}/delete/"' in body

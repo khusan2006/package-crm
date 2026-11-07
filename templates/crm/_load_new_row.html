@@ -1,0 +1,11 @@
+{% load l10n %}
+{% comment %}One new row in Yuk tarkibi: a client and a rulon count. Used for the
+first empty row and as the template «+ Yana mijoz» copies.{% endcomment %}
+<div class="new-row" data-new-row>
+  <select name="new_client" data-combobox data-placeholder="Mijozni tanlang" aria-label="Mijoz">
+    <option value=""></option>
+    {% for c in clients %}<option value="{{ c.pk|unlocalize }}">{{ c.name }}{% if c.address %} — {{ c.address }}{% endif %}</option>{% endfor %}
+  </select>
+  <input type="text" name="new_rolls" inputmode="numeric" class="pick-rolls" placeholder="Rulon" aria-label="Rulon soni" autocomplete="off">
+  <button type="button" class="icon-action" data-new-row-remove title="Qatorni olib tashlash" aria-label="Qatorni olib tashlash">×</button>
+</div>

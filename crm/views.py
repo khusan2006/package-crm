@@ -10697,63 +10697,13 @@ def _whole_rolls(raw):
     return rolls
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
-def load_item_add(request, pk):
-    """Mijoz qo'shish: every client in one list, a rulon box on each row. Typing a
-    number is choosing the client; one save adds them all. A client already in the
-    load is shown but can't be added twice. If the order was already saved, the new
-    clients join the end of it, so the saved route stays as it was."""
-    load = get_object_or_404(Load, pk=pk)
-    in_load = set(load.items.values_list("client_id", flat=True))
-    clients = list(Client.objects.select_related("owner").order_by("name"))
-    typed, bad = {}, []
-
-    if request.method == "POST":
-        for c in clients:
-            raw = request.POST.get(f"rolls_{c.pk}", "")
-            if c.pk in in_load or not raw.strip():
-                continue
-            typed[c.pk] = raw
-            try:
-                _whole_rolls(raw)
-            except ValueError:
-                bad.append(c.name)
-        if bad:
-            messages.error(request, "Rulon soni butun son bo'lishi kerak (1 va undan ko'p): "
-                                    + ", ".join(bad))
-        elif not typed:
-            messages.error(request, "Hech bir mijozga rulon soni kiritilmadi.")
-        else:
-            with transaction.atomic():
-                position = (load.items.aggregate(m=Max("position"))["m"] or 0) if load.ordered_at else None
-                added = []
-                for c in clients:
-                    if c.pk not in typed:
-                        continue
-                    if position is not None:
-                        position += 1
-                    LoadItem.objects.create(load=load, client=c, rolls=_whole_rolls(typed[c.pk]),
-                                            position=position)
-                    added.append(f"{c.name} {_whole_rolls(typed[c.pk])}")
-                AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
-                                f"Yuk #{load.pk}: qo'shildi — {', '.join(added)}"[:255])
-            messages.success(request, f"{len(added)} ta mijoz yukka qo'shildi.")
-            return redirect(_load_url(load))
-
-    rows = [{"client": c, "in_load": c.pk in in_load, "typed": typed.get(c.pk, ""),
-             "search": " ".join(filter(None, [c.name, c.company, c.address, c.phone])).lower()}
-            for c in clients]
-    sellers = sorted({c.owner for c in clients}, key=lambda u: str(u).lower())
-    return render(request, "crm/load_pick.html", {
-        "load": load, "rows": rows, "sellers": sellers, "in_load_count": len(in_load),
-    })
-
-
 @transaction.atomic
 def _save_load_items(request, load, items):
-    """Save the rulon and kg typed into the load's table, all rows at once. Nothing
-    is saved if any box is wrong — the message names the clients to fix."""
-    changes, bad = [], []
+    """One Saqlash for the whole Yuk tarkibi: the rulon and kg typed into the rows
+    already in the load, and the new rows below them (a client picked and a rulon
+    count each). Nothing is saved if any box is wrong — the message says what to fix.
+    New clients join the end of a saved order, so the saved route stays as it was."""
+    changes, problems = [], []
     for item in items:
         raw_rolls = request.POST.get(f"rolls_{item.pk}")
         raw_kg = (request.POST.get(f"kg_{item.pk}") or "").strip().replace(" ", "").replace(",", ".")
@@ -10767,23 +10717,58 @@ def _save_load_items(request, load, items):
             if kg is not None and kg < 0:
                 raise ValueError(raw_kg)
         except (ValueError, ArithmeticError):
-            bad.append(item.client.name)
+            problems.append(item.client.name)
             continue
         if (rolls, kg) != (item.rolls, item.kg):
             changes.append((item, rolls, kg))
-    if bad:
-        messages.error(request, "To'g'rilang — rulon butun son (1 va undan ko'p), kg musbat son: "
-                                + ", ".join(bad))
+
+    in_load = {i.client_id for i in items}
+    new_rows = []
+    pairs = zip(request.POST.getlist("new_client"), request.POST.getlist("new_rolls"))
+    for n, (raw_client, raw_rolls) in enumerate(pairs, start=1):
+        if not raw_client.strip() and not raw_rolls.strip():
+            continue  # an untouched empty row
+        client = Client.objects.filter(pk=raw_client).first() if raw_client.strip().isdigit() else None
+        try:
+            rolls = _whole_rolls(raw_rolls)
+        except ValueError:
+            rolls = 0
+        if client is None:
+            problems.append(f"{n}-yangi qatorda mijoz tanlanmagan")
+        elif not rolls:
+            problems.append(f"{client.name} — rulon soni")
+        elif client.pk in in_load:
+            problems.append(f"{client.name} yukda allaqachon bor")
+        else:
+            in_load.add(client.pk)
+            new_rows.append((client, rolls))
+
+    if problems:
+        messages.error(request, "Saqlanmadi — to'g'rilang (rulon butun son, kg musbat son): "
+                                + "; ".join(problems))
         return redirect(_load_url(load))
+
     for item, rolls, kg in changes:
         item.rolls, item.kg = rolls, kg
         item.save(update_fields=["rolls", "kg"])
-    if changes:
-        AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk, (
-            f"Yuk #{load.pk}: " + ", ".join(
-                f"{i.client.name} {r} rulon" + (f" {k:f} kg" if k is not None else "")
-                for i, r, k in changes))[:255])
-        messages.success(request, f"{len(changes)} ta qator saqlandi.")
+    position = (load.items.aggregate(m=Max("position"))["m"] or 0) if load.ordered_at else None
+    for client, rolls in new_rows:
+        if position is not None:
+            position += 1
+        LoadItem.objects.create(load=load, client=client, rolls=rolls, position=position)
+
+    parts = [f"{i.client.name} {r} rulon" + (f" {k:f} kg" if k is not None else "")
+             for i, r, k in changes]
+    parts += [f"+ {c.name} {r} rulon" for c, r in new_rows]
+    if parts:
+        AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
+                        f"Yuk #{load.pk}: {', '.join(parts)}"[:255])
+        said = []
+        if new_rows:
+            said.append(f"{len(new_rows)} ta mijoz qo'shildi")
+        if changes:
+            said.append(f"{len(changes)} ta qator o'zgardi")
+        messages.success(request, ", ".join(said).capitalize() + ".")
     else:
         messages.info(request, "O'zgarish yo'q.")
     return redirect(_load_url(load))
@@ -10858,7 +10843,7 @@ def _save_load_order(request, load, items):
     AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                     f"Yuk #{load.pk} tartibi saqlandi — {len(order)} ta manzil")
     messages.success(request, "Tartib saqlandi.")
-    return redirect(_load_url(load))
+    return redirect(_load_url(load) + "?marshrut=1")
 
 
 def _reset_load_order(request, load):
@@ -10869,7 +10854,7 @@ def _reset_load_order(request, load):
         AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                         f"Yuk #{load.pk} tartibi o'chirildi — qaytadan hisoblanadi")
         messages.success(request, "Tartib qaytadan hisoblandi. Ma'qul bo'lsa, saqlang.")
-    return redirect(_load_url(load))
+    return redirect(_load_url(load) + "?marshrut=1")
 
 
 def _load_groups(load, items, depot, dist):
@@ -10903,13 +10888,10 @@ def _load_groups(load, items, depot, dist):
 
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
 def load_detail(request, pk):
-    """One load: its clients with rolls and kg, and the route through them.
-
-    Until the order is saved the page shows the one crm/routing.py suggests, worked
-    out afresh on every visit; saving fixes it (with any stops moved by hand) and
-    «Qayta hisoblash» throws it away for a new suggestion. A client added after
-    saving joins the end of the saved order. Every client needs a joylashuv before
-    the route can be drawn. Trucks are chosen by `_load_groups`."""
+    """One load: its clients with rulon and kg, edited in place, and new rows added
+    with a client picker and a rulon box each. The route isn't worked out here —
+    «Marshrut tuzish» fetches it (`load_route`), so opening the page costs no road
+    lookups; it opens by itself once the order has been saved."""
     load = get_object_or_404(Load.objects.select_related("created_by"), pk=pk)
     items = list(load.items.select_related("client", "client__owner").order_by("created_at"))
     for item in items:
@@ -10924,6 +10906,28 @@ def load_detail(request, pk):
             return _save_load_items(request, load, items)
         return _save_load_order(request, load, items)
 
+    in_load = {i.client_id for i in items}
+    kg_known = [i.kg for i in items if i.kg is not None]
+    return render(request, "crm/load_detail.html", {
+        "load": load,
+        "items": items,
+        "roll_total": sum(i.rolls for i in items),
+        "kg_total": sum(kg_known, Decimal("0")),
+        "unweighed": len(items) - len(kg_known),
+        "missing": [i.client for i in items if not i.client.has_location],
+        "clients": [c for c in Client.objects.order_by("name") if c.pk not in in_load],
+        "auto_route": bool(items) and (bool(load.ordered_at) or bool(request.GET.get("marshrut"))),
+    })
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def load_route(request, pk):
+    """«Marshrut tuzish»: the load's route as a page fragment — the truck(s), the
+    order, the map and the driver's message. Until the order is saved it's the one
+    crm/routing.py suggests, worked out afresh each time; trucks are chosen by
+    `_load_groups`. Every client needs a joylashuv first."""
+    load = get_object_or_404(Load, pk=pk)
+    items = list(load.items.select_related("client", "client__owner").order_by("created_at"))
     warehouse = Warehouse.load()
     missing = [i.client for i in items if not i.client.has_location]
     routes, error, by_road, road_note = [], "", False, ""
@@ -10970,15 +10974,9 @@ def load_detail(request, pk):
                 for st in r["stops"]]} for r in routes],
         }
 
-    kg_known = [i.kg for i in items if i.kg is not None]
-    kg_total = sum(kg_known, Decimal("0"))
-    return render(request, "crm/load_detail.html", {
+    return render(request, "crm/_load_route.html", {
         "load": load,
-        "items": items,
         "warehouse": warehouse,
-        "roll_total": sum(i.rolls for i in items),
-        "kg_total": kg_total,
-        "unweighed": len(items) - len(kg_known),
         "missing": missing,
         "routes": routes,
         "km": sum(r["km"] for r in routes),
@@ -10986,4 +10984,5 @@ def load_detail(request, pk):
         "road_note": road_note,
         "error": error,
         "map_data": map_data,
+        "unweighed": sum(1 for i in items if i.kg is None),
     })

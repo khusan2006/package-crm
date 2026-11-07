@@ -32,14 +32,19 @@
 {% if loads %}
 <div class="table-wrap">
 <table>
-  <tr><th class="sticky-col">Yuk</th><th class="num">Mijozlar</th><th class="num">Rulon</th><th class="num">Og'irligi</th><th>Tartib</th></tr>
+  <tr><th class="sticky-col">Yuk</th><th class="num">Mijozlar</th><th class="num">Rulon</th><th class="num">Og'irligi</th><th>Tartib</th><th></th></tr>
   {% for load in loads %}
   <tr>
     <td class="sticky-col"><a href="{% url 'load_detail' load.pk %}"><strong>Yuk #{{ load.pk }}</strong></a>{% if load.note %}<span class="cell-sub">{{ load.note }}</span>{% endif %}</td>
     <td class="num">{{ load.client_count }}</td>
     <td class="num">{{ load.roll_total|default:0 }}</td>
     <td class="num">{% if load.kg_total %}{{ load.kg_total|floatformat:"0g" }} kg{% else %}—{% endif %}{% if load.unweighed and load.client_count %}<span class="cell-sub route-pending">{{ load.unweighed }} tasi tortilmagan</span>{% endif %}</td>
-    <td>{% if load.ordered_at %}<span class="badge badge-paid">Saqlangan</span>{% else %}<span class="badge badge-warning">Taklif</span>{% endif %}</td>
+    <td>{% if not load.client_count %}<span class="muted">—</span>{% elif load.ordered_at %}<span class="badge badge-paid">Saqlangan</span>{% else %}<span class="badge badge-warning">Taklif</span>{% endif %}</td>
+    <td class="row-actions">
+      <span class="ra-slots">
+        <a class="icon-action danger" href="{% url 'load_delete' load.pk %}" data-modal title="Yukni o'chirish" aria-label="Yuk #{{ load.pk }} ni o'chirish">{% include "crm/_ico_trash.html" %}</a>
+      </span>
+    </td>
   </tr>
   {% endfor %}
 </table>
