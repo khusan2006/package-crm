@@ -1,8 +1,9 @@
 # Delivery route planning — design
 
-Status: build steps 1–6 done (trucks and warehouse, routing, Yetkazish page, saving
-and hand corrections, the driver's message and map links). Next: the sellers'
-read-only view of their own stops.
+Status: built — trucks and warehouse, routing, the Yetkazish page, saving and hand
+corrections, the driver's message and map links, and the sellers' read-only view
+of their own stops. Still open: road distances (OSRM), a "deliver first" flag,
+time windows.
 
 Hand corrections use ↑ / ↓ / ⇄ buttons rather than drag-and-drop: HTML5 drag is
 unreliable on phones, and the project has no drag library.

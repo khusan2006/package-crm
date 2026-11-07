@@ -6,6 +6,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from urllib.parse import quote, urlencode
 
 from django.contrib import messages
+from django.core.exceptions import PermissionDenied
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import (
@@ -8060,7 +8061,41 @@ def _reset_delivery_plan(request, day):
     return redirect(_delivery_url(day))
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def _delivery_for_seller(request, day, warehouse, visits, missing, waiting):
+    """A seller's read-only view of the day: where their own clients sit in the
+    saved plan — which truck, which place in its order — and nothing about anyone
+    else's. Only a saved plan is shown: a suggestion still moves around."""
+    seller = request.user
+    mine = {pk: v for pk, v in visits.items()
+            if any(s.sales_rep_id == seller.pk for s in v["sales"])}
+    saved = DeliveryRoute.objects.filter(date=day).first()
+    rows, placed = [], set()
+    if saved and warehouse.has_location:
+        depot = (float(warehouse.latitude), float(warehouse.longitude))
+        plan, _, _ = _saved_plan(saved, visits, depot)
+        for route in plan.routes:
+            for pos, stop in enumerate(route.stops, start=1):
+                if stop.key in mine:
+                    placed.add(stop.key)
+                    rows.append({"client": mine[stop.key]["client"], "truck": route.truck,
+                                 "position": pos, "of": len(route.stops),
+                                 "sales": [s for s in mine[stop.key]["sales"]
+                                           if s.sales_rep_id == seller.pk]})
+    return render(request, "crm/delivery_mine.html", {
+        "day": day,
+        "prev_day": (day - timedelta(days=1)).isoformat(),
+        "next_day": (day + timedelta(days=1)).isoformat(),
+        "is_today": day == timezone.localdate(),
+        "saved": saved,
+        "rows": rows,
+        "unplanned": [v["client"] for pk, v in mine.items()
+                      if pk not in placed and v["client"].has_location],
+        "missing": [c for c in missing if c.pk in mine],
+        "waiting": [s for s in waiting if s.sales_rep_id == seller.pk],
+        "has_sales": bool(mine) or any(s.sales_rep_id == seller.pk for s in waiting),
+    })
+
+
 def delivery_plan(request):
     """Yetkazish: for a chosen day, which truck takes which client and in what order.
 
@@ -8068,13 +8103,19 @@ def delivery_plan(request):
     worked out afresh on every visit. Saving fixes it — with any stops the operator
     moved by hand — and "Qayta hisoblash" throws the saved plan away for a new
     suggestion. It mixes every seller's sales, since the trucks and the warehouse are
-    shared, which is why it is admins and managers only."""
+    shared, which is why only admins and managers plan it. A seller gets a
+    read-only view of where their own clients are in the saved plan."""
     source = request.POST if request.method == "POST" else request.GET
     day = _parse_date(source.get("sana")) or timezone.localdate()
+    if not request.user.can_see_all_records and request.method == "POST":
+        raise PermissionDenied
 
     warehouse = Warehouse.load()
     trucks = list(Truck.objects.filter(is_active=True))
     visits, missing, waiting = _delivery_day(day)
+
+    if not request.user.can_see_all_records:
+        return _delivery_for_seller(request, day, warehouse, visits, missing, waiting)
 
     if request.method == "POST":
         if source.get("action") == "reset":

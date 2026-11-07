@@ -5190,3 +5190,5 @@ a.cell-loc--map:hover { color: var(--accent); }
 .route-share h3 { margin: 0 0 8px; font-size: 14px; }
 .route-share[hidden], .route-share-stale[hidden] { display: none; }
 .route-share-stale { margin-top: 14px; color: var(--warning); }
+.route-mine-place { text-align: right; flex: 0 0 auto; }
+.route-mine-place .cell-sub { display: block; }

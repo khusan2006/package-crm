@@ -63,8 +63,10 @@ def page(client, user, day=None):
     return client.get(url)
 
 
-def test_sellers_cannot_open_it(client, seller_user):
-    assert page(client, seller_user).status_code == 403
+def test_sellers_get_their_read_only_view(client, seller_user):
+    resp = page(client, seller_user)
+    assert resp.status_code == 200
+    assert "crm/delivery_mine.html" in [t.name for t in resp.templates]
 
 
 def test_manager_can_open_it(client, manager, warehouse):
@@ -182,11 +184,10 @@ def test_client_names_are_escaped_in_the_map_data(client, admin_user, seller_use
     assert "</script><b>x" not in body
 
 
-def test_sotuvlar_links_to_it_for_admins_only(client, admin_user, seller_user):
-    client.force_login(admin_user)
-    assert "/yetkazish/" in client.get("/sales/").content.decode()
-    client.force_login(seller_user)
-    assert "/yetkazish/" not in client.get("/sales/").content.decode()
+def test_sotuvlar_links_to_it_for_everyone(client, admin_user, seller_user):
+    for user in (admin_user, seller_user):
+        client.force_login(user)
+        assert "/yetkazish/" in client.get("/sales/").content.decode()
 
 
 # --- saving and hand corrections ----------------------------------------------------
@@ -364,3 +365,62 @@ def test_each_truck_has_the_drivers_message_and_links(client, admin_user, three)
     assert len(share["google_links"]) == 1 and share["yandex_link"]
     body = resp.content.decode()
     assert "Haydovchiga" in body and "t.me/share/url" in body
+
+
+# --- the seller's read-only view ----------------------------------------------------
+
+@pytest.fixture
+def mixed_day(db, seller_user, other_seller, product, warehouse):
+    """A saved plan with one truck: mine, theirs, mine — in that order."""
+    truck = Truck.objects.create(name="Isuzu", capacity_kg=3000)
+    mine1 = make_client(seller_user, "Meniki-1", 0.01)
+    theirs = make_client(other_seller, "Begona mijoz", 0.02)
+    mine2 = make_client(seller_user, "Meniki-2", 0.03)
+    for c in (mine1, theirs, mine2):
+        sell(c, product, 100)
+    route = DeliveryRoute.objects.create(date=TODAY())
+    for pos, c in enumerate((mine1, theirs, mine2), start=1):
+        RouteStop.objects.create(route=route, client=c, truck=truck, position=pos)
+    return truck, mine1, theirs, mine2
+
+
+def test_seller_sees_where_their_clients_are(client, seller_user, mixed_day):
+    truck, mine1, theirs, mine2 = mixed_day
+    resp = page(client, seller_user)
+    rows = [(r["client"].name, r["truck"].name, r["position"], r["of"]) for r in resp.context["rows"]]
+    assert rows == [("Meniki-1", "Isuzu", 1, 3), ("Meniki-2", "Isuzu", 3, 3)]
+    body = resp.content.decode()
+    assert "3-manzil (3 tadan)" in body
+
+
+def test_seller_never_sees_another_sellers_clients(client, seller_user, mixed_day):
+    body = page(client, seller_user).content.decode()
+    assert "Begona mijoz" not in body
+    assert "route-data" not in body  # no map with everyone's pins
+    assert "Haydovchiga" not in body
+
+
+def test_seller_sees_nothing_until_the_plan_is_saved(client, seller_user, product, warehouse):
+    Truck.objects.create(name="Isuzu", capacity_kg=3000)
+    sell(make_client(seller_user, "Meniki", 0.01), product, 100)
+    resp = page(client, seller_user)
+    assert resp.context["rows"] == []
+    assert "hali saqlanmagan" in resp.content.decode()
+
+
+def test_seller_is_told_about_their_own_gaps_only(client, seller_user, other_seller, product,
+                                                  warehouse):
+    sell(make_client(seller_user, "Joysiz-meniki"), product, 100)
+    sell(make_client(other_seller, "Joysiz-begona"), product, 100)
+    sell(make_client(seller_user, "Zakaz-meniki", 0.01), product, 50, fulfilled=0)
+    sell(make_client(other_seller, "Zakaz-begona", 0.02), product, 50, fulfilled=0)
+    resp = page(client, seller_user)
+    assert [c.name for c in resp.context["missing"]] == ["Joysiz-meniki"]
+    assert [s.client.name for s in resp.context["waiting"]] == ["Zakaz-meniki"]
+    body = resp.content.decode()
+    assert "begona" not in body
+
+
+def test_seller_cannot_reset_the_plan(client, seller_user, mixed_day):
+    assert save(client, seller_user, [], action="reset").status_code == 403
+    assert DeliveryRoute.objects.exists()
