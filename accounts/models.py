@@ -13,6 +13,9 @@ class User(AbstractUser):
     # The firm a seller trades under, printed before their name in the yuk xati's
     # «Kimdan» line — each seller releases goods under their own firm, not one shared name.
     firm_name = models.CharField("Firma nomi (yuk xati)", max_length=100, blank=True)
+    # Whether that firm goes on the yuk xati at all. The «Oylik hisobot» heading always
+    # carries it; on 2026-10-17 the owner had Umida's yuk xati show her name alone.
+    firm_on_yuk_xati = models.BooleanField("Yuk xatida firma nomi chiqsin", default=True)
     # A carried-over pre-CRM debt this seller owes production at go-live: the tannarx of
     # goods taken before the CRM existed and not yet remitted. It behaves exactly like
     # real production debt — it lifts `seller_production_debt` from day one and is whittled
@@ -21,6 +24,10 @@ class User(AbstractUser):
     opening_production_debt = models.DecimalField(
         "Ochilish ishlab chiqarish qarzi (so'm)", max_digits=18, decimal_places=2, default=0
     )
+    # Wages are everybody's pay laid out in one table, so a seller only gets the
+    # «Xodimlar oyligi» pages when the admin switches them on for that account.
+    # Admins and managers always have them — see `can_see_payroll`.
+    payroll_access = models.BooleanField("Xodimlar oyligini ko'radi", default=False)
 
     @property
     def is_admin_role(self):
@@ -34,6 +41,12 @@ class User(AbstractUser):
     def can_see_all_records(self):
         """Admins and managers see every client/order; sales see only their own."""
         return self.role in (self.Role.ADMIN, self.Role.MANAGER)
+
+    @property
+    def can_see_payroll(self):
+        """Who may open «Xodimlar oyligi»: admins and managers always, a seller only
+        with `payroll_access` switched on."""
+        return self.can_see_all_records or self.payroll_access
 
     def __str__(self):
         return self.get_full_name() or self.username

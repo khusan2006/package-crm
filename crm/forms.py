@@ -1,5 +1,5 @@
 import re
-from datetime import date
+from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django import forms
@@ -12,13 +12,14 @@ from django.utils import timezone
 from accounts.models import User
 
 from .geo import LocationError, resolve_location
-from .utils import UZ_MONTH_NAMES
+from .utils import UZ_MONTH_NAMES, uz_month
 
 from .models import (
     DEFAULT_DEBT_DAYS,
     Client,
     Employee,
     Expense,
+    Holiday,
     Payment,
     Product,
     ProductionAdjustment,
@@ -47,6 +48,16 @@ def _mark_money(*fields):
     for field in fields:
         if field is not None:
             field.widget.attrs.update(MONEY_WIDGET_ATTRS)
+
+
+def _mark_signed_money(*fields):
+    """The same, for a figure that may be a debt. The page's money formatter strips
+    everything but digits unless the input says a minus belongs there — without this
+    a balance of −500 000 is shown, and saved back, as +500 000."""
+    _mark_money(*fields)
+    for field in fields:
+        if field is not None:
+            field.widget.attrs["data-money-signed"] = ""
 
 
 def _reject_future(value):
@@ -348,7 +359,7 @@ class ProductForm(forms.ModelForm):
         model = Product
         fields = [
             "name", "sku", "description", "cost_price", "price",
-            "has_size", "has_micron", "is_active",
+            "has_size", "has_micron", "report_group", "is_active",
         ]
         widgets = {"description": forms.Textarea(attrs={"rows": 3})}
 
@@ -813,21 +824,37 @@ class EmployeeForm(forms.ModelForm):
 
     class Meta:
         model = Employee
-        fields = ["name", "salary", "start_month", "opening_balance", "is_active", "note"]
+        fields = [
+            "name", "salary", "work_start", "work_end", "start_month",
+            "opening_balance", "is_active", "note",
+        ]
         widgets = {
             "name": forms.TextInput(attrs={"placeholder": "Masalan: Косимов Рахматжон"}),
             "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — lavozimi, izoh"}),
+            "work_start": forms.TimeInput(attrs={"type": "time"}, format="%H:%M"),
+            "work_end": forms.TimeInput(attrs={"type": "time"}, format="%H:%M"),
+        }
+        help_texts = {
+            "work_end": "Grafikda ko'rsatiladi, oylikka ta'sir qilmaydi. "
+                        "Belgilangan soat bo'lmasa ikkalasini bo'sh qoldiring",
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, only=None, **kwargs):
         super().__init__(*args, **kwargs)
         months = _month_choices()
         self.fields["start_month"].choices = months
         self.fields["salary_from"].choices = months
         this_month = timezone.localdate().replace(day=1)
-        self.fields["start_month"].initial = (
-            self.instance.start_month if self.instance.pk else this_month
-        ).strftime("%Y-%m")
+        # Set on the form's `initial`, not the field's: a ModelForm fills `initial`
+        # from the instance, and that date wins over the field. It matches no "YYYY-MM"
+        # option, so the select fell back to its first entry — next month.
+        opened = self.instance.start_month if self.instance.pk else this_month
+        self.initial["start_month"] = opened.strftime("%Y-%m")
+        if self.initial["start_month"] not in dict(months):
+            # An account older than the list reaches back still has to show its month.
+            self.fields["start_month"].choices = months + [
+                (self.initial["start_month"], uz_month(opened.year, opened.month))
+            ]
         # A raise defaults to "from this month": nobody edits a wage meaning to
         # backdate it, and the months behind it are already paid against.
         self.fields["salary_from"].initial = this_month.strftime("%Y-%m")
@@ -839,7 +866,18 @@ class EmployeeForm(forms.ModelForm):
         if not self.instance.pk:
             # Nothing to re-price yet, so the question isn't asked on a new worker.
             del self.fields["salary_from"]
-        _mark_money(self.fields["salary"], self.fields["opening_balance"])
+        _mark_money(self.fields["salary"])
+        _mark_signed_money(self.fields["opening_balance"])
+        self.fields["salary"].help_text = (
+            "Kunlik narx shundan chiqadi: oylik ÷ o'sha oyning ish kunlari "
+            "(yakshanba va dam beriladigan bayramlarsiz)"
+        )
+        if only is not None:
+            # One row of the worker's page edited on its own. It is this form cut
+            # down rather than a second one, so a wage changed from that row is
+            # checked and dated by the very rules the full form uses.
+            for name in [name for name in self.fields if name not in only]:
+                del self.fields[name]
 
     def clean_salary(self):
         salary = self.cleaned_data.get("salary")
@@ -861,12 +899,26 @@ class EmployeeForm(forms.ModelForm):
         # A raise cannot start before the account does — there is no month there to
         # apply it to, and the rate row would sort ahead of the opening figure.
         start, rate_from = cleaned.get("start_month"), cleaned.get("salary_from")
+        if "start_month" not in self.fields and self.instance.pk:
+            # Cut down to one row (`only`): the account's start is not on the form,
+            # so the rule is held against the one already saved.
+            start = self.instance.start_month.replace(day=1)
         if start and rate_from and rate_from < start:
             self.add_error(
                 "salary_from",
                 "Hisob boshlangan oydan oldin bo'lishi mumkin emas "
                 f"({start.strftime('%m.%Y')}).",
             )
+        # Half a working day cannot be printed: both ends, or neither. An end before
+        # the start is left alone — that is a night shift, not a typo.
+        opens, closes = cleaned.get("work_start"), cleaned.get("work_end")
+        if (opens is None) != (closes is None):
+            self.add_error(
+                "work_start" if opens is None else "work_end",
+                "Ish vaqtining ikkala tomonini kiriting yoki ikkalasini bo'sh qoldiring.",
+            )
+        elif opens is not None and opens == closes:
+            self.add_error("work_end", "Ish tugashi boshlanishi bilan bir xil bo'lmasin.")
         return cleaned
 
     def clean_name(self):
@@ -884,25 +936,195 @@ class EmployeeForm(forms.ModelForm):
         return name
 
 
+class EmployeeBalanceForm(forms.Form):
+    """One month's closing balance of a worker, typed over to correct it.
+
+    The balance itself is stored nowhere — it is the opening figure plus every
+    month's wage minus everything paid — so the view turns the correction into a
+    shift of the opening figure. The form only takes the number as the boss knows
+    it: the balance at the end of that month."""
+
+    balance = forms.DecimalField(
+        label="Oy oxiridagi qoldiq (so'm)",
+        max_digits=18,
+        decimal_places=2,
+        help_text=(
+            "Xodim ishxonadan qarzdor bo'lsa — minus bilan (masalan −18 564 000), "
+            "ishxona xodimga qarzdor bo'lsa — minussiz. Oylik va berilgan pullar "
+            "o'zgarmaydi: tuzatish boshlang'ich qoldiqqa yoziladi, shuning uchun "
+            "boshqa oylarning qoldig'i ham shu farqqa suriladi."
+        ),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _mark_signed_money(self.fields["balance"])
+
+
+class DayCardForm(forms.Form):
+    """Everything one day of one worker can be told to be — recorded or planned —
+    asked as a single question.
+
+    In practice there is only ever one question about a day: "what about Bekzod on
+    the 5th?" The answer is sometimes a fact (he did not come in) and sometimes a plan
+    (he is off). Two screens for one question means opening both to find out which
+    one holds the answer.
+
+    Which answers are offered is decided by the day itself and handed in, because the
+    form must not offer one it cannot carry out: a day that has not happened cannot be
+    marked absent, and a day that has cannot be planned.
+
+    The choices are spelled out rather than being a tick box each. The difference
+    between paid and unpaid leave is a day's wage, and so is the difference between
+    "came" and "did not come" — controls that look the same whichever they mean are
+    how that gets picked wrong."""
+
+    # What happened — only offered once the day is over.
+    KELDI = "keldi"
+    KELMADI = "kelmadi"
+    DAM = "dam"
+    # What is meant to happen — only offered while the day is still ahead.
+    LEAVE_PAID = "dam_haqli"
+    LEAVE_UNPAID = "dam_oz_hisobidan"
+    CLEAR = "damni_olib_tashlash"
+    # Not whether the day is worked but WHEN — past or ahead alike. Moves no money.
+    HOURS = "ish_soati"
+
+    # The ones that write a davomad row rather than a plan. Kept as a set so the view
+    # asks "is this attendance?" once instead of listing them again.
+    ATTENDANCE = frozenset({KELDI, KELMADI, DAM})
+
+    action = forms.ChoiceField(label="Nima qilinsin?", widget=forms.RadioSelect)
+    work_start = forms.TimeField(
+        label="Ish boshlanishi", required=False,
+        widget=forms.TimeInput(attrs={"type": "time"}, format="%H:%M"),
+    )
+    work_end = forms.TimeField(
+        label="Ish tugashi", required=False,
+        widget=forms.TimeInput(attrs={"type": "time"}, format="%H:%M"),
+    )
+    note = forms.CharField(
+        label="Izoh", max_length=255, required=False,
+        widget=forms.TextInput(attrs={"placeholder": "Ixtiyoriy — nima uchun"}),
+    )
+
+    def __init__(self, *args, has_leave=False, is_rest=False,
+                 recordable=False, plannable=False, can_set_hours=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        choices = []
+        if recordable:
+            # The sheet's own two pairs: a day off is rested or worked, a working
+            # day is worked or missed.
+            choices += (
+                [(self.DAM, "Dam oldi"),
+                 (self.KELDI, "Chiqib ishladi — oylik ustiga qo'shiladi")]
+                if is_rest else
+                [(self.KELDI, "Keldi"),
+                 (self.KELMADI, "Kelmadi — oylikdan ushlanadi")]
+            )
+        if can_set_hours:
+            choices.append((self.HOURS, "Ish soatini o'zgartirish"))
+        else:
+            # A day nobody works has no hours to move, so the card does not ask.
+            del self.fields["work_start"], self.fields["work_end"]
+        if plannable:
+            choices += [
+                (self.LEAVE_PAID, "Haqli dam — oyligi saqlanadi"),
+                (self.LEAVE_UNPAID, "O'z hisobidan dam — oylikdan ushlanadi"),
+            ]
+            if has_leave:
+                choices.append((self.CLEAR, "Belgilangan damni olib tashlash"))
+        self.fields["action"].choices = choices
+
+    def clean(self):
+        cleaned = super().clean()
+        # The two times only mean something for the one answer that asks for them;
+        # under any other they are whatever the card happened to open with.
+        if cleaned.get("action") == self.HOURS:
+            opens, closes = cleaned.get("work_start"), cleaned.get("work_end")
+            if opens is None or closes is None:
+                self.add_error(
+                    "work_start" if opens is None else "work_end",
+                    "Ish vaqtining ikkala tomonini kiriting.",
+                )
+            elif opens == closes:
+                self.add_error(
+                    "work_end", "Ish tugashi boshlanishi bilan bir xil bo'lmasin."
+                )
+        return cleaned
+
+
+class HolidayForm(forms.ModelForm):
+    """A holiday, and the one decision that matters about it: does the firm close.
+
+    Closed, the day leaves the divisor — so a worker who takes it off is still paid
+    their full salary, and one who comes in has it added on top like any other rest
+    day worked. Left open, the holiday is a label on the sheet and moves no money at
+    all."""
+
+    class Meta:
+        model = Holiday
+        fields = ["date", "name", "rest", "note"]
+        widgets = {
+            "date": forms.DateInput(attrs={"type": "date"}),
+            "name": forms.TextInput(attrs={"placeholder": "Masalan: Ramazon hayit"}),
+            "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["rest"].help_text = (
+            "Belgilansa — o'sha kun dam kuni: dam olgan xodim to'liq oyligini oladi, "
+            "chiqib ishlagani esa oylik ustiga qo'shiladi. Belgilanmasa — oddiy ish "
+            "kuni, faqat jadvalda nomi ko'rinadi."
+        )
+
+    def clean_date(self):
+        # One row per date: two holidays on one day would leave "is the firm shut"
+        # with two answers, and the payroll reads whichever it happens to find.
+        when = self.cleaned_data.get("date")
+        taken = Holiday.objects.filter(date=when)
+        if self.instance.pk:
+            taken = taken.exclude(pk=self.instance.pk)
+        if taken.exists():
+            raise forms.ValidationError("Bu sanada allaqachon bayram bor.")
+        return when
+
+    def clean_name(self):
+        name = (self.cleaned_data.get("name") or "").strip()
+        if not name:
+            raise forms.ValidationError("Bayram nomini yozing.")
+        return name
+
+
 class ExpenseForm(forms.ModelForm):
     """A payout from the till. `method` records which wallet it left (cash/card/bank);
     `currency` records whether it left the so'm or the dollar till. A dollar expense is
     entered in dollars with a hand-typed rate and converted to a so'm `amount`.
 
-    Tagging an `employee` names who the money went to or who spent it;
-    `counts_against_salary` decides whether it also comes off that month's wage — on
-    for a wage or an advance, off for petrol or lunch the worker bought for the
-    business."""
+    Tagging an `employee` names who the money went to or who spent it; `purpose` says
+    what it was: this month's wage or an advance on it, the remainder of an earlier
+    month's wage paid out now, or petrol or lunch the worker bought for the business.
+    The first two come off the wage (`counts_against_salary`); the second also points
+    the payout at the month it settles (`wage_month`) while the till still loses the
+    money on the day it was handed over."""
 
-    # Two spelled-out options rather than a lone tick box. This answer decides whether
-    # money leaves somebody's wage, and an unticked box looks identical whether it was
-    # answered or simply overlooked — the same reason the bank fee asks who carries it
-    # with a pair of radios instead of a checkbox.
-    counts_against_salary = forms.TypedChoiceField(
-        label="Oylik hisobiga ta'siri",
-        choices=[(True, "Oyligidan ushlansin"), (False, "Oyligidan ushlanmasin")],
-        coerce=lambda value: value == "True",
-        empty_value=None,
+    PURPOSE_WAGE = "oylik"
+    PURPOSE_PREVIOUS = "otgan"
+    PURPOSE_ERRAND = "xarajat"
+
+    # Three spelled-out options rather than a tick box. This answer decides whether
+    # money leaves somebody's wage, and which month's: an unticked box looks identical
+    # whether it was answered or overlooked. «Oyligidan ushlansin / ushlanmasin» was
+    # the old pair, and it was read the wrong way: September's remainder paid on 08.10
+    # went in as «ushlanmasin» — "it is not October's pay" — and so came off nothing.
+    purpose = forms.ChoiceField(
+        label="Bu pul nima uchun berildi",
+        choices=[
+            (PURPOSE_WAGE, "Shu oy oyligi yoki avansi — shu oy oyligidan ushlanadi"),
+            (PURPOSE_PREVIOUS, "O'tgan oydan qolgan oyligi — o'tgan oyni yopadi"),
+            (PURPOSE_ERRAND, "Ish uchun xarajat (benzin, obed…) — oyligiga tegmaydi"),
+        ],
         required=False,  # hidden, and meaningless, while no worker is picked
         widget=forms.RadioSelect,
     )
@@ -910,7 +1132,7 @@ class ExpenseForm(forms.ModelForm):
     class Meta:
         model = Expense
         fields = ["date", "amount", "currency", "exchange_rate", "category", "method",
-                  "employee", "counts_against_salary", "note"]
+                  "employee", "note"]
         widgets = {
             "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
             "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy — nima uchun"}),
@@ -964,10 +1186,33 @@ class ExpenseForm(forms.ModelForm):
         # (or to clear a mistagged expense).
         self.fields["employee"].empty_label = "— xodimga tegishli emas —"
         self.fields["employee"].help_text = "Kimga berildi yoki kim sarfladi"
-        self.fields["counts_against_salary"].help_text = (
-            "Oylik yoki avans bo'lsa — “ushlansin”. Benzin, obed kabi ish xarajatlarida "
-            "— “ushlanmasin”: kassadan chiqim bo'ladi, xodim oyligiga tegmaydi."
+        # The payout as stored, before this form touches it: an edit must not count
+        # against itself, and an unchanged one is not warned about again.
+        self.original = (
+            Expense.objects.filter(pk=self.instance.pk).first() if self.instance.pk else None
         )
+        if self.original is not None and self.original.employee_id:
+            if not self.original.counts_against_salary:
+                self.initial.setdefault("purpose", self.PURPOSE_ERRAND)
+            elif self.original.wage_month:
+                self.initial.setdefault("purpose", self.PURPOSE_PREVIOUS)
+            else:
+                self.initial.setdefault("purpose", self.PURPOSE_WAGE)
+        # The options name the months, read off the date the form opens with: "this
+        # month" and "last month" are what a seller gets wrong, "Oktabr" is not.
+        day = self.payroll_day()
+        before = day.replace(day=1) - timedelta(days=1)
+        this_name = UZ_MONTH_NAMES[day.month - 1]
+        prev_name = UZ_MONTH_NAMES[before.month - 1]
+        self.fields["purpose"].choices = [
+            (self.PURPOSE_WAGE,
+             f"{this_name} oyligi yoki avansi — {this_name} oyligidan ushlanadi"),
+            (self.PURPOSE_PREVIOUS,
+             f"{prev_name} oyidan qolgan oyligi — {prev_name} oyligini yopadi "
+             f"(kassadan shu kuni chiqadi)"),
+            (self.PURPOSE_ERRAND,
+             "Ish uchun xarajat (benzin, obed…) — oyligiga tegmaydi"),
+        ]
         _mark_money(self.fields["amount"], self.fields["exchange_rate"])
         # Editing a dollar expense: show the original dollars in the amount field
         # (not the stored so'm), so re-saving converts at the rate correctly.
@@ -1005,23 +1250,148 @@ class ExpenseForm(forms.ModelForm):
         # The answer only means anything next to a worker. Clearing it on an untagged
         # expense keeps a stale "yes" from coming back to life if the row is later
         # edited and someone is picked — the choice is hidden while nobody is.
-        if not cleaned.get("employee"):
-            cleaned["counts_against_salary"] = False
-        elif cleaned.get("counts_against_salary") is None:
-            # Someone is named but neither option was picked. Defaulting either way
-            # would quietly decide whose money this is, so the form asks instead.
-            self.add_error(
-                "counts_against_salary",
-                "Tanlang: bu pul xodim oyligidan ushlansinmi yoki yo'q.",
-            )
-        # A payout dated into a day the till could not carry — see _backdated_warning.
-        warning = _needs_second_press(self, _backdated_warning(
-            self.acting_seller(), cleaned.get("date"), som,
-            exclude_expense_pk=self.instance.pk,
-        ))
+        employee = cleaned.get("employee")
+        purpose = cleaned.get("purpose") or ""
+        day = cleaned.get("date")
+        self.instance.counts_against_salary = False
+        self.instance.wage_month = None
+        if employee and not purpose:
+            # Someone is named but no option was picked. Defaulting either way would
+            # quietly decide whose money this is, so the form asks instead.
+            self.add_error("purpose", "Tanlang: bu pul nima uchun berildi.")
+        elif employee and purpose != self.PURPOSE_ERRAND:
+            self.instance.counts_against_salary = True
+            if purpose == self.PURPOSE_PREVIOUS and day:
+                settles = (day.replace(day=1) - timedelta(days=1)).replace(day=1)
+                if settles < employee.start_month.replace(day=1):
+                    self.add_error("purpose", (
+                        f"{employee.name}ning oylik hisobi "
+                        f"{uz_month(employee.start_month.year, employee.start_month.month)}"
+                        f"dan boshlangan — undan oldingi oyga yozib bo'lmaydi."
+                    ))
+                self.instance.wage_month = settles
+        # Each warning is shown once and passes on the next Saqlash: a payout dated
+        # into a day the till could not carry (see _backdated_warning), and a wage
+        # that does not add up against what the worker is owed (see _wage_warning).
+        warnings = [w for w in (
+            _backdated_warning(
+                self.acting_seller(), day, som, exclude_expense_pk=self.instance.pk,
+            ),
+            self._wage_warning(employee, purpose, day, som, cleaned.get("category") or ""),
+        ) if w]
+        warning = _needs_second_press(self, " ".join(warnings))
         if warning:
             raise forms.ValidationError(warning)
         return cleaned
+
+    def payroll_day(self):
+        """The date the form is about, as far as it can be read before validation:
+        what was posted, else what it opened with, else today."""
+        raw = self.data.get("date") if self.is_bound else None
+        if raw:
+            try:
+                return date.fromisoformat(raw)
+            except ValueError:
+                pass
+        initial = self.initial.get("date") or (self.instance.date if self.instance.pk else None)
+        if isinstance(initial, date):
+            return initial
+        return timezone.localdate()
+
+    def _wage_warning(self, employee, purpose, day, amount, category):
+        """Warning text when a payout does not add up against the worker's wage, else
+        None. Warnings, not blocks — the cashier may know better (an agreed loan, a
+        wage agreed above the rate) — but each says what will happen in figures.
+
+        - Last month's remainder larger than what last month left unpaid.
+        - This month's wage beyond what this month still pays: the worker either
+          dips into last month's unpaid remainder (then that is what to pick) or
+          ends up owing the firm — «qarzdor bo'ladi».
+        - A wage category on a payout marked as a work expense, or with no worker
+          picked at all: it would come off nobody's wage."""
+        salaryish = any(w in category.casefold() for w in ("oylik", "ойлик", "avans", "аванс"))
+        if not employee:
+            if salaryish:
+                return (
+                    f"Diqqat: turkum «{category}», lekin xodim tanlanmagan — bu pul hech "
+                    f"kimning oyligidan ushlanmaydi, oddiy xarajat bo'lib qoladi. Xodimni "
+                    f"tanlang; ataylab shunday bo'lsa, Saqlashni yana bosing."
+                )
+            return None
+        if purpose == self.PURPOSE_ERRAND:
+            if salaryish:
+                return (
+                    f"Diqqat: turkum «{category}», lekin «Ish uchun xarajat» tanlangan — "
+                    f"bu pul {employee.name}ning oyligiga tegmaydi va oddiy xarajat bo'lib "
+                    f"hisoblanadi. Oylik bo'lsa, shu oy yoki o'tgan oy oyligini tanlang; "
+                    f"ataylab shunday bo'lsa, Saqlashni yana bosing."
+                )
+            return None
+        if not purpose or not day or not amount:
+            return None
+        before = self.original
+        if (
+            before is not None and before.employee_id == employee.pk
+            and before.counts_against_salary and before.amount == amount
+            and before.date == day
+            and bool(before.wage_month) == (purpose == self.PURPOSE_PREVIOUS)
+        ):
+            return None                       # an edit that leaves the money as it was
+        position = employee.wage_position(day.year, day.month, exclude=before)
+        if position is None:
+            return None                       # the account opens later
+        # Whole so'm, as the panel shows them: a kopek left over from a day-rate wage
+        # must not turn "exactly what is owed" into "1 so'm too much".
+        carried, salary, paid = (
+            _som(position["carried"]), _som(position["salary"]), _som(position["paid"])
+        )
+        amount = _som(amount)
+        name = employee.name
+        this_name = UZ_MONTH_NAMES[day.month - 1]
+        prev_name = UZ_MONTH_NAMES[(day.replace(day=1) - timedelta(days=1)).month - 1]
+        if purpose == self.PURPOSE_PREVIOUS:
+            if amount <= carried:
+                return None
+            if carried <= 0:
+                debt = f" — aksincha, {-carried:,.0f} so'm qarzi bor" if carried < 0 else ""
+                return (
+                    f"Diqqat: {name}ning {prev_name} oyidan qolgan oyligi yo'q{debt}. "
+                    f"{this_name} oyligidan bersangiz, «{this_name} oyligi»ni tanlang. "
+                    f"Baribir {prev_name}ga yozilsin desangiz, Saqlashni yana bosing."
+                )
+            return (
+                f"Diqqat: {name}ning {prev_name} oyidan {carried:,.0f} so'm qolgan, siz "
+                f"{amount:,.0f} so'm kiritdingiz — {amount - carried:,.0f} so'm ortiqcha. "
+                f"Ortig'i {this_name} oyligidan bo'lsa, ikkita chiqim qiling: "
+                f"{carried:,.0f} — {prev_name} oyligi, qolgani — {this_name} oyligi. "
+                f"To'g'ri bo'lsa, Saqlashni yana bosing."
+            )
+        month_left = salary - paid
+        if amount <= month_left:
+            return None
+        excess = amount - max(month_left, Decimal("0"))
+        after = carried + month_left - amount
+        figures = (
+            f"{this_name} oyligi {salary:,.0f}, shu oy olgani {paid:,.0f}"
+        )
+        if after >= 0:
+            return (
+                f"Diqqat: bu summa {name}ning {this_name} oyligidan {excess:,.0f} so'm "
+                f"ko'p ({figures}). {prev_name} oyidan {carried:,.0f} so'm oyligi qolgan — "
+                f"bu o'sha pul bo'lsa, «{prev_name} oyidan qolgan oyligi»ni tanlang. "
+                f"{this_name} hisobidan bo'lsa, Saqlashni yana bosing."
+            )
+        if carried < 0:
+            return (
+                f"Diqqat: {name} oyligidan {excess:,.0f} so'm ko'p oladi ({figures}) — "
+                f"qarzi shuncha oshadi: hozir {-carried:,.0f}, oy oxirida "
+                f"{-after:,.0f} so'm qarzdor bo'ladi. To'g'ri bo'lsa, Saqlashni yana bosing."
+            )
+        left = f", {prev_name} oyidan qolgani {carried:,.0f}" if carried > 0 else ""
+        return (
+            f"Diqqat: {name} oyligidan ko'p oladi ({figures}{left}) — "
+            f"{-after:,.0f} so'm qarzdor bo'ladi. To'g'ri bo'lsa, Saqlashni yana bosing."
+        )
 
     def acting_seller(self):
         """Whose till the chiqim leaves: the seller an admin/manager picked; else
@@ -1559,7 +1929,9 @@ class ReturnForm(forms.ModelForm):
 
     class Meta:
         model = Return
-        fields = ["sale_item", "weight", "restock", "note"]
+        # No `restock` box: every return is booked as good goods back (the model default
+        # True), so its tannarx always comes off the seller's production debt.
+        fields = ["sale_item", "weight", "note"]
         widgets = {"note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy"})}
 
     @staticmethod
@@ -1663,6 +2035,88 @@ class ReturnForm(forms.ModelForm):
                     f"{_som(self.excess) - _som(on_hand):,.0f} so'm yetmaydi. "
                     f"Avans variantini tanlang yoki avval kassaga pul kiriting."
                 )
+        return cleaned
+
+
+def parse_return_rows(data):
+    """[(sale item pk, quantity)] typed into the vazvrat table — boxes named
+    `ret_<sale item pk>`.
+
+    Read straight off the POST rather than through a formset: the rows are not lines
+    the seller adds and removes, they are a fixed list drawn from the chosen client's
+    receipts. Blanks and zeros are dropped, so returning one line out of forty submits
+    one row. Nothing here is trusted — the view looks every pk up among that client's
+    own returnable lines, so a tampered pk finds nothing."""
+    rows = []
+    for key, value in data.items():
+        if not key.startswith("ret_"):
+            continue
+        value = re.sub(r"\s", "", value or "").replace(",", ".")
+        if not value:
+            continue
+        try:
+            pk = int(key[len("ret_"):])
+            quantity = Decimal(value)
+        except (ValueError, ArithmeticError):
+            continue
+        if quantity > 0:
+            rows.append((pk, quantity))
+    return rows
+
+
+class ReturnBatchForm(forms.Form):
+    """Vazvrat: goods a client brought back in one visit, across any of their receipts.
+
+    The seller picks the CLIENT and types quantities against that client's sale lines
+    — a client comes back with goods, not with "the receipt of the 3rd", and the goods
+    may have gone out on several days at several prices. The line rows are not form
+    fields (their list depends on the client); they are read by `parse_return_rows`.
+
+    Each typed row is still judged by `ReturnForm`, one at a time, in the view: the
+    quantity cap and the debt/excess split live in exactly one place, and a vazvrat
+    of five lines settles exactly like five single returns would."""
+
+    client = forms.ModelChoiceField(
+        label="Mijoz", queryset=Client.objects.none(), widget=ClientSelect
+    )
+    date = forms.DateField(
+        label="Sana",
+        widget=forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+        validators=[_reject_future],
+    )
+    settlement = forms.ChoiceField(
+        label="Mijoz allaqachon to'lagan qismi",
+        choices=ReturnForm.base_fields["settlement"].choices,
+        initial=ReturnForm.SETTLE_ADVANCE,
+        widget=forms.RadioSelect,
+        # Optional for the same reason as on ReturnForm: an unanswered question keeps
+        # the money in the till as advance credit.
+        required=False,
+    )
+    note = forms.CharField(
+        label="Izoh", required=False, max_length=255,
+        widget=forms.TextInput(attrs={"placeholder": "Ixtiyoriy"}),
+    )
+
+    def __init__(self, *args, clients=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["client"].queryset = (
+            clients if clients is not None else Client.objects.none()
+        )
+        _searchable_select(self.fields["client"], "Mijozni qidiring yoki tanlang")
+        self.fields["date"].initial = timezone.localdate
+        #: [(sale item pk, quantity)] the seller typed — filled by clean().
+        self.rows = []
+
+    def clean(self):
+        cleaned = super().clean()
+        self.rows = parse_return_rows(self.data)
+        if cleaned.get("client") is not None and not self.rows:
+            raise forms.ValidationError(
+                "Hech bo'lmasa bitta qatorga qaytgan miqdorni kiriting."
+            )
+        if not cleaned.get("settlement"):
+            cleaned["settlement"] = ReturnForm.SETTLE_ADVANCE
         return cleaned
 
 

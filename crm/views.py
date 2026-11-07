@@ -1,6 +1,7 @@
 import calendar
 import math
 import re
+import uuid
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from urllib.parse import quote, urlencode
@@ -31,7 +32,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
-from accounts.decorators import role_required
+from accounts.decorators import payroll_required, role_required
 from accounts.models import User
 
 from . import road, route_share, routing
@@ -42,10 +43,13 @@ from .forms import (
     AdvanceRemoveForm,
     ClientForm,
     ClientTransferForm,
+    DayCardForm,
+    EmployeeBalanceForm,
     DebtPaymentForm,
     DebtorAddForm,
     EmployeeForm,
     ExpenseForm,
+    HolidayForm,
     OpeningDebtForm,
     PaymentEditForm,
     ProductForm,
@@ -55,6 +59,7 @@ from .forms import (
     ProductionAdjustForm,
     ProductionRemittanceForm,
     ProfitPayoutForm,
+    ReturnBatchForm,
     ReturnForm,
     SaleForm,
     SaleItemFormSet,
@@ -62,6 +67,7 @@ from .forms import (
     StockEntryForm,
     TruckForm,
     WarehouseForm,
+    parse_return_rows,
     sellers_queryset,
 )
 from .models import (
@@ -69,6 +75,7 @@ from .models import (
     ADVANCE_DEPOSIT_KINDS,
     ADVANCE_SPENT_KINDS,
     COST,
+    DEBT_CLEAR_NOTE,
     ITEM_WEIGHT_KG,
     PAYING_KINDS,
     PAYMENT_CREDIT,
@@ -79,11 +86,17 @@ from .models import (
     RETURN_COST,
     RETURN_WEIGHT_KG,
     REVENUE,
+    SETTLEMENT_KINDS,
+    SUNDAY,
+    Attendance,
     AuditLog,
     Client,
     DeliveryRoute,
+    DayHours,
     Employee,
     Expense,
+    Holiday,
+    Leave,
     Payment,
     client_advance_balance,
     recompute_client_debt_deadlines,
@@ -100,14 +113,25 @@ from .models import (
     RouteStop,
     Truck,
     Warehouse,
+    davomad_start,
+    left_after_handover,
     month_span,
+    on_davomad,
+    payout_for_month,
+    payroll_month_of,
+    rest_dates_in_month,
+    rest_holidays_in,
     seller_cash_on_hand,
     seller_production_debt,
+    TILL_SETTLES_FROM,
+    till_cash_on,
+    till_days,
 )
 from .context_processors import SESSION_KEY as ACTING_SELLER_KEY
 from .context_processors import current_acting_seller
 from .geo import LocationError, resolve_location
 from .utils import (
+    UZ_MONTH_NAMES,
     form_changes,
     form_reload,
     form_response,
@@ -1142,9 +1166,11 @@ def _last_payment_map(user, client_pks):
     showing — and return credits / refunds move money the other way. Advances marked
     `is_opening` are dropped too: their cash was taken in earlier and the row carries
     the day it was written up, not the day the client handed anything over, so it says
-    nothing about when they last actually paid."""
+    nothing about when they last actually paid. The same flag on a receipt's payment
+    marks a debt that was cleared, not paid (DEBT_CLEAR_NOTE) — no money there either."""
     on_sales = Payment.objects.filter(
-        sale__client__in=client_pks, kind__in=(Payment.Kind.SALE, Payment.Kind.DEBT)
+        sale__client__in=client_pks, kind__in=(Payment.Kind.SALE, Payment.Kind.DEBT),
+        is_opening=False,
     )
     advances = Payment.objects.filter(
         client__in=client_pks, sale__isnull=True,
@@ -1424,26 +1450,69 @@ def _render_client_edit(request, client, form, title, invalid=False):
     return render(request, "crm/_client_edit_page.html", context)
 
 
+def _client_delete_extras(client):
+    """What goes with a client when they are deleted, as the phrases the confirm
+    dialog and the audit line are built from: (records, balances). Counted across
+    every seller — the whole account goes, not only the caller's side of it."""
+    sales = Sale.objects.filter(client=client)
+    sale_count = sales.real().count()
+    opening_count = sales.count() - sale_count
+    payment_count = (
+        Payment.objects.filter(Q(sale__client=client) | Q(client=client))
+        .distinct().count()
+    )
+    return_count = Return.objects.filter(sale__client=client).count()
+    debt = sales.outstanding().aggregate(s=Sum("remaining"))["s"] or Decimal("0")
+    advance = client_advance_balance(client)
+    records = [
+        f"{count} ta {label}"
+        for count, label in (
+            (sale_count, "sotuv"), (opening_count, "ochilish qarzi"),
+            (payment_count, "to'lov"), (return_count, "qaytarish"),
+        )
+        if count
+    ]
+    balances = [
+        f"{amount:,.0f} so'm {label}"
+        for amount, label in ((debt, "qarz"), (advance, "avans"))
+        if amount > 0
+    ]
+    return records, balances
+
+
 def client_delete(request, pk):
+    """Delete a client outright — debt, advance and all. Their sales (with the items,
+    payments and returns on them) and their advance movements go with them, so the
+    till, debt and profit re-derive as if the client had never been entered. Like
+    `sale_delete`, nothing is blocked: the confirm dialog spells out what will go."""
     client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    records, balances = _client_delete_extras(client)
     if request.method == "POST":
-        try:
+        summary = f"{client.name} o'chirildi"
+        if records or balances:
+            summary += f" — {', '.join(records + balances)}"
+        with transaction.atomic():
+            # Sale → Client is PROTECT, so the sales go first; their items, payments
+            # and returns cascade. Advance movements cascade with the client itself.
+            Sale.objects.filter(client=client).delete()
             client.delete()
-            AuditLog.record(
-                request.user, AuditLog.Action.DELETE, "Mijoz", pk,
-                f"{client.name} o'chirildi",
-            )
-            messages.success(request, f"“{client.name}” mijozi o'chirildi.")
-        except ProtectedError:
-            messages.error(
-                request,
-                f"“{client.name}” mijozini o'chirib bo'lmaydi — sotuvlari mavjud.",
-            )
+        AuditLog.record(
+            request.user, AuditLog.Action.DELETE, "Mijoz", pk, summary[:255]
+        )
+        messages.success(request, f"“{client.name}” mijozi o'chirildi.")
         return form_reload(request, reverse("client_list"))
+    warn = ""
+    if records:
+        warn += f" Unga bog'liq {', '.join(records)} ham o'chiriladi."
+    if balances:
+        warn += f" {' va '.join(balances)} hisobdan chiqadi."
+    if warn:
+        warn += " Kassa va qarz qayta hisoblanadi."
     return render_confirm(
         request,
         "Mijozni o'chirish",
-        f"“{client.name}” mijozi o'chiriladi. Bu amalni qaytarib bo'lmaydi.",
+        f"“{client.name}” mijozi butunlay o'chiriladi.{warn} "
+        "Bu amalni qaytarib bo'lmaydi.",
         "Ha, o'chirish",
         confirm_class="btn-danger",
     )
@@ -1517,6 +1586,10 @@ def _payment_event(payment):
     client with, so the running balance follows their debt: the full sum they sent
     when the seller carried the bank fee, the net when they carried it themselves."""
     label, cls, icon = _PAY_EVENTS[payment.kind]
+    if payment.note.startswith(DEBT_CLEAR_NOTE):
+        # Shaped like a debt payment so the balance follows it, but no money came in:
+        # under its own label it stays out of the history's "to'ladi" total.
+        label, cls = DEBT_CLEAR_NOTE, "badge-neutral"
     paying = payment.kind in PAYING_KINDS
     amount = payment.credited_amount
     if paying:
@@ -2058,12 +2131,21 @@ def _client_search(qs, term, base="", extra=None):
     return qs.filter(match)
 
 
-def _filter_sales(request, sales):
-    """Filter sales by client/product/rep/status and, only when no such filter
-    is active, a date window (dan..gacha, default today..today).
+def _picked_date_window(request):
+    """Whether the URL carries a date window the user actually chose — as opposed to
+    the "today" a page falls back on when it is given none."""
+    return bool(
+        _parse_date(request.GET.get("dan")) or _parse_date(request.GET.get("gacha"))
+    )
 
-    A content filter searches across ALL dates — the date window is the default
-    (unfiltered) view's concern, so the two never apply at once.
+
+def _filter_sales(request, sales):
+    """Filter sales by client/product/rep/status and by a date window (dan..gacha).
+
+    A window the user picked always applies, so a search or a filter narrows the
+    chosen days rather than throwing them away. Only the fallback differs: with no
+    window in the URL the plain list shows today, while a content filter searches
+    across ALL dates — looking a client up by name must not stop at today's sales.
     Returns (queryset, filters, date_from, date_to, has_filters)."""
     today = timezone.localdate()
     filters = {key: request.GET.get(key, "") for key in ("client", "product", "rep", "status")}
@@ -2080,11 +2162,13 @@ def _filter_sales(request, sales):
     date_to = _parse_date(request.GET.get("gacha")) or date_from
     if date_to < date_from:
         date_from, date_to = date_to, date_from
-    if not has_filters:
+    windowed = _picked_date_window(request) or not has_filters
+    if windowed:
         sales = sales.filter(date__gte=date_from, date__lte=date_to)
 
-    filters["dan"] = date_from.isoformat()
-    filters["gacha"] = date_to.isoformat()
+    # Empty when no window is in force, which is what the picker reads as "Hammasi".
+    filters["dan"] = date_from.isoformat() if windowed else ""
+    filters["gacha"] = date_to.isoformat() if windowed else ""
     if filters["q"]:
         sales = _client_search(sales, filters["q"], "client")
     if filters["client"].isdigit():
@@ -2150,6 +2234,24 @@ def _segment(request, param, value, label, count, current):
         "url": _segment_url(request, **{param: value}),
         "active": current == value,
     }
+
+
+def _sibling_url(request, name, **params):
+    """The current query pointed at a different view — the export link, which has to
+    show exactly the sheet being read rather than the unfiltered payroll.
+
+    Built from the route name rather than by rewriting the path, so renaming a URL
+    cannot silently produce a link to nowhere."""
+    query = request.GET.copy()
+    for key, value in params.items():
+        if value in ("", None):
+            query.pop(key, None)
+        else:
+            query[key] = value
+    query.pop("page", None)
+    encoded = query.urlencode()
+    url = reverse(name)
+    return f"{url}?{encoded}" if encoded else url
 
 
 def _active_filter_chips(request, filters, clients, products, reps):
@@ -2232,6 +2334,40 @@ def _date_range_context(request, default_window="today"):
     }
 
 
+def _windowed_filter_context(
+    request, url_name, filters, has_filters, keep, default_window="today"
+):
+    """Toolbar context for a list whose date window and content filters work together
+    (sotuvlar, mijozlar to'lovlari): the picker's vars plus what each control must
+    carry so that using one never drops another.
+
+    A window the user picked rides along with every search and filter. The implicit
+    "today" does not: carried along, it would stop a name search at today's rows.
+    `keep` names the drawer's filters — the search box is its own form, so it has to
+    take them with it. `default_window` is what an unfiltered page opens on (see
+    `_date_range_context`); it must match the window the page's own filter applies."""
+    picked = _picked_date_window(request)
+    window_keep = [
+        {"name": key, "value": filters[key] if picked else ""}
+        for key in ("dan", "gacha")
+    ]
+    window_qs = urlencode([(k["name"], k["value"]) for k in window_keep if k["value"]])
+    return {
+        # Filtered with no window picked, the list spans every date — the picker then
+        # reads "Hammasi" instead of a "Bugun" that isn't being applied.
+        **_date_range_context(
+            request, default_window="all" if has_filters else default_window
+        ),
+        "allow_all_window": has_filters,
+        "window_keep": window_keep,
+        "search_keep": window_keep + [
+            {"name": key, "value": filters[key]} for key in keep
+        ],
+        "search_clear_url": _url_without(request, url_name, "q", "page"),
+        "filter_clear_url": reverse(url_name) + (f"?{window_qs}" if window_qs else ""),
+    }
+
+
 def _outstanding_balance(sales):
     """Total still owed across the given sales: item revenue − returns − payments,
     plus any carried-over opening balance.
@@ -2294,7 +2430,10 @@ def sale_list(request):
             "has_filters": has_filters,
             "active_filters": active_filters,
             "filter_count": len(active_filters),
-            **_date_range_context(request),
+            **_windowed_filter_context(
+                request, "sale_list", filters, has_filters,
+                keep=("client", "product", "rep", "status"),
+            ),
             "clients": clients,
             "products": products,
             "reps": reps,
@@ -3056,6 +3195,7 @@ def _distribute_debt_payment(
     else:
         left = amount
     touched = 0
+    batch = uuid.uuid4()
 
     def _create(credit, **extra):
         gross, commission, original = _slice_figures(
@@ -3073,6 +3213,7 @@ def _distribute_debt_payment(
             note=note,
             date=on_date,
             created_by=user,
+            batch=batch,
             **extra,
         )
 
@@ -3119,6 +3260,7 @@ def _apply_advance_to_open_sales(client, seller, on_date=None):
         .order_by("date", "created_at")
     )
     applied = Decimal("0")
+    batch = uuid.uuid4()
     with transaction.atomic():
         for sale in sales:
             if balance <= 0:
@@ -3142,6 +3284,7 @@ def _apply_advance_to_open_sales(client, seller, on_date=None):
                 # can't have paid a sale that hadn't happened yet
                 date=max(on_date, sale.date),
                 created_by=seller,
+                batch=batch,
             )
             balance -= use
             applied += use
@@ -3166,6 +3309,16 @@ def _usd_note(cleaned):
         usd = cleaned["amount"] / cleaned["exchange_rate"]
         return f" · ${usd:,.2f} × {cleaned['exchange_rate']:,.0f}"
     return ""
+
+
+def _date_note(on_date, was=None):
+    """The audit-line tail carrying the payment's OWN date. The trail's Sana column is
+    the day the line was written, which is not the day the money counts for whenever a
+    payment is entered — or fixed — after the fact. An edit that moved it shows both."""
+    on_date = on_date or timezone.localdate()
+    if was and was != on_date:
+        return f" · sanasi: {was:%d.%m.%Y} → {on_date:%d.%m.%Y}"
+    return f" · sanasi: {on_date:%d.%m.%Y}"
 
 
 def _method_label(code):
@@ -3229,7 +3382,8 @@ def client_debt_pay(request, pk):
                 request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
                 f"Mijoz {client.name} qarz to'lovi "
                 f"({_method_label(form.cleaned_data['method'])}){_usd_note(form.cleaned_data)} "
-                f"— {form.cleaned_data['amount']:,.0f} so'm{_on_behalf(request.user, seller)}",
+                f"— {form.cleaned_data['amount']:,.0f} so'm"
+                f"{_date_note(form.cleaned_data['date'])}{_on_behalf(request.user, seller)}",
             )
             msg = f"{form.cleaned_data['amount']:,.0f} so'm {touched} ta chekka taqsimlandi."
             if touched:
@@ -3316,7 +3470,7 @@ def client_advance_pay(request, pk):
                 f"Mijoz {client.name} avans to'lovi "
                 f"({_method_label(cd['method'])}){_usd_note(cd)} "
                 f"— {cd['amount']:,.0f} so'm{_kassa_note(cd['is_opening'])}"
-                f"{_on_behalf(request.user, seller)}",
+                f"{_date_note(cd['date'])}{_on_behalf(request.user, seller)}",
             )
             left = client_advance_balance(client, seller)
             msg = f"Avans qabul qilindi: {cd['amount']:,.0f} so'm."
@@ -3405,6 +3559,286 @@ def client_advance_moves(request, pk):
     return render(request, "crm/_advance_moves_page.html", context)
 
 
+def _advance_held_by_seller(client, user):
+    """{seller_pk: advance balance} for every till that still holds credit for this
+    client — the caller's own only, for a seller. Advance is seller-bound, so a
+    balance can only be taken off the till it sits in."""
+    rows = Payment.objects.filter(client=client)
+    if not user.can_see_all_records:
+        rows = rows.filter(created_by=user)
+    agg = rows.values("created_by").annotate(
+        dep=Sum(PAYMENT_CREDIT, filter=Q(kind__in=ADVANCE_DEPOSIT_KINDS)),
+        used=Sum(PAYMENT_CREDIT, filter=Q(kind__in=ADVANCE_SPENT_KINDS)),
+    )
+    held = {
+        r["created_by"]: (r["dep"] or Decimal("0")) - (r["used"] or Decimal("0"))
+        for r in agg
+    }
+    return {seller: balance for seller, balance in held.items() if balance > 0}
+
+
+def _render_balance_clear(request, client, context):
+    """The shared "o'chirish" dialog for a client's debt or advance: what the balance
+    is made of, what to fix first if it is simply wrong, and what happens if it is
+    taken off regardless."""
+    context = {"client": client, **context}
+    if is_ajax(request):
+        return render(request, "crm/_balance_clear_modal.html", context)
+    return render(request, "crm/_balance_clear_page.html", context)
+
+
+def _advance_sources(client, held):
+    """The deposits a client's remaining advance is made of, as dialog rows.
+
+    The pool is spent oldest-first, so what is left sits on the newest deposits: each
+    till's rows are walked back from the latest until they cover its balance. Every
+    row names the thing that can be fixed instead of clearing — a deposit has its own
+    edit and delete, credit that came off a sale leads back to that receipt."""
+    labels = {
+        Payment.Kind.ADVANCE_IN: "Avans olingan",
+        Payment.Kind.RETURN_CREDIT: "Qaytarishdan ortgan pul",
+        Payment.Kind.ADJUST_CREDIT: "Narx tuzatilganda ortgan pul",
+    }
+    rows = []
+    for seller_pk, balance in held.items():
+        deposits = (
+            Payment.objects.filter(
+                client=client, created_by_id=seller_pk, kind__in=ADVANCE_DEPOSIT_KINDS
+            )
+            .select_related("sale")
+            .order_by("-date", "-created_at")
+        )
+        for dep in deposits:
+            if balance <= 0:
+                break
+            balance -= dep.credited_amount
+            if dep.kind == Payment.Kind.ADVANCE_IN:
+                links = [
+                    {"label": "Tahrirlash", "modal": True,
+                     "url": reverse("advance_edit", args=[dep.pk])},
+                    {"label": "O'chirish", "modal": True,
+                     "url": reverse("advance_delete", args=[dep.pk])},
+                ]
+                hint = dep.note
+            else:
+                links = [{"label": "Chekni ochish",
+                          "url": reverse("sale_detail", args=[dep.sale_id])}]
+                hint = f"{dep.sale.date:%d.%m.%Y} sotuvi"
+            rows.append({
+                "date": dep.date,
+                "kind": dep.kind,
+                "label": labels[dep.kind],
+                "hint": hint,
+                "amount": dep.credited_amount,
+                "links": links,
+            })
+    return rows
+
+
+def _advance_clear_steps(rows):
+    """What to try before clearing an advance, by what the balance is made of."""
+    kinds = {row["kind"] for row in rows}
+    steps = []
+    if Payment.Kind.ADVANCE_IN in kinds:
+        steps += [
+            "Avans summasi xato yozilgan bo'lsa — qatordagi «Tahrirlash»ni bosing.",
+            "Avans umuman xato yozilgan yoki pul mijozga qaytarib berilgan bo'lsa — "
+            "qatordagi «O'chirish»ni bosing: u pul kassadan chiqqan-chiqmaganini "
+            "so'raydi.",
+        ]
+    if Payment.Kind.RETURN_CREDIT in kinds:
+        steps.append(
+            "Tovar qaytarilgani xato yozilgan bo'lsa — chekni ochib qaytarishni bekor "
+            "qiling: avans ham u bilan birga yo'qoladi."
+        )
+    if Payment.Kind.ADJUST_CREDIT in kinds:
+        steps.append(
+            "Sotuv narxi tuzatilganda ortib qolgan pulning tuzatadigan alohida "
+            "yozuvi yo'q — kerak bo'lmasa shu yerda o'chiriladi."
+        )
+    steps.append(
+        "Mijoz yana savdo qiladigan bo'lsa, hech narsa qilish shart emas — avans "
+        "keyingi sotuvdan o'zi yechiladi."
+    )
+    return [{"text": text} for text in steps]
+
+
+def client_advance_clear(request, pk):
+    """Take whatever advance a client still holds off their account, in one step.
+
+    The way out for credit that has no deposit behind it to edit or delete — the few
+    so'm left over when a sale's price was corrected or goods came back — and for a
+    balance nobody is going to spend. No cash moves: the money stays in the till it is
+    already in, only the "biz mijozga qarzmiz" figure goes.
+
+    Clearing is never refused, but the dialog first lays out what the balance is made
+    of and what to fix if it is simply wrong — a mistyped deposit is better edited
+    than cleared, because only the edit puts the kassa right too.
+
+    Written as an advance return kept out of the kassa, tagged as a correction so no
+    screen reads it as the client taking their money back. Being an ordinary
+    ADVANCE_OUT row it shows under Avans harakatlari, where `advance_out_delete`
+    undoes it."""
+    client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    held = _advance_held_by_seller(client, request.user)
+    total = sum(held.values(), Decimal("0"))
+    back = reverse("debt_client", args=[client.pk])
+    if not held:
+        messages.error(request, f"“{client.name}” mijozida o'chiriladigan avans yo'q.")
+        return form_reload(request, back)
+    if request.method != "POST":
+        rows = _advance_sources(client, held)
+        return _render_balance_clear(request, client, {
+            "title": f"Avansni o'chirish: {client.name}",
+            "total_label": "Mijozda turgan avans",
+            "total": total,
+            "check_intro": (
+                "Avans noto'g'ri chiqib qolgan bo'lsa, avval sababini tuzating — "
+                "shunda kassa ham to'g'ri qoladi:"
+            ),
+            "steps": _advance_clear_steps(rows),
+            "rows_title": "Avans nimadan yig'ilgan",
+            "rows": rows,
+            "effect": (
+                f"{total:,.0f} so'm avans hisobdan chiqadi — mijozga qarzimiz "
+                f"qolmaydi. Pul kassadan chiqmaydi, kassa o'zgarmaydi. Qaytarish "
+                f"uchun «Avans harakatlari»dagi «tuzatish» qatorini o'chiring."
+            ),
+            "confirm_label": "Baribir o'chirish",
+        })
+    with transaction.atomic():
+        for seller_pk, amount in held.items():
+            Payment.objects.create(
+                client=client,
+                sale=None,
+                amount=amount,
+                amount_original=amount,
+                method=Payment.Method.CASH,
+                note=f"{ADVANCE_ADJUST_NOTE}: avans o'chirildi",
+                kind=Payment.Kind.ADVANCE_OUT,
+                is_opening=True,
+                date=timezone.localdate(),
+                created_by_id=seller_pk,
+            )
+    AuditLog.record(
+        request.user, AuditLog.Action.VOID, "To'lov", client.pk,
+        f"Mijoz {client.name} avansi o'chirildi — {total:,.0f} so'm "
+        f"(kassaga tegmadi)",
+    )
+    messages.success(
+        request, f"Avans o'chirildi: {total:,.0f} so'm — kassaga tegilmadi."
+    )
+    return form_reload(request, back)
+
+
+def _debt_clear_rows(client, sales):
+    """A client's open receipts as dialog rows, each leading to where it is fixed."""
+    rows = []
+    for sale in sales:
+        if sale.is_opening:
+            label, hint = "Boshlang'ich qarz", "CRM'gacha bo'lgan eski qarz"
+            links = [{"label": "Tahrirlash", "modal": True,
+                      "url": reverse("client_opening_debt", args=[client.pk])}]
+        else:
+            label, hint = sale.item_summary, ""
+            links = [{"label": "Chekni ochish",
+                      "url": reverse("sale_detail", args=[sale.pk])}]
+        rows.append({
+            "date": sale.date, "label": label, "hint": hint,
+            "amount": sale.remaining, "links": links,
+        })
+    return rows
+
+
+def _debt_clear_steps(client, sales):
+    """What to try before clearing a debt: each way a debt comes to be wrong, and the
+    screen that puts it right."""
+    steps = [
+        {"text": "Mijoz pul bergan, lekin to'lov yozilmagan bo'lsa —",
+         "action": "to'lovni kiriting", "modal": True,
+         "url": reverse("client_debt_pay", args=[client.pk])},
+        {"text": "Narx yoki og'irlik xato yozilgan bo'lsa — chekni ochib "
+                 "«Tahrirlash»ni bosing."},
+        {"text": "Tovar qaytib kelgan bo'lsa — chekni ochib «Qaytarish» yozing."},
+        {"text": "Chek xato yoki ikki marta yozilgan bo'lsa — uni Sotuvlar "
+                 "ro'yxatidan o'chiring."},
+    ]
+    if any(sale.is_opening for sale in sales):
+        steps.append({
+            "text": "CRM'gacha bo'lgan eski qarz xato kiritilgan bo'lsa —",
+            "action": "boshlang'ich qarzni tuzating", "modal": True,
+            "url": reverse("client_opening_debt", args=[client.pk]),
+        })
+    return steps
+
+
+def client_debt_clear(request, pk):
+    """Take a client's whole open debt off their account with no money changing hands
+    — the counterpart of `client_advance_clear`.
+
+    Never refused, but the dialog first lists the open receipts and the proper fix for
+    each way a debt goes wrong (an unrecorded payment, a mistyped price, goods that
+    came back): those put the kassa and the reports right, a clearing only hides the
+    figure. It is for what is left when none of them applies — a few so'm nobody will
+    collect, a debt that is being forgiven.
+
+    Each receipt gets a debt payment for its balance, kept out of every till and
+    carrying DEBT_CLEAR_NOTE. The sale, its revenue and the seller's cash are
+    untouched; deleting that payment on the receipt brings the debt back."""
+    client = get_object_or_404(_visible_clients(request.user), pk=pk)
+    sales = list(_open_receipts(request, client))
+    total = sum((s.remaining for s in sales), Decimal("0"))
+    back = reverse("debt_client", args=[client.pk])
+    if not sales:
+        messages.error(request, f"“{client.name}” mijozida o'chiriladigan qarz yo'q.")
+        return form_reload(request, back)
+    if request.method != "POST":
+        return _render_balance_clear(request, client, {
+            "title": f"Qarzni o'chirish: {client.name}",
+            "total_label": f"Umumiy qarz · {len(sales)} ta ochiq chek",
+            "total": total,
+            "check_intro": (
+                "Qarz noto'g'ri chiqib qolgan bo'lsa, avval sababini tuzating — "
+                "shunda qarz o'zi to'g'rilanadi, kassa va hisobotlar ham to'g'ri "
+                "qoladi:"
+            ),
+            "steps": _debt_clear_steps(client, sales),
+            "rows_title": "Ochiq cheklar",
+            "rows": _debt_clear_rows(client, sales),
+            "effect": (
+                f"{total:,.0f} so'm qarz hisobdan chiqadi: har bir chekka "
+                f"«{DEBT_CLEAR_NOTE}» degan kassasiz to'lov yoziladi. Kassaga pul "
+                f"kirmaydi, sotuv va foyda o'zgarmaydi. Qaytarish uchun chek ichida "
+                f"shu to'lovni o'chiring."
+            ),
+            "confirm_label": "Baribir o'chirish",
+        })
+    with transaction.atomic():
+        for sale in sales:
+            Payment.objects.create(
+                sale=sale,
+                amount=sale.remaining,
+                amount_original=sale.remaining,
+                method=Payment.Method.CASH,
+                note=DEBT_CLEAR_NOTE,
+                kind=Payment.Kind.DEBT,
+                is_opening=True,
+                date=timezone.localdate(),
+                # The receivable is the sale's own seller's, whoever clears it.
+                created_by=sale.sales_rep,
+            )
+        recompute_client_debt_deadlines(client.pk)
+    AuditLog.record(
+        request.user, AuditLog.Action.VOID, "To'lov", client.pk,
+        f"Mijoz {client.name} qarzi o'chirildi — {total:,.0f} so'm, "
+        f"{len(sales)} ta chek (kassaga tegmadi)",
+    )
+    messages.success(
+        request, f"Qarz o'chirildi: {total:,.0f} so'm — kassaga tegilmadi."
+    )
+    return form_reload(request, back)
+
+
 def _reconcile_client_advance(client, seller):
     """Bring a client's advance (for one seller) back into balance after a deposit
     was changed or removed. If deposits have shrunk below what sales already drew
@@ -3457,7 +3891,7 @@ def advance_edit(request, pk):
         if form.is_valid():
             cd = form.cleaned_data
             mode = cd["diff_mode"]
-            was = payment.amount
+            was, was_date = payment.amount, payment.date
             delta = cd["amount"] - was
             retro = mode == AdvanceEditForm.RETRO or not delta
             payment.is_opening = cd["is_opening"]
@@ -3484,7 +3918,7 @@ def advance_edit(request, pk):
                 f"Mijoz {client.name} avansi o'zgartirildi — "
                 f"{was:,.0f} → {cd['amount']:,.0f} so'm"
                 f"{'' if retro else _diff_note(mode)}"
-                f"{_kassa_note(payment.is_opening)}",
+                f"{_kassa_note(payment.is_opening)}{_date_note(payment.date, was_date)}",
             )
             messages.success(request, _advance_edit_message(retro, delta, mode))
             # A deposit kept out of the till isn't on the kassa page at all, so the
@@ -3615,7 +4049,7 @@ def advance_delete(request, pk):
                 AuditLog.record(
                     request.user, AuditLog.Action.PAYMENT, "To'lov", client.pk,
                     f"Mijoz {client.name} avansi qaytarildi — "
-                    f"{cd['amount']:,.0f} so'm ({where})",
+                    f"{cd['amount']:,.0f} so'm ({where}){_date_note(cd['date'])}",
                 )
                 messages.success(
                     request,
@@ -3626,7 +4060,7 @@ def advance_delete(request, pk):
                 AuditLog.record(
                     request.user, AuditLog.Action.VOID, "To'lov", client.pk,
                     f"{client.name} — avans {payment.amount:,.0f} so'm o'chirildi "
-                    f"(xato yozuv)",
+                    f"(xato yozuv){_date_note(payment.date)}",
                 )
                 payment.delete()
                 messages.success(request, "Avans o'chirildi.")
@@ -3680,7 +4114,10 @@ def advance_out_delete(request, pk):
     payment = get_object_or_404(qs, pk=pk)
     client, seller = payment.client, payment.created_by
     if request.method == "POST":
-        summary = f"{client.name} — qaytarilgan avans {payment.amount:,.0f} so'm bekor qilindi"
+        summary = (
+            f"{client.name} — qaytarilgan avans {payment.amount:,.0f} so'm bekor qilindi"
+            f"{_date_note(payment.date)}"
+        )
         payment.delete()
         # The freed credit lands back on whatever the client still owes.
         _reconcile_client_advance(client, seller)
@@ -3720,7 +4157,10 @@ def payment_delete(request, pk):
     if request.method == "POST":
         sale_pk = payment.sale_id
         sale = payment.sale
-        summary = f"{payment.sale.client.name} — {payment.amount:,.0f} so'm ({payment.get_method_display()})"
+        summary = (
+            f"{payment.sale.client.name} — {payment.amount:,.0f} so'm "
+            f"({payment.get_method_display()}){_date_note(payment.date)}"
+        )
         payment.delete()
         # The client's deadlines may have been counted from this payment; with it gone
         # the clock falls back to their previous repayment — restoring the old days.
@@ -3755,6 +4195,9 @@ def payment_edit(request, pk):
     # credited, so add that back to get how much this one may cover.
     max_amount = payment.sale.debt_remaining + payment.credited_amount
     title = "To'lovni tahrirlash"
+    # Read before the form validates: a ModelForm writes the posted values onto its
+    # instance while cleaning, so afterwards the date it used to carry is gone.
+    was_date = payment.date
     form = PaymentEditForm(request.POST or None, instance=payment, max_amount=max_amount)
     if request.method == "POST":
         if form.is_valid():
@@ -3764,7 +4207,7 @@ def payment_edit(request, pk):
                 request.user, AuditLog.Action.UPDATE, "To'lov", payment.sale_id,
                 f"Mijoz {payment.sale.client.name} to'lovi "
                 f"({payment.get_method_display()}){_usd_note(form.cleaned_data)} "
-                f"— {payment.amount:,.0f} so'm",
+                f"— {payment.amount:,.0f} so'm{_date_note(payment.date, was_date)}",
             )
             messages.success(request, "To'lov yangilandi.")
             return form_success(request, reverse("kassa"))
@@ -3829,11 +4272,11 @@ def _payment_scope(user):
 def _filter_payments(request):
     """Client payments for the current filters, newest first.
 
-    Dates work exactly as they do on the sales list: the dan..gacha window (today by
-    default) is what the unfiltered page shows, but as soon as a content filter is
-    set — a client, a method, a search term — the window steps aside and the search
-    runs over every date. Picking a client from the drawer is how you ask "what has
-    this person ever paid us", and answering for today alone would make it useless.
+    Dates work exactly as they do on the sales list: a dan..gacha window the user
+    picked always applies, filters or not. With none picked the unfiltered page shows
+    today, but a content filter — a client, a method, a search term — runs over every
+    date. Picking a client from the drawer is how you ask "what has this person ever
+    paid us", and answering for today alone would make it useless.
 
     Returns (queryset, filters, has_filters)."""
     qs = _payment_scope(request.user)
@@ -3859,9 +4302,11 @@ def _filter_payments(request):
     )
 
     dates = _date_range_context(request)
-    filters["dan"] = dates["date_from"].isoformat()
-    filters["gacha"] = dates["date_to"].isoformat()
-    if not has_filters:
+    windowed = _picked_date_window(request) or not has_filters
+    # Empty when no window is in force, which is what the picker reads as "Hammasi".
+    filters["dan"] = dates["date_from"].isoformat() if windowed else ""
+    filters["gacha"] = dates["date_to"].isoformat() if windowed else ""
+    if windowed:
         qs = qs.filter(date__gte=dates["date_from"], date__lte=dates["date_to"])
 
     if filters["q"]:
@@ -3893,7 +4338,11 @@ _PAYMENT_AGGREGATES = {
     "card": Sum("amount", filter=RECEIVED & Q(method=Payment.Method.CARD)),
     "transfer": Sum("amount", filter=RECEIVED & Q(method=Payment.Method.TRANSFER)),
     "commission": Sum("commission", filter=RECEIVED),
-    "count": Count("pk", filter=RECEIVED),
+    # A sum split across receipts is one payment, however many rows it took.
+    "count": (
+        Count("pk", filter=RECEIVED & Q(batch__isnull=True))
+        + Count("batch", filter=RECEIVED, distinct=True)
+    ),
     "from_advance": Sum("amount", filter=Q(kind=Payment.Kind.ADVANCE_USED)),
 }
 
@@ -3919,38 +4368,83 @@ def _payment_totals(payments):
     return totals
 
 
-def _payment_rows(payments):
-    """One display row per payment. The client is resolved here (a sale payment
+def _payment_row(p):
+    """One stored payment as a display row. The client is resolved here (a sale payment
     reaches it through the sale, an advance carries it directly) so the template
     doesn't have to ask twice on every line."""
-    rows = []
+    client = p.sale.client if p.sale else p.client
+    label, badge = _CLIENT_PAYMENT_LABELS[p.kind]
+    return {
+        "pk": p.pk,
+        "date": p.date,
+        "client": client,
+        "label": label,
+        "badge": badge,
+        "is_advance": p.kind == Payment.Kind.ADVANCE_IN,
+        # False on an advance being spent: the row is shown, but no total counts
+        # it, and the page says so on the line itself.
+        "counted": p.kind != Payment.Kind.ADVANCE_USED,
+        "sale_pk": p.sale_id,
+        "sale_pks": [p.sale_id] if p.sale_id else [],
+        "parts": [],
+        "to_advance": Decimal("0"),
+        "method": p.get_method_display(),
+        "method_code": p.method,
+        "currency": p.currency,
+        "amount": p.amount,
+        "amount_original": p.original_amount,
+        "exchange_rate": p.exchange_rate,
+        "commission": p.commission,
+        # The reconciliation stamps its rows with a note that repeats the label
+        # word for word ("Avansdan yechildi"); printing both just says it twice.
+        "note": "" if p.note == label else p.note,
+        "created_by": p.created_by,
+    }
+
+
+def _merged_payment_row(parts):
+    """The row for a sum that reached several receipts: the whole sum on one line, with
+    its slices carried along under `parts` — each receipt's own figure, and the place
+    to fix a slice, since a correction is still made on the row that holds the money."""
+    parts = parts[::-1]  # listed newest first; the slices read in the order they were paid
+    head = next((part for part in parts if not part["is_advance"]), parts[0])
+
+    def total(key):
+        return sum((part[key] for part in parts), Decimal("0"))
+
+    return {
+        **head,
+        "sale_pk": None,
+        "sale_pks": [part["sale_pk"] for part in parts if part["sale_pk"]],
+        "parts": parts,
+        # What was left over once every receipt was settled and went on to their credit.
+        "to_advance": sum(
+            (part["amount"] for part in parts if part["is_advance"]), Decimal("0")
+        ),
+        "amount": total("amount"),
+        "amount_original": total("amount_original"),
+        "commission": total("commission"),
+    }
+
+
+def _payment_rows(payments):
+    """One display row per sum the client handed over (`Payment.batch`): 10 mln entered
+    is 10 mln here, whichever receipts it was spread across. Slices that have since been
+    edited onto another day or method no longer describe the same money, so they stand
+    on their own line rather than be folded into a row that would misreport them."""
+    groups = {}
     for p in payments:
-        client = p.sale.client if p.sale else p.client
-        label, badge = _CLIENT_PAYMENT_LABELS[p.kind]
-        rows.append({
-            "pk": p.pk,
-            "date": p.date,
-            "client": client,
-            "label": label,
-            "badge": badge,
-            "is_advance": p.kind == Payment.Kind.ADVANCE_IN,
-            # False on an advance being spent: the row is shown, but no total counts
-            # it, and the page says so on the line itself.
-            "counted": p.kind != Payment.Kind.ADVANCE_USED,
-            "sale_pk": p.sale_id,
-            "method": p.get_method_display(),
-            "method_code": p.method,
-            "currency": p.currency,
-            "amount": p.amount,
-            "amount_original": p.original_amount,
-            "exchange_rate": p.exchange_rate,
-            "commission": p.commission,
-            # The reconciliation stamps its rows with a note that repeats the label
-            # word for word ("Avansdan yechildi"); printing both just says it twice.
-            "note": "" if p.note == label else p.note,
-            "created_by": p.created_by,
-        })
-    return rows
+        key = p.pk
+        if p.batch:
+            key = (
+                p.batch, p.kind == Payment.Kind.ADVANCE_USED, p.date, p.method, p.currency,
+                p.created_by_id,
+            )
+        groups.setdefault(key, []).append(_payment_row(p))
+    return [
+        _merged_payment_row(parts) if len(parts) > 1 else parts[0]
+        for parts in groups.values()
+    ]
 
 
 def _payment_client_rows(payments):
@@ -4030,8 +4524,7 @@ def payment_list(request):
             request.GET.get("page")
         )
     else:
-        page = Paginator(payments, 25).get_page(request.GET.get("page"))
-        page.object_list = _payment_rows(page.object_list)
+        page = Paginator(_payment_rows(payments), 25).get_page(request.GET.get("page"))
     export_qs = request.GET.urlencode()
     return render(request, "crm/payment_list.html", {
         "page": page,
@@ -4053,7 +4546,10 @@ def payment_list(request):
         "filter_url": reverse("payment_list"),
         "search_placeholder": "Mijoz ismi yoki telefoni bo'yicha qidirish…",
         "export_url": reverse("payment_export") + (f"?{export_qs}" if export_qs else ""),
-        **_date_range_context(request),
+        **_windowed_filter_context(
+            request, "payment_list", filters, has_filters,
+            keep=("client", "rep", "method", "currency", "kind"),
+        ),
     })
 
 
@@ -4075,7 +4571,7 @@ def payment_export(request):
             r["date"].strftime("%d.%m.%Y"),
             r["client"].name if r["client"] else "",
             r["label"],
-            f"#{r['sale_pk']}" if r["sale_pk"] else "",
+            ", ".join(f"#{pk}" for pk in r["sale_pks"]),
             r["method"],
             dict(Payment.Currency.choices).get(r["currency"], ""),
             float(r["amount_original"]),
@@ -4114,6 +4610,416 @@ def payment_export(request):
         ("Mijozlar bo'yicha", client_headers, client_rows,
          {5: money, 6: money, 7: money, 8: money, 9: money}),
     ])
+
+
+# Where the part of a return's value that the open debt did not soak up went — the
+# drawer's "Pul qayerga ketdi" choice. "debt" is a return with no settlement at all:
+# the whole value cancelled debt and no money moved.
+_RETURN_SETTLE_LABELS = {
+    "debt": "Hammasi qarzdan ayirildi",
+    "advance": "Ortig'i avansga o'tdi",
+    "refund": "Ortig'i naqd qaytarildi",
+}
+
+
+def _return_scope(user):
+    """Every return the user may see. A seller sees the returns on their own sales —
+    the same receipts their Sotuvlar page reaches; admins/managers see all."""
+    qs = Return.objects.select_related(
+        "sale", "sale__client", "sale__sales_rep", "sale_item", "product",
+        "settlement", "created_by",
+    )
+    if user.can_see_all_records:
+        return qs
+    return qs.filter(sale__sales_rep=user)
+
+
+def _filter_returns(request):
+    """Returns for the current filters, newest first.
+
+    Dates work as on the sales and payments lists — a picked window always applies, a
+    content filter with none picked searches every date — except for what the bare
+    page opens on: the whole current month rather than today. Goods come back a few
+    times a month, not a few times a day, so a today-default would greet the page
+    empty. Returns (queryset, filters, has_filters)."""
+    qs = _return_scope(request.user)
+    keys = ("client", "product", "rep", "settle")
+    filters = {key: request.GET.get(key, "") for key in keys}
+    filters["q"] = request.GET.get("q", "").strip()
+    if filters["settle"] not in _RETURN_SETTLE_LABELS:
+        filters["settle"] = ""
+
+    has_filters = bool(
+        filters["q"]
+        or filters["client"].isdigit()
+        or filters["product"].isdigit()
+        or filters["settle"]
+        or (filters["rep"].isdigit() and request.user.can_see_all_records)
+    )
+
+    dates = _date_range_context(request, default_window="month")
+    windowed = _picked_date_window(request) or not has_filters
+    # Empty when no window is in force, which is what the picker reads as "Hammasi".
+    filters["dan"] = dates["date_from"].isoformat() if windowed else ""
+    filters["gacha"] = dates["date_to"].isoformat() if windowed else ""
+    if windowed:
+        qs = qs.filter(date__gte=dates["date_from"], date__lte=dates["date_to"])
+
+    if filters["q"]:
+        # A return is looked up by who brought it back or by what came back.
+        qs = _client_search(
+            qs, filters["q"], "sale__client",
+            extra=Q(product__name__icontains=filters["q"])
+            | Q(note__icontains=filters["q"]),
+        )
+    if filters["client"].isdigit():
+        qs = qs.filter(sale__client_id=filters["client"])
+    if filters["product"].isdigit():
+        qs = qs.filter(product_id=filters["product"])
+    if filters["rep"].isdigit() and request.user.can_see_all_records:
+        qs = qs.filter(sale__sales_rep_id=filters["rep"])
+    if filters["settle"] == "debt":
+        qs = qs.filter(settlement__isnull=True)
+    elif filters["settle"] == "advance":
+        qs = qs.filter(settlement__kind=Payment.Kind.RETURN_CREDIT)
+    elif filters["settle"] == "refund":
+        qs = qs.filter(settlement__kind=Payment.Kind.REFUND_OUT)
+    return qs.order_by("-date", "-created_at"), filters, has_filters
+
+
+def _return_totals(returns):
+    """Period totals for the returns shown, split three ways by where the value went.
+
+    A return cancels the receipt's open debt first; only the excess — money the client
+    had already paid — becomes a settlement payment, parked as advance or handed back
+    in cash. So the debt share is what is left of the value once both are taken off,
+    and the three always add back up to the total."""
+    totals = returns.aggregate(
+        total=Sum(RETURN_AMOUNT),
+        weight_kg=Sum(RETURN_WEIGHT_KG),
+        advance=Sum(
+            "settlement__amount", filter=Q(settlement__kind=Payment.Kind.RETURN_CREDIT)
+        ),
+        refund=Sum(
+            "settlement__amount", filter=Q(settlement__kind=Payment.Kind.REFUND_OUT)
+        ),
+        count=Count("pk"),
+        clients=Count("sale__client", distinct=True),
+    )
+    for key in ("total", "weight_kg", "advance", "refund"):
+        if totals[key] is None:
+            totals[key] = Decimal("0")
+    totals["to_debt"] = totals["total"] - totals["advance"] - totals["refund"]
+    return totals
+
+
+def _return_rows(returns):
+    """One display row per return, with its value split the same way as the totals:
+    what cancelled debt, and what went back to the client (and how)."""
+    rows = []
+    for r in returns:
+        settlement = r.settlement
+        back = settlement.amount if settlement else Decimal("0")
+        rows.append({
+            "ret": r,
+            "to_debt": r.amount - back,
+            "back": back,
+            "back_is_refund": (
+                settlement is not None and settlement.kind == Payment.Kind.REFUND_OUT
+            ),
+        })
+    return rows
+
+
+def _return_filter_chips(request, filters, clients, products, reps):
+    client = (
+        clients.filter(pk=filters["client"]).first() if filters["client"].isdigit() else None
+    )
+    product = (
+        products.filter(pk=filters["product"]).first()
+        if filters["product"].isdigit() else None
+    )
+    rep = reps.filter(pk=filters["rep"]).first() if reps and filters["rep"].isdigit() else None
+    return _filter_chips(request, [
+        {"param": "client", "label": "Mijoz", "value": client.name if client else ""},
+        {"param": "product", "label": "Mahsulot", "value": product.name if product else ""},
+        {"param": "rep", "label": "Sotuvchi", "value": str(rep) if rep else ""},
+        {"param": "settle", "label": "Pul",
+         "value": _RETURN_SETTLE_LABELS.get(filters["settle"], "")},
+    ])
+
+
+def return_list(request):
+    """Vazvratlar — every return on one page, instead of one sale page at a time.
+
+    Each row says where the returned value went: the part that cancelled the
+    receipt's open debt, and the part handed back to the client as advance or cash.
+    Returns are still entered from the sale itself (the "Qaytarish" button); this
+    page lists, filters and exports them, and its edit/delete icons are the same
+    ones the sale page shows."""
+    returns, filters, has_filters = _filter_returns(request)
+    totals = _return_totals(returns)
+
+    clients = _visible_clients(request.user).order_by("name")
+    # Only products that have ever come back — the drawer is a filter, not a catalogue.
+    products = Product.objects.filter(
+        pk__in=_return_scope(request.user).values("product")
+    ).order_by("name")
+    reps = (
+        User.objects.filter(is_active=True).order_by("first_name", "username")
+        if request.user.can_see_all_records
+        else None
+    )
+    active_filters = _return_filter_chips(request, filters, clients, products, reps)
+    page = Paginator(returns, 25).get_page(request.GET.get("page"))
+    page.object_list = _return_rows(page.object_list)
+    export_qs = request.GET.urlencode()
+    return render(request, "crm/return_list.html", {
+        "page": page,
+        "totals": totals,
+        "filters": filters,
+        "clients": clients,
+        "products": products,
+        "reps": reps,
+        "settle_options": list(_RETURN_SETTLE_LABELS.items()),
+        "active_filters": active_filters,
+        "filter_count": len(active_filters),
+        "has_filters": has_filters,
+        "filter_url": reverse("return_list"),
+        "search_placeholder": "Mijoz, telefon yoki mahsulot bo'yicha qidirish…",
+        "export_url": reverse("return_export") + (f"?{export_qs}" if export_qs else ""),
+        **_windowed_filter_context(
+            request, "return_list", filters, has_filters,
+            keep=("client", "product", "rep", "settle"),
+            default_window="month",
+        ),
+    })
+
+
+def return_export(request):
+    """Excel (.xlsx) of the returns for the current filters — exactly the rows the
+    page shows. The two ways money went back to the client get a column each, so
+    summing any money column in Excel gives the matching figure on the page."""
+    returns, _, _ = _filter_returns(request)
+    headers = [
+        "Sana", "Mijoz", "Chek", "Mahsulot", "Miqdor", "Birlik", "Narxi", "Qiymati",
+        "Qarzdan ayirildi", "Avansga o'tdi", "Naqd qaytarildi",
+        "Sotuvchi", "Izoh",
+    ]
+    rows = []
+    for row in _return_rows(returns):
+        r = row["ret"]
+        product = r.product.name
+        if r.sale_item.variant_label:
+            product += f" ({r.sale_item.variant_label})"
+        rows.append([
+            r.date.strftime("%d.%m.%Y"),
+            r.sale.client.name,
+            f"#{r.sale_id}",
+            product,
+            float(r.weight),
+            r.dimension,
+            float(r.price),
+            float(r.amount),
+            float(row["to_debt"]),
+            "" if row["back_is_refund"] or not row["back"] else float(row["back"]),
+            float(row["back"]) if row["back_is_refund"] else "",
+            str(r.sale.sales_rep),
+            r.note,
+        ])
+    money = "#,##0.00"
+    return _xlsx_response(
+        "vazvratlar.xlsx", "Vazvratlar", headers, rows,
+        {5: "#,##0.###", 7: money, 8: money, 9: money, 10: money, 11: money},
+    )
+
+
+def _returnable_lines(user, client):
+    """The client's sale lines that still have something left to return — the rows of
+    the vazvrat table, newest receipt first. Only receipts the user may see are read,
+    so a seller never lists a line off someone else's sale.
+
+    Each line carries `left` (still returnable, in its own unit) and its receipt's
+    `open_debt`, the figure the table's running summary splits the typed value
+    against. Returns (lines, can_overpay): the second is True when some return off
+    these lines could exceed its receipt's debt — only then does the form ask whether
+    the excess goes to advance or back in cash (see `ReturnForm.can_overpay`)."""
+    if client is None:
+        return [], False
+    sales = (
+        Sale.objects.visible_to(user).filter(client=client)
+        .select_related("sales_rep")
+        .prefetch_related("items__product", "items__returns", "returns")
+        .order_by("-date", "-created_at")
+    )
+    lines, can_overpay = [], False
+    for sale in sales:
+        items = [item for item in sale.items.all() if ReturnForm.returnable(item) > 0]
+        if not items:
+            continue
+        open_debt = max(Decimal("0"), sale.debt_remaining)
+        value = Decimal("0")
+        for item in items:
+            item.left = ReturnForm.returnable(item)
+            item.open_debt = open_debt
+            value += item.left * item.price
+            lines.append(item)
+        can_overpay = can_overpay or value > open_debt
+    return lines, can_overpay
+
+
+def _return_batch_summary(lines, typed):
+    """What the typed rows come to, split the way saving will split them: each
+    receipt's share cancels that receipt's own open debt first, and only the rest goes
+    back to the client. Drawn under the table; the page script keeps it live."""
+    by_pk = {line.pk: line for line in lines}
+    per_sale = {}
+    count = 0
+    for pk, quantity in typed:
+        line = by_pk.get(pk)
+        if line is None:
+            continue
+        count += 1
+        debt_and_value = per_sale.setdefault(line.sale_id, [line.open_debt, Decimal("0")])
+        debt_and_value[1] += quantity * line.price
+    total = sum((value for _, value in per_sale.values()), Decimal("0"))
+    to_debt = sum((min(value, debt) for debt, value in per_sale.values()), Decimal("0"))
+    return {"count": count, "total": total, "to_debt": to_debt, "back": total - to_debt}
+
+
+def _save_return_rows(form, by_pk):
+    """Write each typed row of a vazvrat as its own Return.
+
+    Every row is judged by `ReturnForm` against a freshly read receipt, so a second
+    line off the same receipt sees the debt the first one already cancelled, and the
+    till check sees the cash an earlier row already handed back. The return is booked
+    to its receipt's own seller, like a single return. Returns (saved, errors) — saved
+    is [(return, to_debt, excess, refunded)]; any error means the caller rolls the
+    whole vazvrat back."""
+    cd = form.cleaned_data
+    saved, errors = [], []
+    for pk, quantity in form.rows:
+        line = by_pk[pk]
+        sale = Sale.objects.prefetch_related("items__product", "returns").get(pk=line.sale_id)
+        seller = sale.sales_rep
+        data = {
+            "sale_item": pk,
+            "weight": str(quantity),
+            "note": cd["note"],
+            "settlement": cd["settlement"],
+        }
+        row = ReturnForm(data, sale=sale, user=seller)
+        if not row.is_valid():
+            reasons = row.non_field_errors() or [
+                error for field_errors in row.errors.values() for error in field_errors
+            ]
+            errors.append(f"#{sale.pk} · {line.product.name}: {reasons[0]}")
+            continue
+        ret = row.save(commit=False)
+        ret.created_by = seller
+        ret.date = cd["date"]
+        ret.save()
+        saved.append((ret, *_settle_return(ret, row, seller, apply_advance=False)))
+    return saved, errors
+
+
+def return_create(request):
+    """Yangi vazvrat: goods a client brought back, across as many of their receipts as
+    the visit covered, entered in one go.
+
+    Opened bare it asks for the client; picking one reloads it with that client's
+    returnable lines (`?client=`). On save every typed row becomes its own `Return`,
+    judged and settled exactly as a single return from the sale page is — the same
+    quantity cap, the same debt-first split, the same till check. All rows or none:
+    one refused row rolls the whole vazvrat back and the table comes back filled in,
+    with the reason.
+
+    Fresh advance credit is spent on the client's open receipts once, after every row
+    is in (see `_settle_return`)."""
+    clients = _visible_clients(request.user).order_by("name")
+    raw = request.POST.get("client") if request.method == "POST" else request.GET.get("client")
+    client = clients.filter(pk=raw).first() if raw and raw.isdigit() else None
+    form = ReturnBatchForm(
+        request.POST or None, clients=clients,
+        initial={"client": client.pk} if client else None,
+    )
+    # Picking another client reloads the dialog for them (see base.html).
+    form.fields["client"].widget.attrs.update(
+        {"data-return-client": "", "data-url": reverse("return_create")}
+    )
+    lines, can_overpay = _returnable_lines(request.user, client)
+    if not can_overpay:
+        # Nothing returnable here can exceed its debt — the question has no answer.
+        del form.fields["settlement"]
+
+    if request.method == "POST" and form.is_valid():
+        by_pk = {line.pk: line for line in lines}
+        if any(pk not in by_pk for pk, _ in form.rows):
+            form.add_error(
+                None,
+                "Qatorlardan biri bu mijozga tegishli emas yoki undan qaytariladigan "
+                "tovar qolmagan. Oynani qayta oching.",
+            )
+        else:
+            with transaction.atomic():
+                saved, errors = _save_return_rows(form, by_pk)
+                if errors:
+                    transaction.set_rollback(True)
+                else:
+                    # Spend the credit once, now that every receipt's debt is final.
+                    for seller in {
+                        ret.created_by for ret, _, excess, refunded in saved
+                        if excess > 0 and not refunded
+                    }:
+                        _apply_advance_to_open_sales(client, seller)
+                    for ret, to_debt, excess, refunded in saved:
+                        AuditLog.record(
+                            request.user, AuditLog.Action.RETURN, "Qaytarish", ret.sale_id,
+                            f"Mijoz {client.name} qaytardi ({ret.product.name}) — "
+                            f"{ret.amount:,.0f} so'm; qarzdan {to_debt:,.0f}, "
+                            f"ortiqcha {excess:,.0f} "
+                            f"({'naqd berildi' if refunded else 'avansga'})"
+                            f"{_on_behalf(request.user, ret.created_by)}",
+                        )
+            if errors:
+                for error in errors:
+                    form.add_error(None, error)
+            else:
+                refunded = form.cleaned_data["settlement"] == ReturnForm.SETTLE_REFUND
+                messages.success(
+                    request,
+                    f"Vazvrat saqlandi — {len(saved)} ta qator. " + _return_message(
+                        sum((ret.amount for ret, *_ in saved), Decimal("0")),
+                        sum((to_debt for _, to_debt, _, _ in saved), Decimal("0")),
+                        sum((excess for _, _, excess, _ in saved), Decimal("0")),
+                        refunded,
+                    ),
+                )
+                return form_success(request, reverse("return_list"))
+
+    typed = dict(parse_return_rows(request.POST)) if request.method == "POST" else {}
+    for line in lines:
+        quantity = typed.get(line.pk)
+        line.typed = format(quantity.normalize(), "f") if quantity else ""
+    sellers = {line.sale.sales_rep for line in lines}
+    seller = next(iter(sellers)) if len(sellers) == 1 else None
+    context = {
+        "form": form,
+        "title": "Yangi vazvrat",
+        "client": client,
+        "lines": lines,
+        "can_overpay": can_overpay,
+        "summary": _return_batch_summary(lines, list(typed.items())),
+        # Whose till a cash refund leaves — shown only when there is one seller to name.
+        "acting_seller": seller,
+        "cash_on_hand": seller_cash_on_hand(seller) if seller and can_overpay else None,
+    }
+    if is_ajax(request):
+        return render(
+            request, "crm/_return_batch_modal.html", context,
+            status=422 if request.method == "POST" else 200,
+        )
+    return render(request, "crm/_return_batch_page.html", context)
 
 
 def _audit_rows(request):
@@ -4170,7 +5076,7 @@ def _audit_rows(request):
     return logs, filters, reps, actions, active_filters
 
 
-def _audit_links(logs):
+def _audit_links(logs, user):
     """{log.pk: url} — where each trail line leads, for the lines that still have
     somewhere to go.
 
@@ -4226,7 +5132,7 @@ def _audit_links(logs):
         elif kind == "Ombor" and pk in entries:
             # The entry itself has no screen; the product's page is where it shows up.
             url = reverse("product_detail", args=[entries[pk].product_id])
-        elif kind == "Xodim" and pk in employees:
+        elif kind == "Xodim" and pk in employees and user.can_see_payroll:
             url = reverse("employee_detail", args=[pk])
         elif kind == "Chiqim" and pk in expenses:
             url = reverse("kassa_entry_detail", args=["expense", pk])
@@ -4250,7 +5156,7 @@ def audit_list(request):
     page = Paginator(logs, 50).get_page(request.GET.get("page"))
     # Each line's own destination, hung on the row it belongs to. The queryset caches
     # its rows, so these are the very objects the template will iterate.
-    links = _audit_links(list(page.object_list))
+    links = _audit_links(list(page.object_list), request.user)
     for log in page.object_list:
         log.link = links.get(log.pk)
     return render(request, "crm/audit_list.html", {
@@ -4527,6 +5433,15 @@ def _kassa_summary(date_from, date_to, rep=None):
         .aggregate(s=Sum("commission"))["s"] or Decimal("0")
     )
     cash_on_hand = income_all_cum - refund_cum - expense_cum - remitted_cum - paid_profit_cum
+    # What of that is in the drawer to this day. For a window that ends in the past
+    # the dated rows alone would show money that has long since been handed over —
+    # see `till_days`. Till by till, so one seller's shortfall is never hidden behind
+    # another's. With nothing dated after `date_to` the two figures are the same, and
+    # so they are before `TILL_SETTLES_FROM`, where the dated figure is kept on purpose.
+    cash_still_held = sum(
+        (till_cash_on(days, date_to) for days in till_days(rep).values()),
+        Decimal("0"),
+    )
     return {
         "som": som,
         "usd": _currency_till(
@@ -4540,7 +5455,13 @@ def _kassa_summary(date_from, date_to, rep=None):
         "remitted": remitted,
         "paid_profit": paid_profit,
         "production_debt": opening_debt + cost_cum - remitted_cum + adjusted_cum,
-        "cash": cash_on_hand,
+        "cash": cash_still_held,
+        # The dated-rows figure beside it, and how much of that has gone since, so the
+        # page can say "the day closed on X, later handed over" instead of a bare zero.
+        "cash_at_close": cash_on_hand,
+        "cash_settled_later": _whole_som(cash_on_hand - cash_still_held),
+        "cash_as_of": date_to,
+        "cash_settles_from": TILL_SETTLES_FROM,
         # Profit still sitting in the till, free to hand up: cash beyond the debt.
         "withdrawable_profit": cash_on_hand
         - (opening_debt + cost_cum - remitted_cum + adjusted_cum),
@@ -4678,15 +5599,20 @@ def _per_employee_kassa(date_from, date_to, rep=None):
     for r in refunds.values("created_by").annotate(s=Sum("amount")):
         row(r["created_by"])["refunded"] += r["s"] or Decimal("0")
 
+    tills = till_days(rep)
     result = []
     for rr in rows.values():
-        # Cash left: gross income, less the bank fees that never reached the till, less
-        # money refunded to clients, less expenses, less handed to production, less
-        # profit handed to the boss.
-        rr["cash"] = (
+        # Where the dated rows leave the till on date_to: gross income, less the bank
+        # fees that never reached it, less money refunded to clients, less expenses,
+        # less handed to production, less profit handed to the boss.
+        rr["cash_at_close"] = (
             rr["in_som"] - rr["commission"] - rr["refunded"] - rr["expense_total"]
             - rr["remitted"] - rr["paid_profit"]
         )
+        # What the column shows: how much of that is in the drawer to this day. The
+        # same figure unless date_to is in the past and money has left since — see
+        # `till_days`.
+        rr["cash"] = till_cash_on(tills.get(rr["uid"], []), date_to)
         rr["production_debt"] = (
             rr["opening_debt"] + rr["sold_cost"] - rr["remitted"] + rr["adjusted"]
         )
@@ -4969,6 +5895,34 @@ def _last_kassa_activity(rep):
     return max([d for d in found if d], default=None)
 
 
+def _left_behind_notices(sellers, named):
+    """The kassa's "the last handover left money behind" notices, one per seller that
+    has any — see `left_after_handover` for what counts.
+
+    Each opens the handover form with the sum already filled in. The date is left to
+    the seller: whichever day the money goes out under, it comes off the oldest
+    takings first, so no old day is left showing it.
+
+    `named` adds whose till it is, for the company view where several are on screen."""
+    tills = till_days(sellers[0] if len(sellers) == 1 else None)
+    notices = []
+    for seller in sellers:
+        left = left_after_handover(seller, tills.get(seller.pk, []))
+        if not left:
+            continue
+        day, amount = left
+        params = {"amount": f"{amount:.0f}"}
+        if named:
+            params["seller"] = seller.pk
+        notices.append({
+            "day": day,
+            "amount": amount,
+            "seller": str(seller) if named else "",
+            "url": f"{reverse('remittance_create')}?{urlencode(params)}",
+        })
+    return notices
+
+
 def kassa_view(request):
     """The cash register (Kassa): two till drawers (so'm + dollar) with income by
     method and running balance, per-employee kassa & performance, and the expense
@@ -5025,6 +5979,18 @@ def kassa_view(request):
     if not request.user.can_see_all_records:
         my_row = seller_rows[0] if seller_rows else None
 
+    # Money the last handover left behind. A standing fact about the till, not about
+    # the window on screen, so the date filter does not narrow it.
+    if rep is not None:
+        notice_sellers = [rep]
+    else:
+        notice_sellers = list(User.objects.filter(
+            pk__in=[r["uid"] for r in seller_rows]
+        ).order_by("first_name", "username"))
+    left_behind_notices = _left_behind_notices(
+        notice_sellers, named=request.user.can_see_all_records
+    )
+
     # Debt corrections for the window. Listed on their own — they move no cash, so
     # putting them in the outflow ledger would stop the drawer reconciling. A seller
     # sees only the ones filed against them.
@@ -5039,6 +6005,7 @@ def kassa_view(request):
     return render(request, "crm/kassa.html", {
         "summary": summary,
         "empty_hint": empty_hint,
+        "left_behind_notices": left_behind_notices,
         "debt_adjustments": adjustments,
         "income_rows": income_rows,
         "outflow_rows": outflow_rows,
@@ -5169,11 +6136,18 @@ def _rate_cell(row):
     return float(row["exchange_rate"]) if row["currency"] == Payment.Currency.USD else ""
 
 
+def _entered_cell(row):
+    """When the row was typed in, as opposed to the date written on it. Last column on
+    both tabs: a backdated row is found by reading the two side by side."""
+    return timezone.localtime(row["created_at"]).strftime("%d.%m.%Y %H:%M")
+
+
 def _income_sheet(income):
     """The Kirim tab: money taken in over the window."""
     headers = [
         "Sana", "Kimdan", "Kirim turi", "Usul", "Valyuta",
         "Kirim summa (so'm)", "Asl summa", "Kurs", "Qarzga ta'sir", "Kim qabul qildi",
+        "Kiritilgan",
     ]
     rows = [
         [
@@ -5189,6 +6163,7 @@ def _income_sheet(income):
             # so it moves no debt — the page shows a dash in this column.
             0 if r.get("is_advance") else float(r["amount_som"]),
             str(r["created_by"]),
+            _entered_cell(r),
         ]
         for r in income
     ]
@@ -5201,7 +6176,7 @@ def _outflow_sheet(outflow):
     fees and cash refunded to clients — everything that left the till."""
     headers = [
         "Sana", "Turi", "Tavsif", "Xodim", "Izoh", "Usul", "Valyuta",
-        "Chiqim summa (so'm)", "Asl summa", "Kurs", "Kim kiritdi",
+        "Chiqim summa (so'm)", "Asl summa", "Kurs", "Kim kiritdi", "Kiritilgan",
     ]
     rows = [
         [
@@ -5216,6 +6191,7 @@ def _outflow_sheet(outflow):
             float(r["amount_original"]),
             _rate_cell(r),
             str(r["created_by"]),
+            _entered_cell(r),
         ]
         for r in outflow
     ]
@@ -5305,13 +6281,49 @@ def kassa_outflow_export(request):
     return _xlsx_response("chiqimlar.xlsx", title, headers, rows, formats)
 
 
+def _expense_wage_note(expense):
+    """What a worker-tagged chiqim did to their wage, in the audit log's words."""
+    if not expense.counts_against_salary:
+        return "oyligidan emas"
+    if expense.wage_month:
+        return f"{expense.wage_month_label}dan qolgani"
+    return "oyligidan"
+
+
+def _expense_wage_data(form):
+    """Each worker the chiqim form offers, with where their wage stands for the
+    month of the form's date — for the panel that shows it before money is handed
+    over. The same figures the form's warnings are worked out from."""
+    day = form.payroll_day()
+    first = day.replace(day=1)
+    before = first - timedelta(days=1)
+    workers = {}
+    for e in form.fields["employee"].queryset:
+        position = e.wage_position(day.year, day.month, exclude=form.original)
+        if position is None:
+            continue
+        # Whole so'm — what the panel prints and what saving compares in.
+        workers[str(e.pk)] = {
+            key: int(value.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            for key, value in position.items()
+        }
+    return {
+        "month": f"{day.year:04d}-{day.month:02d}",
+        "this": UZ_MONTH_NAMES[day.month - 1],
+        "prev": UZ_MONTH_NAMES[before.month - 1],
+        "workers": workers,
+    }
+
+
 def _expense_response(request, form, title, invalid=False):
     """The expense modal, with the categories already in use as datalist
-    suggestions — Turkum is free text, the list is only a shortcut."""
+    suggestions — Turkum is free text, the list is only a shortcut — and each
+    worker's wage standing for the month, so paying one shows what they are owed."""
     return form_response(
         request, form, title, invalid=invalid,
         modal_template="crm/_expense_modal.html",
         category_suggestions=Expense.used_categories(),
+        wage_data=_expense_wage_data(form),
     )
 
 
@@ -5346,7 +6358,7 @@ def expense_create(request):
             # Arriving from a worker's row means a wage or an advance, so the answer
             # is preselected here and nowhere else: picking someone by hand on a
             # plain chiqim leaves it blank on purpose, and the form insists on one.
-            initial["counts_against_salary"] = True
+            initial["purpose"] = ExpenseForm.PURPOSE_WAGE
             # Only ever a suggestion in the amount box — it is still typed over and
             # still validated like any other; nothing is paid until the form is saved.
             owed = _parse_amount(request.GET.get("summa"))
@@ -5367,8 +6379,7 @@ def expense_create(request):
             # Whether it came off the wage is the part an audit actually needs — the
             # same worker and sum mean two different things depending on the flag.
             who = (
-                f" · {expense.employee}"
-                f" ({'oyligidan' if expense.counts_against_salary else 'oyligidan emas'})"
+                f" · {expense.employee} ({_expense_wage_note(expense)})"
                 if expense.employee_id else ""
             )
             AuditLog.record(
@@ -5398,9 +6409,13 @@ def expense_edit(request, pk):
             expense = form.save(commit=False)
             expense.created_by = form.acting_seller()
             expense.save()
+            who = (
+                f" · {expense.employee} ({_expense_wage_note(expense)})"
+                if expense.employee_id else ""
+            )
             AuditLog.record(
                 request.user, AuditLog.Action.UPDATE, "Chiqim", expense.pk,
-                f"{expense.category} chiqimi — {expense.amount:,.0f} so'm"
+                f"{expense.category} chiqimi{who} — {expense.amount:,.0f} so'm"
                 f"{_on_behalf(request.user, expense.created_by)}",
             )
             messages.success(request, "Chiqim yangilandi.")
@@ -5652,8 +6667,12 @@ def _entry_expense(request, pk):
             f"${e.original_amount:,.2f} × {e.exchange_rate:,.0f}".replace(",", " "),
         ))
     if e.employee_id:
-        held = "oyligidan ayrildi" if e.counts_against_salary \
-            else "oyligiga tegmadi — faqat kassadan chiqim"
+        if not e.counts_against_salary:
+            held = "oyligiga tegmadi — faqat kassadan chiqim"
+        elif e.wage_month:
+            held = f"{e.wage_month_label}dan qolgani berildi"
+        else:
+            held = "oyligidan ayrildi"
         rows.append(("Xodim", f"{e.employee.name} — {held}"))
     if e.note:
         rows.append(("Izoh", e.note))
@@ -5775,14 +6794,19 @@ def _month_shift(year, month, step):
     return index // 12, index % 12 + 1
 
 
-def _month_options(year, month, today, back=12):
+def _month_options(year, month, today, back=12, first=None):
     """Months offered in the picker: a rolling year back from today, newest first.
     A month reached by hand-editing ?oy= is folded in so the select never renders
-    blank on a URL that the view itself accepts."""
+    blank on a URL that the view itself accepts.
+
+    `first` drops every month before it — the davomad sheet does not reach back past
+    the month it was switched on, so its picker must not offer one."""
     months = [_month_shift(today.year, today.month, -step) for step in range(back)]
     if (year, month) not in months:
         months.append((year, month))
         months.sort(reverse=True)
+    if first is not None:
+        months = [m for m in months if m >= (first.year, first.month)]
     return [{"value": f"{y:04d}-{m:02d}", "label": uz_month(y, m)} for y, m in months]
 
 
@@ -5812,6 +6836,42 @@ def _rate_at(rates, first_day, fallback):
     return amount
 
 
+def _marked_months(employee_ids):
+    """{(employee id, year, month)} holding anything that moves a wage off the salary:
+    a davomad row, or a day booked off in advance.
+
+    Present is the default and rows are exceptions, so a finished month missing from
+    this set earned exactly its salary — which lets the carry-forward skip the
+    day-by-day arithmetic for every month nobody wrote anything against."""
+    marked = set()
+    for model in (Attendance, Leave):
+        rows = model.objects.filter(employee_id__in=employee_ids)
+        for employee_id, day in rows.values_list("employee_id", "date"):
+            marked.add((employee_id, day.year, day.month))
+    return marked
+
+
+def _month_wage(employee, year, month, salary, marked, today, closed):
+    """What that month added to a worker's balance, given the wage in force in it.
+
+    The same figure as `Employee.accrued_in` — off the davomad sheet — reached without
+    touching the database for a finished month with nothing written against it, where
+    the answer is the salary itself. A month from before the sheet was switched on is
+    the salary too, whatever is written against it. `closed` caches each month's
+    closed holidays, so a payroll of twenty asks for them once rather than twenty
+    times."""
+    if not employee.accrues_in(year, month):
+        return Decimal("0")
+    if not on_davomad(year, month):
+        return salary
+    finished = (year, month) < (today.year, today.month)
+    if finished and (employee.pk, year, month) not in marked:
+        return salary
+    if (year, month) not in closed:
+        closed[(year, month)] = rest_holidays_in(year, month)
+    return employee.earned_in(year, month, closed[(year, month)], salary)
+
+
 def _payroll_rows(employees, year, month):
     """One row per worker for the chosen month: what rode in unpaid from earlier
     months, what this month adds, what the till has paid against it, and what rides on.
@@ -5821,21 +6881,27 @@ def _payroll_rows(employees, year, month):
     cumulative: the opening balance, plus every month's wage, minus everything paid,
     from `start_month` through the month on screen.
 
-    Two queries carry the whole payroll however deep the history runs: wage rates and
-    payouts are each fetched once and folded together in Python. Payouts dated BEFORE a
-    worker's start month are deliberately left out — that stretch is what the opening
-    balance already summarises, and counting it again would credit the firm twice for
-    money it settled before the CRM was watching."""
+    What a month adds is what its WORK was worth — the days on the davomad sheet times
+    the day's pay — not the salary: a week missed is a smaller wage.
+
+    A handful of queries carry the carry-forward however deep the history runs: wage
+    rates, payouts and the months with davomad marks are each fetched once and folded
+    together in Python. Payouts dated BEFORE a worker's start month are deliberately
+    left out — that stretch is what the opening balance already summarises, and
+    counting it again would credit the firm twice for money it settled before the CRM
+    was watching."""
     ids = [e.pk for e in employees]
     target = date(year, month, 1)
+    today = timezone.localdate()
+    marked = _marked_months(ids)
+    closed = {}
     next_year, next_month = _month_shift(year, month, 1)
+    # Grouped by the month each payout settles, not the day it left the till: a
+    # remainder paid on 08.10 for September is September's (`Expense.wage_month`).
     drawn_rows = (
-        Expense.objects.filter(
-            employee_id__in=ids,
-            counts_against_salary=True,
-            date__lt=date(next_year, next_month, 1),
-        )
-        .annotate(m=TruncMonth("date"))
+        Expense.objects.filter(employee_id__in=ids, counts_against_salary=True)
+        .annotate(m=payroll_month_of())
+        .filter(m__lt=date(next_year, next_month, 1))
         .values("employee_id", "m")
         .annotate(total=Sum("amount"))
     )
@@ -5849,47 +6915,81 @@ def _payroll_rows(employees, year, month):
     rows = []
     for e in employees:
         own_rates = rates.get(e.pk, [])
-        # What the till paid in the month on screen — read straight from the payouts,
-        # never from the accumulation. A month before the account opened still shows
+        # What the till paid against the month on screen — read straight from the
+        # payouts, never from the accumulation. A month before the account opened still shows
         # what was handed over in it, or the figure here would contradict the payout
         # list printed directly underneath.
         paid = drawn.get((e.pk, year, month), Decimal("0"))
         tracked = target >= e.start_month.replace(day=1)
         if not tracked:
             rows.append({
-                "employee": e, "carried": None, "salary": None, "due": None,
-                "paid": paid, "remaining": None, "accrues": False, "tracked": False,
+                "employee": e, "carried": None, "salary": None, "earned": None,
+                "due": None, "paid": paid, "remaining": None, "accrues": False,
+                "tracked": False, "by_day": False,
             })
             continue
         carried = e.opening_balance
         for y, m in month_span(e.start_month, target):
             if (y, m) == (year, month):
                 continue                      # the month on screen is not "carried in"
-            first = date(y, m, 1)
-            wage = (
-                _rate_at(own_rates, first, e.salary)
-                if e.accrues_in(y, m) else Decimal("0")
+            wage = _month_wage(
+                e, y, m, _rate_at(own_rates, date(y, m, 1), e.salary),
+                marked, today, closed,
             )
             carried += wage - drawn.get((e.pk, y, m), Decimal("0"))
         accrues = e.accrues_in(year, month)
         salary = _rate_at(own_rates, target, e.salary) if accrues else Decimal("0")
-        rows.append({
+        earned = _month_wage(e, year, month, salary, marked, today, closed)
+        row = {
             "employee": e,
             "carried": carried,                     # o'tgan oylardan qolgan
-            "salary": salary,                       # shu oy oyligi
-            "due": carried + salary,                # jami olishi kerak
+            "salary": salary,                       # shu oyning kelishilgan oyligi
+            "earned": earned,                       # davomaddan chiqqani
+            "due": carried + earned,                # jami olishi kerak
             "paid": paid,                           # shu oy berilgan
-            "remaining": carried + salary - paid,   # kelasi oyga o'tadi
+            "remaining": carried + earned - paid,   # kelasi oyga o'tadi
             "accrues": accrues,
             "tracked": True,
-        })
+            # Whether `earned` came off the davomad sheet. A month from before the
+            # sheet is the flat salary, and has no days to show for it.
+            "by_day": accrues and on_davomad(year, month),
+        }
+        if row["by_day"]:
+            # How `earned` came about, for the page to show next to it: the days
+            # counted, the ones missed, and what one day is worth this month.
+            if (year, month) not in closed:
+                closed[(year, month)] = rest_holidays_in(year, month)
+            holidays = closed[(year, month)]
+            worked, rest_worked = e.days_in(year, month, holidays)
+            row.update({
+                "days": worked + rest_worked,
+                "sunday_days": rest_worked,
+                "missed_days": len(e.countable_days(year, month, holidays)) - worked,
+                "daily_rate": e.daily_rate_in(year, month, holidays, salary),
+                "working_days": e.working_days_in(year, month, holidays),
+            })
+        rows.append(row)
     return rows
 
 
+def _davomad_url(year, month):
+    """The davomad sheet for that month — or for its first month, when the one asked
+    for is from before the sheet was switched on."""
+    first = max(date(year, month, 1), davomad_start())
+    return f"{reverse('attendance_grid')}?oy={first:%Y-%m}"
+
+
 def _payroll_employees(request):
-    """The workers the Xodimlar page is showing: the name search and the
-    Hammasi / Faol / Faol emas switch. Shared by the page and its Excel export so the
-    file always holds exactly the rows on screen."""
+    """The workers the HR pages are showing: the name search and the
+    Hammasi / Faol / Faol emas switch.
+
+    Shared by Xodimlar, its Excel export, Davomad and the davomad export, so all of
+    them always hold exactly the same people — a davomad sheet listing somebody the
+    payroll page filtered out would be two answers to one question.
+
+    Returns the filter values alongside the rows because every page has to hand them
+    back — to the toolbar, to the hidden fields that keep them across a search, and to
+    the redirect after a save."""
     employees = Employee.objects.all()
     q = request.GET.get("q", "").strip()
     if q:
@@ -5901,20 +7001,22 @@ def _payroll_employees(request):
         employees = employees.filter(is_active=False)
     else:
         status = ""
-    return list(employees), q, status
+    return list(employees), {"q": q, "holat": status}
 
 
+@payroll_required
 def employee_list(request):
     """Payroll (Xodimlar oyligi): everyone on the books, the wage in force this month,
     what rode in unpaid from earlier months, what the till has paid out, and what
     carries on to the next month.
 
-    Open to every role. Wages were admin-only, but the sellers are the ones handing the
-    cash over and being asked "how much of mine is left?" — and filing the till outflow
-    that pays a wage was already theirs to do, so the figure it is measured against was
-    the one thing they could not see."""
+    Admins and managers, plus the sellers it was switched on for (`payroll_access`).
+    A seller who hands the cash over is the one asked "how much of mine is left?", so
+    the page can be opened to them — but it is everybody's wage in one table, so it is
+    opened account by account rather than to the whole role."""
     year, month = _payroll_month(request)
-    employees, q, status = _payroll_employees(request)
+    employees, filters = _payroll_employees(request)
+    q, status = filters["q"], filters["holat"]
     rows = _payroll_rows(employees, year, month)
     # A worker whose account opens later has no figures for this month — only what the
     # till happened to pay them. They are left out of every total but the paid one.
@@ -5922,25 +7024,44 @@ def employee_list(request):
     active = [r for r in counted if r["employee"].is_active]
     totals = {
         "salary": sum((r["salary"] for r in active), Decimal("0")),
+        # What the davomad sheet makes of that fund: the days actually worked.
+        "earned": sum((r["earned"] for r in active), Decimal("0")),
+        # The same over everyone on the table, for its Jami row: that row is read as
+        # a sum (earned + carried − paid = owed), and it only adds up if a worker who
+        # left mid-month is in the first figure as well as the last.
+        "earned_all": sum((r["earned"] for r in counted), Decimal("0")),
         "carried": sum((r["carried"] for r in counted), Decimal("0")),
-        "due": sum((r["due"] for r in counted), Decimal("0")),
         "paid": sum((r["paid"] for r in rows), Decimal("0")),
         "remaining": sum((r["remaining"] for r in counted), Decimal("0")),
+        # `remaining` nets the workers still owed against the ones who have drawn
+        # more than they earned, so on its own it hides both figures. The cards show
+        # them apart: what is to be handed out, and what the workers owe the firm.
+        "to_pay": sum(
+            (r["remaining"] for r in counted if r["remaining"] > 0), Decimal("0")
+        ),
+        "debt": sum(
+            (-r["remaining"] for r in counted if r["remaining"] < 0), Decimal("0")
+        ),
+        "debtors": sum(1 for r in counted if r["remaining"] < 0),
     }
     # The two ledgers below follow the search and the switch as well: a filtered page
     # whose ledgers still listed everybody would not add up to its own KPI cards.
     tagged = (
-        Expense.objects.filter(
-            employee__in=employees, date__year=year, date__month=month
-        )
+        Expense.objects.filter(employee__in=employees)
         .select_related("employee", "created_by")
         .order_by("-date", "-created_at")
     )
     # Two different things wear the same tag, so they get two tables: money paid TO a
     # worker (wage or advance), and money a worker spent FOR the business. Mixed into
-    # one list, "kim qancha oldi" could not be read off the page at a glance.
-    payouts = [e for e in tagged if e.counts_against_salary]
-    errands = [e for e in tagged if not e.counts_against_salary]
+    # one list, "kim qancha oldi" could not be read off the page at a glance. Payouts
+    # are the month's wage's — a remainder paid in October for September is listed
+    # under September, as the rows above count it; errands are the month's days.
+    payouts = list(
+        tagged.filter(payout_for_month(year, month), counts_against_salary=True)
+    )
+    errands = list(
+        tagged.filter(date__year=year, date__month=month, counts_against_salary=False)
+    )
     today = timezone.localdate()
     prev_year, prev_month = _month_shift(year, month, -1)
     next_year, next_month = _month_shift(year, month, 1)
@@ -5962,6 +7083,15 @@ def employee_list(request):
         "q": q,
         "holat": status,
         "segments": segments,
+        # The sheet these wages are computed from. Marking it up is the supervisor's
+        # job, so the door to it is only shown to the roles that can walk through.
+        "davomad_url": (
+            _davomad_url(year, month) if request.user.can_see_all_records else ""
+        ),
+        # Whether this month's wages are counted by the day at all — before the
+        # sheet was switched on they are the flat salary, with no days to total.
+        "by_day": on_davomad(year, month),
+        "davomad_from": davomad_start(),
         "export_url": reverse("employee_export") + (f"?{export_qs}" if export_qs else ""),
         "totals": totals,
         "payouts": payouts,
@@ -5978,14 +7108,16 @@ def employee_list(request):
     })
 
 
+@payroll_required
 def employee_export(request):
     """Excel (.xlsx) of the payroll month as filtered — one row per worker, the same
     figures the page shows."""
     year, month = _payroll_month(request)
-    employees, _, _ = _payroll_employees(request)
+    employees, _ = _payroll_employees(request)
     rows = _payroll_rows(employees, year, month)
     headers = [
-        "Xodim", "Holat", "Hisob boshlangan", "Oyligi (so'm)", "O'tgan oydan (so'm)",
+        "Xodim", "Holat", "Hisob boshlangan", "Oyligi (so'm)",
+        "Hisoblangan kun", "Kelmagan kun", "Hisoblangan (so'm)", "O'tgan oydan (so'm)",
         "Jami olishi kerak (so'm)", "Shu oy berilgan (so'm)", "Qolgan (so'm)", "Izoh",
     ]
     data = [
@@ -5994,6 +7126,9 @@ def employee_export(request):
             "Faol" if r["employee"].is_active else "Faol emas",
             r["employee"].start_month.strftime("%m.%Y"),
             float(r["salary"] or 0),
+            r.get("days", ""),
+            r.get("missed_days", ""),
+            float(r["earned"] or 0),
             float(r["carried"] or 0),
             float(r["due"] or 0),
             float(r["paid"]),
@@ -6002,7 +7137,7 @@ def employee_export(request):
         ]
         for r in rows
     ]
-    number_formats = {i: "#,##0.00" for i in range(4, 9)}
+    number_formats = {4: "#,##0.00", **{i: "#,##0.00" for i in range(7, 12)}}
     return _xlsx_response(
         f"xodimlar-{year:04d}-{month:02d}.xlsx",
         uz_month(year, month), headers, data, number_formats,
@@ -6016,7 +7151,7 @@ def _employee_history(employee, today):
     bottom line here and the row on the payroll page can never disagree."""
     drawn_rows = (
         Expense.objects.filter(employee=employee, counts_against_salary=True)
-        .annotate(m=TruncMonth("date"))
+        .annotate(m=payroll_month_of())
         .values("m")
         .annotate(total=Sum("amount"))
     )
@@ -6027,11 +7162,18 @@ def _employee_history(employee, today):
     ]
     # Runs to today, or further if money was handed over in a later month.
     last = max([today.replace(day=1)] + [date(y, m, 1) for y, m in drawn])
+    marked = _marked_months([employee.pk])
+    closed = {}
     months = []
     balance = employee.opening_balance
     for y, m in month_span(employee.start_month, last):
         accrues = employee.accrues_in(y, m)
-        wage = _rate_at(rates, date(y, m, 1), employee.salary) if accrues else Decimal("0")
+        # What the month's work was worth, off the davomad sheet — the same figure
+        # the payroll page carries forward.
+        wage = _month_wage(
+            employee, y, m, _rate_at(rates, date(y, m, 1), employee.salary),
+            marked, today, closed,
+        )
         paid = drawn.get((y, m), Decimal("0"))
         balance += wage - paid
         months.append({
@@ -6046,6 +7188,7 @@ def _employee_history(employee, today):
     return months, balance
 
 
+@payroll_required
 def employee_detail(request, pk):
     """One worker's whole file: what they are owed now, the month-by-month history
     behind that figure, every payout, and everything they spent for the business.
@@ -6069,16 +7212,85 @@ def employee_detail(request, pk):
     this_month = next(
         (m for m in months if m["value"] == f"{today.year:04d}-{today.month:02d}"), None
     )
+
+    # The schedule: one month of this worker's days, whichever month ?oy= asks for.
+    # A month rather than a week — a week repeats, and so cannot show the days that
+    # actually differ: a holiday the firm shut for, a Sunday somebody came in on, a
+    # day missed.
+    year, month = _payroll_month(request)
+    holidays = rest_holidays_in(year, month)
+    named = {
+        row.date: row
+        for row in Holiday.objects.filter(date__year=year, date__month=month)
+    }
+    rest, unpaid = employee.rest_state_in(year, month, holidays)
+    marks = {
+        row.date: row
+        for row in employee.attendance.filter(date__year=year, date__month=month)
+    }
+    leaves = {
+        row.date: row
+        for row in employee.leaves.filter(date__year=year, date__month=month)
+    }
+    worked, rest_worked = employee.days_in(year, month, holidays)
+    exceptions = [
+        {
+            "date": day,
+            "state": _cell_state(
+                marks[day], day in rest, employee.assumed_present(day, rest, unpaid)
+            ),
+            "note": marks[day].note,
+            "holiday": named.get(day),
+        }
+        for day in sorted(marks)
+    ]
+    prev_year, prev_month = _month_shift(year, month, -1)
+    next_year, next_month = _month_shift(year, month, 1)
+    can_manage = request.user.can_see_all_records
     return render(request, "crm/employee_detail.html", {
         "employee": employee,
         "months": months,
         "balance": balance,
+        # A minus balance is the worker's debt to the firm; the card states it as a
+        # sum owed rather than as a negative "to be paid".
+        "debt": -balance if balance < 0 else Decimal("0"),
         "this_month": this_month,
         "payouts": payouts,
         "errands": errands,
         "payout_total": sum((e.amount for e in payouts), Decimal("0")),
         "errand_total": sum((e.amount for e in errands), Decimal("0")),
-        "month_value": f"{today.year:04d}-{today.month:02d}",
+        "weeks": _schedule_calendar(
+            year, month, rest, named, marks, leaves, today,
+            usual_hours=employee.work_hours,
+            day_hours={
+                row.date: row
+                for row in employee.day_hours.filter(date__year=year, date__month=month)
+            },
+        ),
+        "leaves": [leaves[d] for d in sorted(leaves)],
+        "weekday_names": UZ_WEEKDAY_SHORT,
+        "holidays": [named[d] for d in sorted(named)],
+        "total_days": worked + rest_worked,
+        "rest_worked": rest_worked,
+        "missed_days": len(employee.countable_days(year, month, holidays)) - worked,
+        "working_days": employee.working_days_in(year, month, holidays),
+        "daily_rate": employee.daily_rate_in(year, month, holidays),
+        "earned": employee.accrued_in(year, month, holidays),
+        "exceptions": exceptions,
+        # Marking a day moves a wage, so the day card is the supervisor's — a seller
+        # reads the calendar but gets no pencil on it.
+        "can_manage": can_manage,
+        "davomad_url": _davomad_url(year, month) if can_manage else "",
+        # A month from before the sheet was switched on has no calendar to draw:
+        # its wage is the flat salary and no day of it can be marked.
+        "by_day": on_davomad(year, month),
+        "davomad_from": davomad_start(),
+        "month_value": f"{year:04d}-{month:02d}",
+        "month_label": uz_month(year, month),
+        "month_options": _month_options(year, month, today),
+        "prev_month": f"{prev_year:04d}-{prev_month:02d}",
+        "next_month": f"{next_year:04d}-{next_month:02d}",
+        "is_current_month": (year, month) == (today.year, today.month),
     })
 
 
@@ -6094,9 +7306,10 @@ def _set_salary_rate(employee, amount, effective_from, user):
     )
 
 
+@payroll_required
 @transaction.atomic
 def employee_create(request):
-    """Add someone to the payroll. Open to every role, like the rest of this page."""
+    """Add someone to the payroll. Open to whoever may open the page itself."""
     form = EmployeeForm(request.POST or None)
     title = "Yangi xodim"
     if request.method == "POST":
@@ -6118,15 +7331,32 @@ def employee_create(request):
     return form_response(request, form, title)
 
 
+# The rows of a worker's own page that carry a pencil: the address each opens at, the
+# title of its card, and the fields of the full form it is cut down to.
+EMPLOYEE_ROW_EDITS = {
+    "oylik": ("Oylikni o'zgartirish", ("salary", "salary_from")),
+    "ish-vaqti": ("Ish vaqtini o'zgartirish", ("work_start", "work_end")),
+}
+
+
+@payroll_required
 @transaction.atomic
-def employee_edit(request, pk):
+def employee_edit(request, pk, maydon=None):
     """Edit a payroll worker. A changed wage is dated rather than swapped in: it takes
     effect from the month the form asks for (this month by default), leaving every
-    month already settled priced as it was agreed."""
+    month already settled priced as it was agreed.
+
+    `maydon` narrows the form to one row of the worker's page — their wage, or their
+    hours — for the pencil beside it. It is the same form and the same save, so a wage
+    changed from that row is dated and logged exactly like one changed here."""
     employee = get_object_or_404(Employee, pk=pk)
-    was = employee.salary
-    form = EmployeeForm(request.POST or None, instance=employee)
-    title = "Xodimni tahrirlash"
+    was, opened_at = employee.salary, employee.opening_balance
+    title, only = "Xodimni tahrirlash", None
+    if maydon is not None:
+        if maydon not in EMPLOYEE_ROW_EDITS:
+            raise Http404
+        title, only = EMPLOYEE_ROW_EDITS[maydon]
+    form = EmployeeForm(request.POST or None, instance=employee, only=only)
     if request.method == "POST":
         if form.is_valid():
             form.save()
@@ -6149,15 +7379,75 @@ def employee_edit(request, pk):
                 summary += (
                     f" (oldin {was:,.0f}; {uz_month(since.year, since.month)}dan)"
                 )
+            if {"work_start", "work_end"} & set(form.changed_data):
+                summary += f"; ish vaqti {employee.work_hours or 'belgilanmagan'}"
+            if employee.opening_balance != opened_at:
+                # It moves every month's balance at once, so the trail names it.
+                summary += (
+                    f"; boshlang'ich qoldiq {opened_at:,.0f} → "
+                    f"{employee.opening_balance:,.0f}"
+                )
             AuditLog.record(
                 request.user, AuditLog.Action.UPDATE, "Xodim", employee.pk, summary
             )
             messages.success(request, "Xodim yangilandi.")
+            if only is not None:
+                # Opened from the worker's own page, so that is the page to return to.
+                return form_reload(
+                    request, reverse("employee_detail", args=[employee.pk])
+                )
             return form_success(request, reverse("employee_list"))
         return form_response(request, form, title, invalid=True)
     return form_response(request, form, title)
 
 
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+@transaction.atomic
+def employee_balance_edit(request, pk, oy):
+    """Correct a month's closing balance, from that month's row on the worker's page.
+
+    A balance is stored nowhere: it is the opening figure, plus every month's wage,
+    minus everything the till paid. Wages and payouts have their own screens and are
+    left alone here, so the one thing a correction can move is the opening figure —
+    by exactly the difference. That shifts every other month by the same sum, which
+    is what a wrong starting figure calls for: the months themselves were right.
+
+    The boss knows the figure as "what they owed at the end of August", not as "what
+    they owed on the 1st", so that is the number asked for; the arithmetic back to
+    the opening figure is done here. Supervisors only: it moves a debt without a
+    till entry behind it."""
+    employee = get_object_or_404(Employee, pk=pk)
+    months, _ = _employee_history(employee, timezone.localdate())
+    row = next((m for m in months if m["value"] == oy), None)
+    if row is None:
+        raise Http404
+    # Whole so'm, as the table prints it: typing the figure on screen back in must
+    # be a correction of nothing, not of the fraction a by-the-day wage leaves.
+    current = row["balance"].quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    form = EmployeeBalanceForm(request.POST or None, initial={"balance": current})
+    title = f"{row['label']} oxiridagi qoldiq — {employee.name}"
+    if request.method == "POST":
+        if form.is_valid():
+            new = form.cleaned_data["balance"]
+            if new != current:
+                was = employee.opening_balance
+                employee.opening_balance = was + (new - current)
+                employee.save(update_fields=["opening_balance"])
+                AuditLog.record(
+                    request.user, AuditLog.Action.UPDATE, "Xodim", employee.pk,
+                    f"{employee.name} — {row['label']} oxiridagi qoldiq "
+                    f"{current:,.0f} → {new:,.0f} (boshlang'ich qoldiq "
+                    f"{was:,.0f} → {employee.opening_balance:,.0f})",
+                )
+                messages.success(request, f"{row['label']} oxiridagi qoldiq tuzatildi.")
+            return form_reload(
+                request, reverse("employee_detail", args=[employee.pk])
+            )
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
+
+
+@payroll_required
 def employee_delete(request, pk):
     """Remove someone from the payroll. Refused once money has been paid to them —
     erasing the worker would orphan a real till outflow, so they are deactivated
@@ -6201,6 +7491,853 @@ def employee_delete(request, pk):
     )
 
 
+def _cell_tone(mark, is_rest, holiday):
+    """Which of the calendar's colours a day wears.
+
+    What HAPPENED outranks what the day was meant to be: a holiday somebody came in
+    on is a day worked, and reads as one. Only a day with nothing recorded against it
+    falls back to its kind — a closed holiday, any other day off, or a working day
+    that simply has not arrived yet."""
+    if mark == CELL_PRESENT:
+        return "present"
+    if mark == CELL_ABSENT:
+        return "absent"
+    if is_rest:
+        return "holiday" if holiday is not None and holiday.rest else "rest"
+    return "future"
+
+
+def _schedule_calendar(year, month, rest, named, marks, leaves, today,
+                       usual_hours="", day_hours=None):
+    """A worker's month as a calendar: which days are theirs to work, which are off,
+    and what actually happened on each.
+
+    A month rather than a week. A week repeats and could be drawn once, but it cannot
+    show the days that actually differ: a holiday the firm shut for, a Sunday somebody
+    came in on, a day missed. The month can.
+
+    `usual_hours` is the worker's ordinary working day as a label, `day_hours` the
+    dates on which it runs differently; a day that is worked prints one of the two."""
+    day_hours = day_hours or {}
+    days = _month_days(year, month)
+    # The first day lands under its own weekday column. The cells before it are not
+    # left blank: they carry the neighbouring month's day numbers, because an empty
+    # cell reads as "these days do not exist" — they do, in another month. They carry
+    # nothing else, since the schedule belongs to this month's wage.
+    cells = [
+        {"day": (days[0] - timedelta(days=back)).day, "outside": True}
+        for back in range(days[0].weekday(), 0, -1)
+    ]
+    for day in days:
+        row = marks.get(day)
+        booked = leaves.get(day)
+        # Paid leave is already in `rest` — it leaves the divisor like a holiday.
+        # Unpaid leave does not, but the day is still not worked, so the calendar
+        # draws it as a day off either way and the label says which kind.
+        is_rest = day in rest or booked is not None
+        # What actually happened, where it differs from the plan. Future days have
+        # no answer yet, so they carry none rather than a hopeful "keldi".
+        mark = "" if day > today else _cell_state(row, is_rest)
+        custom = day_hours.get(day)
+        # Hours are printed on a day that is worked — an ordinary working day, past
+        # or ahead, or a day off somebody came in on — and never on one missed.
+        works = mark == CELL_PRESENT or (not is_rest and mark != CELL_ABSENT)
+        cells.append({
+            "day": day.day,
+            "date": day,
+            "outside": False,
+            "is_rest": is_rest,
+            "leave": booked,
+            "holiday": named.get(day),
+            "is_future": day > today,
+            "is_today": day == today,
+            "mark": mark,
+            "tone": _cell_tone(mark, is_rest, named.get(day)),
+            "hours": (custom.label if custom else usual_hours) if works else "",
+            "hours_custom": works and custom is not None,
+            "note": (row.note if row else "") or (custom.note if custom else ""),
+        })
+    ahead = 1
+    while len(cells) % 7:
+        cells.append({"day": (days[-1] + timedelta(days=ahead)).day, "outside": True})
+        ahead += 1
+    return [cells[i:i + 7] for i in range(0, len(cells), 7)]
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def employee_day(request, pk, sana):
+    """One day of one worker's calendar, opened from that day's own card (Kun kartasi).
+
+    ANY day, not only the ones still ahead. A day that is over is recorded rather than
+    planned — but it still has to be correctable, because a supervisor remembers on
+    Thursday that somebody left early on Monday, and the alternative is a wage that is
+    wrong for a month. What the card writes for a past day is the very same
+    `Attendance` row the davomad sheet writes, through the very same function
+    (`_apply_attendance`), so the two screens are two doors into one answer and never
+    two answers.
+
+    That is also why the sheet's closed-day lock is not repeated here. The lock exists
+    because the sheet is thirty-one columns read sideways and a mouse dragging past
+    can change a wage nobody is looking at. Opening a card, choosing an option and
+    pressing save is not something a mouse does on its way past."""
+    employee = get_object_or_404(Employee, pk=pk)
+    day = _parse_date(sana)
+    # A day from before the sheet was switched on has no card: that month was paid
+    # as the flat salary, and a mark or a day of leave written against it now would
+    # move nothing.
+    if day is None or not on_davomad(day.year, day.month):
+        raise Http404
+    today = timezone.localdate()
+
+    holidays = rest_holidays_in(day.year, day.month)
+    rest, unpaid = employee.rest_state_in(day.year, day.month, holidays)
+    is_rest = day in rest
+    booked = Leave.objects.filter(employee=employee, date=day).first()
+    row = employee.attendance.filter(date=day).first()
+    custom = DayHours.objects.filter(employee=employee, date=day).first()
+    # Hours belong to a day that is worked: an ordinary working day, or a day off
+    # somebody came in on. A day of leave, or a Sunday rested, has none to change.
+    can_set_hours = booked is None and (
+        not is_rest or (row is not None and row.present)
+    )
+
+    # The card opens showing what the day IS. Without it a supervisor checking on a
+    # day has to read the calendar behind the modal to see what they are changing.
+    initial = {
+        "note": row.note if row else "",
+        "work_start": custom.start if custom else employee.work_start,
+        "work_end": custom.end if custom else employee.work_end,
+    }
+    if day <= today:
+        initial["action"] = _cell_state(
+            row, is_rest, employee.assumed_present(day, rest, unpaid)
+        )
+    form = DayCardForm(
+        request.POST or None,
+        has_leave=booked is not None,
+        is_rest=is_rest,
+        recordable=day <= today,
+        plannable=day >= today,
+        can_set_hours=can_set_hours,
+        initial=initial,
+    )
+    title = f"{employee.name} · {day:%d.%m.%Y}"
+    back = f"{reverse('employee_detail', args=[employee.pk])}?oy={day:%Y-%m}"
+    # What the card shows beside the form: whether the two time boxes are there at
+    # all, and the hours they are being changed FROM.
+    card = {"can_set_hours": can_set_hours, "usual_hours": employee.work_hours}
+
+    if request.method == "POST":
+        if form.is_valid():
+            action = form.cleaned_data["action"]
+            note = form.cleaned_data["note"]
+
+            if action == DayCardForm.HOURS:
+                opens = form.cleaned_data["work_start"]
+                closes = form.cleaned_data["work_end"]
+                if (opens, closes) == (employee.work_start, employee.work_end):
+                    # Back to the usual hours: the day stops being an exception, so
+                    # its row goes rather than repeating what the worker's own says.
+                    DayHours.objects.filter(employee=employee, date=day).delete()
+                else:
+                    DayHours.objects.update_or_create(
+                        employee=employee, date=day,
+                        defaults={
+                            "start": opens, "end": closes, "note": note,
+                            "created_by": request.user,
+                        },
+                    )
+                label = f"{opens:%H:%M}–{closes:%H:%M}"
+                AuditLog.record(
+                    request.user, AuditLog.Action.UPDATE, "Ish vaqti", employee.pk,
+                    f"{employee.name}: {day} — ish vaqti {label}",
+                )
+                messages.success(
+                    request, f"{employee.name} — {day:%d.%m.%Y}: ish vaqti {label}."
+                )
+            elif action in DayCardForm.ATTENDANCE:
+                _apply_attendance(
+                    employee, day, action, note, request.user, rest, unpaid, row
+                )
+                label = CELL_LABELS[action]
+                AuditLog.record(
+                    request.user, AuditLog.Action.UPDATE, "Davomad", employee.pk,
+                    f"{employee.name}: {day} — {label.lower()}",
+                )
+                messages.success(
+                    request, f"{employee.name} — {day:%d.%m.%Y}: {label.lower()}."
+                )
+            elif action == DayCardForm.CLEAR:
+                if booked is not None:
+                    booked.delete()
+                AuditLog.record(
+                    request.user, AuditLog.Action.DELETE, "Dam", employee.pk,
+                    f"{employee.name}: {day} dagi dam olib tashlandi",
+                )
+                messages.success(request, "Belgilangan dam olib tashlandi.")
+            else:
+                paid = action == DayCardForm.LEAVE_PAID
+                Leave.objects.update_or_create(
+                    employee=employee, date=day,
+                    defaults={"paid": paid, "note": note, "created_by": request.user},
+                )
+                kind = "haqli dam" if paid else "o'z hisobidan dam"
+                AuditLog.record(
+                    request.user, AuditLog.Action.UPDATE, "Dam", employee.pk,
+                    f"{employee.name}: {day} — {kind}",
+                )
+                messages.success(request, f"{employee.name} — {day:%d.%m.%Y}: {kind}.")
+            return form_success(request, back)
+        return form_response(
+            request, form, title, invalid=True,
+            modal_template="crm/_day_card_modal.html", **card,
+        )
+    return form_response(
+        request, form, title, modal_template="crm/_day_card_modal.html", **card,
+    )
+
+
+def _holiday_year(request):
+    """The year the Bayramlar page is showing, from ?yil=YYYY (this year by default)."""
+    today = timezone.localdate()
+    try:
+        year = int(request.GET.get("yil", ""))
+    except (TypeError, ValueError):
+        return today.year
+    return year if 2000 <= year <= 2100 else today.year
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def holiday_list(request):
+    """Bayramlar: the firm's holidays for a year, and whether it closes for each.
+
+    `rest` is the decision the whole feature exists for. Closed, the day leaves the
+    divisor, so somebody who takes it off is still paid their full
+    salary and somebody who comes in has it added on top. Open, it is a label."""
+    year = _holiday_year(request)
+    rows = list(
+        Holiday.objects.filter(date__year=year).select_related("created_by")
+    )
+    today = timezone.localdate()
+    return render(request, "crm/holiday_list.html", {
+        "rows": rows,
+        "year": year,
+        "prev_year": year - 1,
+        "next_year": year + 1,
+        "is_current_year": year == today.year,
+        "rest_count": sum(1 for r in rows if r.rest),
+        "davomad_url": reverse("attendance_grid"),
+    })
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def holiday_seed(request):
+    """Put the fixed-date national holidays into a year in one go.
+
+    The two hayits are not here: they move against the calendar every year, and a
+    list that looked complete while quietly going stale would be worse than one the
+    supervisor knows to finish by hand."""
+    if request.method != "POST":
+        raise Http404
+    year = _holiday_year(request)
+    made = Holiday.seed_year(year, request.user)
+    if made:
+        AuditLog.record(
+            request.user, AuditLog.Action.CREATE, "Bayram", None,
+            f"{year} yil uchun {made} ta bayram qo'shildi",
+        )
+        messages.success(request, f"{year} yil uchun {made} ta bayram qo'shildi.")
+    else:
+        messages.info(request, f"{year} yilning bayramlari allaqachon kiritilgan.")
+    return redirect(f"{reverse('holiday_list')}?yil={year}")
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def holiday_create(request):
+    form = HolidayForm(request.POST or None)
+    title = "Yangi bayram"
+    if request.method == "POST":
+        if form.is_valid():
+            holiday = form.save(commit=False)
+            holiday.created_by = request.user
+            holiday.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.CREATE, "Bayram", holiday.pk,
+                f"{holiday.date} — {holiday.name}"
+                + (" (dam)" if holiday.rest else " (ish kuni)"),
+            )
+            messages.success(request, f"“{holiday.name}” qo'shildi.")
+            return form_success(
+                request, f"{reverse('holiday_list')}?yil={holiday.date.year}"
+            )
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def holiday_edit(request, pk):
+    holiday = get_object_or_404(Holiday, pk=pk)
+    form = HolidayForm(request.POST or None, instance=holiday)
+    title = "Bayramni tahrirlash"
+    if request.method == "POST":
+        if form.is_valid():
+            form.save()
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Bayram", holiday.pk,
+                f"{holiday.date} — {holiday.name}"
+                + (" (dam)" if holiday.rest else " (ish kuni)"),
+            )
+            messages.success(request, "Bayram yangilandi.")
+            return form_success(
+                request, f"{reverse('holiday_list')}?yil={holiday.date.year}"
+            )
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def holiday_delete(request, pk):
+    holiday = get_object_or_404(Holiday, pk=pk)
+    if request.method == "POST":
+        year, name = holiday.date.year, holiday.name
+        holiday.delete()
+        AuditLog.record(
+            request.user, AuditLog.Action.DELETE, "Bayram", pk, f"{name} o'chirildi"
+        )
+        messages.success(request, f"“{name}” o'chirildi.")
+        return form_success(request, f"{reverse('holiday_list')}?yil={year}")
+    return render_confirm(
+        request,
+        "Bayramni o'chirish",
+        f"{holiday.date:%d.%m.%Y} — {holiday.name}. O'chirilsa, o'sha kun "
+        "oddiy kunga aylanadi va oylik qayta hisoblanadi.",
+        "Ha, o'chirish",
+        confirm_class="btn-danger",
+    )
+
+
+# --- Davomad (attendance) -------------------------------------------------------
+#
+# The sheet the whole payroll is computed from. Everybody is on a monthly salary
+# counted by the day, so a cell is a mark rather than a measurement: was this person
+# here or not.
+#
+# Present is the DEFAULT. What gets written down is the exception — a day somebody was
+# away, or a Sunday somebody came in on — so a normal month is an empty sheet and the
+# rows that exist are exactly the ones that move a wage.
+
+# Column headings, Monday first — `date.weekday()` counts from Monday.
+UZ_WEEKDAY_SHORT = ["Du", "Se", "Ch", "Pa", "Ju", "Sh", "Ya"]
+
+# What one cell of the sheet can say: the worker was here, or was not. A day off has
+# its own word for "was not" — there was nothing to miss.
+CELL_PRESENT = "keldi"      # worked — the normal case on a working day
+CELL_ABSENT = "kelmadi"     # working day, not worked — comes off the wage
+CELL_OFF = "dam"            # a day off, rested — costs nothing
+
+# What a click turns a cell into, per kind of day. A working day is either worked or
+# missed; a day off is either rested or worked, and then it goes on top of the wage.
+# A rest day cannot be "absent": there was nothing to miss.
+WORKING_CYCLE = [CELL_PRESENT, CELL_ABSENT]
+REST_CYCLE = [CELL_OFF, CELL_PRESENT]
+
+
+# How many days back the sheet stays open. A day closes itself once it is over —
+# "kun oxirida saqlanadi" — because the sheet is 31 columns wide and is read by
+# dragging sideways, and a mouse that brushes a cell on the way past would rewrite a
+# wage nobody was looking at. Older days are read-only until a cell is deliberately
+# opened.
+#
+# Yesterday stays open with today, and that is not slack: the sheet is usually marked
+# up the next morning, once it is known who actually came in. Closing at midnight
+# would mean unlocking a cell for every one of yesterday's marks, every morning.
+OPEN_DAYS = 1
+
+
+def _open_from(today=None):
+    """The oldest day the sheet will accept an ordinary edit for."""
+    return (today or timezone.localdate()) - timedelta(days=OPEN_DAYS)
+
+
+def _apply_attendance(employee, day, state, note, user, rest, unpaid, row):
+    """Write ONE day of the sheet, and decide whether that day needs a row at all.
+
+    The only place that decision is made. Both doors into a day use it — the davomad
+    sheet posting thirty-one columns at once, and the day card on a worker's calendar
+    posting a single one — so the two cannot disagree about what happened. Two
+    screens each with their own rule would be two answers to the same day.
+
+    A row exists only where the day DIFFERS from what the sheet would otherwise
+    assume: a working day not worked, a day off worked, or leave somebody cancelled
+    and came in for. A day that goes back to normal loses its row rather than keeping
+    one that says "as expected" — and the note goes with it, because there is no
+    longer an exception to explain.
+
+    `note` of None leaves any existing note alone; an empty string clears it.
+    Returns "marked", "cleared" or "" — what the caller should count."""
+    present = state == CELL_PRESENT
+    if present == employee.assumed_present(day, rest, unpaid):
+        if row is not None:
+            row.delete()
+            return "cleared"
+        return ""
+    if row is None:
+        Attendance.objects.create(
+            employee=employee, date=day, present=present,
+            note=note or "", created_by=user,
+        )
+        return "marked"
+    renoted = note is not None and row.note != note
+    if row.present == present and not renoted:
+        return ""
+    row.present = present
+    fields = ["present", "updated_at"]
+    if renoted:
+        row.note = note
+        fields.append("note")
+    row.save(update_fields=fields)
+    return "marked"
+
+
+def _cell_state(row, is_rest_day, assumed=True):
+    """What the sheet draws in a cell, given its attendance row (or none).
+
+    No row means the day behaved as assumed — and what is assumed depends on the
+    calendar and on any leave booked in advance: a rest day was rested, a day of
+    unpaid leave was not worked, everything else was worked."""
+    present = row.present if row is not None else (assumed and not is_rest_day)
+    if present:
+        return CELL_PRESENT
+    return CELL_OFF if is_rest_day else CELL_ABSENT
+
+
+def _month_days(year, month):
+    total = calendar.monthrange(year, month)[1]
+    return [date(year, month, day) for day in range(1, total + 1)]
+
+
+def _sheet_holidays(days):
+    """(closed dates, date -> Holiday) for the days the sheet is showing."""
+    rows = list(Holiday.objects.filter(date__gte=days[0], date__lte=days[-1]))
+    return {row.date for row in rows if row.rest}, {row.date: row for row in rows}
+
+
+def _rest_for(employee, year, month, closed):
+    """(rest dates, unpaid leave dates, booked leave dates) for the sheet's month.
+
+    The third set is every day booked off in advance, paid or not: the sheet draws an
+    agreed day off differently from a day somebody simply failed to turn up for."""
+    rest, unpaid = employee.rest_state_in(year, month, closed)
+    booked = set().union(*employee.leave_in(year, month))
+    return rest, unpaid, booked
+
+
+def _save_attendance(request, employees, days):
+    """Write the posted grid back.
+
+    Only exceptions are stored, so most of the work here is DELETING: a working day
+    that has gone back to normal, or a day off nobody came in on, loses its row rather
+    than keeping one that says "as expected". Storing the normal case would double the
+    table for no reader.
+
+    Which days are rest days is the calendar plus the worker's own paid leave: Sunday
+    and a closed holiday rest everybody, a day of paid leave rests one person. So the
+    same column can be a day off in one row of the sheet and a working day in the
+    next.
+
+    A day that is over is CLOSED: an ordinary post cannot move it, no matter what the
+    cell says. Only a cell the user deliberately opened (`o-<worker>-<day>`) is
+    accepted, so a stray click while dragging the sheet sideways changes nothing —
+    which is the whole reason the lock exists.
+
+    A note is exempt. Typing into a text box is not something a mouse does on its way
+    past, and a note moves no money, so an explanation can still be written against a
+    closed day.
+
+    Cells are keyed by the FULL DATE, not the day number, so a form posted against one
+    month can never land its marks on the same day numbers of another.
+
+    Future days are ignored outright. A wage is earned by turning up, and marking
+    somebody absent next Thursday is not a fact about anything yet."""
+    today = timezone.localdate()
+    open_from = _open_from(today)
+    closed, _ = _sheet_holidays(days)
+    window = {"date__gte": days[0], "date__lte": days[-1]}
+    existing = {
+        (row.employee_id, row.date): row
+        for row in Attendance.objects.filter(employee__in=employees, **window)
+    }
+    marked = cleared = 0
+    for employee in employees:
+        rest, unpaid, _booked = _rest_for(
+            employee, days[0].year, days[0].month, closed
+        )
+        for day in days:
+            if day > today:
+                continue
+            key = day.isoformat()
+            is_rest_day = day in rest
+            cycle = REST_CYCLE if is_rest_day else WORKING_CYCLE
+            state = request.POST.get(f"d-{employee.pk}-{key}", "")
+            row = existing.get((employee.pk, day))
+            # The note travels with the day rather than with a row id, because the row
+            # may not exist yet when the note is typed — and when the day goes back to
+            # normal the row is deleted and the note goes with it, which is right: a
+            # note explains an exception, and there is no longer one.
+            #
+            # A field that did not arrive is None and leaves the note alone; an empty
+            # one that DID arrive is somebody clearing it.
+            posted = request.POST.get(f"n-{employee.pk}-{key}")
+            note = None if posted is None else posted.strip()[:255]
+
+            if day < open_from and request.POST.get(f"o-{employee.pk}-{key}") != "1":
+                # Closed day: the mark is untouchable, the explanation is not.
+                if row is not None and note is not None and row.note != note:
+                    row.note = note
+                    row.save(update_fields=["note", "updated_at"])
+                    marked += 1
+                continue
+
+            # A cell this day could not have produced — missing, or junk — LEAVES THE
+            # DAY EXACTLY AS IT WAS. Falling back to "normal" instead would let a form
+            # that arrived half-written quietly erase every absence already recorded,
+            # and the sheet would look like a month nobody missed a day of.
+            if state not in cycle:
+                continue
+            done = _apply_attendance(
+                employee, day, state, note, request.user, rest, unpaid, row
+            )
+            marked += done == "marked"
+            cleared += done == "cleared"
+    return marked, cleared
+
+
+# What a day is worth in the export, per cell state. Numbers rather than ticks: the
+# sheet is opened in Excel to be checked, and a row of numbers adds up to the days the
+# wage was actually built from. A rest day is left blank — it contributed nothing and
+# a 0 there would read as "did not turn up".
+CELL_UNITS = {
+    CELL_PRESENT: 1,
+    CELL_ABSENT: 0,
+    CELL_OFF: "",
+}
+
+CELL_LABELS = {
+    CELL_PRESENT: "keldi",
+    CELL_ABSENT: "kelmadi",
+    CELL_OFF: "dam",
+}
+
+
+def _to_first_sheet(request):
+    """Send a request for a month before the sheet was switched on to its first month.
+
+    Those months were paid as the flat salary, so there is no sheet to show for them
+    and nothing a mark there could move — which is also why a POST is turned away
+    here without being read."""
+    return redirect(_segment_url(request, oy=f"{davomad_start():%Y-%m}"))
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def attendance_excel(request):
+    """The davomad sheet as .xlsx — the same month, search and switch as the page.
+
+    Four tabs, because the sheet answers four different questions and mixing them
+    makes each one harder to read: the grid it was marked up on, the wages that came
+    out of it, the notes explaining the exceptions, and the holidays the month was
+    measured against.
+
+    Cells carry the DAYS a wage was built from rather than ticks, so a row adds up to
+    the figure on the Oylik tab and can be checked with a calculator."""
+    year, month = _payroll_month(request)
+    if not on_davomad(year, month):
+        return _to_first_sheet(request)
+    days = _month_days(year, month)
+    employees = _sheet_employees(request, year, month)[0]
+    today = timezone.localdate()
+    holidays, named = _sheet_holidays(days)
+    marks = {
+        (row.employee_id, row.date): row
+        for row in Attendance.objects.filter(
+            employee__in=employees, date__gte=days[0], date__lte=days[-1]
+        )
+    }
+
+    def heading(day):
+        mark = UZ_WEEKDAY_SHORT[day.weekday()]
+        if day in named:
+            mark = "Bayram" if day in holidays else f"{mark}*"
+        return f"{day.day} {mark}"
+
+    grid_headers = (
+        ["Xodim"]
+        + [heading(day) for day in days]
+        + ["Jami kun", "Kelmagan", "Dam kunida ishlagan"]
+    )
+    grid_rows, wage_rows, note_rows = [], [], []
+    for employee in employees:
+        rest = employee.rest_dates_in(year, month, holidays)
+        cells = []
+        for day in days:
+            if day > today:
+                cells.append("")
+                continue
+            row = marks.get((employee.pk, day))
+            state = _cell_state(row, day in rest)
+            cells.append(CELL_UNITS[state])
+            if row is not None:
+                note_rows.append([
+                    day.isoformat(), employee.name, CELL_LABELS[state],
+                    named[day].name if day in named else "",
+                    row.note,
+                ])
+        worked, rest_worked = employee.days_in(year, month, holidays)
+        grid_rows.append(
+            [employee.name]
+            + cells
+            + [
+                worked + rest_worked,
+                len(employee.countable_days(year, month, holidays)) - worked,
+                rest_worked,
+            ]
+        )
+        wage_rows.append([
+            employee.name,
+            float(employee.salary_for(year, month)),
+            employee.working_days_in(year, month, holidays),
+            float(employee.daily_rate_in(year, month, holidays)),
+            worked + rest_worked,
+            float(employee.accrued_in(year, month, holidays)),
+            float(employee.paid_in(year, month)),
+        ])
+
+    money = "#,##0"
+    return _xlsx_book_response(
+        f"davomad-{year:04d}-{month:02d}.xlsx",
+        [
+            ("Davomad", grid_headers, grid_rows, None),
+            (
+                "Oylik",
+                [
+                    "Xodim", "Oyligi", "Bo'luvchi (kun)", "Kuniga", "Hisoblangan kun",
+                    "Hisoblangan", "Shu oy berilgan",
+                ],
+                wage_rows,
+                {2: money, 4: money, 6: money, 7: money},
+            ),
+            (
+                "Izohlar",
+                ["Sana", "Xodim", "Holat", "Bayram", "Izoh"],
+                sorted(note_rows),
+                None,
+            ),
+            (
+                "Bayramlar",
+                ["Sana", "Nomi", "Dam beriladi", "Izoh"],
+                [
+                    [
+                        row.date.isoformat(), row.name,
+                        "ha" if row.rest else "yo'q", row.note,
+                    ]
+                    for row in sorted(named.values(), key=lambda r: r.date)
+                ],
+                None,
+            ),
+        ],
+    )
+
+
+def _sheet_employees(request, year, month):
+    """Who the davomad sheet lists for that month: the same search and switch as
+    Xodimlar, minus anybody whose account is not open in it.
+
+    The sheet exists to move a wage. Somebody who left in March, or whose account
+    opens next month, has no wage in this one — a row for them would be thirty cells
+    that change nothing."""
+    employees, filters = _payroll_employees(request)
+    return [e for e in employees if e.accrues_in(year, month)], filters
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def attendance_grid(request):
+    """Davomad: one row per worker, one column per day, a mark for each day worked.
+
+    A mark rather than a number of hours: wages are counted by the day, so a day is a
+    day whether somebody left early or stayed late, and a figure here would be one
+    nothing reads. A cell says one thing: came, or did not.
+
+    The whole month posts as one form. There is no per-cell save: the sheet is filled
+    in from a paper list in one sitting, and 300 separate requests would be 300 chances
+    to lose half of it."""
+    year, month = _payroll_month(request)
+    if not on_davomad(year, month):
+        return _to_first_sheet(request)
+    days = _month_days(year, month)
+    # The same people the Xodimlar page is showing, narrowed by the same search and
+    # the same switch — two HR screens listing different staff would be two answers
+    # to one question. A POST only ever writes the rows on screen, which is why the
+    # filter is applied before saving as well as before drawing.
+    employees, filters = _sheet_employees(request, year, month)
+
+    if request.method == "POST":
+        if not employees:
+            raise Http404
+        marked, cleared = _save_attendance(request, employees, days)
+        if marked or cleared:
+            AuditLog.record(
+                request.user, AuditLog.Action.UPDATE, "Davomad", None,
+                f"{uz_month(year, month)}: {marked} ta belgi qo'yildi, "
+                f"{cleared} ta olib tashlandi",
+            )
+            messages.success(
+                request,
+                f"Davomad saqlandi — {marked} ta o'zgarish yozildi"
+                + (f", {cleared} ta odatdagiga qaytdi." if cleared else "."),
+            )
+        else:
+            messages.info(request, "O'zgarish yo'q.")
+        # Back to the sheet exactly as it was being read — the search and the switch
+        # ride along, or saving would silently widen the page back out.
+        return redirect(
+            _segment_url(request, oy=f"{year:04d}-{month:02d}", **filters)
+        )
+
+    today = timezone.localdate()
+    open_from = _open_from(today)
+    # One lookup for the whole sheet: the closed days every row is measured against.
+    closed, named = _sheet_holidays(days)
+    marks = {
+        (row.employee_id, row.date): row
+        for row in Attendance.objects.filter(
+            employee__in=employees, date__gte=days[0], date__lte=days[-1]
+        )
+    }
+    columns = [{
+        "day": day.day,
+        "key": day.isoformat(),
+        "label": UZ_WEEKDAY_SHORT[day.weekday()],
+        "is_sunday": day.weekday() == SUNDAY,
+        "is_future": day > today,
+        "is_today": day == today,
+        "month_label": uz_month(day.year, day.month),
+        # A holiday is called out whether or not the firm closed for it: an open one
+        # explains why the sheet looks unusual without pretending it moved a wage.
+        "holiday": named.get(day),
+        "is_closed": day in closed,
+    } for day in days]
+
+    rows = []
+    exceptions = []
+    for employee in employees:
+        rest, unpaid, booked = _rest_for(employee, year, month, closed)
+        cells = []
+        for day in days:
+            is_rest_day = day in rest
+            assumed = employee.assumed_present(day, rest, unpaid)
+            row = marks.get((employee.pk, day))
+            state = _cell_state(row, is_rest_day, assumed)
+            default = _cell_state(None, is_rest_day, assumed)
+            cells.append({
+                "day": day.day,
+                # The cell's name in the form: the full date, never the day number.
+                "key": day.isoformat(),
+                "is_sunday": day.weekday() == SUNDAY,
+                "is_rest_day": is_rest_day,
+                # Booked off in advance. Drawn differently from a day somebody simply
+                # failed to turn up for: one was agreed, the other was not.
+                "is_leave": day in booked,
+                "is_holiday": day in named,
+                "is_future": day > today,
+                # A day that is over. Drawn, but not clickable until it is opened on
+                # purpose — the sheet is dragged sideways to be read, and a mouse that
+                # brushes a cell must not rewrite a wage.
+                "is_locked": day < open_from,
+                "state": state,
+                "note": row.note if row else "",
+                # The order this particular cell cycles in, handed to the page so the
+                # click behaviour is decided here rather than guessed at in JS.
+                "cycle": ",".join(REST_CYCLE if is_rest_day else WORKING_CYCLE),
+                # Worth pointing out on the sheet: a day missed, or a day off worked.
+                # Everything else is the month behaving normally.
+                "is_exception": state != default,
+            })
+            if row is not None:
+                # The rows that already exist are exactly the ones worth explaining,
+                # so the note list is built from them rather than from every cell.
+                exceptions.append({
+                    "employee": employee,
+                    "day": day,
+                    "state": state,
+                    "note": row.note,
+                    "field": f"n-{employee.pk}-{day.isoformat()}",
+                    "holiday": named.get(day),
+                })
+        worked, rest_worked = employee.days_in(year, month, closed)
+        rows.append({
+            "employee": employee,
+            "cells": cells,
+            "sunday_days": rest_worked,
+            "total_days": worked + rest_worked,
+            "missed_days": len(employee.countable_days(year, month, closed)) - worked,
+            # The wage in force THAT month — a raise agreed since must not re-price
+            # the days of a month it was not in force for.
+            "salary": employee.salary_for(year, month),
+            "daily_rate": employee.daily_rate_in(year, month, closed),
+            "working_days": employee.working_days_in(year, month, closed),
+            "earned": employee.accrued_in(year, month, closed),
+        })
+
+    prev_year, prev_month = _month_shift(year, month, -1)
+    next_year, next_month = _month_shift(year, month, 1)
+    # The month's own working days, before anybody's leave: what the footer says the
+    # salary is spread over, and how many of those days are already behind us.
+    month_rest = rest_dates_in_month(year, month, closed)
+    return render(request, "crm/attendance.html", {
+        "columns": columns,
+        "rows": rows,
+        # What the sheet tells the user is still open, in their own words.
+        "open_from": open_from,
+        "open_days": OPEN_DAYS,
+        "exceptions": sorted(exceptions, key=lambda r: (r["day"], r["employee"].name)),
+        "holidays": [named[d] for d in sorted(named)],
+        "q": filters["q"],
+        "holat": filters["holat"],
+        # The toolbar row. The sister page carries this month across so the two stay
+        # in step, and it sits last — right beside the month control it hands over.
+        "toolbar_links": [
+            {
+                "url": _sibling_url(
+                    request, "attendance_excel", oy=f"{year:04d}-{month:02d}"
+                ),
+                "label": "Excel'ga chiqarish",
+            },
+            {
+                "url": f"{reverse('holiday_list')}?yil={year:04d}",
+                "label": "Bayramlar",
+            },
+            {
+                "url": f"{reverse('employee_list')}?oy={year:04d}-{month:02d}",
+                "label": "Oylik hisobi →",
+            },
+        ],
+        "workdays": len(days) - len(month_rest),
+        "elapsed_workdays": sum(
+            1 for day in days if day <= today and day not in month_rest
+        ),
+        "total_earned": sum((r["earned"] for r in rows), Decimal("0")),
+        "month_value": f"{year:04d}-{month:02d}",
+        "month_label": uz_month(year, month),
+        "month_options": _month_options(year, month, today, first=davomad_start()),
+        # No way back from the sheet's first month — there is no sheet before it.
+        "prev_month": (
+            f"{prev_year:04d}-{prev_month:02d}"
+            if on_davomad(prev_year, prev_month) else ""
+        ),
+        "next_month": f"{next_year:04d}-{next_month:02d}",
+        "is_current_month": (year, month) == (today.year, today.month),
+    })
+
+
 def _remit_summary(remit):
     verb = "ishlab chiqarishdan qaytarib oldi" if remit.is_refund else "topshirdi"
     return (
@@ -6222,6 +8359,13 @@ def remittance_create(request):
     seller_pk = request.GET.get("seller", "")
     if request.method == "GET" and request.user.can_see_all_records and seller_pk.isdigit():
         initial["seller"] = seller_pk
+    if request.method == "GET":
+        # The kassa's left-behind notice opens the form with the sum already filled in
+        # — see `_left_behind_notices`. Only a prefill: the form still checks whatever
+        # is finally submitted.
+        amount = _parse_amount(request.GET.get("amount"))
+        if amount and amount > 0:
+            initial["amount"] = amount
     form = ProductionRemittanceForm(request.POST or None, user=request.user, initial=initial)
     title = "Ishlab chiqarishga topshirish"
     if request.method == "POST":
@@ -6629,12 +8773,32 @@ def _ombor_items(request, date_from, date_to):
 
 
 def _ombor_rows(items):
-    """One row per product: kg sold, and how many receipts it appeared on."""
-    return list(
+    """One row per product: kg sold, how many receipts it appeared on, and how much of
+    it came back.
+
+    Returns follow their sale line, not their own date — the rule `_sale_totals` uses —
+    so the page's net total is the very figure the dashboard calls «Sotilgan». Without
+    it the two pages disagreed by exactly the returned kg and neither said why."""
+    rows = list(
         items.values("product", "product__name", "product__sku")
         .annotate(total_kg=Sum(ITEM_WEIGHT_KG), sales_count=Count("sale", distinct=True))
         .order_by("-total_kg")
     )
+    returned = {
+        r["product"]: r
+        for r in Return.objects.filter(sale_item__in=items.values("pk"))
+        .values("product")
+        .annotate(kg=Sum(RETURN_WEIGHT_KG), amount=Sum(RETURN_AMOUNT), count=Count("pk"))
+        .order_by()
+    }
+    zero = Decimal("0")
+    for r in rows:
+        back = returned.get(r["product"], {})
+        r["returned_kg"] = back.get("kg") or zero
+        r["returned_amount"] = back.get("amount") or zero
+        r["returned_count"] = back.get("count", 0)
+        r["net_kg"] = (r["total_kg"] or zero) - r["returned_kg"]
+    return rows
 
 
 def ombor_view(request):
@@ -6648,6 +8812,7 @@ def ombor_view(request):
     items, filters, reps, rep_obj = _ombor_items(request, date_from, date_to)
     rows = _ombor_rows(items)
     total_kg = sum((r["total_kg"] or Decimal("0") for r in rows), Decimal("0"))
+    returned_kg = sum((r["returned_kg"] for r in rows), Decimal("0"))
 
     active_filters = _filter_chips(request, [
         {"param": "rep", "label": "Sotuvchi", "value": str(rep_obj) if rep_obj else ""},
@@ -6659,6 +8824,10 @@ def ombor_view(request):
     return render(request, "crm/ombor.html", {
         "rows": rows,
         "total_kg": total_kg,
+        "returned_kg": returned_kg,
+        "returned_amount": sum((r["returned_amount"] for r in rows), Decimal("0")),
+        "returned_count": sum(r["returned_count"] for r in rows),
+        "net_kg": total_kg - returned_kg,
         "product_count": len(rows),
         "q": filters["q"],
         "filters": filters,
@@ -6685,17 +8854,23 @@ def ombor_export(request):
     items, _, _, _ = _ombor_items(request, dates["date_from"], dates["date_to"])
     rows = _ombor_rows(items)
 
-    headers = ["Mahsulot", "SKU", "Sotuvlar soni", "Sotilgan (kg)"]
+    headers = [
+        "Mahsulot", "SKU", "Sotuvlar soni", "Sotilgan (kg)", "Qaytgan (kg)", "Sof sotilgan (kg)",
+    ]
     data = [
         [
             r["product__name"],
             r["product__sku"],
             r["sales_count"],
             float(r["total_kg"] or 0),
+            float(r["returned_kg"]),
+            float(r["net_kg"]),
         ]
         for r in rows
     ]
-    return _xlsx_response("ombor.xlsx", "Ombor", headers, data, {4: "0.000"})
+    return _xlsx_response(
+        "ombor.xlsx", "Ombor", headers, data, {4: "0.000", 5: "0.000", 6: "0.000"}
+    )
 
 
 def _filter_ombor_items(request, items):
@@ -6838,6 +9013,529 @@ def ombor_product_export(request, pk):
     return _xlsx_response(
         f"mahsulot-{product.pk}-sotuvlar.xlsx", "Sotuvlar", headers, rows, number_formats
     )
+
+
+def _client_debt_on(day, rep=None):
+    """What clients owed at the close of `day`, before their advances come off it (see
+    `_client_advance_on`). With `rep`, only that seller's receipts — the Qarzlar page's
+    Sotuvchi filter.
+
+    The Qarzlar page only knows today's balance; a month's report needs the one its
+    last day closed on. So every receipt dated up to then is re-read with only the
+    movements dated up to then: its goods, less what had come back, less what had been
+    paid in, plus money already handed back. The same arithmetic as
+    `SaleQuerySet.with_balance` — for today it is the same total — and overpaid
+    receipts are left out, as `outstanding()` leaves them out."""
+    zero = Decimal("0")
+    sales = Sale.objects.filter(date__lte=day)
+    if rep is not None:
+        sales = sales.filter(sales_rep=rep)
+    owed = {pk: opening or zero for pk, opening in sales.values_list("pk", "opening_amount")}
+
+    def move(rows, expr, sign):
+        rows = rows.filter(sale__date__lte=day)
+        if rep is not None:
+            rows = rows.filter(sale__sales_rep=rep)
+        sums = (
+            rows
+            .order_by()
+            .values_list("sale")
+            .annotate(s=Sum(expr))
+        )
+        for pk, amount in sums:
+            owed[pk] += sign * (amount or zero)
+
+    move(SaleItem.objects.all(), REVENUE, 1)
+    move(Return.objects.filter(date__lte=day), RETURN_AMOUNT, -1)
+    move(Payment.objects.filter(date__lte=day, kind__in=PAYING_KINDS), PAYMENT_CREDIT, -1)
+    move(Payment.objects.filter(date__lte=day, kind__in=SETTLEMENT_KINDS), "amount", 1)
+    return sum((v for v in owed.values() if v > 0), zero)
+
+
+def _client_advance_on(day, rep=None):
+    """The credit clients held at the close of `day` — `client_advance_balance` read as
+    of that day, across every client. The paper's «Кўчадаги остатка» is the debt less
+    this (client's request, 31.10.2026): 1 800 owed with 200 prepaid is 1 600 on the
+    street, whoever of the clients the 200 belongs to. Advance is seller-bound, so `rep`
+    narrows it by who took the money, as `_advance_balance_map` does."""
+    rows = Payment.objects.filter(date__lte=day)
+    if rep is not None:
+        rows = rows.filter(created_by=rep)
+    agg = rows.aggregate(
+        dep=Sum(PAYMENT_CREDIT, filter=Q(kind__in=ADVANCE_DEPOSIT_KINDS)),
+        used=Sum(PAYMENT_CREDIT, filter=Q(kind__in=ADVANCE_SPENT_KINDS)),
+    )
+    return (agg["dep"] or Decimal("0")) - (agg["used"] or Decimal("0"))
+
+
+# The paper's Расход lines, in its order (17.10.2026). A chiqim's free-text category is
+# added into the line whose word it names first — «Ovqat (obed), СУВ» is Обед — and a
+# category none of them names is Прочие, so a newly typed one needs no setting up.
+# «Boshqa» is not a word of any line: ticked beside a real one («Boshqa, СУВ») it gives
+# way to it, and alone it is Прочие anyway. Matched lower-cased, as parts of the name.
+# Бензин is fuel alone — car and road costs (wash, parking, fare) are Прочие; water
+# rides with lunch. The bank's cut is not a chiqim and keeps its own line («Перечис
+# процент»).
+REPORT_EXPENSE_GROUPS = (
+    ("Бензин", ("benzin", "бензин")),
+    ("Обед", ("obed", "ovqat", "обед", "овқат", "сув", "suv")),
+    ("Прочие", (
+        "мошина", "машина", "мойка", "стаянка", "стоянка", "с/т", "су/ст",
+        "йулкира", "йўлкира", "yo'lkira",
+    )),
+    ("Клиент фойда", ("фойда", "foyda")),
+)
+REPORT_EXPENSE_OTHER = "Прочие"
+
+
+def _report_expense_group(category):
+    """The paper's Расход line a chiqim category is added into."""
+    text = category.casefold()
+    group, at = REPORT_EXPENSE_OTHER, len(text)
+    for label, words in REPORT_EXPENSE_GROUPS:
+        for word in words:
+            i = text.find(word)
+            if i != -1 and i < at:
+                group, at = label, i
+    return group
+
+
+# The seller's name as the firm's paper form spells it, where that is not just the
+# CRM name in Cyrillic letters (`_uz_cyrillic`). Keyed by username, case-insensitive.
+REPORT_PRINT_NAMES = {"kamola": "КАМОЛА ТОШХУЖАЙЕВА"}
+
+_UZ_DIGRAPHS = (
+    ("o'", "ў"), ("g'", "ғ"), ("sh", "ш"), ("ch", "ч"),
+    ("yo", "ё"), ("yu", "ю"), ("ya", "я"), ("ye", "е"),
+)
+_UZ_LETTERS = str.maketrans(
+    "abcdefghijklmnopqrstuvwxyz'", "абсдефгҳижклмнопқрстуввхйзъ"
+)
+
+
+def _uz_cyrillic(text):
+    """Uzbek Latin → Cyrillic capitals, for a name on the Cyrillic paper form:
+    "Umida Ismaylova" → "УМИДА ИСМАЙЛОВА"."""
+    words = []
+    for word in re.sub("[\u02bb\u02bc\u2019\u2018`]", "'", text.lower()).split():
+        if word.startswith("e"):
+            word = "э" + word[1:]
+        for latin, cyrillic in _UZ_DIGRAPHS:
+            word = word.replace(latin, cyrillic)
+        words.append(word.translate(_UZ_LETTERS))
+    return " ".join(words).upper()
+
+
+def _monthly_report(year, month, rep=None, employees=None):
+    """One calendar month the way the firm closes it on paper: goods sold by product,
+    what the month cost, what is left of the profit, and where the money stands with
+    production, the clients and the workers.
+
+    `rep` narrows it to one seller — their sales, their till's chiqims and bank fees,
+    their production debt and their clients, the way Kassa's Sotuvchi filter does.
+    `employees` is whose wages the month carries; None is every worker.
+
+    Two figures are deliberately NOT the kassa's. Profit is the full markup of what
+    was sold (`_sale_totals`), not the cost-first «qo'lga tushgan foyda»: the paper
+    counts a sale's profit the day the goods leave. And a wage is what the month's
+    work was worth — the payroll's «hisoblangan» — not what the till happened to hand
+    out: money drawn beyond the wage is the worker's debt, not the month's cost. So
+    this page and Kassa → «Sof foyda» answer different questions and do not agree."""
+    zero = Decimal("0")
+    first = date(year, month, 1)
+    last = date(year, month, calendar.monthrange(year, month)[1])
+    client_debt_opening = _client_debt_on(first - timedelta(days=1), rep)
+    client_debt_closing = _client_debt_on(last, rep)
+    client_advance_opening = _client_advance_on(first - timedelta(days=1), rep)
+    client_advance_closing = _client_advance_on(last, rep)
+    sales = Sale.objects.filter(date__gte=first, date__lte=last)
+    if rep is not None:
+        sales = sales.filter(sales_rep=rep)
+
+    # 1. Sotilgan yuk. Returns follow their receipt (as in `_sale_totals`), and only a
+    # restocked one gives its tannarx back.
+    backs = {
+        r["product"]: r
+        for r in Return.objects.filter(sale__in=sales.values("pk"))
+        .order_by()
+        .values("product")
+        .annotate(
+            kg=Sum(RETURN_WEIGHT_KG),
+            amount=Sum(RETURN_AMOUNT),
+            cost=Sum(RETURN_COST, filter=Q(restock=True)),
+        )
+    }
+    products = []
+    for r in (
+        SaleItem.objects.filter(sale__in=sales.values("pk"))
+        .values("product", "product__name", "product__report_group")
+        .annotate(kg=Sum(ITEM_WEIGHT_KG), revenue=Sum(REVENUE), cost=Sum(COST))
+    ):
+        back = backs.get(r["product"], {})
+        revenue = (r["revenue"] or zero) - (back.get("amount") or zero)
+        cost = (r["cost"] or zero) - (back.get("cost") or zero)
+        products.append({
+            "product": r["product"],
+            "name": r["product__name"],
+            # The paper's line for it; a product nobody grouped is a line of its own.
+            "group": " ".join(r["product__report_group"].split()) or r["product__name"],
+            "kg": (r["kg"] or zero) - (back.get("kg") or zero),
+            "revenue": revenue,
+            "cost": cost,
+            "profit": revenue - cost,
+        })
+    products.sort(key=lambda p: p["kg"], reverse=True)
+    figures = ("kg", "revenue", "cost", "profit")
+    totals = {key: sum((p[key] for p in products), zero) for key in figures}
+    # The report's own lines: products added into their `Product.report_group`, the
+    # way the firm closes the month on paper (ОҚ, ҚОРА, НОВВОТ, КОП).
+    by_group = {}
+    for p in products:
+        group = by_group.setdefault(
+            p["group"].casefold(),
+            {"label": p["group"], "members": [], **{key: zero for key in figures}},
+        )
+        group["members"].append(p)
+        for key in figures:
+            group[key] += p[key]
+    groups = sorted(by_group.values(), key=lambda g: g["kg"], reverse=True)
+    for group in groups:
+        # Nothing to spell out when the line is one product under its own name.
+        group["is_single"] = (
+            len(group["members"]) == 1 and group["members"][0]["name"] == group["label"]
+        )
+
+    # 2. Rasxod. A wage or an advance is not this month's cost — the wage further
+    # down is; counting the payout too would charge the month twice for one job.
+    by_category = {}
+    costs = Expense.objects.filter(date__gte=first, date__lte=last).exclude(
+        employee__isnull=False, counts_against_salary=True
+    )
+    if rep is not None:
+        costs = costs.filter(created_by=rep)
+    for category, amount in costs.values_list("category", "amount"):
+        label = " ".join(category.split()) or "Turkumsiz"
+        row = by_category.setdefault(label.casefold(), {
+            "label": label, "group": _report_expense_group(label), "amount": zero, "count": 0,
+        })
+        row["amount"] += amount
+        row["count"] += 1
+    expenses = sorted(by_category.values(), key=lambda r: r["amount"], reverse=True)
+    expense_total = sum((r["amount"] for r in expenses), zero)
+    # The paper's Расход: every line it has, in its order, even an empty one — each the
+    # sum of the categories that fall in it (`REPORT_EXPENSE_GROUPS`).
+    expense_groups = [
+        {"label": label, "members": [], "amount": zero, "count": 0}
+        for label, _ in REPORT_EXPENSE_GROUPS
+    ]
+    by_group = {g["label"]: g for g in expense_groups}
+    for r in expenses:
+        group = by_group[r["group"]]
+        group["members"].append(r)
+        group["amount"] += r["amount"]
+        group["count"] += r["count"]
+    for group in expense_groups:
+        # Nothing to spell out when the line is one category under its own name.
+        group["is_single"] = (
+            len(group["members"]) == 1
+            and group["members"][0]["label"].casefold() == group["label"].casefold()
+        )
+
+    # The bank's cut on transfers the firm agreed to carry. It never reaches the till,
+    # so no chiqim row holds it — the paper writes it out as «перечис процент».
+    fees = Payment.objects.filter(
+        date__gte=first, date__lte=last,
+        commission__gt=0, commission_payer=Payment.Payer.SELLER,
+    )
+    if rep is not None:
+        fees = fees.filter(created_by=rep)
+    bank_fee = fees.aggregate(s=Sum("commission"))["s"] or zero
+
+    if employees is None:
+        employees = list(Employee.objects.order_by("name"))
+    # This month's wage handed over after the month was out — September's remainder
+    # paid on 08.10 (`Expense.wage_month`). It closes this month, but the screen's
+    # «Berilgan» is only what the month itself handed over, so it gets a column of its own.
+    later = {
+        row["employee"]: row["s"]
+        for row in Expense.objects.filter(
+            employee__in=employees, counts_against_salary=True,
+            wage_month=first, date__gt=last,
+        )
+        .values("employee")
+        .annotate(s=Sum("amount"))
+    }
+    wages = []
+    for r in _payroll_rows(employees, year, month):
+        # A worker whose account opens later accrues nothing yet: what the till paid
+        # them is then the only cost the month has for them.
+        wage = r["earned"] if r["tracked"] else r["paid"]
+        if wage or r["paid"] or r["remaining"]:
+            # The paper's «Ойлик» shows the wage alone — the month's own, however
+            # and whenever it was paid. The screen spells the rest out as one sum:
+            # what rode in from earlier months (minus — the worker's debt), plus this
+            # month's wage, less what was paid against it — in the month, then
+            # later — is what is left (minus — still in debt).
+            paid_later = later.get(r["employee"].pk, zero)
+            wages.append({
+                "employee": r["employee"],
+                "wage": wage,
+                "carried": r["carried"],
+                "paid": r["paid"],
+                "paid_now": r["paid"] - paid_later,
+                "paid_later": paid_later,
+                "remaining": r["remaining"],
+                "tracked": r["tracked"],
+            })
+    has_paid_later = any(r["paid_later"] for r in wages)
+    # The month's cost is the wage earned, however much of it was paid out yet.
+    wage_total = sum((r["wage"] for r in wages), zero)
+    spent = expense_total + bank_fee + wage_total
+
+    # 4. Ishlab chiqarish — the kassa's own figures, so the debt here is the debt there.
+    till = _kassa_summary(first, last, rep)
+    adjustments = ProductionAdjustment.objects.filter(date__gte=first, date__lte=last)
+    if rep is not None:
+        adjustments = adjustments.filter(seller=rep)
+    adjusted = adjustments.aggregate(s=Sum("amount"))["s"] or zero
+    production = {
+        "opening": till["production_debt"] - till["cost"] + till["remitted"] - adjusted,
+        "taken": till["cost"],
+        "paid": till["remitted"],
+        "adjusted": adjusted,
+        "closing": till["production_debt"],
+    }
+
+    # The paper writes a worker's debt out as a sum: what they owed coming into the
+    # month, what this month put on top (or took off), and where that leaves it. Both
+    # in whole so'm, so the printed line adds up.
+    whole = Decimal("1")
+    debtors = []
+    for r in wages:
+        if not r["tracked"] or r["remaining"] >= 0:
+            continue
+        debt = -r["remaining"]
+        before = max(-r["carried"], zero).quantize(whole, ROUND_HALF_UP)
+        debtors.append({
+            "employee": r["employee"],
+            "debt": debt,
+            "before": before,
+            "change": debt.quantize(whole, ROUND_HALF_UP) - before,
+        })
+    return {
+        "date_from": first,
+        "date_to": last,
+        "products": products,
+        "groups": groups,
+        "totals": totals,
+        "margin": totals["profit"] / totals["revenue"] * 100 if totals["revenue"] else zero,
+        "expenses": expenses,
+        "expense_groups": expense_groups,
+        "expense_total": expense_total,
+        "bank_fee": bank_fee,
+        "wages": wages,
+        "has_paid_later": has_paid_later,
+        "wage_total": wage_total,
+        "spent": spent,
+        "net_profit": totals["profit"] - spent,
+        "production": production,
+        "client_debt_opening": client_debt_opening,
+        "client_debt_closing": client_debt_closing,
+        "client_advance_opening": client_advance_opening,
+        "client_advance_closing": client_advance_closing,
+        "street_balance_opening": client_debt_opening - client_advance_opening,
+        "street_balance_closing": client_debt_closing - client_advance_closing,
+        "employee_debtors": debtors,
+        "employee_debt_total": sum((d["debt"] for d in debtors), zero),
+    }
+
+
+def _monthly_report_scope(request):
+    """Whose month the report is: one seller (?rep=) and the workers whose wages it
+    carries (?xodim=, repeated). Neither picked — the whole firm, every worker.
+
+    Workers are not tied to a seller in the CRM, but each is paid out of one seller's
+    till. So with a seller picked and no worker ticked, the report takes the workers
+    that seller's kassa has paid a wage to — Kamola's report does not carry Umida's
+    wage. Ticking workers overrides that. Returns (rep, employees, context)."""
+    reps = (
+        User.objects.filter(
+            Q(role=User.Role.SALES, is_active=True)
+            | Q(pk__in=Sale.objects.values("sales_rep"))
+        )
+        .distinct()
+        .order_by("first_name", "username")
+    )
+    raw_rep = request.GET.get("rep", "")
+    rep = reps.filter(pk=raw_rep).first() if raw_rep.isdigit() else None
+    everyone = list(Employee.objects.order_by("name"))
+    picked_pks = [pk for pk in request.GET.getlist("xodim") if pk.isdigit()]
+    picked = [e for e in everyone if str(e.pk) in picked_pks]
+    note = ""
+    if picked:
+        employees = picked
+    elif rep is not None:
+        paid = set(
+            Expense.objects.filter(
+                created_by=rep, employee__isnull=False, counts_against_salary=True
+            ).values_list("employee", flat=True)
+        )
+        employees = [e for e in everyone if e.pk in paid]
+        note = f"{rep} kassasidan oylik olganlar"
+    else:
+        employees = everyone
+    if not picked:
+        picked_label = ""
+    elif len(picked) <= 2:
+        picked_label = ", ".join(e.name for e in picked)
+    else:
+        picked_label = f"{len(picked)} ta"
+    active_filters = _filter_chips(request, [
+        {"param": "rep", "label": "Sotuvchi", "value": str(rep) if rep else ""},
+        {"param": "xodim", "label": "Xodimlar", "value": picked_label},
+    ])
+    return rep, employees, {
+        "reps": reps,
+        "rep": rep,
+        "employee_options": everyone,
+        "filters": {"rep": str(rep.pk) if rep else "", "xodim": [str(e.pk) for e in picked]},
+        "active_filters": active_filters,
+        "has_filters": bool(active_filters),
+        "filter_count": len(active_filters),
+        "employee_note": note,
+    }
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def monthly_report(request):
+    """Oylik hisobot: the month's closing sheet the firm used to keep by hand — see
+    `_monthly_report`. Live: reopening a past month re-reads today's records, so a late
+    return or a corrected chiqim moves its figures."""
+    year, month = _payroll_month(request)
+    today = timezone.localdate()
+    prev_year, prev_month = _month_shift(year, month, -1)
+    next_year, next_month = _month_shift(year, month, 1)
+    value = f"{year:04d}-{month:02d}"
+    rep, employees, scope = _monthly_report_scope(request)
+    report = _monthly_report(year, month, rep, employees)
+    # Excel downloads what the page shows: the same month, seller and workers.
+    export_qs = request.GET.copy()
+    export_qs["oy"] = value
+    window = {"dan": report["date_from"].isoformat(), "gacha": report["date_to"].isoformat()}
+    if rep is not None:
+        window["rep"] = rep.pk
+    return render(request, "crm/monthly_report.html", {
+        **report,
+        **scope,
+        # The paper form's heading: the seller's firm and name. The whole firm's
+        # report is no one seller's, so it goes out under neither.
+        "print_firm": rep.firm_name.upper() if rep is not None else "",
+        "print_name": (
+            REPORT_PRINT_NAMES.get(rep.username.casefold()) or _uz_cyrillic(str(rep))
+            if rep is not None else ""
+        ),
+        "filter_url": request.path,
+        "filter_clear_url": f"{request.path}?oy={value}",
+        "drawer_keep": [{"name": "oy", "value": value}],
+        "month_value": value,
+        "month_label": uz_month(year, month),
+        "month_options": _month_options(year, month, today),
+        "prev_month": f"{prev_year:04d}-{prev_month:02d}",
+        "next_month": f"{next_year:04d}-{next_month:02d}",
+        "is_current_month": (year, month) == (today.year, today.month),
+        # The month is still running (or has not started): its closing figures are
+        # today's, and the page says so rather than dating them to a day yet to come.
+        "is_open_month": report["date_to"] >= today,
+        "today": today,
+        "window_qs": urlencode(window),
+        "export_url": f"{reverse('monthly_report_export')}?{export_qs.urlencode()}",
+    })
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def monthly_report_export(request):
+    """The month's report as .xlsx — the summary first, then the tables behind it."""
+    year, month = _payroll_month(request)
+    rep, employees, _ = _monthly_report_scope(request)
+    r = _monthly_report(year, month, rep, employees)
+    money = "#,##0"
+    p = r["production"]
+    summary = [
+        ["Sotilgan yuk (kg)", float(r["totals"]["kg"])],
+        ["Savdo", float(r["totals"]["revenue"])],
+        ["Tannarx", float(r["totals"]["cost"])],
+        ["Foyda", float(r["totals"]["profit"])],
+        ["Rasxod: chiqimlar", float(r["expense_total"])],
+        ["Rasxod: bank foizi", float(r["bank_fee"])],
+        ["Rasxod: oylik (hisoblangan)", float(r["wage_total"])],
+        ["Jami rasxod", float(r["spent"])],
+        ["Sof foyda", float(r["net_profit"])],
+        ["Ishlab chiqarish: oy boshidagi qarz", float(p["opening"])],
+        ["Ishlab chiqarish: olingan yuk (tannarx)", float(p["taken"])],
+        ["Ishlab chiqarish: berilgan pul", float(p["paid"])],
+        ["Ishlab chiqarish: qarz tuzatishlari", float(p["adjusted"])],
+        ["Ishlab chiqarish: oy oxiridagi qarz", float(p["closing"])],
+        ["Mijozlar qarzi: oy boshida", float(r["client_debt_opening"])],
+        ["Mijozlar qarzi: oy oxirida", float(r["client_debt_closing"])],
+        ["Oldindan to'langan: oy boshida", float(r["client_advance_opening"])],
+        ["Oldindan to'langan: oy oxirida", float(r["client_advance_closing"])],
+        ["Ko'chadagi ostatka: oy boshida", float(r["street_balance_opening"])],
+        ["Ko'chadagi ostatka: oy oxirida", float(r["street_balance_closing"])],
+        ["Xodimlar qarzi", float(r["employee_debt_total"])],
+    ]
+    figures = ("kg", "revenue", "cost", "profit")
+    jami = [float(r["totals"][k]) for k in figures]
+    sold = [[x["label"]] + [float(x[k]) for k in figures] for x in r["groups"]]
+    sold.append(["Jami"] + jami)
+    # The same goods product by product — the lines above are sums of these.
+    by_product = [
+        [x["name"], x["group"]] + [float(x[k]) for k in figures] for x in r["products"]
+    ]
+    by_product.append(["Jami", ""] + jami)
+    # Each chiqim under the paper's Расход line it is added into, line by line.
+    spent = [
+        [g["label"], x["label"], float(x["amount"])]
+        for g in r["expense_groups"] for x in g["members"]
+    ]
+    spent.append(["Bank foizi", "Perechisleniye foizi", float(r["bank_fee"])])
+    spent += [["Oylik", x["employee"].name, float(x["wage"])] for x in r["wages"] if x["wage"]]
+    spent.append(["Jami", "", float(r["spent"])])
+    workers = [
+        [
+            x["employee"].name,
+            float(x["carried"]) if x["tracked"] else "",
+            float(x["wage"]),
+            float(x["paid_now"]),
+            float(x["paid_later"]),
+            float(x["remaining"]) if x["tracked"] else "",
+        ]
+        for x in r["wages"]
+    ]
+    suffix = f"-{rep.username.lower()}" if rep is not None else ""
+    heading = f"{uz_month(year, month)} · {rep}" if rep is not None else uz_month(year, month)
+    return _xlsx_book_response(f"oylik-hisobot-{year:04d}-{month:02d}{suffix}.xlsx", [
+        ("Xulosa", ["Ko'rsatkich", heading], summary, {2: "#,##0.##"}),
+        (
+            "Sotilgan yuk",
+            ["Guruh", "Sotilgan (kg)", "Savdo", "Tannarx", "Foyda"],
+            sold, {2: "0.000", 3: money, 4: money, 5: money},
+        ),
+        (
+            "Mahsulotlar",
+            ["Mahsulot", "Guruh", "Sotilgan (kg)", "Savdo", "Tannarx", "Foyda"],
+            by_product, {3: "0.000", 4: money, 5: money, 6: money},
+        ),
+        ("Rasxod", ["Turi", "Nomi", "Summa (so'm)"], spent, {3: money}),
+        (
+            "Xodimlar",
+            [
+                "Xodim", "O'tgan oydan (minus — xodim qarzi)", "Hisoblangan",
+                "Berilgan (shu oyda)", "Keyin berilgan (keyingi oylarda)",
+                "Qoldiq (minus — xodim qarzi)",
+            ],
+            workers, {2: money, 3: money, 4: money, 5: money, 6: money},
+        ),
+    ])
 
 
 def sale_export(request):
@@ -7332,6 +10030,7 @@ def sale_mark_paid(request, pk):
             AuditLog.record(
                 request.user, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
                 f"Mijoz {sale.client.name} to'liq to'ladi (Naqd) — {remaining:,.0f} so'm"
+                f"{_date_note(timezone.localdate())}"
                 f"{_on_behalf(request.user, sale.sales_rep)}",
             )
             messages.success(request, "Sotuv to'langan deb belgilandi.")
@@ -7394,7 +10093,8 @@ def sale_pay(request, pk):
                 request.user, AuditLog.Action.PAYMENT, "To'lov", sale.pk,
                 f"Mijoz {sale.client.name} to'lovi "
                 f"({_method_label(cd['method'])}){_usd_note(cd)} "
-                f"— {cd['amount']:,.0f} so'm{_on_behalf(request.user, seller)}",
+                f"— {cd['amount']:,.0f} so'm{_date_note(cd['date'])}"
+                f"{_on_behalf(request.user, seller)}",
             )
             if sale.debt_remaining <= 0:
                 msg = "Qarz to'liq to'landi."
@@ -7485,17 +10185,20 @@ def sale_return(request, pk):
             messages.success(request, _return_message(ret.amount, to_debt, excess, refunded))
             return form_reload(request, reverse("sale_detail", args=[sale.pk]))
         return _render_return_form(request, sale, form, invalid=True)
-    form = ReturnForm(sale=sale, user=seller, initial={"restock": True})
+    form = ReturnForm(sale=sale, user=seller)
     return _render_return_form(request, sale, form)
 
 
-def _settle_return(ret, form, user):
+def _settle_return(ret, form, user, apply_advance=True):
     """Post the money side of a just-saved return and link it back to the return.
 
     The return's value cancels open debt first; any excess is money the client had
     already paid and is owed back — parked as advance credit (default) or handed out
-    as cash. Kept in one place so `sale_return` and `return_edit` settle identically.
-    Returns (to_debt, excess, refunded)."""
+    as cash. Kept in one place so `sale_return`, `return_edit` and `return_create`
+    settle identically. `apply_advance=False` leaves fresh credit unspent, for a caller
+    that settles several returns and spends it once at the end — spent after each one,
+    it would pay down a receipt whose own return comes next and dress that return's
+    debt cancellation up as more credit. Returns (to_debt, excess, refunded)."""
     excess = form.excess
     to_debt = form.credited_to_debt
     refunded = form.cleaned_data.get("settlement") == ReturnForm.SETTLE_REFUND
@@ -7516,7 +10219,7 @@ def _settle_return(ret, form, user):
         # Link the payment back to the return so it can be voided/edited as one unit.
         ret.settlement = settlement
         ret.save(update_fields=["settlement"])
-        if not refunded:
+        if not refunded and apply_advance:
             # Spend the fresh credit on whatever else the client still owes.
             _apply_advance_to_open_sales(ret.sale.client, user)
     return to_debt, excess, refunded
@@ -7539,8 +10242,8 @@ def _reverse_return(ret):
 
 
 def return_edit(request, pk):
-    """Correct a mistaken return — change the line, quantity, restock flag or how the
-    excess was settled. The old return is rolled back in full and the new values are
+    """Correct a mistaken return — change the line, quantity or how the excess was
+    settled. The old return is rolled back in full and the new values are
     applied as a fresh return, so debt, till and advance stay perfectly in sync (a
     return can't be safely edited in place — its settlement is derived from it). A
     seller may edit only their own returns; admins/managers any."""
@@ -7587,7 +10290,6 @@ def return_edit(request, pk):
         initial={
             "sale_item": ret.sale_item_id,
             "weight": ret.weight,
-            "restock": ret.restock,
             "note": ret.note,
             "settlement": settlement_initial,
         },

@@ -104,10 +104,23 @@ ikki sahifa bir xil oynani bir xil tushunadi.{% endcomment %}
   {% endif %}
 </div>
 
-{% if advance_moves %}
+{% comment %}Avans har doim ham avans yozuvidan kelmaydi: narx tuzatilganda yoki tovar
+qaytganda ortib qolgan pul ham shu yerga tushadi va uning tahrirlanadigan qatori
+yo'q. Shuning uchun karta balans bor bo'lsa ham ko'rinadi — «Avansni o'chirish»
+tugmasi turadigan joy shu.{% endcomment %}
+{% if advance_moves or advance > 0 %}
 <div class="card">
-  <h2>Avans harakatlari</h2>
+  <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+    <h2 style="margin:0;">Avans harakatlari</h2>
+    {% if advance > 0 %}
+    <a class="btn btn-sm btn-ghost" href="{% url 'client_advance_clear' client.pk %}" data-modal title="Qolgan avansni hisobdan o'chirish — kassaga tegmaydi">Avansni o'chirish</a>
+    {% endif %}
+  </div>
+  {% if advance_moves %}
   {% include "crm/_advance_moves_table.html" %}
+  {% else %}
+  <p class="muted">Bu avans sotuvdan hosil bo'lgan — narx tuzatilgan yoki tovar qaytarilgan, pul esa allaqachon kassada. Alohida avans yozuvi yo'q.</p>
+  {% endif %}
 </div>
 {% endif %}
 
@@ -116,6 +129,7 @@ ikki sahifa bir xil oynani bir xil tushunadi.{% endcomment %}
     <h2 style="margin:0;">Ochiq cheklar</h2>
     <a class="btn btn-sm btn-ghost" href="{% url 'client_opening_debt' client.pk %}" data-modal title="CRM'gacha bo'lgan eski qarzni kiritish yoki tuzatish">Boshlang'ich qarz</a>
     {% if sales %}
+    <a class="btn btn-sm btn-ghost" href="{% url 'client_debt_clear' client.pk %}" data-modal title="Qolgan qarzni hisobdan o'chirish — kassaga tegmaydi">Qarzni o'chirish</a>
     <a class="btn btn-sm btn-excel" href="{{ export_url }}" title="Excel yuklab olish{% if period_window %} (ochiq cheklar + oraliq sverka){% endif %}">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       Excel

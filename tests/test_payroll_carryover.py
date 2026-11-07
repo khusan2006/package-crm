@@ -6,6 +6,7 @@ opening figure a payroll account starts from, and the rule that a raise prices t
 months from which it was agreed — never the ones already settled.
 """
 
+import calendar
 from datetime import timedelta
 from decimal import Decimal
 
@@ -13,11 +14,25 @@ import pytest
 from django.urls import reverse
 from django.utils import timezone
 
-from crm.models import Employee, Expense, SalaryRate
+from crm.forms import EmployeeBalanceForm, EmployeeForm
+from crm.models import AuditLog, Employee, Expense, SalaryRate
 
 pytestmark = pytest.mark.django_db
 
 WAGE = Decimal("2000000")
+
+
+@pytest.fixture(autouse=True)
+def month_is_over(monkeypatch):
+    """Pin today to the last day of the month.
+
+    A wage is earned by the day now, so "this month's wage" is only the whole salary
+    once the month has run out — on the 4th it is four days' worth. These tests are
+    about what carries from month to month, not about the davomad sheet (that is
+    tests/test_hr_davomad.py), so they are asked on the day the month is complete."""
+    real = timezone.localdate()
+    last = real.replace(day=calendar.monthrange(real.year, real.month)[1])
+    monkeypatch.setattr(timezone, "localdate", lambda *args, **kwargs: last)
 
 
 def this_month():
@@ -139,13 +154,13 @@ def test_leaving_stops_the_wage(client, admin_user, seller_user):
     assert worker.balance_through(*month_of(nxt)) == settled_now
 
 
-def test_page_shows_what_rode_in_and_what_rides_on(client, seller_user):
+def test_page_shows_what_rode_in_and_what_rides_on(client, payroll_seller):
     worker = make_worker()
-    pay(worker, seller_user, "500000", on=last_month())   # oylikning bir qismi
-    pay(worker, seller_user, "300000")                    # shu oy avans
-    pay(worker, seller_user, "120000", counts=False)      # benzin — oylikka tegmaydi
+    pay(worker, payroll_seller, "500000", on=last_month())   # oylikning bir qismi
+    pay(worker, payroll_seller, "300000")                    # shu oy avans
+    pay(worker, payroll_seller, "120000", counts=False)      # benzin — oylikka tegmaydi
 
-    client.force_login(seller_user)
+    client.force_login(payroll_seller)
     response = client.get(reverse("employee_list"))
     row = {r["employee"].pk: r for r in response.context["rows"]}[worker.pk]
 
@@ -162,12 +177,31 @@ def test_page_shows_what_rode_in_and_what_rides_on(client, seller_user):
     assert "summa=3200000" in response.content.decode()
 
 
-def test_a_month_before_the_account_opened_shows_no_balance(client, seller_user):
+def test_the_page_adds_up_what_workers_owe_the_firm(client, payroll_seller):
+    """A worker who drew ahead owes the firm. That is totalled on its own: the net
+    «Berilishi kerak» sets it against the workers still owed and so shows neither."""
+    ahead = make_worker()
+    pay(ahead, payroll_seller, "4500000")            # two months earn 4 000 000
+    make_worker(name="Ишчи Собир")                   # nothing paid: 4 000 000 owed
+    client.force_login(payroll_seller)
+
+    totals = client.get(reverse("employee_list")).context["totals"]
+    assert (totals["debt"], totals["debtors"]) == (Decimal("500000"), 1)
+    assert totals["to_pay"] == Decimal("4000000")
+    assert totals["remaining"] == Decimal("3500000")     # the Jami row: 4m − 500k
+
+    detail = client.get(reverse("employee_detail", args=[ahead.pk]))
+    assert (detail.context["balance"], detail.context["debt"]) == (
+        Decimal("-500000"), Decimal("500000"),
+    )
+
+
+def test_a_month_before_the_account_opened_shows_no_balance(client, payroll_seller):
     """The row still reports what the till paid that month — the payout list right
     below it does — but it claims no wage and no remainder for a month it never had."""
     worker = make_worker(start=this_month())
-    pay(worker, seller_user, "400000", on=last_month())
-    client.force_login(seller_user)
+    pay(worker, payroll_seller, "400000", on=last_month())
+    client.force_login(payroll_seller)
     response = client.get(
         reverse("employee_list"), {"oy": last_month().strftime("%Y-%m")}
     )
@@ -178,8 +212,8 @@ def test_a_month_before_the_account_opened_shows_no_balance(client, seller_user)
     assert response.context["totals"]["remaining"] == Decimal("0")
 
 
-def test_seller_can_add_a_worker_and_the_wage_is_dated(client, seller_user):
-    client.force_login(seller_user)
+def test_seller_can_add_a_worker_and_the_wage_is_dated(client, payroll_seller):
+    client.force_login(payroll_seller)
     start = last_month()
     response = client.post(reverse("employee_create"), {
         "name": "Кассир Дилноза", "salary": "1500000",
@@ -192,3 +226,60 @@ def test_seller_can_add_a_worker_and_the_wage_is_dated(client, seller_user):
     assert worker.opening_balance == Decimal("250000")
     rate = SalaryRate.objects.get(employee=worker)
     assert (rate.effective_from, rate.amount) == (start, Decimal("1500000"))
+
+
+def test_a_supervisor_corrects_a_months_closing_balance(client, admin_user, payroll_seller):
+    """The figure asked for is the one the boss knows — what was owed at the end of a
+    month. It is written back as a shift of the opening figure, so the wages and the
+    payouts stay as they were and every month moves by the same sum."""
+    worker = make_worker()                             # 2 000 000 a month, from last month
+    pay(worker, payroll_seller, "2450000", on=last_month())
+    assert worker.balance_through(*month_of(last_month())) == Decimal("-450000")
+    url = reverse(
+        "employee_balance_edit", args=[worker.pk, last_month().strftime("%Y-%m")]
+    )
+
+    client.force_login(admin_user)
+    assert client.get(url).context["form"].initial["balance"] == Decimal("-450000")
+    assert client.post(url, {"balance": "-18564000"}).status_code == 302
+    worker.refresh_from_db()
+    assert worker.opening_balance == Decimal("-18114000")       # the −450 000 is inside
+    assert worker.balance_through(*month_of(last_month())) == Decimal("-18564000")
+    assert worker.balance_through(*month_of(this_month())) == Decimal("-16564000")
+    assert "18,564,000" in AuditLog.objects.filter(target_type="Xodim").first().summary
+
+    # Typing the figure on screen back in is a correction of nothing.
+    client.post(url, {"balance": "-18564000"})
+    worker.refresh_from_db()
+    assert worker.opening_balance == Decimal("-18114000")
+    # A month the account never had has no balance to correct.
+    missing = reverse("employee_balance_edit", args=[worker.pk, "2020-01"])
+    assert client.get(missing).status_code == 404
+
+
+def test_only_a_supervisor_may_correct_a_balance(client, payroll_seller):
+    worker = make_worker()
+    url = reverse(
+        "employee_balance_edit", args=[worker.pk, last_month().strftime("%Y-%m")]
+    )
+    client.force_login(payroll_seller)
+
+    assert client.post(url, {"balance": "0"}).status_code == 403
+    worker.refresh_from_db()
+    assert worker.opening_balance == Decimal("0")
+    # …and the page offers them no pencil for it.
+    detail = client.get(reverse("employee_detail", args=[worker.pk]))
+    assert url not in detail.content.decode()
+
+
+def test_debt_fields_keep_their_minus_in_the_browser():
+    """The page's money formatter drops everything but digits unless the input is
+    marked as signed — an opening debt of −500 000 was shown, and saved back, as
+    +500 000. Both boxes that can hold a debt carry the mark."""
+    worker = make_worker(opening="-500000")
+    for field in (
+        EmployeeForm(instance=worker)["opening_balance"],
+        EmployeeBalanceForm()["balance"],
+    ):
+        assert "data-money-signed" in str(field)
+    assert "data-money-signed" not in str(EmployeeForm(instance=worker)["salary"])

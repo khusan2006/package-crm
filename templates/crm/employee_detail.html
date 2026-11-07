@@ -18,15 +18,20 @@
   olgan pullari va ish uchun qilgan rasxotlari. Oylik sahifasi “shu oyda kim nima
   oladi” degan savolga javob beradi; bu sahifa undan keyingi savolga — “bu odam bilan
   boshidan beri nima bo'lgan”.
+
+  O'rtadagi GRAFIK — bitta oyning kunlari. Hafta emas, OY: hafta takrorlanadi va
+  aynan farq qiladigan kunlarni ko'rsata olmaydi — yopilgan bayram, chiqib
+  ishlangan yakshanba, kelmagan kun. Qaysi oy ekanini `?oy=` hal qiladi; tepadagi
+  kartalar va «Oylar bo'yicha» jadvali esa doim butun tarixni ko'rsatadi.
 {% endcomment %}
 <div class="kpi-grid">
   <div class="kpi{% if balance > 0 %} kpi--red{% elif balance < 0 %} kpi--gold{% else %} kpi--green{% endif %}">
     <div class="kpi-head">
       <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/></svg></span>
-      <span class="kpi-label">{% if balance < 0 %}Oldindan olgan{% else %}Hozir olishi kerak{% endif %}</span>
+      <span class="kpi-label">{% if balance < 0 %}Xodimning qarzi{% else %}Hozir olishi kerak{% endif %}</span>
     </div>
-    <div class="kpi-value">{{ balance|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta muted">{% if balance > 0 %}to'lanmagan qoldiq{% elif balance < 0 %}kelasi oylikdan ushlanadi{% else %}hisob teng{% endif %}</div>
+    <div class="kpi-value">{% if balance < 0 %}{{ debt|floatformat:"0g" }}{% else %}{{ balance|floatformat:"0g" }}{% endif %}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{% if balance > 0 %}to'lanmagan qoldiq{% elif balance < 0 %}ortiqcha olgan · oyligidan ushlanadi{% else %}hisob teng{% endif %}</div>
   </div>
 
   <div class="kpi kpi--blue">
@@ -67,33 +72,210 @@
       <a class="btn btn-sm btn-ghost" href="{% url 'employee_edit' employee.pk %}" data-modal>Tahrirlash</a>
     </span>
   </div>
+  {% comment %}
+    Eng ko'p o'zgaradigan ikki narsa — oylik va ish vaqti — o'z qatorida qalamcha
+    bilan turadi: butun formani ochib, kerakli maydonni qidirish shart emas. Qalamcha
+    o'sha formaning shu qatorga kesilgan ko'rinishini ochadi (`employee_edit_field`).
+    Uchinchi ustun amallar uchun; qalamchasiz qatorda u bo'sh — qiymatlar bir
+    chiziqda tursin.
+  {% endcomment %}
   <div class="table-wrap">
-  <table>
-    <tr><td>Hisob boshlangan oy</td><td class="num">{{ employee.start_month|date:"m.Y" }}</td></tr>
+  <table class="kv-table">
+    <tr>
+      <td>Oylik</td>
+      <td class="num">{{ employee.salary|floatformat:"0g" }} so'm</td>
+      <td class="row-actions"><a class="icon-action act-edit" href="{% url 'employee_edit_field' employee.pk 'oylik' %}" data-modal title="Oylikni o'zgartirish" aria-label="Oylikni o'zgartirish">{% include "crm/_ico_edit.html" %}</a></td>
+    </tr>
+    <tr>
+      <td>Ish vaqti</td>
+      <td class="num">{% if employee.work_hours %}{{ employee.work_hours }}{% else %}<span class="muted">belgilanmagan</span>{% endif %}</td>
+      <td class="row-actions"><a class="icon-action act-edit" href="{% url 'employee_edit_field' employee.pk 'ish-vaqti' %}" data-modal title="Ish vaqtini o'zgartirish" aria-label="Ish vaqtini o'zgartirish">{% include "crm/_ico_edit.html" %}</a></td>
+    </tr>
+    <tr><td>Hisob boshlangan oy</td><td class="num">{{ employee.start_month|date:"m.Y" }}</td><td></td></tr>
     {% if employee.opening_balance %}
-    <tr><td>Boshlang'ich qoldiq</td><td class="num">{{ employee.opening_balance|floatformat:"0g" }} so'm</td></tr>
+    <tr><td>Boshlang'ich qoldiq</td><td class="num">{{ employee.opening_balance|floatformat:"0g" }} so'm</td><td></td></tr>
     {% endif %}
     {% if employee.end_month %}
-    <tr><td>Oxirgi oy</td><td class="num">{{ employee.end_month|date:"m.Y" }}</td></tr>
+    <tr><td>Oxirgi oy</td><td class="num">{{ employee.end_month|date:"m.Y" }}</td><td></td></tr>
     {% endif %}
     {% if this_month %}
-    <tr><td>Shu oy berilgan</td><td class="num">{{ this_month.paid|floatformat:"0g" }} so'm</td></tr>
+    <tr><td>Shu oy berilgan</td><td class="num">{{ this_month.paid|floatformat:"0g" }} so'm</td><td></td></tr>
     {% endif %}
     {% if employee.note %}
-    <tr><td>Izoh</td><td class="num">{{ employee.note }}</td></tr>
+    <tr><td>Izoh</td><td class="num">{{ employee.note }}</td><td></td></tr>
     {% endif %}
   </table>
   </div>
 </div>
 
+{% comment %} ── Grafik ─────────────────────────────────────────────────── {% endcomment %}
+<div class="card" id="grafik">
+  <div class="card-head">
+    <h2 style="margin:0;">Grafik · {{ month_label }}</h2>
+    <span class="card-head-right">
+      {% if davomad_url %}<a class="btn btn-sm btn-ghost" href="{{ davomad_url }}">Davomad →</a>{% endif %}
+      {% if not is_current_month %}<a class="btn btn-sm btn-ghost" href="{% url 'employee_detail' employee.pk %}#grafik">Shu oy</a>{% endif %}
+      <div class="month-pick" role="group" aria-label="Oy tanlash">
+        <a class="datebar-btn" href="?oy={{ prev_month }}#grafik" title="Oldingi oy" aria-label="Oldingi oy">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        </a>
+        <form method="get" class="month-pick-form" action="#grafik">
+          <select name="oy" class="month-pick-select" aria-label="Oy" onchange="this.form.submit()">
+            {% for o in month_options %}<option value="{{ o.value }}"{% if o.value == month_value %} selected{% endif %}>{{ o.label }}</option>{% endfor %}
+          </select>
+          <noscript><button type="submit" class="btn btn-sm">Ko'rsat</button></noscript>
+        </form>
+        <a class="datebar-btn" href="?oy={{ next_month }}#grafik" title="Keyingi oy" aria-label="Keyingi oy">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        </a>
+      </div>
+    </span>
+  </div>
+
+  {% comment %}
+    Davomad yoqilgan oydan oldingi oyning grafigi yo'q: u to'liq oylik bilan
+    yopilgan, kunlari belgilanmaydi. Bo'sh kalendar chizilsa «hamma kuni kelgan»
+    deb o'qilar edi — bu esa hech kim yozmagan gap.
+  {% endcomment %}
+  {% if not by_day %}
+  <p class="field-hint" style="margin:0;">
+    Davomad {{ davomad_from|date:"m.Y" }} dan yuritiladi{% if earned %} — {{ month_label }}
+    kunbay hisoblanmagan, oylik to'liq yozilgan: <strong>{{ earned|floatformat:"0g" }} so'm</strong>{% endif %}.
+  </p>
+  {% else %}
+  <div class="table-wrap">
+    <table class="sched-month">
+      <thead>
+        <tr>{% for name in weekday_names %}<th>{{ name }}</th>{% endfor %}</tr>
+      </thead>
+      <tbody>
+        {% for row in weeks %}
+        <tr>
+          {% comment %}
+            Qo'shni oyning kuni — faqat raqami. Grafik shu oyniki, shuning uchun bu
+            kunlarda yorliq ham, belgi ham chizilmaydi.
+          {% endcomment %}
+          {% for c in row %}
+          {% if c.outside %}
+          <td class="sched-cell sched-cell--outside"><span class="sched-day">{{ c.day }}</span></td>
+          {% else %}
+          {# Katak rangi — o'sha kun nima bo'lgani (`tone`): keldi, kelmadi, bayram, dam yoki hali kelmagan #}
+          <td class="sched-cell sched-cell--{{ c.tone }}{% if c.is_today %} is-today{% endif %}"
+              title="{{ c.date|date:"d.m.Y" }}{% if c.holiday %} · {{ c.holiday.name }}{% endif %}{% if c.note %} — {{ c.note }}{% endif %}">
+            {% comment %}
+              Har bir katakning o'z tugmasi bor — o'tgan kunniki ham. O'tgan kun
+              rejalashtirilmaydi, lekin tuzatiladi: nazoratchi payshanba kuni
+              dushanbada kimdir erta ketganini eslaydi. Karta yozadigan yozuv davomad
+              varag'i yozadigan yozuvning aynan o'zi.
+
+              Kunni belgilash oylikni o'zgartiradi, shuning uchun tugma faqat
+              admin/menejerga chiqadi; sotuvchi grafikni o'qiydi, xolos.
+            {% endcomment %}
+            <span class="sched-top">
+              <span class="sched-day">{{ c.day }}</span>
+              {% if can_manage %}
+              <a class="sched-edit" href="{% url 'employee_day' employee.pk c.date|date:"Y-m-d" %}"
+                 data-modal title="{{ c.date|date:"d.m.Y" }} — {% if c.is_future %}reja qo'yish{% else %}tahrirlash{% endif %}"
+                 aria-label="{{ c.date|date:"d.m.Y" }} kunini tahrirlash">
+                {% include "crm/_ico_edit.html" %}
+              </a>
+              {% endif %}
+            </span>
+            {% if c.leave %}
+            <span class="sched-tag sched-tag--{% if c.leave.paid %}paid{% else %}unpaid{% endif %}"
+                  title="{{ c.leave.note }}">{% if c.leave.paid %}Haqli dam{% else %}O'z hisobidan{% endif %}</span>
+            {% elif c.is_rest %}
+            <span class="sched-tag sched-tag--rest">{% if c.holiday %}{{ c.holiday.name }}{% else %}Dam{% endif %}</span>
+            {% endif %}
+            {% comment %}Ishlangan (yoki ishlanadigan) kunning ish vaqti. Shu kunga alohida
+            soat qo'yilgan bo'lsa, u odatdagisidan ajralib tursin — `is-custom`.{% endcomment %}
+            {% if c.hours %}
+            <span class="sched-hours{% if c.hours_custom %} is-custom{% endif %}"{% if c.hours_custom %} title="Shu kun uchun o'zgartirilgan ish vaqti"{% endif %}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>{{ c.hours }}</span>
+            {% endif %}
+            {% if c.mark == "kelmadi" %}<span class="sched-mark sched-mark--miss">kelmadi</span>
+            {% elif c.mark == "keldi" and c.is_rest %}<span class="sched-mark sched-mark--extra">chiqdi</span>{% endif %}
+          </td>
+          {% endif %}
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {# Ranglar nimani anglatishi — kalendarning o'zidan taxmin qilinmasin #}
+  <div class="sched-legend" aria-label="Ranglar">
+    <span class="sched-key sched-key--present">Keldi</span>
+    <span class="sched-key sched-key--absent">Kelmadi</span>
+    <span class="sched-key sched-key--holiday">Bayram</span>
+    <span class="sched-key sched-key--rest">Dam</span>
+    <span class="sched-key sched-key--future">Hali kelmagan kun</span>
+  </div>
+  {% if holidays %}
+  <p class="field-hint" style="margin-top:10px;">
+    {{ month_label }} bayramlari:
+    {% for h in holidays %}<span class="att-holiday-tag{% if not h.rest %} is-open{% endif %}">{{ h.date|date:"j-M" }} {{ h.name }}{% if not h.rest %} (ish kuni){% endif %}</span>{% endfor %}
+  </p>
+  {% endif %}
+  {% if leaves %}
+  <p class="field-hint" style="margin-top:6px;">
+    Belgilangan dam:
+    {% for l in leaves %}<span class="att-holiday-tag{% if not l.paid %} is-open{% endif %}">{{ l.date|date:"j-M" }} {% if l.paid %}haqli{% else %}o'z hisobidan{% endif %}</span>{% endfor %}
+  </p>
+  {% endif %}
+
+  {% comment %}
+    Shu oyning ISHI — necha kun sanaldi va u qancha turadi. Berilgan pul va qoldiq
+    bu yerda emas: qoldiq oydan oyga o'tadi, shuning uchun u tepadagi kartada va
+    pastdagi «Oylar bo'yicha» jadvalida turadi.
+  {% endcomment %}
+  <div class="stat-grid" style="margin-top:16px;">
+    <div class="stat">
+      <div class="label">Hisoblangan kun</div>
+      <div class="value">{{ total_days }}</div>
+      <div class="cell-sub">
+        {{ working_days }} kundan{% if missed_days %} · {{ missed_days }} kun kelmadi{% endif %}{% if rest_worked %} · +{{ rest_worked }} dam kunida ishladi{% endif %}
+      </div>
+    </div>
+    <div class="stat">
+      <div class="label">Kuniga</div>
+      <div class="value">{{ daily_rate|floatformat:"0g" }}</div>
+      <div class="cell-sub">oylik ÷ {{ working_days }} ish kuni</div>
+    </div>
+    <div class="stat">
+      <div class="label">Hisoblangan · {{ month_label }}</div>
+      <div class="value">{{ earned|floatformat:"0g" }}</div>
+      {% if is_current_month %}<div class="cell-sub">bugungi kungacha</div>{% endif %}
+    </div>
+  </div>
+
+  {% if exceptions %}
+  <div class="table-wrap" style="margin-top:16px;">
+    <table class="table--blue-head">
+      <tr><th>Sana</th><th>Holat</th><th>Izoh</th></tr>
+      {% for e in exceptions %}
+      <tr>
+        <td><strong>{{ e.date|date:"d.m" }}</strong> <span class="cell-sub">{{ e.date|date:"D" }}{% if e.holiday %} · {{ e.holiday.name }}{% endif %}</span></td>
+        <td>
+          {% if e.state == "kelmadi" %}<span class="badge badge-danger">Kelmadi</span>
+          {% else %}<span class="badge badge-info">Dam kunida ishladi</span>{% endif %}
+        </td>
+        <td class="muted">{{ e.note|default:"—" }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+
 <div class="card">
   <div class="card-head"><h2 style="margin:0;">Oylar bo'yicha</h2></div>
-  <p class="ledger-hint">Har oyning oyligi, o'sha oyda berilgan pul va shundan keyingi qoldiq — eng yangisi yuqorida.</p>
+  <p class="ledger-hint">Har oyda davomad bo'yicha hisoblangan oylik, o'sha oyda berilgan pul va shundan keyingi qoldiq — eng yangisi yuqorida.{% if can_manage %} Qoldiq xato bo'lsa — qatordagi qalamcha bilan tuzatiladi.{% endif %}</p>
   <div class="table-wrap">
   <table class="table--blue-head">
     <tr>
       <th class="sticky-col">Oy</th>
-      <th class="num">Oyligi</th>
+      <th class="num">Hisoblangan</th>
       <th class="num">Berilgan</th>
       <th class="num">Oy oxiridagi qoldiq</th>
       <th></th>
@@ -110,7 +292,14 @@
         {% else %}<span class="badge badge-paid">To'liq berildi</span>{% endif %}
       </td>
       <td class="num">
+        {% comment %}Qoldiqni tuzatish — pul harakatisiz qarzni o'zgartiradi, shuning
+        uchun faqat nazoratchida. Tuzatish boshlang'ich qoldiqqa yoziladi va hamma
+        oyni bir xil summaga suradi (`employee_balance_edit`).{% endcomment %}
+        <span class="ra-cluster ra-cluster--even">
+        {% if can_manage %}<a class="icon-action act-edit" href="{% url 'employee_balance_edit' employee.pk m.value %}" data-modal title="{{ m.label }} oxiridagi qoldiqni tuzatish" aria-label="{{ m.label }} oxiridagi qoldiqni tuzatish">{% include "crm/_ico_edit.html" %}</a>{% endif %}
+        <a class="btn btn-sm btn-ghost" href="?oy={{ m.value }}#grafik" title="Shu oyning grafigi va davomadi">Grafik</a>
         <a class="btn btn-sm btn-ghost" href="{% url 'employee_list' %}?oy={{ m.value }}" title="Shu oyning to'liq hisobi">Oylik hisobi</a>
+        </span>
       </td>
     </tr>
     {% empty %}
@@ -133,7 +322,7 @@
       {% for e in payouts %}
       <tr>
         <td>{{ e.date|date:"d.m.Y" }}</td>
-        <td>{{ e.category }}</td>
+        <td>{{ e.category }}{% if e.wage_month %} <span class="badge badge-violet">{{ e.wage_month_label }}</span>{% endif %}</td>
         <td>{% include "crm/_method_badge.html" with code=e.method label=e.get_method_display %}</td>
         <td class="num amt-out">−{{ e.amount|floatformat:"0g" }}</td>
         <td>{{ e.note|default:"—" }}</td>

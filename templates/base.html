@@ -62,6 +62,10 @@
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg></span>
           <span>{% if user.can_see_all_records %}Mijozlar to'lovlari{% else %}Mening to'lovlarim{% endif %}</span>
         </a>
+        <a class="nav-item {% if url_name == 'return_list' %}active{% endif %}" href="{% url 'return_list' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></span>
+          <span>{% if user.can_see_all_records %}Vazvratlar{% else %}Mening vazvratlarim{% endif %}</span>
+        </a>
         <a class="nav-item {% if 'kassa' in url_name or 'expense' in url_name %}active{% endif %}" href="{% url 'kassa' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4"/><path d="M4 6v12a2 2 0 0 0 2 2h14v-4"/><path d="M18 12a2 2 0 0 0-2 2c0 1.1.9 2 2 2h4v-4Z"/></svg></span>
           <span>{% if user.can_see_all_records %}Kassa{% else %}Mening kassam{% endif %}</span>
@@ -79,13 +83,39 @@
       <div class="nav-group">
         <div class="nav-group-label">Nazorat</div>
         {% comment %}
-          Oylik hammaga ochiq: naqdni uzatadigan ham, "mendan qancha qoldi?" degan
-          savolga javob beradigan ham sotuvchining o'zi.
+          Oylik — admin/menejerga doim, sotuvchiga esa faqat admin shu hisobga
+          yoqib qo'ygan bo'lsa (Foydalanuvchilar → «Xodimlar oyligini ko'radi»).
         {% endcomment %}
+        {% comment %}
+          Davomad va Bayramlar — oylik shu ikkisidan hisoblanadi. Ularni nazoratchi
+          yuritadi (belgi oylikni o'zgartiradi), shuning uchun faqat admin/menejerga
+          ko'rinadi.
+        {% endcomment %}
+        {% if user.can_see_all_records %}
+        <a class="nav-item {% if 'attendance' in url_name %}active{% endif %}" href="{% url 'attendance_grid' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="m9 16 2 2 4-4"/></svg></span>
+          <span>Davomad</span>
+        </a>
+        {% endif %}
+        {% if user.can_see_payroll %}
         <a class="nav-item {% if 'employee' in url_name %}active{% endif %}" href="{% url 'employee_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
           <span>Xodimlar oyligi</span>
         </a>
+        {% endif %}
+        {% if user.can_see_all_records %}
+        <a class="nav-item {% if 'holiday' in url_name %}active{% endif %}" href="{% url 'holiday_list' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5.8 11.3 2 22l10.7-3.79"/><path d="M4 3h.01"/><path d="M22 8h.01"/><path d="M15 2h.01"/><path d="M22 20h.01"/><path d="m22 2-2.24.75a2.9 2.9 0 0 0-1.96 3.12c.1.86-.57 1.63-1.45 1.63h-.38c-.86 0-1.6.6-1.76 1.44L14 10"/><path d="m22 13-.82-.33c-.86-.34-1.82.2-1.98 1.11c-.11.7-.72 1.22-1.43 1.22H16"/><path d="M11 2 9.66 2.6a2 2 0 0 0-1.14 2.4l.25.9A1.7 1.7 0 0 1 7.1 8H6"/></svg></span>
+          <span>Bayramlar</span>
+        </a>
+        {% comment %}Oylik hisobot — oyning yopilish varag'i (ilgari qo'lda yuritilgan):
+        foyda, rasxod, oyliklar va qarzlar bitta sahifada. Hammaning oyligi va
+        firmaning foydasi ko'rinadi, shuning uchun faqat admin/menejerga.{% endcomment %}
+        <a class="nav-item {% if 'monthly_report' in url_name %}active{% endif %}" href="{% url 'monthly_report' %}">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="18" x2="8" y2="15"/><line x1="12" y1="18" x2="12" y2="11"/><line x1="16" y1="18" x2="16" y2="13"/></svg></span>
+          <span>Oylik hisobot</span>
+        </a>
+        {% endif %}
         <a class="nav-item {% if 'audit' in url_name %}active{% endif %}" href="{% url 'audit_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/><line x1="9" y1="11" x2="12" y2="11"/></svg></span>
           <span>Amallar tarixi</span>
@@ -334,6 +364,17 @@
       params.set('dan', from || to);
       params.set('gacha', to || from);
       openModal(url.split('?')[0] + '?' + params.toString());
+    });
+
+    // Yangi vazvrat: picking the mijoz reloads the dialog for them, so the table lists
+    // exactly that client's returnable lines — drawn by the same view that will judge
+    // the save. On the full-page fallback the page itself reloads.
+    document.addEventListener('change', function (e) {
+      var select = e.target.closest('select[data-return-client]');
+      if (!select) { return; }
+      var url = select.getAttribute('data-url');
+      if (select.value) { url += '?client=' + encodeURIComponent(select.value); }
+      if (dlg.contains(select)) { openModal(url); } else { window.location = url; }
     });
 
     // Light-dismiss: close only when the press BOTH started and ended on the
@@ -872,11 +913,13 @@
 
     function openPop() {
       render();
-      pop.classList.remove('is-up');
       pop.hidden = false;
       root.classList.add('is-open');
       trigger.setAttribute('aria-expanded', 'true');
-      if (pop.getBoundingClientRect().bottom > window.innerHeight - 8) { pop.classList.add('is-up'); }
+      // Always downward. Flipping it above the control when it didn't fit sent it off
+      // the top of a phone screen, where no scrolling brings it back; below the fold
+      // it is still within reach — scroll just far enough to show it.
+      pop.scrollIntoView({ block: 'nearest' });
     }
     function closePop() { pop.hidden = true; root.classList.remove('is-open'); trigger.setAttribute('aria-expanded', 'false'); }
 
@@ -996,6 +1039,101 @@
       if (!el) { return 0; }
       return parseFloat(String(el.value).replace(/\s/g, '').replace(',', '.')) || 0;
     }
+    // Chiqim form: where the picked worker's wage stands for the month, and what the
+    // typed sum would do to it. The figures come from the server (`_expense_wage_data`),
+    // the same ones saving checks; this only says it before Saqlash is pressed.
+    function wageData(panel) {
+      if (panel._wage === undefined) {
+        var el = panel.querySelector('script[type="application/json"]');
+        try { panel._wage = el ? JSON.parse(el.textContent) : null; } catch (e) { panel._wage = null; }
+      }
+      return panel._wage;
+    }
+    function wageRow(label, value, cls, fill) {
+      return '<div class="wage-row' + (cls ? ' ' + cls : '') + '"><span>' + label + '</span><strong>'
+        + value + '</strong>'
+        + (fill ? '<button type="button" class="btn btn-sm btn-ghost" data-wage-fill="' + fill
+          + '">Summaga qo\'yish</button>' : '<span></span>')
+        + '</div>';
+    }
+    function wagePanel(root, panel, amount) {
+      var data = wageData(panel);
+      var body = panel.querySelector('[data-wage-body]');
+      var employeeEl = root.querySelector('[name=employee]');
+      var dateEl = root.querySelector('[name=date]');
+      var purposeEl = root.querySelector('[name=purpose]:checked');
+      var purpose = purposeEl ? purposeEl.value : '';
+      var w = data && employeeEl ? data.workers[employeeEl.value] : null;
+      if (!w || !body || purpose === 'xarajat') { panel.hidden = true; return; }
+      panel.hidden = false;
+      if (dateEl && dateEl.value && dateEl.value.slice(0, 7) !== data.month) {
+        body.innerHTML = '<p class="wage-result is-warn">Sana ' + data.this
+          + ' oyidan boshqa oyga o\'zgardi — oylik hisobi saqlashda tekshiriladi.</p>';
+        return;
+      }
+      amount = Math.round(amount);
+      var monthLeft = w.salary - w.paid;
+      var html = '';
+      if (w.carried > 0) {
+        html += wageRow(data.prev + ' oyidan qolgan oyligi', money(w.carried), '', 'carried');
+      } else if (w.carried < 0) {
+        html += wageRow('O\'tgan oylardan qarzi', '−' + money(-w.carried), 'is-debt', '');
+      }
+      html += wageRow(data.this + ' oyligi', money(w.salary), '', '');
+      html += wageRow(data.this + 'da olgani', money(w.paid), '', '');
+      html += wageRow(data.this + ' oyligidan qolgani',
+        (monthLeft < 0 ? '−' : '') + money(Math.abs(monthLeft)), monthLeft < 0 ? 'is-debt' : '',
+        monthLeft > 0 ? 'month' : '');
+      var note = '', cls = 'is-ok';
+      if (amount > 0 && purpose === 'otgan') {
+        if (w.carried <= 0) {
+          cls = 'is-bad'; note = data.prev + ' oyidan qolgan oyligi yo\'q — '
+            + data.this + ' oyligidan bo\'lsa, «' + data.this + ' oyligi»ni tanlang.';
+        } else if (amount < w.carried) {
+          note = data.prev + ' oyligidan ' + money(w.carried - amount) + ' qoladi.';
+        } else if (amount === w.carried) {
+          note = data.prev + ' oyligi to\'liq yopiladi.';
+        } else {
+          cls = 'is-bad'; note = money(amount - w.carried) + ' so\'m ortiqcha — ortig\'ini '
+            + data.this + ' oyligi qilib alohida kiriting.';
+        }
+      } else if (amount > 0 && purpose === 'oylik') {
+        var after = w.carried + monthLeft - amount;
+        if (amount <= monthLeft) {
+          note = amount === monthLeft ? data.this + ' oyligi to\'liq beriladi.'
+            : data.this + ' oyligidan ' + money(monthLeft - amount) + ' qoladi.';
+        } else if (after >= 0) {
+          cls = 'is-warn'; note = data.this + ' oyligidan ' + money(amount - Math.max(monthLeft, 0))
+            + ' ko\'p. ' + data.prev + ' oyidan qolgan pul bo\'lsa, «' + data.prev
+            + ' oyidan qolgan oyligi»ni tanlang.';
+        } else {
+          cls = 'is-bad'; note = 'Oyligidan ko\'p oladi — ' + money(-after) + ' so\'m qarzdor bo\'ladi.';
+        }
+      }
+      if (note) { html += '<p class="wage-result ' + cls + '">' + note + '</p>'; }
+      body.innerHTML = html;
+    }
+    // «Summaga qo'yish»: the figure goes into the amount box and the matching choice
+    // is ticked — last month's remainder, or what this month's wage still pays.
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-wage-fill]');
+      if (!btn) { return; }
+      var root = btn.closest('[data-debt-pay]');
+      var panel = btn.closest('[data-wage-panel]');
+      var data = panel && wageData(panel);
+      var employeeEl = root && root.querySelector('[name=employee]');
+      var w = data && employeeEl ? data.workers[employeeEl.value] : null;
+      var currencyEl = root && root.querySelector('[name=currency]');
+      if (!w || (currencyEl && currencyEl.value === 'usd')) { return; }
+      var fill = btn.getAttribute('data-wage-fill');
+      var value = fill === 'carried' ? w.carried : w.salary - w.paid;
+      var radio = root.querySelector('[name=purpose][value="' + (fill === 'carried' ? 'otgan' : 'oylik') + '"]');
+      if (radio) { radio.checked = true; }
+      var amountEl = root.querySelector('[name=amount]');
+      amountEl.value = String(Math.round(value));
+      amountEl.dispatchEvent(new Event('input', { bubbles: true }));
+      recalc(root);
+    });
     function recalc(root) {
       var amountEl = root.querySelector('[name=amount]');
       var methodEl = root.querySelector('[name=method]');
@@ -1037,6 +1175,8 @@
       Array.prototype.forEach.call(root.querySelectorAll('.employee-only'), function (el) {
         el.hidden = !(employeeEl && employeeEl.value);
       });
+      var wagePanelEl = root.querySelector('[data-wage-panel]');
+      if (wagePanelEl) { wagePanel(root, wagePanelEl, amount); }
       var out = root.querySelector('[data-net]');
       if (!out) { return; }
       var pct = pctEl ? (parseFloat(pctEl.value) || 0) : 0;
@@ -1129,22 +1269,30 @@
   // Live thousands-grouping on money inputs. Renders "1 000 000" as the user
   // types (marked server-side with data-money); the raw numeric value is
   // restored right before submit, so the server always gets a plain number.
+  // A field that may hold a debt is marked data-money-signed as well: only there
+  // is a leading minus kept (typed as "-", "−" or "–"). Everywhere else it is
+  // dropped, as before — a price or a payment is never negative.
   (function () {
-    function toNumeric(value) {
-      var s = String(value).replace(/\s/g, '').replace(',', '.').replace(/[^\d.]/g, '');
+    function isSigned(el) { return el.hasAttribute('data-money-signed'); }
+    function toNumeric(value, signed) {
+      var raw = String(value);
+      var minus = signed && /^\s*[-\u2212\u2013]/.test(raw) ? '-' : '';
+      var s = raw.replace(/\s/g, '').replace(',', '.').replace(/[^\d.]/g, '');
       var dot = s.indexOf('.');
       if (dot !== -1) { s = s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, ''); }
-      return s;
+      return minus + s;
     }
-    function format(value) {
-      var s = toNumeric(value);
-      if (s === '' || s === '.') { return s; }
+    function format(value, signed) {
+      var s = toNumeric(value, signed);
+      var minus = s.charAt(0) === '-' ? '-' : '';
+      s = s.slice(minus.length);
+      if (s === '' || s === '.') { return minus + s; }
       var dot = s.indexOf('.');
       var intPart = dot === -1 ? s : s.slice(0, dot);
       var dec = dot === -1 ? '' : s.slice(dot);
       intPart = intPart.replace(/^0+(?=\d)/, '');
       if (intPart === '') { intPart = '0'; }
-      return intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + dec;
+      return minus + intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + dec;
     }
     function digitsBefore(str, caret) {
       var n = 0;
@@ -1165,7 +1313,7 @@
     function reformat(el) {
       var caret = el.selectionStart;
       var before = caret == null ? null : digitsBefore(el.value, caret);
-      el.value = format(el.value);
+      el.value = format(el.value, isSigned(el));
       if (before != null) {
         var pos = caretForDigits(el.value, before);
         try { el.setSelectionRange(pos, pos); } catch (e) {}
@@ -1178,7 +1326,7 @@
         el.type = 'text';                       // number inputs can't show grouping
         el.setAttribute('inputmode', 'decimal');
         el.autocomplete = 'off';
-        if (el.value) { el.value = format(el.value); }
+        if (el.value) { el.value = format(el.value, isSigned(el)); }
       });
     }
     document.addEventListener('input', function (e) {
@@ -1188,7 +1336,7 @@
     // modal's own submit handler builds its FormData, so the fetch sends clean data.
     document.addEventListener('submit', function (e) {
       if (!e.target.querySelectorAll) { return; }
-      e.target.querySelectorAll('input[data-money]').forEach(function (el) { el.value = toNumeric(el.value); });
+      e.target.querySelectorAll('input[data-money]').forEach(function (el) { el.value = toNumeric(el.value, isSigned(el)); });
     }, true);
     window.enhanceMoneyInputs = enhance;
     if (document.readyState !== 'loading') { enhance(); }
@@ -1230,6 +1378,47 @@
   })();
 
   // Opening-balance form: show what the balance will BECOME while the sum is typed.
+  // Yangi vazvrat: the running line under the table — what the typed rows are worth,
+  // how much of it cancels debt and how much goes back to the client. Split per
+  // receipt (a return cancels its OWN receipt's debt first), the rule the server
+  // applies on save; the advance/cash question only shows once money goes back.
+  (function () {
+    function money(n) {
+      return Math.round(n).toLocaleString('ru-RU').replace(/\s/g, ' ');
+    }
+    function update(root) {
+      var bySale = {}, debts = {}, count = 0;
+      root.querySelectorAll('[data-return-row]').forEach(function (row) {
+        var input = row.querySelector('input');
+        var qty = parseFloat(String(input.value).replace(/\s/g, '').replace(',', '.')) || 0;
+        if (qty <= 0) { return; }
+        count += 1;
+        var sale = row.getAttribute('data-sale');
+        bySale[sale] = (bySale[sale] || 0) + qty * (parseFloat(row.getAttribute('data-price')) || 0);
+        debts[sale] = parseFloat(row.getAttribute('data-debt')) || 0;
+      });
+      var total = 0, toDebt = 0;
+      Object.keys(bySale).forEach(function (sale) {
+        total += bySale[sale];
+        toDebt += Math.min(bySale[sale], debts[sale]);
+      });
+      var back = total - toDebt;
+      var out = root.querySelector('[data-return-summary]');
+      if (out) {
+        out.textContent = count
+          ? 'Jami: ' + count + ' ta qator · ' + money(total) + " so'm — qarzdan " + money(toDebt)
+            + " so'm" + (back >= 0.5 ? ', mijozga qaytadi ' + money(back) + " so'm" : '')
+          : 'Qaytgan miqdorni kerakli qatorlarga yozing.';
+      }
+      var settle = root.querySelector('[data-return-settle]');
+      if (settle) { settle.hidden = back < 0.5; }
+    }
+    document.addEventListener('input', function (e) {
+      var root = e.target.closest('[data-return-batch]');
+      if (root) { update(root); }
+    });
+  })();
+
   // The field holds a delta ("add 1 138 300"), because that is what the seller is
   // told — without this line they would be adding it to the current figure in their
   // head, on a phone, against a number they cannot see while typing.
@@ -2034,6 +2223,91 @@
     if (document.readyState !== 'loading') { enhanceMultipicks(); }
     else { document.addEventListener('DOMContentLoaded', function () { enhanceMultipicks(); }); }
     document.addEventListener('modal:loaded', function (e) { enhanceMultipicks(e.detail || document); });
+  })();
+
+  /* Davomad katagi — bosilganda holat aylanadi.
+     Aylanish tartibini sahifa o'ylab topmaydi, serverdan data-cycle bilan keladi:
+     ish kuni va dam kuni turlicha aylanadi (dam kunida "kelmadi" degan holat yo'q —
+     o'tkazib yuborilgan narsa bo'lmagan), va qaysi kun kimga dam kuni ekanini
+     server hal qiladi (yakshanba, bayram, haqli dam). Buni ikkinchi marta JS'da hisoblansa, ikkita
+     javob paydo bo'ladi.
+
+     Haqiqiy qiymat yonidagi yashirin maydonda turadi — forma o'shani yuboradi.
+     Tugmaning o'zi hech narsa yubormaydi, u faqat ko'rinish. */
+  (function () {
+    var CYCLE_FALLBACK = ['keldi', 'kelmadi'];
+
+    function step(button) {
+      var cycle = (button.dataset.cycle || '').split(',').filter(Boolean);
+      if (!cycle.length) { cycle = CYCLE_FALLBACK; }
+      var at = cycle.indexOf(button.dataset.state);
+      var next = cycle[(at + 1) % cycle.length];
+      button.dataset.state = next;
+      var field = button.parentNode.querySelector('input[type="hidden"]');
+      if (field) { field.value = next; }
+      /* Istisno bo'lgan katak ajralib tursin — jadvalda aynan shular oylikni
+         o'zgartiradi. Sukut holati har xil kunda har xil: ish kunida "keldi",
+         dam kunida "dam", ya'ni aylanish ro'yxatining birinchisi. */
+      var cell = button.closest('.att-cell');
+      if (cell) { cell.classList.toggle('att-cell--flag', next !== cycle[0]); }
+    }
+
+    /* Tugagan kun yopiq turadi. Jadval 31 ustun va uni yonga surib o'qiladi —
+       yo'l-yo'lakay tegib ketgan sichqoncha hech kim qaramayotgan oylikni
+       o'zgartirib yuborishi mumkin edi. Bitta bosish yopiq katakka hech narsa
+       qilmaydi; ochish uchun ataylab IKKI marta bosiladi.
+
+       Ochilishning o'zi kunni o'zgartirmaydi — faqat qulfni oladi. Shundan keyin
+       katak odatdagidek aylanadi. Server ham shu bayroqni tekshiradi, ya'ni himoya
+       bu yerda emas, `_save_attendance` da. */
+    function unlock(button) {
+      button.dataset.locked = '0';
+      button.classList.add('is-opened');
+      button.removeAttribute('aria-disabled');
+      var flag = button.parentNode.querySelector('[data-att-open]');
+      if (flag) { flag.value = '1'; }
+      var cell = button.closest('.att-cell');
+      if (cell) { cell.classList.remove('att-cell--locked'); }
+    }
+
+    document.addEventListener('click', function (e) {
+      var button = e.target.closest('[data-att-cell]');
+      if (!button) { return; }
+      e.preventDefault();
+      if (button.dataset.locked === '1') { return; }
+      step(button);
+    });
+
+    document.addEventListener('dblclick', function (e) {
+      var button = e.target.closest('[data-att-cell]');
+      if (!button || button.dataset.locked !== '1') { return; }
+      e.preventDefault();
+      unlock(button);
+    });
+
+    /* Jadval BUGUNGA surilgan holda ochiladi.
+       Oy 31 ustun, ekranga esa o'ntachasi sig'adi — sukut bo'yicha chapdan
+       ochilsa, har safar belgilanadigan kunga yetib borish uchun jadvalni qo'lda
+       surish kerak bo'ladi. Bugun o'ng chekkaga qo'yiladi: undan keyingi kunlar
+       baribir kelajak, ulardan oldingi bir necha kun esa ochiq va tuzatilishi
+       mumkin — ya'ni ko'z aynan kerakli joyga tushadi.
+
+       O'lchov `getBoundingClientRect` bilan: `offsetLeft` eng yaqin joylashgan
+       ota-elementga nisbatan bo'ladi va jadval tuzilishi o'zgarsa buziladi. */
+    function showToday() {
+      var wrap = document.querySelector('.att-wrap');
+      if (!wrap) { return; }
+      var today = wrap.querySelector('.att-day--today');
+      if (!today) { return; }   // boshqa oy ochilgan — chapdan boshlangani to'g'ri
+      var pinned = wrap.querySelector('thead .att-total');
+      var gap = (pinned ? pinned.offsetWidth : 0) + 8;
+      var move = today.getBoundingClientRect().right
+        - wrap.getBoundingClientRect().right + gap;
+      if (move > 0) { wrap.scrollLeft += move; }
+    }
+
+    if (document.readyState !== 'loading') { showToday(); }
+    else { document.addEventListener('DOMContentLoaded', showToday); }
   })();
 </script>
 </body>

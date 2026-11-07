@@ -39,6 +39,8 @@
   --danger-soft: #fbe0e0;
   --violet: #6d3bd4;
   --violet-soft: #ece3fb;
+  --pink: #cf2a8e;
+  --pink-soft: #fbd9ee;
 
   --topbar-bg: rgba(255, 255, 255, 0.9);
 
@@ -90,6 +92,8 @@ html[data-theme="dark"] {
   --danger-soft: #321B1A;
   --violet: #b191f7;
   --violet-soft: #2b2440;
+  --pink: #f272b8;
+  --pink-soft: #3a1c30;
 
   --topbar-bg: rgba(28, 28, 28, 0.9);
 
@@ -1196,7 +1200,7 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
   padding-right: 16px;
 }
 
-/* Fixed action column so Kirim (7 cols) and Chiqim (6 cols) line their icons up
+/* Fixed action column so Kirim (8 cols) and Chiqim (7 cols) line their icons up
    at the same offset — two 28px slots plus their gap, right-aligned, never wraps. */
 .ledger-table th:last-child,
 .ledger-table td:last-child {
@@ -1947,7 +1951,8 @@ tbody tr:hover td.sticky-col {
   color: var(--accent);
 }
 
-.badge-transfer {
+.badge-transfer,
+.badge-violet {
   background: var(--violet-soft);
   color: var(--violet);
 }
@@ -2142,6 +2147,19 @@ tbody tr:hover td.sticky-col {
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
+}
+
+/* An icon beside text buttons: all stretched to one height, so the boxes share a
+   top and a bottom edge instead of the 32px icon standing over shorter buttons. */
+.ra-cluster--even {
+  align-items: stretch;
+}
+
+/* On a phone the buttons grow past 32px; the icon follows them rather than
+   keeping its fixed box. */
+.ra-cluster--even .icon-action {
+  height: auto;
+  min-height: 32px;
 }
 
 .icon-action {
@@ -2396,6 +2414,29 @@ tbody tr:hover td.sticky-col {
   max-width: none;
 }
 
+/* Yangi vazvrat: the quantity boxes sit inside a table row, so they keep a narrow
+   fixed width instead of the full-width form field look. */
+.return-batch-table input.return-qty {
+  width: 88px;
+  padding: 6px 8px;
+  text-align: right;
+}
+
+/* Mijoz tanlanmaguncha oynada faqat bitta maydon bor — u past bo'lib qolar va mijozlar
+   ro'yxati (.combobox-pop, 240px) oyna ichida kesilib, scroll ortiga tushardi. Shuning
+   uchun vazvrat oynasi pastga cho'zilib ochiladi; kichik ekranda max-height chegarasi qoladi.
+   Kengroq ham ochiladi: besh ustunli qatorlar jadvali 560px ga sig'mas edi. */
+.modal:has(select[data-return-client]) {
+  width: min(820px, calc(100vw - var(--sidebar-w) - 32px));
+  min-height: min(620px, calc(100vh - 72px));
+}
+
+@media (max-width: 560px) {
+  .modal:has(select[data-return-client]) {
+    width: min(820px, calc(100vw - 32px));
+  }
+}
+
 .modal-confirm {
   padding: 14px 22px 22px;
 }
@@ -2466,6 +2507,54 @@ tbody tr:hover td.sticky-col {
   gap: 10px;
   margin-top: 8px;
   justify-content: flex-end;
+}
+
+/* ---- Qarz / avansni o'chirish oynasi ----------------------------------------
+   Oddiy tasdiqlash oynasidan ko'proq gapiradi: avval nimani tuzatish kerakligi,
+   balans nimadan yig'ilgani va o'chirilsa nima bo'lishi. Jadvali bor, shuning uchun
+   avans harakatlari oynasi kabi kengroq ochiladi. */
+.modal:has(.balance-clear) {
+  width: min(680px, calc(100vw - var(--sidebar-w) - 32px));
+}
+
+@media (max-width: 560px) {
+  .modal:has(.balance-clear) {
+    width: min(680px, calc(100vw - 32px));
+  }
+}
+
+.balance-clear .clear-title {
+  margin: 16px 0 6px;
+  font-size: 14px;
+}
+
+.balance-clear .clear-steps {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.balance-clear .clear-steps li + li {
+  margin-top: 6px;
+}
+
+.balance-clear .clear-rows th,
+.balance-clear .clear-rows td {
+  padding: 10px 12px;
+}
+
+.balance-clear .clear-rows td.note {
+  white-space: normal;
+  min-width: 150px;
+}
+
+.balance-clear .clear-links a + a {
+  margin-left: 10px;
+}
+
+.balance-clear .modal-actions {
+  margin-top: 16px;
 }
 
 /* ---- Excel chooser (kassa) --------------------------------------------------
@@ -2745,6 +2834,7 @@ input[type=email],
 input[type=password],
 input[type=number],
 input[type=date],
+input[type=time],
 input[type=tel],
 select,
 textarea {
@@ -2891,6 +2981,64 @@ ul.errorlist li::before {
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
   font-size: 13px;
+}
+
+/* Chiqim formasida tanlangan xodimning oylik holati: o'tgan oydan qolgani, shu oy
+   oyligi, olgani, qolgani — va pastda yozilgan summa unga nima qilishi (yashil — joyida,
+   sariq — tekshiring, qizil — ortiqcha / qarzdor bo'ladi). */
+.wage-panel {
+  margin: 0 0 16px;
+  padding: 8px 14px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: 13px;
+}
+
+.wage-panel[hidden] {
+  display: none;
+}
+
+.wage-row {
+  display: grid;
+  grid-template-columns: 1fr auto 112px;
+  gap: 10px;
+  align-items: center;
+  min-height: 30px;
+}
+
+.wage-row strong {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.wage-row .btn {
+  justify-self: end;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.wage-row.is-debt strong {
+  color: var(--danger);
+}
+
+.wage-result {
+  margin: 8px 0 0;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  font-weight: 600;
+}
+
+.wage-result.is-ok {
+  color: var(--success);
+}
+
+.wage-result.is-warn {
+  color: var(--warning);
+}
+
+.wage-result.is-bad {
+  color: var(--danger);
 }
 
 /* "Qarz qachon olingan" reminder above the payment fields — the open receipts
@@ -3132,6 +3280,15 @@ ul.errorlist li::before {
   height: 18px;
 }
 
+/* Boradigan oyi yo'q o'q — joyida turadi, lekin bosilmaydi. */
+.datebar-btn.is-disabled,
+.datebar-btn.is-disabled:hover {
+  background: transparent;
+  color: var(--text-faint);
+  opacity: 0.5;
+  cursor: default;
+}
+
 .daterange a.datebar-btn:first-of-type {
   border-radius: var(--r) 0 0 var(--r);
 }
@@ -3261,30 +3418,15 @@ ul.errorlist li::before {
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-lg);
   animation: cal-in 0.14s ease;
-}
-
-.daterange-pop.is-up {
-  top: auto;
-  bottom: calc(100% + 8px);
-  animation: cal-in-up 0.14s ease;
+  /* Room kept clear when the page scrolls to show it: the sticky topbar above,
+     a breath of air below. */
+  scroll-margin: 70px 0 12px;
 }
 
 @keyframes cal-in {
   from {
     opacity: 0;
     transform: translateY(-6px);
-  }
-
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-@keyframes cal-in-up {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
   }
 
   to {
@@ -5196,3 +5338,1268 @@ a.cell-loc--map:hover { color: var(--accent); }
 /* Outside a toolbar row the pill would shrink to its content — give it a width. */
 .route-search { display: flex; width: 100%; max-width: 420px; margin-bottom: 12px; }
 .route-pick-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
+
+/* ── Davomad jadvali ───────────────────────────────────────────────────────────
+   31 ta ustun — jadval albatta gorizontal siljiydi, shuning uchun ism ustuni va
+   jami ustuni yopishib turadi: siljitganda kimning qatoriga qarayotganingiz
+   yo'qolmasin. Yakshanba ustuni bo'yalgan, chunki u dam kuni: bo'luvchiga
+   kirmaydi, chiqib ishlansa oylik ustiga qo'shiladi.                       */
+
+/* Jadval O'Z OYNASI ichida siljiydi, oyna esa ekran balandligiga bog'langan —
+   kun raqamlarini joyida ushlab turadigan narsa aynan shu. Ilgari bu yerda faqat
+   `overflow-x` turardi: bir o'q `visible` bo'lmasa ikkinchisi ham `auto` ga
+   aylanadi, ya'ni quti allaqachon vertikal skroll konteyneri edi — lekin
+   balandligi cheklanmagani uchun ichida siljiydigan narsa yo'q edi va
+   `thead th { top: 0 }` yopishadigan joyini topolmasdi. Sarlavha sahifa bilan
+   birga chiqib ketardi.
+
+   `height` emas, `max-height`: uch xodimlik ro'yxat uchun yarim ekran bo'sh quti
+   ochilmasin. Qatorlar sig'sa quti qatorlarcha bo'ladi (u holda muzlatadigan
+   narsa ham yo'q — hammasi bir ekranda), sig'masa ekrancha bo'ladi va ichida
+   siljiydi.
+
+   `--sticky-chrome` bu loyihada o'rnatilmaydi — qoida doim zaxira qiymatini
+   (210px: topbar, filtr yo'lagi va karta sarlavhasi) oladi. */
+.att-wrap,
+.sheet-wrap {
+  overflow: auto;
+  max-height: max(240px, calc(100vh - var(--sticky-chrome, 210px) - 16px));
+  /* Mobil brauzerda manzil yo'lagi `100vh` ning ichida turadi va jadval ekrandan
+     oshib ketadi. `dvh` ni tanimaydigan brauzer bu qatorni tashlab, yuqoridagi
+     `vh` variantida qoladi — shuning uchun ikkitasi ham yozilgan. */
+  max-height: max(240px, calc(100dvh - var(--sticky-chrome, 210px) - 16px));
+  /* Gorizontal siljish sahifaga o'tib ketmasin — brauzerda u «orqaga» degani,
+     31 ustunli jadvalni chetiga surganda to'ldirilgan davomad yo'qolardi. */
+  overscroll-behavior-x: contain;
+}
+
+.att-grid {
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: 100%;
+}
+
+.att-grid th,
+.att-grid td {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 5px;
+  vertical-align: middle;
+}
+
+.att-grid thead th {
+  background: var(--table-head);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+/* Ism ustuni — chapda yopishadi. Fon shaffof bo'lsa, ostidan raqamlar o'tib
+   ketadi, shuning uchun aniq fon beriladi. */
+.att-grid .att-name {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: var(--surface);
+  min-width: 200px;
+  border-right: 1px solid var(--border);
+}
+
+.att-grid thead .att-name {
+  z-index: 4;
+  background: var(--table-head);
+}
+
+.att-grid tfoot .att-name {
+  background: var(--surface-2);
+}
+
+.att-grid .att-total {
+  position: sticky;
+  right: 0;
+  z-index: 3;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  min-width: 96px;
+  white-space: nowrap;
+}
+
+.att-grid thead .att-total {
+  z-index: 4;
+  background: var(--table-head);
+}
+
+.att-grid tfoot .att-total {
+  background: var(--surface-2);
+}
+
+/* «Jami» qatori qutining pastida qoladi. Ism ustuni bilan jami ustuni allaqachon
+   yon tomonlarga yopishgan, shuning uchun ular ikki o'q bo'yicha ham yopishadi va
+   z-index'i kattaroq: chorrahada ustunlar ustidan o'tishi kerak. */
+.att-grid tfoot td {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  background: var(--surface-2);
+  border-top: 1px solid var(--border);
+  border-bottom: none;
+}
+
+.att-grid tfoot .att-name,
+.att-grid tfoot .att-total {
+  z-index: 5;
+}
+
+.att-day {
+  text-align: center;
+  min-width: 46px;
+}
+
+.att-daynum,
+.att-dayname {
+  display: block;
+  line-height: 1.15;
+}
+
+.att-daynum {
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.att-dayname {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+
+.att-day--sunday .att-daynum,
+.att-day--sunday .att-dayname {
+  color: var(--danger);
+}
+
+.att-cell {
+  text-align: center;
+  padding: 4px;
+}
+
+.att-cell--sunday {
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+
+/* Katak — belgi, o'lchov emas: bosilganda almashadi (ish kunida keldi ↔ kelmadi,
+   dam kunida dam ↔ keldi). Checkbox emas, chunki qaysi ikki holat orasida
+   almashishi kunga bog'liq va yopiq kunni ikki marta bosib ochish kerak. Katta
+   nishon beriladi — oyning 30 katagi sichqoncha bilan bosib chiqiladi. */
+.att-mark {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1.5px solid var(--border-strong);
+  background: var(--input);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.att-mark:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* Belgi — CSS bilan chizilgan, shrift yoki rasm emas. Tasdiq va rad bir xil
+   qutida turadi, shuning uchun ikkalasi ham `.att-mark-face` ichida chiziladi. */
+.att-mark-face {
+  display: block;
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.att-mark[data-state="keldi"] {
+  background: var(--success);
+  border-color: var(--success);
+}
+
+.att-mark[data-state="keldi"] .att-mark-face::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 4px;
+  width: 5px;
+  height: 10px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.att-mark[data-state="kelmadi"] {
+  background: color-mix(in srgb, var(--danger) 12%, var(--input));
+  border-color: var(--danger);
+}
+
+/* Kelmagan kun — ikki chiziqli xoch. Bo'sh katakdan farqi darrov ko'rinsin:
+   bo'sh katak «dam», xoch esa «kelmadi» degan qaror. */
+.att-mark[data-state="kelmadi"] .att-mark-face::before,
+.att-mark[data-state="kelmadi"] .att-mark-face::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 12px;
+  height: 2px;
+  margin: -1px 0 0 -6px;
+  background: var(--danger);
+  border-radius: 1px;
+}
+
+.att-mark[data-state="kelmadi"] .att-mark-face::before { transform: rotate(45deg); }
+.att-mark[data-state="kelmadi"] .att-mark-face::after { transform: rotate(-45deg); }
+
+/* Istisno — kelmagan ish kuni yoki ishlangan dam kuni. Ko'zga tashlanadi,
+   chunki jadvalda aynan shular oylikni o'zgartiradi. */
+.att-cell--flag {
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+}
+
+/* ── Yopiq kun ────────────────────────────────────────────────────────────────
+   Tugagan kun o'z-o'zidan yopiladi. Jadval 31 ustun va uni yonga surib o'qiladi —
+   yo'l-yo'lakay tegib ketgan sichqoncha hech kim qaramayotgan oylikni o'zgartirib
+   yuborishi mumkin edi. Yopiq katak ko'rinadi, lekin bosilmaydi.
+
+   Himoya faqat shu CSS'da emas: server ham yopiq kunga tegmaydi (`o-` bayrog'i).  */
+
+.att-mark[data-locked="1"] {
+  cursor: default;
+  opacity: 0.72;
+  filter: saturate(0.55);
+}
+
+.att-cell--locked {
+  /* Juda ozgina kulrang parda — ustun yopiqligi bilinib tursin, lekin belgining
+     o'zi baribir o'qilsin: bu jadval avvalo O'QILADI, keyin to'ldiriladi. */
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--text-faint) 7%, transparent),
+    color-mix(in srgb, var(--text-faint) 7%, transparent)
+  );
+}
+
+/* Ataylab ochilgan katak — qaysi eski kunlarga tegilgani ko'rinib tursin. */
+.att-mark.is-opened {
+  opacity: 1;
+  filter: none;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* Bugun — jadvalda ko'z shu ustundan boshlanadi. */
+.att-day--today .att-daynum {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* Izoh qatori — holatlarning har biri qanday ko'rinishini bir joyda ko'rsatadi,
+   chunki katakning o'zida yozuv yo'q. */
+.att-legend {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.att-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.att-chip {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1.5px solid var(--border-strong);
+  background: var(--input);
+  display: inline-block;
+}
+
+.att-chip--keldi { background: var(--success); border-color: var(--success); }
+.att-chip--kelmadi {
+  background: color-mix(in srgb, var(--danger) 12%, var(--input));
+  border-color: var(--danger);
+  position: relative;
+}
+
+/* Jadvaldagi katak bilan bir xil xoch — izoh katakning o'zini ko'rsatsin. */
+.att-chip--kelmadi::before,
+.att-chip--kelmadi::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 1.5px;
+  margin: -0.75px 0 0 -4px;
+  background: var(--danger);
+  border-radius: 1px;
+}
+
+.att-chip--kelmadi::before { transform: rotate(45deg); }
+.att-chip--kelmadi::after { transform: rotate(-45deg); }
+
+/* Kelajakdagi kun — hali hech narsa bo'lmagan, shuning uchun belgilanmaydi ham. */
+.att-day--future .att-daynum,
+.att-day--future .att-dayname {
+  color: var(--text-faint);
+}
+
+.att-blank {
+  color: var(--text-faint);
+}
+
+.att-missed {
+  color: var(--danger);
+}
+
+.att-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.att-actions .field-hint {
+  margin: 0;
+  flex: 1 1 260px;
+}
+
+/* Karta sarlavhasining o'ng tomoni — bir nechta narsa turganda. */
+.card-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ── Oylik hisobi jadvali ─────────────────────────────────────────────────────
+   Jadval bitta amal bo'lib o'qiladi: ishlab topdi + o'tgan oydan − berildi =
+   berilishi kerak. Belgilar sarlavhada turadi, javob ustuni esa fon bilan
+   ajratilgan — ko'z qatordagi beshta raqamdan avval o'shanga tushsin.          */
+
+/* Ustun belgisi — nomning oldida, to'q doirada: xodim, kelgan kun, pul, keyin
+   amallar (+ − =). Belgi va nom bitta flex qatorda: shunda doira matnning aynan
+   o'rtasida turadi. */
+.th-term {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.th-op {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.th-op svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+
+/* Javob ustuni. Fon `td`ning o'zida, shuning uchun qator ustiga sichqoncha
+   kelganda ham o'chmaydi. */
+.wage-table td.wage-due {
+  background: color-mix(in srgb, var(--accent) 6%, var(--table-bg));
+  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--accent) 22%, var(--border));
+}
+
+.wage-table th.wage-due {
+  background: color-mix(in srgb, var(--accent) 20%, var(--table-bg));
+  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--accent) 22%, var(--border));
+}
+
+.wage-due-amt {
+  font-size: 16.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* «3 / 26 kun» — kelgan kun yirik, oyning ish kunlari uning yonida xira. */
+.wage-of {
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+
+/* Oyning qancha qismi o'tgani: «ishlab topdi» nega oylikdan kichikligini
+   raqam o'qimasdan ko'rsatadi. Dam kunida ham ishlagan xodimda 100% dan oshadi —
+   `max-width` uni yo'lakdan chiqarmaydi. */
+.wage-bar {
+  display: block;
+  width: 88px;
+  height: 5px;
+  margin: 7px 0 0 auto;
+  background: var(--surface-2);
+  border-radius: var(--r-pill);
+  overflow: hidden;
+}
+
+.wage-bar-fill {
+  display: block;
+  height: 100%;
+  max-width: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+}
+
+.wage-extra {
+  color: var(--success);
+}
+
+/* Sarlavha yonidagi izoh: hisob qaysi kungacha yuritilgani. */
+.wage-asof {
+  font-size: 12.5px;
+  color: var(--text-faint);
+  text-align: right;
+}
+
+/* ── Xodim kartasi: nom — qiymat — amal ───────────────────────────────────────
+   Uchinchi ustun faqat qalamcha uchun: eni tugmaning o'zicha, qolgan joy qiymatga
+   qoladi. Qalamchasiz qatorda katak bo'sh turadi — qiymatlar bir chiziqda tursin. */
+.kv-table td:last-child {
+  width: 1%;
+  padding-left: 0;
+}
+
+.kv-table td {
+  padding-top: 10px;
+  padding-bottom: 10px;
+  height: 53px;
+}
+
+/* ── Grafik ───────────────────────────────────────────────────────────────────
+   Xodimning bir oyi kalendar ko'rinishida. Hafta emas, OY: hafta takrorlanadi va
+   aynan farq qiladigan kunlarni ko'rsata olmaydi — yopilgan bayram, chiqib
+   ishlangan yakshanba, kelmagan kun.                                           */
+
+.sched-month {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 4px;
+  table-layout: fixed;
+}
+
+/* Hafta kunlari ko'kish: sarlavha kataklar bilan bir xil kulrangda tursa,
+   jadvalning qayerda boshlanishi bilinmaydi. Ko'k — sahifaning o'z urg'u rangi,
+   ya'ni kalendarga yangi rang qo'shilmaydi; tokendan olingani uchun qorong'i
+   mavzuda ham o'zi moslashadi. */
+.sched-month th {
+  padding: 8px 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--r-sm);
+  text-align: center;
+}
+
+/* Katakdagi yorliq: dam kuni, bayram nomi yoki rejalashtirilgan dam. Ish kunida
+   yorliq yo'q — bo'sh katak «odatdagi kun» degani. Bayram nomi uzun bo'lishi
+   mumkin, shuning uchun matn o'raladi. */
+/* Yorliq o'z qatorida turadi (`block`), eni esa matnicha (`fit-content`) va
+   o'rtada. `inline-block` bo'lganda u ish vaqti yorlig'i bilan bir qatorga tushib,
+   tor katakda ustma-ust chiqar edi — bayramda chiqib ishlangan kunda ikkalasi ham
+   bor. */
+.sched-tag {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+/* Katakning o'zi rangli (kulrang yoki pushti), shuning uchun yorliq foni yarim
+   shaffof: har qanday rang ustida o'qiladi. */
+.sched-tag--rest {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  font-weight: 500;
+}
+
+/* Rejalashtirilgan dam. Haqli — oylik saqlanadi, ya'ni kun bo'luvchidan chiqadi;
+   o'z hisobidan — kun bo'luvchida qoladi va oylikdan ushlanadi. Ikkalasi bir xil
+   ko'rinsa, bir kunlik pul noto'g'ri tomonga ketadi. */
+.sched-tag--paid {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.sched-tag--unpaid {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+/* Katakning tepasi: chapda kun raqami, o'ngda tahrirlash tugmasi. Raqamning o'zi
+   havola emas — kalendarda o'ttizta raqam bor va hammasi havola bo'lib tursa, ko'z
+   hech narsaga tushmaydi. Tugma o'chib turadi va katak ustiga kelganda yonadi;
+   sensorli ekranda sichqoncha yo'q, shuning uchun u yerda doim ko'rinadi. */
+.sched-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.sched-edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: var(--r-sm);
+  color: var(--text-faint);
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.sched-edit svg {
+  width: 12px;
+  height: 12px;
+}
+
+.sched-cell:hover .sched-edit,
+.sched-edit:focus-visible {
+  opacity: 1;
+}
+
+.sched-edit:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* Sichqonchasi yo'q ekranda «ustiga kelganda ko'rinadi» degan tugma umuman
+   yo'qday tuyuladi. */
+@media (hover: none) {
+  .sched-edit { opacity: 0.6; }
+}
+
+/* Oylik katak — kun raqami, (dam bo'lsa) yorlig'i va o'sha kuni nima bo'lgani.
+   Reja bilan haqiqat bitta katakda: grafik nima deyishidan qat'i nazar, kelmagan
+   kun kelmagan kun bo'lib qoladi. */
+.sched-cell {
+  height: 74px;
+  padding: 7px 6px;
+  vertical-align: top;
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+
+/* Qo'shni oyning kuni — o'rni bilinib tursin, lekin o'qishga da'vo qilmasin. */
+.sched-cell--outside {
+  background: transparent;
+  border-style: dashed;
+}
+
+.sched-cell--outside .sched-day {
+  color: var(--text-faint);
+  font-weight: 500;
+}
+
+/* Katak rangi — o'sha kun nima bo'lgani. Bo'lgan narsa rejadan ustun: bayramda
+   chiqib ishlagan kun pushti emas, yashil. Ranglar tokenlardan — qorong'i mavzuda
+   o'zi moslashadi.
+     yashil — keldi          qizil — kelmadi        pushti — bayram
+     kulrang — dam           sariq — hali kelmagan ish kuni                    */
+
+/* Har rangning ikki tusi bir joyda: `--tone` — to'q (raqam, chegara, fon belgisi),
+   `--tone-soft` — och (fon). Katak ham, pastdagi izoh kvadrati ham shulardan
+   bo'yaladi, shuning uchun ikkalasi hech qachon ikki xil chiqmaydi. */
+.sched-cell--present,
+.sched-key--present {
+  --tone: var(--success);
+  --tone-soft: var(--success-soft);
+}
+
+.sched-cell--absent,
+.sched-key--absent {
+  --tone: var(--danger);
+  --tone-soft: var(--danger-soft);
+}
+
+.sched-cell--holiday,
+.sched-key--holiday {
+  --tone: var(--pink);
+  --tone-soft: var(--pink-soft);
+}
+
+.sched-cell--future,
+.sched-key--future {
+  --tone: var(--warning);
+  --tone-soft: var(--warning-soft);
+}
+
+/* Fon ataylab och: kalendarda o'ttizta katak bor, to'q rang ularni devorga
+   aylantiradi. Och tusni chegara va kun raqami ushlab turadi. */
+.sched-cell--present,
+.sched-cell--absent,
+.sched-cell--holiday,
+.sched-cell--future {
+  background: color-mix(in srgb, var(--tone-soft) 48%, var(--surface));
+  border-color: color-mix(in srgb, var(--tone) 24%, var(--border));
+}
+
+.sched-cell--rest {
+  background: color-mix(in srgb, var(--surface-2) 55%, var(--surface));
+}
+
+/* Kun raqami katak rangining to'q tusida — rang faqat fonda qolib ketmasin. */
+.sched-cell--present .sched-day,
+.sched-cell--absent .sched-day,
+.sched-cell--holiday .sched-day,
+.sched-cell--future .sched-day {
+  color: var(--tone);
+}
+
+/* Fon belgisi — katakning o'ng tomonida, ko'rinar-ko'rinmas: keldi — galochka,
+   kelmadi — x, hali kelmagan kun — kutish belgisi. Rasm emas, niqob (mask): rang
+   `--tone`dan olinadi va qorong'i mavzuda o'zi moslashadi. Belgi matnning ostida
+   qolishi uchun katak ichidagi hamma narsa bir qavat yuqoriga ko'tarilgan. */
+.sched-cell--present,
+.sched-cell--absent,
+.sched-cell--future {
+  position: relative;
+}
+
+.sched-cell--present::after,
+.sched-cell--absent::after,
+.sched-cell--future::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  width: 44px;
+  height: 44px;
+  transform: translateY(-50%);
+  background: var(--tone);
+  opacity: 0.13;
+  -webkit-mask: var(--tone-icon) center / contain no-repeat;
+  mask: var(--tone-icon) center / contain no-repeat;
+  pointer-events: none;
+}
+
+.sched-cell > * {
+  position: relative;
+  z-index: 1;
+}
+
+.sched-cell--present {
+  --tone-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+}
+
+.sched-cell--absent {
+  --tone-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round'%3E%3Cline x1='18' y1='6' x2='6' y2='18'/%3E%3Cline x1='6' y1='6' x2='18' y2='18'/%3E%3C/svg%3E");
+}
+
+.sched-cell--future {
+  --tone-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round'%3E%3Cline x1='12' y1='2' x2='12' y2='6'/%3E%3Cline x1='12' y1='18' x2='12' y2='22'/%3E%3Cline x1='4.93' y1='4.93' x2='7.76' y2='7.76'/%3E%3Cline x1='16.24' y1='16.24' x2='19.07' y2='19.07'/%3E%3Cline x1='2' y1='12' x2='6' y2='12'/%3E%3Cline x1='18' y1='12' x2='22' y2='12'/%3E%3Cline x1='4.93' y1='19.07' x2='7.76' y2='16.24'/%3E%3Cline x1='16.24' y1='7.76' x2='19.07' y2='4.93'/%3E%3C/svg%3E");
+}
+
+/* Ranglar izohi — kalendar ostida. Namuna kvadrati katakning aynan o'zi kabi
+   bo'yalgan: fon va chegara bir xil tokenlardan. */
+.sched-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 12px;
+}
+
+.sched-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.sched-key::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 4px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+}
+
+.sched-key--present::before,
+.sched-key--absent::before,
+.sched-key--holiday::before,
+.sched-key--future::before {
+  background: color-mix(in srgb, var(--tone-soft) 48%, var(--surface));
+  border-color: color-mix(in srgb, var(--tone) 24%, var(--border));
+}
+
+.sched-key--rest::before {
+  background: color-mix(in srgb, var(--surface-2) 55%, var(--surface));
+}
+
+/* Kalendarda qator hech narsani anglatmaydi — u shunchaki haftaning bo'lagi.
+   O'qiladigan narsa bitta KUN, shuning uchun sichqoncha ostida butun qator emas,
+   o'sha katak yonadi. Jadvaldagi umumiy `tbody tr:hover` shu yerda bekor
+   qilinadi. */
+.sched-month tbody tr:hover {
+  background: transparent;
+}
+
+.sched-cell:not(.sched-cell--outside):hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-ring);
+}
+
+.sched-cell.is-today {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.sched-day {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+/* Ishlangan kunning ish vaqti: «09:00–19:00». Katak o'zi rangli (yashil, sariq),
+   shuning uchun yorliq foni yarim shaffof va matni oddiy — rang ustiga rang
+   tushmaydi. Soat belgisi tor katakda sig'masa matn o'zi qoladi (pastdagi media). */
+.sched-hours {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: var(--r-pill);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.25;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  /* Och fonda yorliq erib ketmasin: ingichka hoshiya uning chetini ushlab turadi. */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 9%, transparent);
+}
+
+.sched-hours svg {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--text-muted);
+}
+
+/* Yorliq ostida kelganda (bayramda yoki dam kunida chiqib ishlangan kun) oraliq. */
+.sched-tag + .sched-hours {
+  margin-top: 4px;
+}
+
+/* Shu kunga alohida qo'yilgan soat — odatdagisidan farqi bir qarashda ko'rinsin. */
+.sched-hours.is-custom {
+  color: var(--accent);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.sched-hours.is-custom svg {
+  color: inherit;
+}
+
+/* ── Kun kartasi: shu kunning ish vaqti ───────────────────────────────────────
+   Ikki soat maydoni faqat «Ish soatini o'zgartirish» tanlanganda kerak. Boshqa
+   variant belgilansa blok yashiriladi. `:has` ni bilmaydigan brauzer bu qoidani
+   o'tkazib yuboradi va maydonlar shunchaki ko'rinib turadi — ishlashdan
+   to'xtamaydi. */
+.day-card:has(input[name="action"]:checked:not([value="ish_soati"])) .day-hours {
+  display: none;
+}
+
+.day-hours {
+  max-width: 480px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: var(--r);
+  background: var(--accent-soft);
+}
+
+.day-hours-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.day-hours-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.day-hours-row input {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.day-hours-dash {
+  color: var(--text-faint);
+}
+
+.sched-mark {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.sched-mark--miss {
+  color: var(--danger);
+}
+
+/* Dam kunida chiqib ishlagan — oylik ustiga qo'shilgan kun. */
+.sched-mark--extra {
+  color: var(--warning);
+}
+
+@media (max-width: 720px) {
+  .sched-month {
+    min-width: 560px;
+  }
+
+  .sched-hours {
+    padding: 2px 5px;
+    font-size: 10.5px;
+  }
+
+  .sched-hours svg {
+    display: none;
+  }
+}
+
+/* ── Bayram ───────────────────────────────────────────────────────────────────
+   Bayram ustuni jadvalda ko'rinib turishi kerak: «nega bu hafta hamma kam
+   ishlagan» degan savolning javobi shu ustunda.                                */
+
+.att-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 14px;
+}
+
+.att-holiday-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--violet);
+  background: var(--violet-soft);
+}
+
+/* Ish kuni deb qoldirilgan bayram — nomi ko'rinadi, lekin pulga tegmaydi.
+   Yopilgan bayramdan ajralib tursin, aks holda ikkalasi bir xil o'qiladi. */
+.att-holiday-tag.is-open {
+  color: var(--text-muted);
+  background: var(--surface-2, var(--input));
+}
+
+.att-day--holiday .att-daynum,
+.att-day--holiday .att-dayname {
+  color: var(--violet);
+  font-weight: 700;
+}
+
+.att-cell--holiday {
+  background: color-mix(in srgb, var(--violet) 8%, transparent);
+}
+
+/* Istisno rangi bayram rangidan ustun turadi: bayram — kunning fakti, istisno esa
+   oylikni o'zgartiradigan narsa, va jadvalda ko'z avval o'shani topishi kerak. */
+.att-cell--flag.att-cell--holiday {
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+}
+
+/* ── Izohlar ──────────────────────────────────────────────────────────────────
+   Har katakka matn maydoni qo'yilmaydi — oyda 900 katak bor, izoh esa o'nga yaqin
+   kunga kerak. Shuning uchun faqat qatori bor kunlar ro'yxat bo'lib chiqadi.    */
+
+.att-notes {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.att-notes h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.att-note-input {
+  width: 100%;
+  min-width: 200px;
+  padding: 6px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--input);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.att-note-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* ============================================================
+   Oylik hisobot — ekrandagi sahifa (chop varag'i shablonning o'zida)
+   ============================================================ */
+
+/* Har bo'lim KPI kartalaridagi rangda: Sotilgan yuk — ko'k, Rasxod — qizil, Sof foyda —
+   yashil (zararda qizil), Qarzlar — sariq, Xodimlar — binafsha. Rang bitta --rep
+   o'zgaruvchisida, KPI'dagi --kpi kabi: chegara, burchakdagi nur, raqam belgisi,
+   jadval sarlavhasi va jami qatori shundan bo'yaladi. */
+.rep-card {
+  --rep: var(--accent);
+  position: relative;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--rep) 26%, var(--border));
+}
+
+.rep-card::after {
+  content: "";
+  position: absolute;
+  top: -70px;
+  right: -40px;
+  width: 180px;
+  height: 180px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--rep), transparent 70%);
+  opacity: 0.12;
+  pointer-events: none;
+}
+
+.rep-card > * {
+  position: relative;
+}
+
+.rep-card--blue {
+  --rep: var(--accent);
+}
+
+.rep-card--green {
+  --rep: var(--success);
+}
+
+.rep-card--red {
+  --rep: var(--danger);
+}
+
+.rep-card--gold {
+  --rep: var(--warning);
+}
+
+.rep-card--violet {
+  --rep: var(--violet);
+}
+
+.rep-card .table-wrap {
+  border-color: color-mix(in srgb, var(--rep) 22%, var(--border));
+}
+
+.rep-card .rep-table th {
+  background: color-mix(in srgb, var(--rep) 10%, var(--table-bg));
+  color: var(--rep);
+  border-bottom-color: color-mix(in srgb, var(--rep) 30%, var(--border));
+}
+
+/* Sotilgan yuk jadvalida ustunlar o'z KPI kartasining rangida: Sotilgan — ko'k,
+   Savdo — binafsha, Foyda — yashil; sarlavhasi ham, jami raqami ham. */
+.rep-card .rep-table .rep-c-blue {
+  color: var(--accent);
+}
+
+.rep-card .rep-table .rep-c-violet {
+  color: var(--violet);
+}
+
+.rep-card .rep-table .rep-c-green {
+  color: var(--success);
+}
+
+.rep-card .rep-table .rep-c-red {
+  color: var(--danger);
+}
+
+.rep-card .rep-table .rep-c-muted {
+  color: var(--text-muted);
+}
+
+/* Jadvalning asosiy ustuni (Xodimlar: «Berilgan») — butun ustun karta rangida och
+   fonli, yon chiziqli, raqami qalin va yirikroq. Fon shaffof: qator hover ko'rinadi. */
+.rep-card .rep-table .rep-col-key {
+  background: color-mix(in srgb, var(--rep) 9%, transparent);
+  box-shadow:
+    inset 1px 0 0 color-mix(in srgb, var(--rep) 28%, transparent),
+    inset -1px 0 0 color-mix(in srgb, var(--rep) 28%, transparent);
+  color: var(--rep);
+  font-weight: 750;
+  font-size: 15px;
+}
+
+.rep-card .rep-table th.rep-col-key {
+  background: color-mix(in srgb, var(--rep) 22%, var(--table-bg));
+  font-size: 12px;
+  font-weight: 800;
+}
+
+/* Bo'lim sarlavhasi oldidagi raqam: hisobot qog'ozdagi tartibda o'qiladi (1 → 5). */
+.rep-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rep-step {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--rep, var(--accent)) 18%, transparent);
+  color: var(--rep, var(--accent));
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hisobot jadvallari: qatorlar zichroq, raqamlar bir tekis. */
+.rep-table td {
+  padding-top: 11px;
+  padding-bottom: 11px;
+}
+
+.rep-table .rep-name {
+  font-weight: 600;
+}
+
+.rep-table a.rep-name {
+  color: var(--text);
+}
+
+.rep-table a.rep-name:hover {
+  color: var(--accent);
+}
+
+.rep-table .rep-muted {
+  color: var(--text-muted);
+}
+
+/* Jami qatori — jadvalning tagi: to'q fon va qalin raqamlar. */
+.rep-table .rep-total td {
+  background: color-mix(in srgb, var(--rep, var(--text-faint)) 9%, var(--table-bg));
+  border-top: 1px solid color-mix(in srgb, var(--rep, var(--text-faint)) 35%, var(--border));
+  font-weight: 750;
+  font-size: 14.5px;
+}
+
+/* Guruhning kg'dagi ulushi — raqam ostida ingichka chiziq. */
+.rep-share {
+  display: block;
+  width: 80px;
+  height: 4px;
+  margin: 7px 0 0 auto;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.rep-share i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--rep, var(--accent));
+}
+
+.is-cards .rep-share {
+  display: none;
+}
+
+/* Rasxod/qarz ro'yxati: guruh qatori o'z yig'indisi bilan, ichidagilari surilib va
+   xiraroq — ko'z avval uchta katta raqamni, keyin tafsilotni ko'radi. */
+.rep-ledger .rep-group td {
+  font-weight: 650;
+  background: color-mix(in srgb, var(--rep, var(--text-faint)) 5%, var(--table-bg));
+}
+
+.rep-ledger .rep-sub td {
+  font-size: 13.5px;
+  color: var(--text-muted);
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.rep-ledger .rep-sub td:first-child {
+  padding-left: 36px;
+}
+
+.rep-ledger .rep-sub a {
+  color: var(--text);
+}
+
+.rep-ledger .rep-sub a:hover {
+  color: var(--accent);
+}
+
+.rep-count {
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* O'ng ustun: uch karta bir-birining ostida, oxirgisi cho'zilib chap karta bilan bir
+   chiziqda tugaydi. */
+.rep-cols > .card {
+  margin-bottom: 0;
+}
+
+.rep-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.rep-stack > .card {
+  margin-bottom: 0;
+}
+
+.rep-stack > .card:last-child {
+  flex: 1 1 auto;
+}
+
+/* Sof foyda — foyda − rasxod = sof foyda, natija katta raqam bilan. */
+.rep-eq-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 0;
+  border-bottom: 1px dashed var(--border);
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.rep-eq-row b {
+  color: var(--text);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rep-eq-row b.amt-out {
+  color: var(--danger);
+}
+
+.rep-eq-result {
+  padding-top: 13px;
+  border-bottom: none;
+  color: var(--text);
+  font-weight: 650;
+}
+
+.rep-eq-result b {
+  font-size: 26px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.rep-eq-result b.amt-in {
+  color: var(--success);
+}
+
+.rep-eq-result b.amt-out {
+  color: var(--danger);
+}
+
+.rep-eq-result .unit {
+  margin-left: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+/* Foydaning qancha qismini rasxod oldi: qizil — rasxod, yashil — qolgani. */
+.rep-meter {
+  display: flex;
+  height: 8px;
+  margin-top: 12px;
+  border-radius: var(--r-pill);
+  background: var(--success);
+  overflow: hidden;
+}
+
+.rep-meter i {
+  display: block;
+  background: var(--danger);
+}
+
+.rep-meter-cap {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.rep-meter-cap > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rep-dot-out {
+  background: var(--danger);
+}

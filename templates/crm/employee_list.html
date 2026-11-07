@@ -9,6 +9,16 @@
   Oylik — oylik raqam, shuning uchun sahifa kun filtriga emas, bitta oyga bog'langan.
   Har oy o'zicha yopilmaydi: to'liq berilmagan oylik keyingi oyga o'tadi (“O'tgan
   oydan” ustuni), oldindan ortiqcha olingan pul esa minus bo'lib o'tadi.
+
+  “Hisoblangan” — shartnomadagi raqam emas, DAVOMADDAN chiqqan raqam: kelgan kun ×
+  kunlik narx. Kunlik narx = oylik ÷ o'sha oyning ish kunlari (yakshanbasiz;
+  yopilgan bayram ham chiqadi). Ya'ni hamma kuni kelgan xodim aniq o'z oyligini
+  oladi, bir hafta kelmagani esa kamroq. Joriy oyda hisob bugungi kungacha
+  yuritiladi.
+
+  Davomad yoqilgan oydan (`davomad_from`) oldingi oylar bundan mustasno: ular
+  to'liq oylik bilan yopilgan, shuning uchun «Kun» bo'sh, «Hisoblangan» — oylikning
+  o'zi.
 {% endcomment %}
 {% comment %}Oy tanlash sahifaning eng tepasida: u faqat jadvalni emas, kartalarni ham
 boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% endcomment %}
@@ -28,6 +38,9 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
       <a class="seg-btn{% if s.active %} is-active{% endif %}" href="{{ s.url }}"{% if s.active %} aria-current="true"{% endif %}>{{ s.label }}<span class="seg-count">{{ s.count }}</span></a>
       {% endfor %}
     </div>
+    {% comment %}Davomad — shu oyliklar hisoblanadigan jadval. Uni nazoratchi
+    yuritadi, shuning uchun havola faqat admin/menejerga ko'rinadi.{% endcomment %}
+    {% if davomad_url %}<a class="btn btn-sm btn-ghost" href="{{ davomad_url }}">Davomad →</a>{% endif %}
     {% if not is_current_month %}<a class="btn btn-sm btn-ghost" href="{% qs_replace oy='' %}">Shu oy</a>{% endif %}
     <div class="month-pick" role="group" aria-label="Oy tanlash">
       <a class="datebar-btn" href="{% qs_replace oy=prev_month %}" title="Oldingi oy" aria-label="Oldingi oy">
@@ -52,16 +65,17 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
   </div>
 </div>
 
-{% comment %}Oddiy kpi-grid: to'rtta karta qatorni to'liq egallaydi. Dashboarddagi
---compact yetti ustunga bo'lingan, shu yerda o'ng tomoni bo'sh qolar edi.{% endcomment %}
-<div class="kpi-grid">
+{% comment %}Beshta karta bir qatorda (kassadagi --period bilan bir xil to'r).
+Dashboarddagi --compact yetti ustunga bo'lingan, shu yerda o'ng tomoni bo'sh qolar
+edi.{% endcomment %}
+<div class="kpi-grid kpi-grid--period">
   <div class="kpi kpi--blue">
     <div class="kpi-head">
       <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></svg></span>
       <span class="kpi-label">Shu oy oylik fondi</span>
     </div>
     <div class="kpi-value">{{ totals.salary|floatformat:"0g" }}<span class="unit">so'm</span></div>
-    <div class="kpi-meta muted">faol xodimlar · {{ month_label }}</div>
+    <div class="kpi-meta muted">shundan hisoblangani {{ totals.earned|floatformat:"0g" }} · {{ month_label }}</div>
   </div>
 
   <div class="kpi kpi--gold">
@@ -87,26 +101,50 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
       <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/></svg></span>
       <span class="kpi-label">Berilishi kerak</span>
     </div>
-    <div class="kpi-value">{{ totals.remaining|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    {# Faqat olishi kerak bo'lganlar: boshqa xodimning qarzi bu pulni kamaytirmaydi #}
+    <div class="kpi-value">{{ totals.to_pay|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta muted">to'lanmasa kelasi oyga o'tadi</div>
+  </div>
+
+  {% comment %}Ishlab topganidan ortiq olgan xodimlarning jami qarzi (hisob
+  boshlanishidagi eski qarzi ham shu ichida). Alohida kartada doim ko'rinib turadi —
+  qarz yo'q bo'lsa ham (nol bilan). Jadvalning «Jami» qatori esa ikkalasining
+  farqi: berilishi kerak − xodimlar qarzi.{% endcomment %}
+  <div class="kpi kpi--violet">
+    <div class="kpi-head">
+      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M19 12l-7-7-7 7"/></svg></span>
+      <span class="kpi-label">Xodimlar qarzi</span>
+    </div>
+    <div class="kpi-value">{{ totals.debt|floatformat:"0g" }}<span class="unit">so'm</span></div>
+    <div class="kpi-meta muted">{% if totals.debtors %}{{ totals.debtors }} ta xodim qarzdor · {% if is_current_month %}bugungi holat{% else %}{{ month_label }} oxirida{% endif %}{% else %}hech kim ortiqcha olmagan{% endif %}</div>
   </div>
 </div>
 
 <div class="card">
   <div class="card-head">
     <h2 style="margin:0;">Oylik hisobi · {{ month_label }}</h2>
+    {# Oy o'rtasida «ishlab topdi» oylikdan kichik chiqadi — sababi shu yerda aytiladi #}
+    {% if by_day and is_current_month %}<span class="wage-asof">Hisob bugungacha — {% now "d.m.Y" %}. Oy oxirigacha to'liq ishlagan xodimga oyligining o'zi chiqadi.</span>{% endif %}
   </div>
 
   {% if rows %}
+  {% comment %}
+    Jadval chapdan o'ngga bitta amal bo'lib o'qiladi:
+    ishlab topdi + o'tgan oydan − berildi = berilishi kerak.
+    Sarlavhadagi belgilar shuni aytadi, oxirgi ustun — javob, shuning uchun u
+    ajratib ko'rsatilgan. Oraliq «jami» ustuni yo'q: u javobni ikki marta yozar edi.
+  {% endcomment %}
   <div class="table-wrap">
-  <table class="table--blue-head">
+  <table class="table--blue-head wage-table">
     <tr>
-      <th class="sticky-col">Xodim</th>
-      <th class="num">Oyligi</th>
-      <th class="num">O'tgan oydan</th>
-      <th class="num">Jami olishi kerak</th>
-      <th class="num">Shu oy berilgan</th>
-      <th class="num">Qolgan</th>
+      {# Har ustunning o'z belgisi bor: birinchi uchtasi — nima ekani, keyingi uchtasi — amal #}
+      <th class="sticky-col"><span class="th-term"><span class="th-op"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></svg></span>Xodim</span></th>
+      <th class="num"><span class="th-term"><span class="th-op"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="5 12.5 10 17.5 19 7"/></svg></span>Ishlagan kuni</span></th>
+      <th class="num"><span class="th-term"><span class="th-op"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><circle cx="12" cy="12" r="2.4"/></svg></span>Ishlab topdi</span></th>
+      {# Belgilar harf emas, SVG: shrift belgini doiraning o'rtasiga qo'ymaydi #}
+      <th class="num"><span class="th-term"><span class="th-op" title="qo'shiladi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span>O'tgan oydan</span></th>
+      <th class="num"><span class="th-term"><span class="th-op" title="ayriladi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/></svg></span>Berildi</span></th>
+      <th class="num wage-due"><span class="th-term"><span class="th-op" title="natija"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" aria-hidden="true"><line x1="5" y1="8.5" x2="19" y2="8.5"/><line x1="5" y1="15.5" x2="19" y2="15.5"/></svg></span>{% if is_current_month %}Berilishi kerak{% else %}Oy oxirida qoldi{% endif %}</span></th>
       <th></th>
     </tr>
     {% for r in rows %}
@@ -115,30 +153,52 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
         <span class="cell-user">
           {% include "crm/_avatar.html" with name=r.employee.name %}
           {# Ism — xodimning to'liq tarixiga yo'l: oylari, olgan pullari, rasxotlari #}
-          <span><a href="{% url 'employee_detail' r.employee.pk %}" title="Xodim tarixi">{{ r.employee.name }}</a>
+          <span><a href="{% url 'employee_detail' r.employee.pk %}?oy={{ month_value }}" title="Xodim tarixi va grafigi">{{ r.employee.name }}</a>
             {% if not r.employee.is_active %}<span class="badge badge-cancelled" style="margin-left:6px;">Faol emas</span>{% endif %}
-            {% if r.employee.note %}<span class="cell-sub">{{ r.employee.note }}</span>{% endif %}
+            {# Kelishilgan oylik — «Hisoblangan» shundan, kelgan kunlarga qarab chiqadi #}
+            <span class="cell-sub">Oylik {% if r.accrues %}{{ r.salary|floatformat:"0g" }}{% else %}{{ r.employee.salary|floatformat:"0g" }}{% endif %} so'm{% if r.employee.note %} · {{ r.employee.note }}{% endif %}</span>
           </span>
         </span>
       </td>
       {# Hisob boshlanmagan (yoki ishdan ketgan) oyda oylik yozilmaydi #}
-      <td class="num">{% if r.accrues %}{{ r.salary|floatformat:"0g" }}{% else %}<span class="muted" title="Bu oyda oylik hisoblanmaydi">—</span>{% endif %}</td>
-      {% if r.tracked %}
-      {# Manfiy = oldindan ortiqcha olgan, ya'ni kelasi oy oyligidan ushlanadi #}
-      <td class="num">{% if r.carried > 0 %}<strong class="amt-debt">{{ r.carried|floatformat:"0g" }}</strong>{% elif r.carried < 0 %}<span class="amt-in">{{ r.carried|floatformat:"0g" }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
-      <td class="num">{{ r.due|floatformat:"0g" }}</td>
-      <td class="num amt-out">{{ r.paid|floatformat:"0g" }}</td>
+      {% if r.by_day %}
+      {# `days` dam kunida ishlanganini ham o'z ichiga oladi, shuning uchun u «shundan» #}
       <td class="num">
-        {% if r.remaining > 0 %}<strong class="amt-debt">{{ r.remaining|floatformat:"0g" }}</strong><span class="cell-sub">kelasi oyga o'tadi</span>
-        {% elif r.remaining < 0 %}<strong class="amt-in">{{ r.remaining|floatformat:"0g" }}</strong><span class="cell-sub">oldindan olgan</span>
+        <strong>{{ r.days }}</strong><span class="wage-of"> / {{ r.working_days }} kun</span>
+        <span class="wage-bar"><span class="wage-bar-fill" style="width:{% widthratio r.days r.working_days 100 %}%"></span></span>
+        {% if r.missed_days %}<span class="cell-sub att-missed">{{ r.missed_days }} kun kelmadi</span>{% endif %}
+        {% if r.sunday_days %}<span class="cell-sub wage-extra">shundan {{ r.sunday_days }} kun dam kunida</span>{% endif %}
+      </td>
+      <td class="num">{{ r.earned|floatformat:"0g" }}<span class="cell-sub">{{ r.days }} kun × {{ r.daily_rate|floatformat:"0g" }}</span></td>
+      {% elif r.accrues %}
+      {# Davomad yuritilmagan oy: kun sanalmaydi, oylik to'liq yoziladi #}
+      <td class="num"><span class="muted" title="Davomad {{ davomad_from|date:'m.Y' }} dan yuritiladi">—</span></td>
+      <td class="num">{{ r.earned|floatformat:"0g" }}<span class="cell-sub">to'liq oylik</span></td>
+      {% else %}
+      <td class="num"><span class="muted">—</span></td>
+      <td class="num"><span class="muted" title="Bu oyda oylik hisoblanmaydi">—</span></td>
+      {% endif %}
+      {% if r.tracked %}
+      {% comment %}Manfiy = oldindan ortiqcha olgan, ya'ni shu oy oyligidan ushlanadi.
+      Raqamning ishorasi buni aytmaydi, shuning uchun har ikki holat so'z bilan
+      yozilgan.{% endcomment %}
+      <td class="num">
+        {% if r.carried > 0 %}<strong class="amt-debt">{{ r.carried|floatformat:"0g" }}</strong><span class="cell-sub">berilmay qolgan</span>
+        {% elif r.carried < 0 %}<span class="amt-in">{{ r.carried|floatformat:"0g" }}</span><span class="cell-sub">oldindan olgan</span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      {# Berilmagan bo'lsa qizil emas: nol — xato emas, hali pul chiqmagani #}
+      <td class="num">{% if r.paid %}<span class="amt-out">{{ r.paid|floatformat:"0g" }}</span>{% else %}<span class="muted">0</span>{% endif %}</td>
+      <td class="num wage-due">
+        {% if r.remaining > 0 %}<strong class="wage-due-amt amt-debt">{{ r.remaining|floatformat:"0g" }}</strong>{% if not is_current_month %}<span class="cell-sub">keyingi oyga o'tdi</span>{% endif %}
+        {% elif r.remaining < 0 %}<strong class="wage-due-amt amt-in">{{ r.remaining|floatformat:"0g" }}</strong><span class="cell-sub">xodimning qarzi</span>
         {% else %}<span class="badge badge-paid">To'liq berildi</span>{% endif %}
       </td>
       {% else %}
       {# Hisob bu oydan keyin boshlangan: berilgan pul ko'rsatiladi, qoldiq yuritilmaydi #}
       <td class="num"><span class="muted">—</span></td>
-      <td class="num"><span class="muted">—</span></td>
-      <td class="num amt-out">{{ r.paid|floatformat:"0g" }}</td>
-      <td class="num"><span class="muted" title="Hisob {{ r.employee.start_month|date:'m.Y' }} dan boshlangan">hisob yuritilmagan</span></td>
+      <td class="num">{% if r.paid %}<span class="amt-out">{{ r.paid|floatformat:"0g" }}</span>{% else %}<span class="muted">0</span>{% endif %}</td>
+      <td class="num wage-due"><span class="muted" title="Hisob {{ r.employee.start_month|date:'m.Y' }} dan boshlangan">hisob yuritilmagan</span></td>
       {% endif %}
       {% comment %}Amallar ichki o'ramda: katakning o'ziga display:flex berilsa u
       table-cell bo'lishdan to'xtaydi va qator chizig'i shu joyda uziladi.{% endcomment %}
@@ -154,18 +214,30 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
     </tr>
     {% endfor %}
     <tr>
-      <td class="sticky-col"><strong>Jami</strong> <span class="cell-sub">oylik — faol xodimlar</span></td>
-      <td class="num"><strong>{{ totals.salary|floatformat:"0g" }}</strong></td>
+      {# Kunlar yig'indisi yo'q: har xil odamning kunlarini qo'shish hech narsani bildirmaydi #}
+      <td class="sticky-col"><strong>Jami</strong></td>
+      <td class="num"></td>
+      <td class="num"><strong>{{ totals.earned_all|floatformat:"0g" }}</strong></td>
       <td class="num"><strong>{{ totals.carried|floatformat:"0g" }}</strong></td>
-      <td class="num"><strong>{{ totals.due|floatformat:"0g" }}</strong></td>
-      <td class="num amt-out"><strong>{{ totals.paid|floatformat:"0g" }}</strong></td>
-      <td class="num"><strong>{{ totals.remaining|floatformat:"0g" }}</strong></td>
+      <td class="num">{% if totals.paid %}<strong class="amt-out">{{ totals.paid|floatformat:"0g" }}</strong>{% else %}<span class="muted">0</span>{% endif %}</td>
+      <td class="num wage-due"><strong class="wage-due-amt">{{ totals.remaining|floatformat:"0g" }}</strong>{% if totals.debt %}<span class="cell-sub">xodimlar qarzi ayrilgan: {{ totals.debt|floatformat:"0g" }}</span>{% endif %}</td>
       <td></td>
     </tr>
   </table>
   </div>
   {% else %}
+  {% comment %}
+    Bo'sh ro'yxatning ikki sababi bor: hali xodim yo'q, yoki filtr hammani
+    chiqarib tashlagan. Ikkinchisida «xodim qo'shing» — noto'g'ri maslahat.
+  {% endcomment %}
+  {% if q or holat %}
+  <p class="muted">
+    Tanlangan filtrga mos xodim yo'q.
+    <a href="{% url 'employee_list' %}?oy={{ month_value }}">Filtrni tozalash</a>
+  </p>
+  {% else %}
   <p class="muted">Hali xodim qo'shilmagan. O'ng pastdagi “Yangi xodim” tugmasi bilan qo'shing.</p>
+  {% endif %}
   {% endif %}
 </div>
 
@@ -181,7 +253,7 @@ boshqaradi. Qidiruv chapda, boshqaruvlar o'ngda — boshqa sahifalardagidek.{% e
       <tr><th>Sana</th><th>Xodim</th><th>Usul</th><th class="num">Summa</th><th>Izoh</th><th>Kim berdi</th><th></th></tr>
       {% for e in payouts %}
       <tr>
-        <td>{{ e.date|date:"d.m.Y" }}</td>
+        <td>{{ e.date|date:"d.m.Y" }}{% if e.wage_month %} <span class="badge badge-violet">{{ e.wage_month_label }}</span>{% endif %}</td>
         <td>
           <span class="cell-user">
             {% include "crm/_avatar.html" with name=e.employee.name %}

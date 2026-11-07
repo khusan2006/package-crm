@@ -41,6 +41,16 @@ urlpatterns = [
         name="client_advance_moves",
     ),
     path(
+        "clients/<int:pk>/advance/clear/",
+        crm_views.client_advance_clear,
+        name="client_advance_clear",
+    ),
+    path(
+        "clients/<int:pk>/qarz/clear/",
+        crm_views.client_debt_clear,
+        name="client_debt_clear",
+    ),
+    path(
         "clients/<int:pk>/boshlangich-qarz/",
         crm_views.client_opening_debt,
         name="client_opening_debt",
@@ -93,6 +103,13 @@ urlpatterns = [
     path("tolovlar/export/", crm_views.payment_export, name="payment_export"),
     path("payments/<int:pk>/edit/", crm_views.payment_edit, name="payment_edit"),
     path("payments/<int:pk>/delete/", crm_views.payment_delete, name="payment_delete"),
+    # vazvratlar (every return, across all sales)
+    path("vazvrat/", crm_views.return_list, name="return_list"),
+    path("vazvrat/export/", crm_views.return_export, name="return_export"),
+    path("vazvrat/yangi/", crm_views.return_create, name="return_create"),
+    # oylik hisobot (the month's closing sheet)
+    path("hisobot/", crm_views.monthly_report, name="monthly_report"),
+    path("hisobot/export/", crm_views.monthly_report_export, name="monthly_report_export"),
     path("audit/", crm_views.audit_list, name="audit_list"),
     path("audit/export/", crm_views.audit_export, name="audit_export"),
     path("kassa/", crm_views.kassa_view, name="kassa"),
@@ -113,9 +130,40 @@ urlpatterns = [
     path("yetkazish/", crm_views.delivery_plan, name="delivery_plan"),
     path("xodimlar/", crm_views.employee_list, name="employee_list"),
     path("xodimlar/export/", crm_views.employee_export, name="employee_export"),
+    # Davomad: oylik shu jadvaldan hisoblanadi
+    path("xodimlar/davomad/", crm_views.attendance_grid, name="attendance_grid"),
+    path(
+        "xodimlar/davomad/excel/",
+        crm_views.attendance_excel,
+        name="attendance_excel",
+    ),
+    path(
+        "xodimlar/<int:pk>/reja/<str:sana>/",
+        crm_views.employee_day,
+        name="employee_day",
+    ),
+    path("bayramlar/", crm_views.holiday_list, name="holiday_list"),
+    path("bayramlar/yangi/", crm_views.holiday_create, name="holiday_create"),
+    path("bayramlar/toldirish/", crm_views.holiday_seed, name="holiday_seed"),
+    path("bayramlar/<int:pk>/edit/", crm_views.holiday_edit, name="holiday_edit"),
+    path(
+        "bayramlar/<int:pk>/delete/",
+        crm_views.holiday_delete,
+        name="holiday_delete",
+    ),
     path("xodimlar/yangi/", crm_views.employee_create, name="employee_create"),
     path("xodimlar/<int:pk>/", crm_views.employee_detail, name="employee_detail"),
     path("xodimlar/<int:pk>/edit/", crm_views.employee_edit, name="employee_edit"),
+    path(
+        "xodimlar/<int:pk>/edit/<slug:maydon>/",
+        crm_views.employee_edit,
+        name="employee_edit_field",
+    ),
+    path(
+        "xodimlar/<int:pk>/qoldiq/<str:oy>/",
+        crm_views.employee_balance_edit,
+        name="employee_balance_edit",
+    ),
     path("xodimlar/<int:pk>/delete/", crm_views.employee_delete, name="employee_delete"),
     path("kassa/topshirish/", crm_views.remittance_create, name="remittance_create"),
     path("kassa/qaytarish/", crm_views.remittance_refund_create, name="remittance_refund_create"),

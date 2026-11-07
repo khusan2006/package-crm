@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('crm', '0044_sale_note'),
+        ('crm', '0050_payment_batch'),
     ]
 
     operations = [

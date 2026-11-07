@@ -1,0 +1,43 @@
+{% comment %}Qarz yoki avansni o'chirish oynasining mazmuni — ikkalasi bir xil tartibda
+gapiradi: hozir nima turibdi, o'chirishdan oldin nimani tuzatib ko'rish kerak, balans
+nimadan yig'ilgan (har qatorda o'sha tuzatish joyiga havola) va baribir o'chirilsa
+nima bo'ladi. O'chirish hech qachon taqiqlanmaydi; oyna faqat to'g'ri yo'lni avval
+ko'rsatadi, chunki xato yozuvni tuzatish kassani ham to'g'rilaydi, o'chirish esa
+faqat raqamni yashiradi.{% endcomment %}
+{% csrf_token %}
+<div class="remove-box">
+  <div class="rb-line">
+    <span>{{ total_label }}</span>
+    <strong>{{ total|floatformat:"0g" }} so'm</strong>
+  </div>
+</div>
+
+<h3 class="clear-title">Avval tekshiring</h3>
+<p class="field-hint">{{ check_intro }}</p>
+<ul class="clear-steps">
+  {% for step in steps %}
+  <li>{{ step.text }}{% if step.url %} <a href="{{ step.url }}"{% if step.modal %} data-modal{% endif %}>{{ step.action }}</a>.{% endif %}</li>
+  {% endfor %}
+</ul>
+
+{% if rows %}
+<h3 class="clear-title">{{ rows_title }}</h3>
+<div class="table-wrap clear-rows">
+<table>
+  <tr><th>Sana</th><th>Nima</th><th class="num">Summa</th><th></th></tr>
+  {% for row in rows %}
+  <tr>
+    <td>{{ row.date|date:"d.m.Y" }}</td>
+    <td class="note">{{ row.label }}{% if row.hint %}<span class="cell-sub">{{ row.hint }}</span>{% endif %}</td>
+    <td class="num"><strong>{{ row.amount|floatformat:"0g" }}</strong></td>
+    <td class="clear-links">
+      {% for link in row.links %}<a href="{{ link.url }}"{% if link.modal %} data-modal{% endif %}>{{ link.label }}</a>{% endfor %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% endif %}
+
+<h3 class="clear-title">Baribir o'chirilsa</h3>
+<p class="field-hint">{{ effect }}</p>

@@ -40,6 +40,15 @@ def seller_user(db):
 
 
 @pytest.fixture
+def payroll_seller(db):
+    """A seller the admin opened «Xodimlar oyligi» to — a plain seller has no way in."""
+    return User.objects.create_user(
+        username="e2e_payroll_seller", password=PASSWORD, role=User.Role.SALES,
+        first_name="Pay", last_name="Roll", payroll_access=True,
+    )
+
+
+@pytest.fixture
 def sample_data(db, admin_user, seller_user):
     """A minimal but realistic dataset: a product, a client, and one credit sale
     with a partial payment — enough to render every list, the dashboard and kassa."""

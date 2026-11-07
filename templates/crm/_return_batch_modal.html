@@ -1,0 +1,11 @@
+<div class="modal-head">
+  <h2>{{ title }}</h2>
+  <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
+</div>
+<form method="post" action="{% url 'return_create' %}" class="stacked">
+  {% include "crm/_return_batch_body.html" %}
+  <div class="modal-actions">
+    {% if lines %}<button type="submit" class="btn">Vazvratni saqlash</button>{% endif %}
+    <button type="button" class="btn btn-ghost" data-modal-close>Bekor qilish</button>
+  </div>
+</form>

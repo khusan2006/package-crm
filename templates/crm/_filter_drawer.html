@@ -9,6 +9,10 @@
     <input type="hidden" name="dan" value="{{ filters.dan }}">
     <input type="hidden" name="gacha" value="{{ filters.gacha }}">
     {% endif %}
+    {% comment %}Sotuvlar: sana oynasi faqat foydalanuvchi o'zi tanlagan bo'lsa ilashadi
+    (ro'yxat bo'sh qiymat bilan keladi, agar tanlanmagan bo'lsa) — aks holda filtr
+    faqat bugungi kunni ko'rsatib qo'yardi.{% endcomment %}
+    {% for keep in drawer_keep %}{% if keep.value %}<input type="hidden" name="{{ keep.name }}" value="{{ keep.value }}">{% endif %}{% endfor %}
     {% if filters.q %}<input type="hidden" name="q" value="{{ filters.q }}">{% endif %}
     {% comment %}Toolbar tugmasi bilan tanlangan ko'rinish filtr qo'llanganda ham qoladi.{% endcomment %}
     {% if filters.tur %}<input type="hidden" name="tur" value="{{ filters.tur }}">{% endif %}
@@ -47,6 +51,19 @@
         {% for r in reps %}<option value="{{ r.pk }}" {% if filters.rep == r.pk|stringformat:'s' %}selected{% endif %}>{{ r }}</option>{% endfor %}
       </select>
     </label>
+    {% endif %}
+    {% comment %}Payroll workers, several at once (Oylik hisobot: whose wages the month
+    carries) — the same tick-box picker as Turkum, sent as repeated `xodim=`. Nothing
+    ticked is the page's own default, which `employee_hint` spells out.{% endcomment %}
+    {% if employee_options %}
+    <label>Xodimlar
+      <select name="xodim" multiple data-multicheck data-empty="Avtomatik">
+        {% for e in employee_options %}
+        <option value="{{ e.pk }}" {% if e.pk|stringformat:'s' in filters.xodim %}selected{% endif %}>{{ e.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% if employee_hint %}<p class="field-hint">{{ employee_hint }}</p>{% endif %}
     {% endif %}
     {% if actions %}
     <label>Amal
@@ -94,6 +111,14 @@
       <select name="kind">
         <option value="">Barchasi</option>
         {% for code, label in payment_kinds %}<option value="{{ code }}" {% if filters.kind == code %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    {% endif %}
+    {% if settle_options %}
+    <label>Pul qayerga ketdi
+      <select name="settle">
+        <option value="">Barchasi</option>
+        {% for code, label in settle_options %}<option value="{{ code }}" {% if filters.settle == code %}selected{% endif %}>{{ label }}</option>{% endfor %}
       </select>
     </label>
     {% endif %}
@@ -153,10 +178,10 @@
     {% if show_overdue %}
     <label class="check-row"><input type="checkbox" name="overdue" value="1" {% if filters.overdue %}checked{% endif %}> Faqat muddati o'tgan</label>
     {% endif %}
-    {% if show_status %}<p class="field-hint">Filtr qo'llanganda sana oralig'i hisobga olinmaydi — barcha kunlar bo'yicha qidiriladi.</p>{% endif %}
+    {% if show_status %}<p class="field-hint">Sana tanlangan bo'lsa, filtr shu oraliq ichida qidiradi. Sana tanlanmagan bo'lsa — barcha kunlar bo'yicha.</p>{% endif %}
     <div class="drawer-actions">
       <button type="submit" class="btn">Qo'llash</button>
-      <a href="{{ filter_url }}" class="btn btn-ghost">Tozalash</a>
+      <a href="{{ filter_clear_url|default:filter_url }}" class="btn btn-ghost">Tozalash</a>
     </div>
   </form>
 </aside>

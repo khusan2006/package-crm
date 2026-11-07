@@ -1,6 +1,11 @@
+import calendar
 from datetime import date, timedelta
 from decimal import Decimal
+from importlib import import_module
 from io import BytesIO, StringIO
+from unittest import mock
+
+from django.apps import apps
 
 from django.contrib.messages import get_messages
 from django.core.management import call_command
@@ -17,6 +22,7 @@ from .forms import (
     AdvanceForm,
     AdvanceRemoveForm,
     ClientForm,
+    EmployeeForm,
     ExpenseForm,
     ProductionRemittanceForm,
     SaleForm,
@@ -24,6 +30,7 @@ from .forms import (
 )
 from .models import (
     ADVANCE_ADJUST_NOTE,
+    DEBT_CLEAR_NOTE,
     COST,
     DEFAULT_DEBT_DAYS,
     AuditLog,
@@ -42,17 +49,23 @@ from .models import (
     SaleItem,
     StockEntry,
     client_advance_balance,
+    left_after_handover,
     seller_cash_on_hand,
     seller_production_debt,
     seller_withdrawable_profit,
+    till_cash_on,
+    till_days,
+    till_on,
 )
-from .utils import uz_month
+from .utils import UZ_MONTH_NAMES, uz_month
 from .views import (
     XLSX_CONTENT_TYPE,
+    _apply_advance_to_open_sales,
     _kassa_net_profit,
     _kassa_summary,
     _per_employee_kassa,
     _realized_profit_by_seller,
+    _uz_cyrillic,
 )
 
 
@@ -804,12 +817,197 @@ class DayViewTests(BaseSetup):
         resp = self.client.get(reverse("sale_list"), {"client": self.client1.pk})
         self.assertTrue(resp.context["has_filters"])
         self.assertEqual(resp.context["active_filters"], [])
-        # Toolbar shows the clear-filter control and hides the date-range picker,
-        # matching the pre-refactor behavior. (The bare class name also appears
-        # in base.html's unconditional JS behavior script, so match the actual
-        # rendered element instead of the substring.)
+        # Toolbar shows the clear-filter control, and the date-range picker stays
+        # beside it — a filter and a window work together. (The bare class name also
+        # appears in base.html's unconditional JS behavior script, so match the
+        # actual rendered element instead of the substring.)
         self.assertContains(resp, "chip-clear")
-        self.assertNotContains(resp, 'class="daterange-trigger"')
+        self.assertContains(resp, 'class="daterange-trigger"')
+
+    def _window_fixture(self):
+        """One sale of client1 inside a picked window, one before it."""
+        today = timezone.localdate()
+        inside = make_sale(
+            self.client1, self.sales1, self.product, date=today - timedelta(days=3)
+        )
+        before = make_sale(
+            self.client1, self.sales1, self.product, date=today - timedelta(days=30)
+        )
+        window = {
+            "dan": (today - timedelta(days=5)).isoformat(),
+            "gacha": (today - timedelta(days=1)).isoformat(),
+        }
+        return inside, before, window
+
+    def test_search_narrows_the_picked_window_instead_of_dropping_it(self):
+        inside, before, window = self._window_fixture()
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_list"), {"q": "Mijoz A", **window})
+        sales = list(response.context["page"].object_list)
+        self.assertIn(inside, sales)
+        self.assertNotIn(before, sales)       # outside the window
+        self.assertNotIn(self.sale1, sales)   # today, outside the window
+        self.assertFalse(response.context["is_all"])
+        # ...and the next search keeps it: the form carries the window along
+        self.assertContains(
+            response, f'<input type="hidden" name="dan" value="{window["dan"]}">', count=2
+        )
+        self.assertContains(
+            response, f'<input type="hidden" name="gacha" value="{window["gacha"]}">', count=2
+        )
+
+    def test_drawer_filter_narrows_the_picked_window_too(self):
+        inside, before, window = self._window_fixture()
+        self.client.force_login(self.sales1)
+        response = self.client.get(
+            reverse("sale_list"), {"client": self.client1.pk, **window}
+        )
+        sales = list(response.context["page"].object_list)
+        self.assertEqual(sales, [inside])
+
+    def test_search_without_a_picked_window_spans_every_date(self):
+        inside, before, _ = self._window_fixture()
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_list"), {"q": "Mijoz A"})
+        sales = list(response.context["page"].object_list)
+        self.assertIn(before, sales)
+        self.assertIn(self.sale1, sales)
+        # The picker says so, rather than showing a "Bugun" that isn't applied
+        self.assertTrue(response.context["is_all"])
+        # The implicit today is not carried into the next search
+        self.assertNotContains(response, '<input type="hidden" name="dan"')
+
+    def test_plain_list_does_not_pin_today_onto_the_next_search(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_list"))
+        self.assertTrue(response.context["is_today"])
+        self.assertNotContains(response, '<input type="hidden" name="dan"')
+
+    def test_clearing_filters_keeps_the_picked_window(self):
+        _, _, window = self._window_fixture()
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_list"), {"q": "Mijoz A", **window})
+        self.assertEqual(
+            response.context["filter_clear_url"],
+            f'{reverse("sale_list")}?dan={window["dan"]}&gacha={window["gacha"]}',
+        )
+
+    def test_payments_search_narrows_the_picked_window(self):
+        inside, before, window = self._window_fixture()
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("payment_list"), {"q": "Mijoz A", **window})
+        sale_pks = {row["sale_pk"] for row in response.context["page"].object_list}
+        self.assertEqual(sale_pks, {inside.pk})
+        everything = self.client.get(reverse("payment_list"), {"q": "Mijoz A"})
+        sale_pks = {row["sale_pk"] for row in everything.context["page"].object_list}
+        self.assertEqual(sale_pks, {inside.pk, before.pk, self.sale1.pk})
+
+
+class LumpPaymentListTests(BaseSetup):
+    """10 mln entered reads as 10 mln on the payments page, whatever receipts it reached."""
+
+    def setUp(self):
+        self.older = make_sale(self.client1, self.sales1, self.product, is_debt=True)  # 240 000
+        self.newer = make_sale(self.client1, self.sales1, self.product, is_debt=True)  # 240 000
+        self.client.force_login(self.sales1)
+
+    def _pay(self, amount, **extra):
+        return self.client.post(
+            reverse("client_debt_pay", args=[self.client1.pk]),
+            {"amount": amount, "method": "cash", **extra},
+        )
+
+    def _rows(self, **params):
+        return self.client.get(
+            reverse("payment_list"), {"client": self.client1.pk, **params}
+        ).context["page"].object_list
+
+    def _lump_row(self, rows=None):
+        return next(r for r in (rows or self._rows()) if r["parts"])
+
+    def test_a_sum_spread_across_receipts_is_one_row_of_the_whole_sum(self):
+        self._pay("300000")
+        self.assertEqual(self.older.payments.get().amount, Decimal("240000"))
+        self.assertEqual(self.newer.payments.get().amount, Decimal("60000"))
+        row = self._lump_row()
+        self.assertEqual(row["amount"], Decimal("300000"))
+        self.assertEqual(row["sale_pks"], [self.older.pk, self.newer.pk])
+        self.assertEqual([p["amount"] for p in row["parts"]], [Decimal("240000"), Decimal("60000")])
+        # Each slice can still be opened and fixed from under the row.
+        response = self.client.get(reverse("payment_list"), {"client": self.client1.pk})
+        self.assertContains(response, "2 ta chek")
+        for part in row["parts"]:
+            self.assertContains(response, reverse("payment_edit", args=[part["pk"]]))
+
+    def test_the_totals_do_not_move_and_the_count_counts_the_sum_once(self):
+        self._pay("300000")
+        totals = self.client.get(
+            reverse("payment_list"), {"client": self.client1.pk}
+        ).context["totals"]
+        # sale1's own 240 000 from BaseSetup, plus the 300 000 given in one go
+        self.assertEqual(totals["total"], Decimal("540000"))
+        self.assertEqual(totals["count"], 2)
+
+    def test_what_was_left_over_stays_inside_the_sum_it_came_with(self):
+        self._pay("500000")
+        row = self._lump_row()
+        self.assertEqual(row["amount"], Decimal("500000"))
+        self.assertEqual(row["to_advance"], Decimal("20000"))
+        self.assertEqual(row["label"], "Qarz to'lovi")
+        self.assertEqual(row["sale_pks"], [self.older.pk, self.newer.pk])
+        self.assertEqual(len(row["parts"]), 3)
+
+    def test_two_payments_stay_two_rows(self):
+        self._pay("100000")
+        self._pay("50000")
+        amounts = [r["amount"] for r in self._rows() if r["sale_pk"] == self.older.pk]
+        self.assertCountEqual(amounts, [Decimal("100000"), Decimal("50000")])
+
+    def test_a_slice_moved_to_another_day_stands_on_its_own(self):
+        self._pay("300000")
+        moved = self.newer.payments.get()
+        Payment.objects.filter(pk=moved.pk).update(date=date(2020, 1, 15))
+        rows = self._rows()
+        self.assertFalse(any(r["parts"] for r in rows))
+        self.assertIn(Decimal("60000"), [r["amount"] for r in rows])
+        self.assertIn(Decimal("240000"), [r["amount"] for r in rows])
+
+    def test_export_has_the_sum_on_one_line_naming_its_receipts(self):
+        self._pay("300000")
+        response = self.client.get(reverse("payment_export"), {"client": self.client1.pk})
+        sheet = list(load_workbook(BytesIO(response.content))["To'lovlar"].iter_rows(values_only=True))
+        lump = next(row for row in sheet[1:] if row[8] == 300000)
+        self.assertEqual(lump[3], f"#{self.older.pk}, #{self.newer.pk}")
+
+    def test_an_advance_spent_across_receipts_is_one_uncounted_row(self):
+        Payment.objects.create(
+            client=self.client1, amount=Decimal("300000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.ADVANCE_IN, created_by=self.sales1,
+        )
+        _apply_advance_to_open_sales(self.client1, self.sales1)
+        rows = self._rows(kind="advance_used")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["amount"], Decimal("300000"))
+        self.assertFalse(rows[0]["counted"])
+
+    def test_old_slices_are_tied_together_only_when_written_at_once(self):
+        self._pay("300000")
+        self._pay("50000")
+        Payment.objects.update(batch=None)
+        slices = list(self.older.payments.order_by("pk")) + list(self.newer.payments.order_by("pk"))
+        # The second payment was typed in a minute after the first.
+        later = slices[0].created_at + timedelta(minutes=1)
+        second = self.newer.payments.get(amount=Decimal("50000"))
+        Payment.objects.filter(pk=second.pk).update(created_at=later)
+
+        import_module("crm.migrations.0050_payment_batch").backfill(apps, None)
+
+        lump = Payment.objects.get(sale=self.older, amount=Decimal("240000"))
+        other = Payment.objects.get(sale=self.newer, amount=Decimal("60000"))
+        second.refresh_from_db()
+        self.assertIsNotNone(lump.batch)
+        self.assertEqual(lump.batch, other.batch)
+        self.assertIsNone(second.batch)
 
 
 class StockTests(BaseSetup):
@@ -2266,6 +2464,44 @@ class AuditLogTests(BaseSetup):
         self.client.post(reverse("payment_delete", args=[payment.pk]))
         self.assertTrue(AuditLog.objects.filter(action="void", target_id=sale.pk).exists())
 
+    def test_payment_line_carries_the_payments_own_date(self):
+        # Typed in today for money that came in last week: the line's own timestamp
+        # says when it was written, so the day the money counts for has to be spelled out.
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        paid_on = timezone.localdate() - timedelta(days=7)
+        self.client.force_login(self.sales1)
+        self.client.post(
+            reverse("sale_pay", args=[sale.pk]),
+            {"amount": "100000", "method": "cash", "date": paid_on.isoformat()},
+        )
+        log = AuditLog.objects.get(action="payment", target_id=sale.pk)
+        self.assertIn(f"sanasi: {paid_on:%d.%m.%Y}", log.summary)
+
+    def test_void_line_keeps_the_date_of_the_payment_it_removed(self):
+        # The payment row is gone after a void — the line is the only place left that
+        # can say which day's kirim just shrank.
+        paid_on = timezone.localdate() - timedelta(days=7)
+        sale = make_sale(self.client1, self.sales1, self.product, date=paid_on)
+        payment = sale.payments.get()
+        self.client.force_login(self.manager)
+        self.client.post(reverse("payment_delete", args=[payment.pk]))
+        log = AuditLog.objects.get(action="void", target_id=sale.pk)
+        self.assertIn(f"sanasi: {paid_on:%d.%m.%Y}", log.summary)
+
+    def test_edit_that_moves_the_payment_shows_both_dates(self):
+        sale = make_sale(self.client1, self.sales1, self.product)  # paid
+        payment = sale.payments.get()
+        was, moved = payment.date, payment.date - timedelta(days=3)
+        self.client.force_login(self.manager)
+        self.client.post(
+            reverse("payment_edit", args=[payment.pk]),
+            {"date": moved.isoformat(), "amount": "240000", "method": "cash"},
+        )
+        payment.refresh_from_db()
+        self.assertEqual(payment.date, moved)
+        log = AuditLog.objects.get(action="update", target_id=sale.pk)
+        self.assertIn(f"sanasi: {was:%d.%m.%Y} → {moved:%d.%m.%Y}", log.summary)
+
     def test_audit_list_open_to_all_but_scoped_for_seller(self):
         # Audit is an "own work" view: a seller may open it but sees only their
         # own actions; admins/managers see everyone's.
@@ -2281,11 +2517,9 @@ class AuditLogTests(BaseSetup):
 
 
 class ReturnTests(BaseSetup):
-    def _return(self, sale, weight, restock=True):
+    def _return(self, sale, weight):
         # A return names the sale LINE it reverses; price/tannarx/unit come from there.
         data = {"sale_item": sale.items.first().pk, "weight": weight}
-        if restock:
-            data["restock"] = "on"
         return self.client.post(reverse("sale_return", args=[sale.pk]), data)
 
     def test_return_reduces_debt(self):
@@ -2299,19 +2533,21 @@ class ReturnTests(BaseSetup):
     def _stock(self):
         return Product.objects.get(pk=self.product.pk).current_stock
 
-    def test_restock_return_increases_stock(self):
+    def test_return_increases_stock(self):
         sale = make_sale(self.client1, self.sales1, self.product, is_debt=True, weight="10")
         self.client.force_login(self.sales1)
         before = self._stock()
-        self._return(sale, "3", restock=True)
+        self._return(sale, "3")
         self.assertEqual(self._stock() - before, Decimal("3"))  # 3 kg back in stock
 
-    def test_no_restock_leaves_stock_unchanged(self):
+    def test_return_form_has_no_restock_box(self):
+        # Every return is booked as good goods back — the seller is not asked.
         sale = make_sale(self.client1, self.sales1, self.product, is_debt=True, weight="10")
         self.client.force_login(self.sales1)
-        before = self._stock()
-        self._return(sale, "3", restock=False)
-        self.assertEqual(self._stock() - before, Decimal("0"))  # not restocked
+        response = self.client.get(reverse("sale_return", args=[sale.pk]))
+        self.assertNotContains(response, 'name="restock"')
+        self._return(sale, "3")
+        self.assertTrue(sale.returns.get().restock)
 
     def test_cannot_return_more_than_sold(self):
         sale = make_sale(self.client1, self.sales1, self.product, is_debt=True, weight="10")
@@ -2330,10 +2566,8 @@ class ReturnSettlementTests(BaseSetup):
     """The money side of a return: it cancels open debt first, and any excess — value
     the client had already paid for — is handed back as advance credit or as cash."""
 
-    def _return(self, sale, weight, settlement=None, restock=True, item=None):
+    def _return(self, sale, weight, settlement=None, item=None):
         data = {"sale_item": (item or sale.items.first()).pk, "weight": weight}
-        if restock:
-            data["restock"] = "on"
         if settlement:
             data["settlement"] = settlement
         return self.client.post(reverse("sale_return", args=[sale.pk]), data)
@@ -2413,17 +2647,20 @@ class ReturnSettlementTests(BaseSetup):
         self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("0"))
 
     def test_written_off_return_keeps_production_debt(self):
+        # The form no longer offers a write-off, but a row stored with restock=False
+        # (older data) still leaves the tannarx owed.
         sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
         self.client.force_login(self.sales1)
         before = seller_production_debt(self.sales1)
-        self._return(sale, "4", restock=False)  # goods gone, tannarx still owed
+        self._return(sale, "4")
+        sale.returns.update(restock=False)  # goods gone, tannarx still owed
         self.assertEqual(seller_production_debt(self.sales1), before)
 
     def test_restocked_return_lowers_production_debt(self):
         sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
         self.client.force_login(self.sales1)
         before = seller_production_debt(self.sales1)
-        self._return(sale, "4", restock=True)  # 4 × 18 000 tannarx back
+        self._return(sale, "4")  # 4 × 18 000 tannarx back
         self.assertEqual(before - seller_production_debt(self.sales1), Decimal("72000"))
 
     def test_unpaid_sale_hides_the_settlement_choice(self):
@@ -3088,6 +3325,49 @@ class KassaScopingTests(BaseSetup):
         self.assertContains(response, "Sotuvchilar nazorati")
 
 
+class KassaEntryTimeTests(BaseSetup):
+    """Each ledger row says when it was typed in, next to the date written on it.
+
+    A day is closed by handing the till over. A row backdated onto it afterwards makes
+    money reappear on a day that was left at zero, and the two dates side by side are
+    how that row gets found."""
+
+    def setUp(self):
+        self.day = timezone.localdate() - timedelta(days=5)
+        # auto_now_add stamps "now"; move it to a moment that is neither the rows' own
+        # date nor today, so only the entry time itself can satisfy the assertions.
+        self.entered = timezone.now() - timedelta(days=2)
+        expense = Expense.objects.create(
+            amount=Decimal("30000"), category="Boshqa", method=Payment.Method.CASH,
+            created_by=self.sales1, date=self.day,
+        )
+        Expense.objects.filter(pk=expense.pk).update(created_at=self.entered)
+        sale = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+        payment = Payment.objects.create(
+            sale=sale, amount=Decimal("50000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=self.day, created_by=self.sales1,
+        )
+        Payment.objects.filter(pk=payment.pk).update(created_at=self.entered)
+        self.window = {"dan": self.day.isoformat(), "gacha": self.day.isoformat()}
+        self.client.force_login(self.sales1)
+
+    def _stamp(self, fmt):
+        return timezone.localtime(self.entered).strftime(fmt)
+
+    def test_both_ledgers_show_when_the_row_was_entered(self):
+        response = self.client.get(reverse("kassa"), self.window)
+        self.assertContains(response, "<th>Kiritilgan</th>", count=2)
+        self.assertContains(response, self._stamp("%d.%m %H:%M"), count=2)
+
+    def test_exports_carry_the_entry_time(self):
+        for url_name in ("kassa_income_export", "kassa_outflow_export"):
+            rows = read_xlsx(self.client.get(reverse(url_name), self.window))
+            self.assertEqual(rows[0][-1], "Kiritilgan")
+            self.assertEqual(
+                {row[-1] for row in rows[1:]}, {self._stamp("%d.%m.%Y %H:%M")}
+            )
+
+
 class TransferCommissionKassaTests(BaseSetup):
     """The bank's cut is charged to the seller, so the kassa has to show it going out
     instead of quietly shrinking the income it came in with."""
@@ -3543,16 +3823,25 @@ class EmployeePayrollTests(BaseSetup):
     that month counted against it."""
 
     def setUp(self):
+        # A wage is earned by the day now (tests/test_hr_davomad.py), so "this month's
+        # wage" is the whole salary only once the month has run out. These cases are
+        # about payouts measured against a month, so they are asked on its last day.
+        real = timezone.localdate()
+        last = real.replace(day=calendar.monthrange(real.year, real.month)[1])
+        pinned = mock.patch.object(timezone, "localdate", lambda *args, **kwargs: last)
+        pinned.start()
+        self.addCleanup(pinned.stop)
         self.worker = Employee.objects.create(
             name="Косимов Рахматжон", salary=Decimal("2000000")
         )
         self.today = timezone.localdate()
 
     def _pay(self, amount, employee=None, category="Oylik / xodim", on=None,
-             from_salary=True):
-        """A till payout tagged with a worker. `from_salary` is the radio pair:
-        "ushlansin" for a wage or an advance, "ushlanmasin" for an errand they paid
-        for out of the till. Pass None to leave it unanswered."""
+             from_salary=True, purpose=None):
+        """A till payout tagged with a worker. `from_salary` picks between this
+        month's wage or advance ("oylik") and an errand they paid for out of the till
+        ("xarajat"); None leaves it unanswered. `purpose` names the choice outright —
+        "otgan" for last month's remainder paid now."""
         self.client.force_login(self.admin)
         data = {
             "date": (on or self.today).isoformat(),
@@ -3562,8 +3851,10 @@ class EmployeePayrollTests(BaseSetup):
             # its own tests, so answer it up front rather than posting twice.
             "confirm_backdated": "1",
         }
-        if from_salary is not None:
-            data["counts_against_salary"] = "True" if from_salary else "False"
+        if purpose is not None:
+            data["purpose"] = purpose
+        elif from_salary is not None:
+            data["purpose"] = "oylik" if from_salary else "xarajat"
         return self.client.post(
             reverse("expense_create"), data,
             headers={"x-requested-with": "XMLHttpRequest"},
@@ -3638,7 +3929,7 @@ class EmployeePayrollTests(BaseSetup):
         self.client.post(
             reverse("expense_create"),
             {"date": self.today.isoformat(), "amount": "150000", "currency": "uzs",
-             "category": "Ijara", "method": "cash", "counts_against_salary": "True"},
+             "category": "Ijara", "method": "cash", "purpose": "oylik"},
             headers={"x-requested-with": "XMLHttpRequest"},
         )
         expense = Expense.objects.get(category="Ijara")
@@ -3670,6 +3961,143 @@ class EmployeePayrollTests(BaseSetup):
             self.worker.balance_through(self.today.year, self.today.month),
             Decimal("2000000"),
         )
+
+    def _open_last_month(self, paid=None):
+        """The worker's account opens last month; `paid` of last month's wage was
+        handed over in it. Returns last month's 1st."""
+        last_month = (self.today.replace(day=1) - timedelta(days=1)).replace(day=1)
+        self.worker.start_month = last_month
+        self.worker.save(update_fields=["start_month"])
+        if paid:
+            self._pay(paid, on=last_month)
+        return last_month
+
+    def _ask(self, amount, purpose="oylik", category="Oylik / xodim", employee=True):
+        """A payout dated today, posted once — no warning answered up front."""
+        self.client.force_login(self.admin)
+        data = {
+            "date": self.today.isoformat(), "amount": amount, "currency": "uzs",
+            "category": category, "method": "cash", "purpose": purpose,
+        }
+        if employee:
+            data["employee"] = self.worker.pk
+        return self.client.post(
+            reverse("expense_create"), data, headers={"x-requested-with": "XMLHttpRequest"},
+        )
+
+    def test_last_months_remainder_paid_now_closes_last_month(self):
+        # «O'tgan oydan qolgan oylik»: handed over today, out of today's till, but it
+        # settles last month's wage — last month ends at 0, this month starts clean.
+        last_month = self._open_last_month(paid="1500000")
+        self._pay("500000", purpose="otgan")
+        payout = Expense.objects.get(amount=Decimal("500000"))
+        self.assertEqual(payout.date, self.today)
+        self.assertEqual(payout.wage_month, last_month)
+        self.assertTrue(payout.counts_against_salary)
+        self.assertEqual(
+            self.worker.remaining_in(last_month.year, last_month.month), Decimal("0")
+        )
+        self.assertEqual(self.worker.paid_in(self.today.year, self.today.month), Decimal("0"))
+        # The payroll pages count it, and list it, under the month it settles
+        before = self.client.get(reverse("employee_list"), {"oy": f"{last_month:%Y-%m}"})
+        (row,) = before.context["rows"]
+        self.assertEqual((row["paid"], row["remaining"]), (Decimal("2000000"), Decimal("0")))
+        self.assertEqual(len(before.context["payouts"]), 2)
+        self.assertContains(before, f"{UZ_MONTH_NAMES[last_month.month - 1]} oyligi")
+        now = self.client.get(reverse("employee_list"))
+        (row,) = now.context["rows"]
+        self.assertEqual((row["carried"], row["paid"]), (Decimal("0"), Decimal("0")))
+        self.assertEqual(now.context["payouts"], [])
+        # …while the till lost it today
+        response = self.client.get(reverse("kassa"))
+        rows = [r for r in response.context["outflow_rows"] if r["kind"] == "expense"]
+        self.assertEqual(sum(r["amount_som"] for r in rows), Decimal("500000"))
+
+    def test_a_mistaken_errand_is_moved_onto_last_months_wage(self):
+        # The 08.10 case: last month's remainder went in as an errand, came off
+        # nothing; editing it to «o'tgan oy» closes last month.
+        last_month = self._open_last_month(paid="1500000")
+        self._pay("500000", from_salary=False)
+        payout = Expense.objects.get(amount=Decimal("500000"))
+        self.client.post(
+            reverse("expense_edit", args=[payout.pk]),
+            {
+                "date": self.today.isoformat(), "amount": "500000", "currency": "uzs",
+                "category": "Oylik / xodim", "method": "cash",
+                "employee": self.worker.pk, "purpose": "otgan",
+            },
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+        payout.refresh_from_db()
+        self.assertEqual(payout.wage_month, last_month)
+        self.assertEqual(
+            self.worker.remaining_in(last_month.year, last_month.month), Decimal("0")
+        )
+
+    def test_drawing_past_the_wage_warns_the_worker_will_owe(self):
+        self._pay("1500000")
+        response = self._ask("1000000")
+        self.assertEqual(response.status_code, 422)
+        self.assertContains(response, "500,000 so&#x27;m qarzdor bo&#x27;ladi", status_code=422)
+        self.assertEqual(Expense.objects.count(), 1)
+        # The refused form carries the answer back: the second Saqlash goes through
+        self.assertContains(response, 'name="confirm_backdated" value="1"', status_code=422)
+
+    def test_a_wage_beyond_this_month_points_at_last_months_remainder(self):
+        self._open_last_month()                      # last month's 2 000 000 unpaid
+        response = self._ask("2500000")
+        self.assertEqual(response.status_code, 422)
+        self.assertContains(response, "oyidan qolgan oyligi»ni tanlang", status_code=422)
+
+    def test_more_than_last_month_left_warns(self):
+        self._open_last_month(paid="1500000")        # 500 000 left
+        response = self._ask("800000", purpose="otgan")
+        self.assertEqual(response.status_code, 422)
+        self.assertContains(response, "300,000 so&#x27;m ortiqcha", status_code=422)
+        self.assertEqual(self._ask("500000", purpose="otgan").status_code, 204)
+
+    def test_a_wage_category_on_an_errand_or_on_nobody_warns(self):
+        response = self._ask("400000", purpose="xarajat")
+        self.assertContains(response, "«Ish uchun xarajat» tanlangan", status_code=422)
+        response = self._ask("400000", employee=False)
+        self.assertContains(response, "xodim tanlanmagan", status_code=422)
+        self.assertFalse(Expense.objects.exists())
+        # A plain errand is no question at all
+        self.assertEqual(self._ask("400000", purpose="xarajat", category="Benzin").status_code, 204)
+
+    def test_last_month_before_the_account_opened_is_refused(self):
+        response = self._pay("100000", purpose="otgan")   # answered warnings, still no
+        self.assertEqual(response.status_code, 422)
+        self.assertContains(response, "undan oldingi oyga yozib bo", status_code=422)
+
+    def test_editing_only_the_note_does_not_warn_again(self):
+        self._pay("2500000")                              # an overdraw, confirmed
+        payout = Expense.objects.get()
+        response = self.client.post(
+            reverse("expense_edit", args=[payout.pk]),
+            {
+                "date": self.today.isoformat(), "amount": "2500000", "currency": "uzs",
+                "category": "Oylik / xodim", "method": "cash",
+                "employee": self.worker.pk, "purpose": "oylik", "note": "kelishilgan",
+            },
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+        self.assertEqual(response.status_code, 204)
+
+    def test_form_shows_where_the_wage_stands(self):
+        self._open_last_month(paid="1500000")
+        self._pay("300000")
+        self.client.force_login(self.admin)
+        response = self.client.get(
+            reverse("expense_create"), {"employee": self.worker.pk},
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+        data = response.context["wage_data"]
+        self.assertEqual(
+            data["workers"][str(self.worker.pk)],
+            {"carried": 500000, "salary": 2000000, "paid": 300000},
+        )
+        self.assertContains(response, "data-wage-panel")
 
     def test_overdraw_shows_as_a_negative_remainder(self):
         self._pay("2500000")
@@ -3750,17 +4178,50 @@ class EmployeePayrollTests(BaseSetup):
             response.context["month_value"], f"{self.today.year}-{self.today.month:02d}"
         )
 
-    def test_seller_can_see_and_manage_the_payroll(self):
-        # Payroll used to be admin-only. The sellers are the ones handing the cash
-        # over and being asked "how much of mine is left?", and filing the till
-        # outflow that pays a wage was already theirs to do — so the page they were
-        # kept out of was the one holding the figure it is all measured against.
+    def test_seller_with_payroll_access_can_see_and_manage_the_payroll(self):
+        # A seller who hands the cash over is the one asked "how much of mine is
+        # left?", so the page can be opened to them — account by account, because it
+        # is everybody's wage in one table. sales1 has it switched on, sales2 does not.
+        self.sales1.payroll_access = True
+        self.sales1.save(update_fields=["payroll_access"])
+        pages = [
+            reverse("employee_list"),
+            reverse("employee_create"),
+            reverse("employee_edit", args=[self.worker.pk]),
+        ]
         self.client.force_login(self.sales1)
-        self.assertEqual(self.client.get(reverse("employee_list")).status_code, 200)
-        self.assertEqual(self.client.get(reverse("employee_create")).status_code, 200)
-        self.assertEqual(
-            self.client.get(reverse("employee_edit", args=[self.worker.pk])).status_code,
-            200,
+        for url in pages:
+            self.assertEqual(self.client.get(url).status_code, 200)
+        self.client.force_login(self.sales2)
+        for url in pages:
+            self.assertEqual(self.client.get(url).status_code, 403)
+
+    def test_edit_form_opens_on_the_workers_own_start_month(self):
+        # The select used to open on its first option — next month — because the
+        # instance's date matched none of the "YYYY-MM" values. Saving that as-is
+        # would have moved the account past every month already on the books.
+        self.worker.start_month = date(self.today.year - 1, 3, 1)
+        self.worker.save(update_fields=["start_month"])
+        self.client.force_login(self.admin)
+        opened = f"{self.today.year - 1}-03"
+        for url in (
+            reverse("employee_edit", args=[self.worker.pk]),
+            reverse("employee_create"),
+        ):
+            form = self.client.get(url).context["form"]
+            value = form["start_month"].value()
+            self.assertIn(value, dict(form.fields["start_month"].choices))
+            self.assertIn(f'value="{value}" selected', str(form["start_month"]))
+            # the edit form shows the worker's month, a new worker starts this month
+            self.assertEqual(value, opened)
+            opened = f"{self.today.year}-{self.today.month:02d}"
+
+    def test_start_month_older_than_the_list_is_still_offered(self):
+        self.worker.start_month = date(self.today.year - 5, 1, 1)
+        self.worker.save(update_fields=["start_month"])
+        form = EmployeeForm(instance=self.worker)
+        self.assertIn(
+            f'value="{self.today.year - 5}-01" selected', str(form["start_month"])
         )
 
     def test_detail_page_tells_the_whole_history(self):
@@ -3794,7 +4255,7 @@ class EmployeePayrollTests(BaseSetup):
             {
                 "date": self.today.isoformat(), "amount": "400000", "currency": "uzs",
                 "category": "Oylik / xodim", "method": "cash",
-                "employee": self.worker.pk, "counts_against_salary": "True",
+                "employee": self.worker.pk, "purpose": "oylik",
             },
         )
         self.assertRedirects(
@@ -4361,6 +4822,66 @@ class OmborReportTests(BaseSetup):
         response = self.client.get(reverse("ombor"))
         self.assertEqual(self._row(response)["total_kg"], Decimal("10"))  # sales2 excluded
 
+    def test_list_takes_returned_goods_off_the_sold_total(self):
+        sale = make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        make_sale(self.client1, self.sales1, self.p, weight="5", price="20000")
+        Return.objects.create(
+            sale_item=sale.items.first(), weight=Decimal("4"), created_by=self.sales1,
+        )
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("ombor"))
+        row = self._row(response)
+        self.assertEqual(row["total_kg"], Decimal("15"))  # what left the warehouse
+        self.assertEqual(row["returned_kg"], Decimal("4"))
+        self.assertEqual(row["net_kg"], Decimal("11"))
+        # The header is the net figure — the same one the dashboard shows as «Sotilgan»
+        self.assertEqual(
+            response.context["net_kg"],
+            response.context["total_kg"] - response.context["returned_kg"],
+        )
+        self.assertGreaterEqual(response.context["returned_kg"], Decimal("4"))
+
+    def test_list_has_a_returns_kpi(self):
+        sale = make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        self.client.force_login(self.sales1)
+        self.assertContains(self.client.get(reverse("ombor")), "bu davrda qaytarish yo'q")
+        for kg in ("4", "1"):
+            Return.objects.create(
+                sale_item=sale.items.first(), weight=Decimal(kg), created_by=self.sales1,
+            )
+        response = self.client.get(reverse("ombor"))
+        self.assertEqual(response.context["returned_kg"], Decimal("5"))
+        self.assertEqual(response.context["returned_count"], 2)
+        self.assertEqual(response.context["returned_amount"], Decimal("100000"))  # 5 × 20 000
+        self.assertContains(response, "Qaytgan tovar")
+        self.assertContains(response, "2 ta qaytarish")
+
+    def test_return_follows_its_sale_into_the_window_not_its_own_date(self):
+        # Sold last month, came back today: this month's report must not lose kg it
+        # never sold, and last month's must show the goods as returned.
+        old = date(2020, 3, 10)
+        sale = make_sale(self.client1, self.sales1, self.p, weight="10", price="20000", date=old)
+        Return.objects.create(
+            sale_item=sale.items.first(), weight=Decimal("3"), created_by=self.sales1,
+        )
+        self.client.force_login(self.sales1)
+        then = self.client.get(reverse("ombor"), {"dan": "2020-03-01", "gacha": "2020-03-31"})
+        self.assertEqual(self._row(then)["returned_kg"], Decimal("3"))
+        self.assertEqual(self._row(then)["net_kg"], Decimal("7"))
+        now = self.client.get(reverse("ombor"))
+        self.assertFalse([r for r in now.context["rows"] if r["product"] == self.p.pk])
+
+    def test_seller_does_not_see_another_sellers_returns(self):
+        make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
+        other = make_sale(self.client2, self.sales2, self.p, weight="7", price="20000")
+        Return.objects.create(
+            sale_item=other.items.first(), weight=Decimal("2"), created_by=self.sales2,
+        )
+        self.client.force_login(self.sales1)
+        row = self._row(self.client.get(reverse("ombor")))
+        self.assertEqual(row["returned_kg"], Decimal("0"))
+        self.assertEqual(row["net_kg"], Decimal("10"))
+
     def test_product_detail_admin_shows_per_seller_breakdown(self):
         make_sale(self.client1, self.sales1, self.p, weight="10", price="20000")
         make_sale(self.client2, self.sales2, self.p, weight="7", price="20000")
@@ -4862,6 +5383,352 @@ class InnerPageBackTests(BaseSetup):
             self.assertIn("topbar-back", r.content.decode(), url)
 
 
+class AdvanceClearTests(BaseSetup):
+    """Credit a client holds can be taken off in one step, even when no deposit stands
+    behind it — the few so'm left when a paid sale's price was corrected. The till is
+    not touched and the step can be undone."""
+
+    def _stray_credit(self, seller=None, amount="1000"):
+        """What a price correction on a paid sale leaves behind: credit on the client's
+        pool, hung on the sale, with no deposit row to edit or delete."""
+        seller = seller or self.sales1
+        # The client paid that much over the receipt...
+        Payment.objects.create(
+            sale=self.sale1, amount=Decimal(amount), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, created_by=seller,
+        )
+        # ...and the correction parked the excess as their credit.
+        return Payment.objects.create(
+            sale=self.sale1, client=self.client1, amount=Decimal(amount),
+            method=Payment.Method.CASH, kind=Payment.Kind.ADJUST_CREDIT,
+            note="Narx tuzatildi", created_by=seller,
+        )
+
+    def _clear(self):
+        return self.client.post(reverse("client_advance_clear", args=[self.client1.pk]))
+
+    def test_qarz_card_offers_the_button_for_credit_with_no_deposit(self):
+        self._stray_credit()
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("debt_client", args=[self.client1.pk]))
+        self.assertContains(
+            response, reverse("client_advance_clear", args=[self.client1.pk])
+        )
+
+    def test_no_button_without_advance(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("debt_client", args=[self.client1.pk]))
+        self.assertNotContains(
+            response, reverse("client_advance_clear", args=[self.client1.pk])
+        )
+
+    def test_clear_zeroes_the_balance_and_leaves_the_till_alone(self):
+        self._stray_credit()
+        till = seller_cash_on_hand(self.sales1)
+        self.client.force_login(self.sales1)
+        self.assertEqual(self._clear().status_code, 302)
+        self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("0"))
+        self.assertEqual(seller_cash_on_hand(self.sales1), till)
+        row = Payment.objects.get(kind=Payment.Kind.ADVANCE_OUT)
+        self.assertEqual(row.amount, Decimal("1000"))
+        self.assertTrue(row.is_opening)            # kept out of the kassa
+        self.assertTrue(row.note.startswith(ADVANCE_ADJUST_NOTE))
+        self.assertEqual(row.created_by, self.sales1)
+
+    def test_clear_can_be_undone_from_the_moves_table(self):
+        self._stray_credit()
+        self.client.force_login(self.sales1)
+        self._clear()
+        row = Payment.objects.get(kind=Payment.Kind.ADVANCE_OUT)
+        card = self.client.get(reverse("debt_client", args=[self.client1.pk]))
+        self.assertContains(card, reverse("advance_out_delete", args=[row.pk]))
+        self.client.post(reverse("advance_out_delete", args=[row.pk]))
+        self.assertEqual(
+            client_advance_balance(self.client1, self.sales1), Decimal("1000")
+        )
+
+    def test_nothing_is_written_when_there_is_no_advance(self):
+        self.client.force_login(self.sales1)
+        self._clear()
+        self.assertFalse(Payment.objects.filter(kind=Payment.Kind.ADVANCE_OUT).exists())
+
+    def test_admin_clears_each_sellers_till_separately(self):
+        self._stray_credit(self.sales1, "1000")
+        self._stray_credit(self.sales2, "700")
+        self.client.force_login(self.admin)
+        self._clear()
+        rows = {
+            p.created_by_id: p.amount
+            for p in Payment.objects.filter(kind=Payment.Kind.ADVANCE_OUT)
+        }
+        self.assertEqual(
+            rows, {self.sales1.pk: Decimal("1000"), self.sales2.pk: Decimal("700")}
+        )
+        self.assertEqual(client_advance_balance(self.client1), Decimal("0"))
+
+    def test_seller_clears_only_their_own_till(self):
+        self._stray_credit(self.sales1, "1000")
+        self._stray_credit(self.sales2, "700")
+        self.client.force_login(self.sales1)
+        self._clear()
+        self.assertEqual(client_advance_balance(self.client1, self.sales1), Decimal("0"))
+        self.assertEqual(
+            client_advance_balance(self.client1, self.sales2), Decimal("700")
+        )
+
+    def test_seller_cannot_clear_another_sellers_client(self):
+        Payment.objects.create(
+            sale=self.sale2, client=self.client2, amount=Decimal("1000"),
+            method=Payment.Method.CASH, kind=Payment.Kind.ADJUST_CREDIT,
+            created_by=self.sales2,
+        )
+        self.client.force_login(self.sales1)
+        response = self.client.post(
+            reverse("client_advance_clear", args=[self.client2.pk])
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(Payment.objects.filter(kind=Payment.Kind.ADVANCE_OUT).exists())
+
+    def test_clear_is_written_to_the_audit_log(self):
+        self._stray_credit()
+        self.client.force_login(self.sales1)
+        self._clear()
+        entry = AuditLog.objects.filter(action=AuditLog.Action.VOID).latest("pk")
+        self.assertIn("avansi o'chirildi", entry.summary)
+        self.assertIn("1,000", entry.summary)
+
+
+class AdvanceClearDialogTests(AdvanceClearTests):
+    """Before clearing, the dialog says what the advance is made of and what to fix
+    first — and still lets it be cleared."""
+
+    def _dialog(self):
+        return self.client.get(reverse("client_advance_clear", args=[self.client1.pk]))
+
+    def test_credit_off_a_sale_leads_back_to_its_receipt(self):
+        self._stray_credit()
+        self.client.force_login(self.sales1)
+        response = self._dialog()
+        self.assertContains(response, "Avval tekshiring")
+        self.assertContains(response, "Narx tuzatilganda ortgan pul")
+        self.assertContains(response, reverse("sale_detail", args=[self.sale1.pk]))
+        self.assertContains(response, "Baribir o&#x27;chirish")
+        # Looking is not clearing
+        self.assertFalse(Payment.objects.filter(kind=Payment.Kind.ADVANCE_OUT).exists())
+
+    def test_a_deposit_offers_its_own_edit_and_delete(self):
+        buyer = Client.objects.create(name="Avansli mijoz", owner=self.sales1)
+        deposit = Payment.objects.create(
+            client=buyer, amount=Decimal("500000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.ADVANCE_IN, created_by=self.sales1,
+        )
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_advance_clear", args=[buyer.pk]))
+        self.assertContains(response, reverse("advance_edit", args=[deposit.pk]))
+        self.assertContains(response, reverse("advance_delete", args=[deposit.pk]))
+        self.assertEqual(response.context["total"], Decimal("500000"))
+
+    def test_only_the_deposits_still_holding_money_are_listed(self):
+        buyer = Client.objects.create(name="Avansli mijoz", owner=self.sales1)
+        today = timezone.localdate()
+        spent = Payment.objects.create(
+            client=buyer, amount=Decimal("300000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.ADVANCE_IN, created_by=self.sales1,
+            date=today - timedelta(days=10),
+        )
+        Payment.objects.create(
+            client=buyer, amount=Decimal("300000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.ADVANCE_OUT, created_by=self.sales1,
+            date=today - timedelta(days=5),
+        )
+        live = Payment.objects.create(
+            client=buyer, amount=Decimal("200000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.ADVANCE_IN, created_by=self.sales1,
+        )
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_advance_clear", args=[buyer.pk]))
+        self.assertContains(response, reverse("advance_edit", args=[live.pk]))
+        self.assertNotContains(response, reverse("advance_edit", args=[spent.pk]))
+
+
+class DebtClearTests(BaseSetup):
+    """A client's open debt can be taken off with no money changing hands. The dialog
+    first shows what to fix instead; the clearing itself touches no till and is undone
+    by deleting the payment it wrote."""
+
+    def setUp(self):
+        self.debt = make_sale(self.client1, self.sales1, self.product, is_debt=True)
+
+    def _url(self, client=None):
+        return reverse("client_debt_clear", args=[(client or self.client1).pk])
+
+    def _clear(self):
+        return self.client.post(self._url())
+
+    def test_qarz_card_offers_the_button_only_with_open_receipts(self):
+        self.client.force_login(self.sales1)
+        card = self.client.get(reverse("debt_client", args=[self.client1.pk]))
+        self.assertContains(card, self._url())
+        self.client.force_login(self.sales2)
+        card = self.client.get(reverse("debt_client", args=[self.client2.pk]))
+        self.assertNotContains(card, self._url(self.client2))
+
+    def test_dialog_shows_what_to_fix_first(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(self._url())
+        self.assertContains(response, "Avval tekshiring")
+        # The receipt behind the debt, and the screens that put a wrong debt right
+        self.assertContains(response, reverse("sale_detail", args=[self.debt.pk]))
+        self.assertContains(response, reverse("client_debt_pay", args=[self.client1.pk]))
+        self.assertEqual(response.context["total"], Decimal("240000"))
+        self.assertContains(response, "Baribir o&#x27;chirish")
+        # Looking is not clearing
+        self.debt.refresh_from_db()
+        self.assertEqual(self.debt.debt_remaining, Decimal("240000"))
+
+    def test_opening_debt_leads_to_its_own_form(self):
+        Sale.objects.create(
+            client=self.client1, sales_rep=self.sales1, is_opening=True,
+            opening_amount=Decimal("100000"),
+            debt_deadline=timezone.localdate() + timedelta(days=7),
+        )
+        self.client.force_login(self.sales1)
+        response = self.client.get(self._url())
+        self.assertContains(response, "Boshlang&#x27;ich qarz")
+        self.assertContains(
+            response, reverse("client_opening_debt", args=[self.client1.pk])
+        )
+
+    def test_clear_settles_every_receipt_and_leaves_the_till_alone(self):
+        opening = Sale.objects.create(
+            client=self.client1, sales_rep=self.sales1, is_opening=True,
+            opening_amount=Decimal("100000"),
+            debt_deadline=timezone.localdate() + timedelta(days=7),
+        )
+        till = seller_cash_on_hand(self.sales1)
+        self.client.force_login(self.admin)
+        self.assertEqual(self._clear().status_code, 302)
+        open_left = Sale.objects.filter(client=self.client1).outstanding()
+        self.assertFalse(open_left.exists())
+        self.assertEqual(seller_cash_on_hand(self.sales1), till)
+        rows = Payment.objects.filter(note=DEBT_CLEAR_NOTE)
+        self.assertEqual(
+            {p.sale_id: p.amount for p in rows},
+            {self.debt.pk: Decimal("240000"), opening.pk: Decimal("100000")},
+        )
+        for row in rows:
+            self.assertEqual(row.kind, Payment.Kind.DEBT)
+            self.assertTrue(row.is_opening)                 # kept out of the kassa
+            self.assertEqual(row.created_by, self.sales1)   # the sale's own seller
+        self.assertFalse(Payment.objects.till_income().filter(note=DEBT_CLEAR_NOTE).exists())
+
+    def test_cleared_debt_is_not_reported_as_money_received(self):
+        self.client.force_login(self.sales1)
+        self._clear()
+        payments = self.client.get(reverse("payment_list"))
+        self.assertEqual(
+            [row["sale_pk"] for row in payments.context["page"].object_list],
+            [self.sale1.pk],     # the paid sale from BaseSetup, nothing else
+        )
+        history = self.client.get(reverse("client_history", args=[self.client1.pk]))
+        self.assertEqual(history.context["totals"]["debt"], Decimal("0"))
+        self.assertEqual(history.context["totals"]["paid"], Decimal("240000"))
+        self.assertContains(history, DEBT_CLEAR_NOTE.replace("'", "&#x27;"))
+        # Nor does it count as the day the client last paid
+        card = self.client.get(reverse("debt_client", args=[self.client1.pk]))
+        self.assertEqual(card.context["last_payment"], self.sale1.date)
+
+    def test_clear_is_undone_by_deleting_the_payment_on_the_receipt(self):
+        self.client.force_login(self.sales1)
+        self._clear()
+        row = Payment.objects.get(note=DEBT_CLEAR_NOTE)
+        detail = self.client.get(reverse("sale_detail", args=[self.debt.pk]))
+        self.assertContains(detail, reverse("payment_delete", args=[row.pk]))
+        self.assertContains(detail, "kassasiz")
+        self.client.post(reverse("payment_delete", args=[row.pk]))
+        self.debt.refresh_from_db()
+        self.assertEqual(self.debt.debt_remaining, Decimal("240000"))
+
+    def test_nothing_is_written_when_there_is_no_debt(self):
+        self.client.force_login(self.sales2)
+        self.client.post(self._url(self.client2))
+        self.assertFalse(Payment.objects.filter(note=DEBT_CLEAR_NOTE).exists())
+
+    def test_seller_cannot_clear_another_sellers_client(self):
+        self.client.force_login(self.sales2)
+        self.assertEqual(self._clear().status_code, 404)
+        self.assertFalse(Payment.objects.filter(note=DEBT_CLEAR_NOTE).exists())
+
+    def test_clear_is_written_to_the_audit_log(self):
+        self.client.force_login(self.sales1)
+        self._clear()
+        entry = AuditLog.objects.filter(action=AuditLog.Action.VOID).latest("pk")
+        self.assertIn("qarzi o'chirildi", entry.summary)
+        self.assertIn("240,000", entry.summary)
+
+
+class ClientDeleteTests(BaseSetup):
+    """A client is deleted outright, whatever is on their account — debt, advance,
+    paid sales. Nothing blocks it; the dialog says what goes and the money re-derives."""
+
+    def _owing_client_with_advance(self):
+        buyer = Client.objects.create(name="Qarzdor mijoz", owner=self.sales1)
+        debt = make_sale(buyer, self.sales1, self.product, is_debt=True)   # owes 240000
+        paid = make_sale(buyer, self.sales1, self.product)                 # paid 240000
+        Payment.objects.create(
+            client=buyer, amount=Decimal("500000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.ADVANCE_IN, created_by=self.sales1,
+        )
+        return buyer, debt, paid
+
+    def test_client_with_debt_and_advance_is_deleted_with_everything_on_it(self):
+        buyer, debt, paid = self._owing_client_with_advance()
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("client_delete", args=[buyer.pk]))
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(Client.objects.filter(pk=buyer.pk).exists())
+        self.assertFalse(Sale.objects.filter(pk__in=[debt.pk, paid.pk]).exists())
+        self.assertFalse(SaleItem.objects.filter(sale__in=[debt.pk, paid.pk]).exists())
+        self.assertFalse(Payment.objects.filter(sale=paid.pk).exists())
+        self.assertFalse(Payment.objects.filter(kind=Payment.Kind.ADVANCE_IN).exists())
+        # Everyone else's records are untouched
+        self.assertTrue(Sale.objects.filter(pk=self.sale1.pk).exists())
+        self.assertEqual(self.sale1.payments.count(), 1)
+
+    def test_dialog_spells_out_what_goes(self):
+        buyer, _, _ = self._owing_client_with_advance()
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_delete", args=[buyer.pk]))
+        self.assertContains(response, "2 ta sotuv")
+        self.assertContains(response, "2 ta to&#x27;lov")
+        self.assertContains(response, "240,000 so&#x27;m qarz")
+        self.assertContains(response, "500,000 so&#x27;m avans")
+        # Opening the dialog deletes nothing
+        self.assertTrue(Client.objects.filter(pk=buyer.pk).exists())
+
+    def test_audit_line_keeps_what_was_on_the_account(self):
+        buyer, _, _ = self._owing_client_with_advance()
+        self.client.force_login(self.sales1)
+        self.client.post(reverse("client_delete", args=[buyer.pk]))
+        entry = AuditLog.objects.get(target_type="Mijoz", action=AuditLog.Action.DELETE)
+        self.assertIn("Qarzdor mijoz", entry.summary)
+        self.assertIn("240,000 so'm qarz", entry.summary)
+        self.assertIn("500,000 so'm avans", entry.summary)
+
+    def test_empty_client_dialog_has_no_money_warning(self):
+        buyer = Client.objects.create(name="Bo'sh mijoz", owner=self.sales1)
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("client_delete", args=[buyer.pk]))
+        self.assertNotContains(response, "qayta hisoblanadi")
+
+    def test_seller_cannot_delete_another_sellers_client(self):
+        self.client.force_login(self.sales1)
+        response = self.client.post(reverse("client_delete", args=[self.client2.pk]))
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(Client.objects.filter(pk=self.client2.pk).exists())
+        self.assertTrue(Sale.objects.filter(pk=self.sale2.pk).exists())
+
+
 class AuditCoverageTests(BaseSetup):
     """Amallar tarixi is meant to hold EVERY operation, not only the ones that move
     money: a renamed client, a re-priced product, a stock correction and a new login
@@ -5120,10 +5987,23 @@ class OmborExportTests(BaseSetup):
     def test_export_lists_sold_kg_for_every_seller(self):
         self.client.force_login(self.admin)
         rows = read_xlsx(self.client.get(reverse("ombor_export")))
-        self.assertEqual(rows[0], ("Mahsulot", "SKU", "Sotuvlar soni", "Sotilgan (kg)"))
+        self.assertEqual(rows[0], (
+            "Mahsulot", "SKU", "Sotuvlar soni", "Sotilgan (kg)", "Qaytgan (kg)", "Sof sotilgan (kg)",
+        ))
         by_sku = {r[1]: r for r in rows[1:]}
         # BaseSetup sells 10 kg through each of the two sellers
         self.assertEqual(by_sku[self.product.sku][3], 20.0)
+
+    def test_export_carries_returned_and_net_kg(self):
+        sale = Sale.objects.filter(sales_rep=self.sales1, items__product=self.product).first()
+        Return.objects.create(
+            sale_item=sale.items.filter(product=self.product).first(),
+            weight=Decimal("3"), created_by=self.sales1,
+        )
+        self.client.force_login(self.admin)
+        rows = read_xlsx(self.client.get(reverse("ombor_export")))
+        row = {r[1]: r for r in rows[1:]}[self.product.sku]
+        self.assertEqual(row[3:6], (20.0, 3.0, 17.0))
 
     def test_export_is_scoped_to_the_seller_who_downloads_it(self):
         self.client.force_login(self.sales1)
@@ -6495,7 +7375,7 @@ class BackdatedPayoutWarningTests(BaseSetup):
             data={
                 "date": day.isoformat(), "amount": amount, "category": "Boshqa",
                 "method": Payment.Method.CASH, "currency": Payment.Currency.UZS,
-                "counts_against_salary": "False", **extra,
+                "purpose": "xarajat", **extra,
             },
             user=self.sales1,
         )
@@ -6533,6 +7413,276 @@ class BackdatedPayoutWarningTests(BaseSetup):
         )
         self.assertFalse(form.is_valid())
         self.assertIn("Saqlashni yana bosing", " ".join(form.errors["__all__"]))
+
+
+class HandedOverLaterTests(BaseSetup):
+    """A past day shows only the money that has not left the till since.
+
+    A seller keys a day in, hands over what it took and the day reads zero. Minutes
+    later three more payments for that day are entered with the old date, and the
+    money goes out with the NEXT day's handover. The sum is right, but by the dates
+    alone the old day holds a balance for ever — that is how 30.09 came to read
+    8 211 700 on a till that had been emptied. Keeping a day's takings overnight and
+    handing them over in the morning leaves the same trail.
+
+    So what left the till under a later date comes off the oldest money first: a day
+    whose takings have been handed over reads zero whichever date the handover
+    carries, and nothing has to be re-dated or warned about."""
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.yesterday = self.today - timedelta(days=1)
+        self.day = self.today - timedelta(days=5)
+        # A day keyed in and closed: 100 000 came in on a debt, 100 000 was handed over.
+        self.debt = make_sale(
+            self.client1, self.sales1, self.product, is_debt=True, date=self.day,
+        )
+        self._pay(self.day, "100000")
+        self._hand_over(self.day, "100000")
+        # BaseSetup's paid sale also leaves 240 000 in the till, dated today.
+        # The rule itself is under test, wherever the calendar stands: the window left
+        # for clearing old days by hand is switched off here and tested on its own.
+        by_hand = mock.patch("crm.models.TILL_SETTLES_FROM", None)
+        by_hand.start()
+        self.addCleanup(by_hand.stop)
+
+    def _pay(self, day, amount):
+        return Payment.objects.create(
+            sale=self.debt, amount=Decimal(amount), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=day, created_by=self.sales1,
+        )
+
+    def _hand_over(self, day, amount):
+        return ProductionRemittance.objects.create(
+            seller=self.sales1, date=day, amount=Decimal(amount), created_by=self.sales1,
+        )
+
+    def _on(self, day):
+        """(what the dated rows say the day closed on, what of it is still held)."""
+        standing = till_on(till_days(self.sales1).get(self.sales1.pk, []), day)
+        return standing.at_close, standing.still_held
+
+    # --- the rule ---------------------------------------------------------------
+
+    def test_late_income_shows_on_its_day_until_it_is_handed_over(self):
+        self._pay(self.day, "50000")
+        self.assertEqual(self._on(self.day), (Decimal("50000"), Decimal("50000")))
+
+    def test_handed_over_under_a_later_date_the_old_day_reads_zero(self):
+        # The 30.09 case: the late 50 000 goes out with today's handover.
+        self._pay(self.day, "50000")
+        self._hand_over(self.today, "290000")
+        self.assertEqual(self._on(self.day), (Decimal("50000"), Decimal("0")))
+        self.assertEqual(self._on(self.today), (Decimal("0"), Decimal("0")))
+
+    def test_takings_kept_overnight_read_zero_once_handed_over(self):
+        # Nothing handed over yesterday; one handover today carries both days.
+        self._pay(self.yesterday, "70000")
+        self.assertEqual(self._on(self.yesterday), (Decimal("70000"), Decimal("70000")))
+        self._hand_over(self.today, "310000")
+        self.assertEqual(self._on(self.yesterday), (Decimal("70000"), Decimal("0")))
+
+    def test_a_handover_takes_the_oldest_money_first(self):
+        # 200 000 of the 310 000 goes: yesterday's 70 000 is covered, the rest of the
+        # shortfall sits on today.
+        self._pay(self.yesterday, "70000")
+        self._hand_over(self.today, "200000")
+        self.assertEqual(self._on(self.yesterday)[1], Decimal("0"))
+        self.assertEqual(self._on(self.today), (Decimal("110000"), Decimal("110000")))
+
+    def test_what_a_handover_does_not_reach_stays_on_the_old_day(self):
+        self._pay(self.yesterday, "70000")
+        self._hand_over(self.today, "30000")
+        self.assertEqual(self._on(self.yesterday)[1], Decimal("40000"))
+
+    def test_an_expense_under_a_later_date_counts_as_money_gone(self):
+        self._pay(self.day, "50000")
+        Expense.objects.create(
+            date=self.today, amount=Decimal("50000"), amount_original=Decimal("50000"),
+            category="Boshqa", created_by=self.sales1,
+        )
+        self.assertEqual(self._on(self.day)[1], Decimal("0"))
+
+    def test_cash_production_hands_back_is_money_in_not_money_gone(self):
+        # A return is a handover with a minus. Read as "money gone" it would ADD to
+        # what the old day holds instead of leaving it alone.
+        self._pay(self.day, "50000")
+        self._hand_over(self.today, "-40000")
+        self.assertEqual(self._on(self.day)[1], Decimal("50000"))
+        self.assertEqual(self._on(self.today)[0], Decimal("330000"))
+
+    def test_an_overdrawn_day_reads_zero_once_later_money_covers_it(self):
+        self._hand_over(self.day, "30000")
+        self.assertEqual(self._on(self.day), (Decimal("-30000"), Decimal("0")))
+
+    def test_an_overdraft_nothing_has_covered_still_shows(self):
+        self._hand_over(self.day, "300000")
+        self.assertEqual(self._on(self.day)[1], Decimal("-60000"))
+        self.assertEqual(self._on(self.today), (Decimal("-60000"), Decimal("-60000")))
+
+    def test_the_days_end_on_the_cash_on_hand_figure(self):
+        # Two ways of adding up the same till must never drift apart.
+        self._pay(self.day, "50000")
+        Expense.objects.create(
+            date=self.yesterday, amount=Decimal("7000"), amount_original=Decimal("7000"),
+            category="Boshqa", created_by=self.sales1,
+        )
+        days = till_days(self.sales1)[self.sales1.pk]
+        self.assertEqual(days[-1].at_close, seller_cash_on_hand(self.sales1))
+        self.assertEqual(days[-1].still_held, seller_cash_on_hand(self.sales1))
+        for day in days:
+            self.assertEqual(
+                day.at_close, seller_cash_on_hand(self.sales1, through=day.day)
+            )
+
+    def test_every_till_at_once_matches_each_on_its_own(self):
+        self._pay(self.day, "50000")
+        everyone = till_days()
+        for seller in (self.sales1, self.sales2):
+            self.assertEqual(everyone[seller.pk], till_days(seller)[seller.pk])
+
+    def test_a_till_that_had_not_moved_yet_stood_at_nothing(self):
+        before = self.day - timedelta(days=30)
+        self.assertEqual(self._on(before), (Decimal("0"), Decimal("0")))
+
+    # --- the kassa figures ------------------------------------------------------
+
+    def test_the_kassa_figure_for_an_old_day_drops_what_was_handed_over_since(self):
+        self._pay(self.day, "50000")
+        held = _kassa_summary(self.day, self.day, rep=self.sales1)
+        self.assertEqual(held["cash"], Decimal("50000"))
+        self.assertEqual(held["cash_settled_later"], Decimal("0"))
+        self._hand_over(self.today, "290000")
+        settled = _kassa_summary(self.day, self.day, rep=self.sales1)
+        self.assertEqual(settled["cash"], Decimal("0"))
+        self.assertEqual(settled["cash_at_close"], Decimal("50000"))
+        self.assertEqual(settled["cash_settled_later"], Decimal("50000"))
+
+    def test_todays_kassa_figure_is_still_the_cash_on_hand(self):
+        self._pay(self.day, "50000")
+        summary = _kassa_summary(self.today, self.today, rep=self.sales1)
+        self.assertEqual(summary["cash"], seller_cash_on_hand(self.sales1))
+        self.assertEqual(summary["cash"], summary["cash_at_close"])
+
+    def test_the_company_figure_adds_the_tills_up_one_by_one(self):
+        # sales2 holds 240 000 of their own; sales1's settled day must not eat into it.
+        self._pay(self.day, "50000")
+        self._hand_over(self.today, "290000")
+        company = _kassa_summary(self.today, self.today)
+        self.assertEqual(company["cash"], seller_cash_on_hand(self.sales2))
+
+    def test_the_sellers_row_shows_the_same_figure(self):
+        self._pay(self.day, "50000")
+        self._hand_over(self.today, "290000")
+        row = _per_employee_kassa(self.day, self.day, rep=self.sales1)[0]
+        self.assertEqual(row["cash"], Decimal("0"))
+        self.assertEqual(row["cash_at_close"], Decimal("50000"))
+        today = _per_employee_kassa(self.today, self.today, rep=self.sales1)[0]
+        self.assertEqual(today["cash"], today["cash_at_close"])
+
+    def test_the_page_says_what_the_old_day_closed_on(self):
+        self._pay(self.day, "50000")
+        self._hand_over(self.today, "290000")
+        self.client.force_login(self.sales1)
+        window = {"dan": self.day.isoformat(), "gacha": self.day.isoformat()}
+        response = self.client.get(reverse("kassa"), window)
+        self.assertEqual(response.context["summary"]["cash"], Decimal("0"))
+        # The page groups thousands with a non-breaking space.
+        self.assertContains(response, "50\xa0000 so'm bo'lgan")
+        self.assertContains(response, "keyin topshirilgan yoki sarflangan")
+        # Today nothing has left since, so there is nothing to explain.
+        self.assertNotContains(self.client.get(reverse("kassa")), "so'm bo'lgan")
+
+    # --- days left for the owner to clear by hand -------------------------------
+
+    def test_days_before_the_start_date_keep_the_plain_dated_figure(self):
+        # July–September are being corrected by hand, so the screen must not zero
+        # them: before TILL_SETTLES_FROM the old day shows what the rows say.
+        self._pay(self.day, "50000")
+        self._hand_over(self.today, "290000")
+        days = till_days(self.sales1)[self.sales1.pk]
+        with mock.patch("crm.models.TILL_SETTLES_FROM", self.today):
+            self.assertEqual(till_cash_on(days, self.day), Decimal("50000"))
+            self.assertEqual(till_cash_on(days, self.today), Decimal("0"))
+            old_day = _kassa_summary(self.day, self.day, rep=self.sales1)
+            self.assertEqual(old_day["cash"], Decimal("50000"))
+            self.assertEqual(old_day["cash_settled_later"], Decimal("0"))
+            row = _per_employee_kassa(self.day, self.day, rep=self.sales1)[0]
+            self.assertEqual(row["cash"], Decimal("50000"))
+
+    def test_with_no_start_date_every_day_follows_the_rule(self):
+        self._pay(self.day, "50000")
+        self._hand_over(self.today, "290000")
+        days = till_days(self.sales1)[self.sales1.pk]
+        with mock.patch("crm.models.TILL_SETTLES_FROM", None):
+            self.assertEqual(till_cash_on(days, self.day), Decimal("0"))
+
+    # --- the notice -------------------------------------------------------------
+
+    def test_money_the_last_handover_left_behind_is_pointed_out(self):
+        self.assertIsNone(left_after_handover(self.sales1))
+        self._pay(self.day, "50000")
+        self.assertEqual(
+            left_after_handover(self.sales1), (self.day, Decimal("50000"))
+        )
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("kassa"))
+        self.assertContains(response, "50\xa0000 so'm topshirilmay qolgan")
+        self.assertContains(response, "amount=50000")
+
+    def test_once_it_has_gone_under_any_date_there_is_no_notice(self):
+        self._pay(self.day, "50000")
+        self._hand_over(self.today, "290000")
+        self.assertIsNone(left_after_handover(self.sales1))
+        self.client.force_login(self.sales1)
+        self.assertNotContains(self.client.get(reverse("kassa")), "topshirilmay qolgan")
+
+    def test_takings_since_the_last_handover_are_not_pointed_out(self):
+        # Yesterday's money waiting for this morning's handover is ordinary.
+        self._pay(self.yesterday, "70000")
+        self.assertIsNone(left_after_handover(self.sales1))
+
+    def test_a_handover_made_today_is_not_judged_yet(self):
+        self._hand_over(self.today, "100000")
+        self.assertIsNone(left_after_handover(self.sales1))
+
+    def test_a_seller_who_never_handed_over_gets_no_notice(self):
+        self.assertIsNone(left_after_handover(self.sales2))
+
+    def test_an_admin_is_told_whose_till_it_is(self):
+        self._pay(self.day, "50000")
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("kassa"))
+        self.assertContains(response, "50\xa0000 so'm topshirilmay qolgan")
+        self.assertContains(response, f"seller={self.sales1.pk}")
+
+    def test_the_notice_opens_the_handover_with_the_sum_filled_in(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("remittance_create"), {"amount": "50000"})
+        self.assertContains(response, 'value="50000"')
+
+    # --- nothing is questioned any more -----------------------------------------
+
+    def test_income_dated_into_a_handed_over_day_saves_first_time(self):
+        self.client.force_login(self.sales1)
+        before = Payment.objects.count()
+        response = self.client.post(reverse("sale_pay", args=[self.debt.pk]), {
+            "date": self.day.isoformat(), "amount": "50000",
+            "method": Payment.Method.CASH, "currency": Payment.Currency.UZS,
+        })
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(Payment.objects.count(), before + 1)
+
+    def test_a_later_handover_that_takes_the_old_money_saves_first_time(self):
+        self._pay(self.day, "50000")
+        form = ProductionRemittanceForm(
+            data={
+                "date": self.today.isoformat(), "seller": self.sales1.pk,
+                "amount": "290000", "method": Payment.Method.CASH, "note": "",
+            },
+            user=self.sales1,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
 
 
 class ActingSellerTests(BaseSetup):
@@ -6768,3 +7918,538 @@ class ActingSellerSwitchTests(BaseSetup):
         self.client.force_login(self.admin)
         response = self._switch(self.sales1.pk, next_url="https://evil.example/")
         self.assertRedirects(response, reverse("dashboard"), fetch_redirect_response=False)
+
+
+class MonthlyReportTests(BaseSetup):
+    """Oylik hisobot: the month's closing sheet, counted the way the paper one was —
+    full markup as profit, the wage the month's work was worth as its cost."""
+
+    # A finished month nothing else in the suite writes into, so every figure on the
+    # page is one this class put there.
+    MONTH = "2020-03"
+    DAY = date(2020, 3, 10)
+
+    def setUp(self):
+        self.p = Product.objects.create(
+            name="Hisobot test", sku="HSB-1",
+            cost_price=Decimal("10000"), price=Decimal("20000"),
+        )
+        self.client.force_login(self.admin)
+
+    def _report(self, month=MONTH):
+        return self.client.get(reverse("monthly_report"), {"oy": month}).context
+
+    def _sell(self, weight="10", **kwargs):
+        # 10 kg × 20 000 = 200 000 savdo; tannarx 100 000; foyda 100 000
+        return make_sale(
+            self.client1, self.sales1, self.p, weight=weight, price="20000",
+            date=self.DAY, **kwargs,
+        )
+
+    def _spend(self, amount, category="Benzin / transport", **kwargs):
+        return Expense.objects.create(
+            date=self.DAY, amount=Decimal(amount), category=category,
+            method=Payment.Method.CASH, created_by=self.admin, **kwargs,
+        )
+
+    def test_sold_goods_are_listed_by_product_after_returns(self):
+        sale = self._sell()
+        Return.objects.create(
+            sale_item=sale.items.first(), weight=Decimal("4"), date=self.DAY,
+            created_by=self.sales1,
+        )
+        ctx = self._report()
+        (row,) = ctx["products"]
+        self.assertEqual(row["name"], "Hisobot test")
+        self.assertEqual(row["kg"], Decimal("6"))
+        self.assertEqual(row["revenue"], Decimal("120000"))
+        self.assertEqual(row["cost"], Decimal("60000"))
+        self.assertEqual(row["profit"], Decimal("60000"))
+        self.assertEqual(ctx["totals"]["profit"], Decimal("60000"))
+
+    def test_products_are_added_into_their_report_group(self):
+        # The paper has one line for ОҚ: ОҚ ЯЛТИРОҚ is counted inside it.
+        self.p.report_group = "Guruh A"
+        self.p.save()
+        shiny = Product.objects.create(
+            name="Hisobot test yaltiroq", sku="HSB-2", report_group=" guruh a ",
+            cost_price=Decimal("10000"), price=Decimal("20000"),
+        )
+        alone = Product.objects.create(
+            name="Yakka mahsulot", sku="HSB-3",
+            cost_price=Decimal("10000"), price=Decimal("20000"),
+        )
+        self._sell()                                                       # 10 kg
+        make_sale(self.client1, self.sales1, shiny, weight="4", price="20000", date=self.DAY)
+        make_sale(self.client1, self.sales1, alone, weight="1", price="20000", date=self.DAY)
+        ctx = self._report()
+        self.assertEqual(len(ctx["products"]), 3)                # still known one by one
+        merged, single = ctx["groups"]
+        self.assertEqual(merged["label"], "Guruh A")
+        self.assertEqual(merged["kg"], Decimal("14"))
+        self.assertEqual(merged["revenue"], Decimal("280000"))
+        self.assertEqual(merged["profit"], Decimal("140000"))
+        self.assertEqual(
+            [m["name"] for m in merged["members"]],
+            ["Hisobot test", "Hisobot test yaltiroq"],
+        )
+        self.assertFalse(merged["is_single"])
+        # A product nobody grouped is a line of its own, under its own name
+        self.assertEqual(single["label"], "Yakka mahsulot")
+        self.assertTrue(single["is_single"])
+        self.assertEqual(
+            sum(g["profit"] for g in ctx["groups"]), ctx["totals"]["profit"]
+        )
+
+    def test_report_group_is_set_on_the_product_form(self):
+        data = {
+            "name": self.p.name, "sku": self.p.sku, "description": "",
+            "cost_price": "10000", "price": "20000", "report_group": "КОП",
+            "is_active": "on",
+        }
+        self.client.post(reverse("product_edit", args=[self.p.pk]), data)
+        self.p.refresh_from_db()
+        self.assertEqual(self.p.report_group, "КОП")
+
+    def test_a_written_off_return_keeps_its_tannarx(self):
+        sale = self._sell()
+        Return.objects.create(
+            sale_item=sale.items.first(), weight=Decimal("4"), date=self.DAY,
+            restock=False, created_by=self.sales1,
+        )
+        (row,) = self._report()["products"]
+        self.assertEqual(row["cost"], Decimal("100000"))
+        self.assertEqual(row["profit"], Decimal("20000"))  # 120 000 − 100 000
+
+    def test_profit_is_the_full_markup_even_while_the_sale_is_unpaid(self):
+        # Kassa's «Sof foyda» earns nothing on an unpaid receipt; the paper does.
+        self._sell(is_debt=True)
+        self.assertEqual(self._report()["totals"]["profit"], Decimal("100000"))
+
+    def test_net_profit_is_profit_less_expenses_bank_fee_and_wages(self):
+        sale = self._sell(is_debt=True)
+        self._spend("30000")
+        Payment.objects.create(
+            sale=sale, amount=Decimal("100000"), method=Payment.Method.TRANSFER,
+            kind=Payment.Kind.DEBT, date=self.DAY, created_by=self.sales1,
+            commission=Decimal("4000"), commission_payer=Payment.Payer.SELLER,
+        )
+        Employee.objects.create(
+            name="Hisobot xodimi", salary=Decimal("20000"), start_month=date(2020, 3, 1),
+        )
+        ctx = self._report()
+        self.assertEqual(ctx["expense_total"], Decimal("30000"))
+        self.assertEqual(ctx["bank_fee"], Decimal("4000"))
+        self.assertEqual(ctx["wage_total"], Decimal("20000"))
+        self.assertEqual(ctx["spent"], Decimal("54000"))
+        self.assertEqual(ctx["net_profit"], Decimal("46000"))  # 100 000 − 54 000
+
+    def test_a_fee_the_client_carries_is_not_the_firms_cost(self):
+        sale = self._sell(is_debt=True)
+        Payment.objects.create(
+            sale=sale, amount=Decimal("100000"), method=Payment.Method.TRANSFER,
+            kind=Payment.Kind.DEBT, date=self.DAY, created_by=self.sales1,
+            commission=Decimal("4000"), commission_payer=Payment.Payer.CLIENT,
+        )
+        self.assertEqual(self._report()["bank_fee"], Decimal("0"))
+
+    def test_the_wage_is_what_was_earned_and_an_overdraw_is_the_workers_debt(self):
+        worker = Employee.objects.create(
+            name="Hisobot xodimi", salary=Decimal("2000000"), start_month=date(2020, 3, 1),
+        )
+        self._spend("2500000", category="Oylik / xodim", employee=worker)
+        ctx = self._report()
+        # The payout is not charged on top of the wage it pays
+        self.assertEqual(ctx["expense_total"], Decimal("0"))
+        self.assertEqual(ctx["wage_total"], Decimal("2000000"))
+        (debtor,) = ctx["employee_debtors"]
+        self.assertEqual(debtor["employee"], worker)
+        self.assertEqual(debtor["debt"], Decimal("500000"))
+        self.assertEqual(debtor["before"], Decimal("0"))     # nothing owed coming in
+        self.assertEqual(ctx["employee_debt_total"], Decimal("500000"))
+
+    def test_a_workers_debt_is_spelled_out_as_before_and_the_months_change(self):
+        # The paper's «Қарз» line: 300 000 + 500 000 = 800 000
+        worker = Employee.objects.create(
+            name="Hisobot xodimi", salary=Decimal("2000000"),
+            start_month=date(2020, 3, 1), opening_balance=Decimal("-300000"),
+        )
+        self._spend("2500000", category="Oylik / xodim", employee=worker)
+        response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
+        (debtor,) = response.context["employee_debtors"]
+        self.assertEqual(debtor["before"], Decimal("300000"))
+        self.assertEqual(debtor["change"], Decimal("500000"))
+        self.assertEqual(debtor["debt"], Decimal("800000"))
+        self.assertContains(response, "=<strong>")
+        # April's wage outruns what was drawn: 800 000 − 400 000 = 400 000
+        Expense.objects.create(
+            date=date(2020, 4, 10), amount=Decimal("1600000"), category="Oylik / xodim",
+            method=Payment.Method.CASH, created_by=self.admin, employee=worker,
+        )
+        (debtor,) = self._report("2020-04")["employee_debtors"]
+        self.assertEqual(debtor["before"], Decimal("800000"))
+        self.assertEqual(debtor["change"], Decimal("-400000"))
+        self.assertEqual(debtor["debt"], Decimal("400000"))
+
+    def test_wage_line_reads_carried_plus_wage_less_paid_is_left(self):
+        # 300 000 still owed from before + 2 000 000 earned − 500 000 paid = 1 800 000.
+        # The month's cost is the wage alone, however much of it was paid out.
+        worker = Employee.objects.create(
+            name="Hisobot xodimi", salary=Decimal("2000000"),
+            start_month=date(2020, 3, 1), opening_balance=Decimal("300000"),
+        )
+        self._spend("500000", category="Oylik / xodim", employee=worker)
+        response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
+        ctx = response.context
+        (row,) = ctx["wages"]
+        self.assertEqual(row["carried"], Decimal("300000"))
+        self.assertEqual(row["wage"], Decimal("2000000"))
+        self.assertEqual(row["paid"], Decimal("500000"))
+        self.assertEqual(row["remaining"], Decimal("1800000"))
+        self.assertEqual(ctx["spent"], Decimal("2000000"))
+        # The paper shows the month's wage, not what was handed over
+        self.assertContains(
+            response,
+            "<tr><td>Hisobot xodimi</td><td>2\xa0000\xa0000</td></tr>",
+        )
+        self.assertContains(response, "<tr><th>Ходим</th><th>Сумма</th></tr>")
+        self.assertNotContains(response, "<td>Аванс</td>")
+        export = self.client.get(reverse("monthly_report_export"), {"oy": self.MONTH})
+        book = load_workbook(BytesIO(export.content))
+        rows = list(book["Rasxod"].iter_rows(values_only=True))
+        self.assertIn(("Oylik", "Hisobot xodimi", 2000000), rows)
+        self.assertEqual(rows[-1], ("Jami", None, 2000000))
+        workers = list(book["Xodimlar"].iter_rows(values_only=True))
+        self.assertIn(("Hisobot xodimi", 300000, 2000000, 500000, 0, 1800000), workers)
+
+    def test_a_worker_in_debt_shows_it_as_minus_on_the_wage_line(self):
+        # −300 000 (the worker's debt) + 2 000 000 earned − 2 500 000 drawn = −800 000
+        worker = Employee.objects.create(
+            name="Hisobot xodimi", salary=Decimal("2000000"),
+            start_month=date(2020, 3, 1), opening_balance=Decimal("-300000"),
+        )
+        self._spend("2500000", category="Oylik / xodim", employee=worker)
+        response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
+        self.assertEqual(response.context["spent"], Decimal("2000000"))
+        self.assertContains(
+            response,
+            "<tr><td>Hisobot xodimi</td><td>2\xa0000\xa0000</td></tr>",
+        )
+
+    def test_a_remainder_paid_next_month_closes_the_month_it_settles(self):
+        # March's 500 000 handed over on 05.04: March reads paid in full, April opens
+        # with nothing carried and nothing of it drawn.
+        worker = Employee.objects.create(
+            name="Hisobot xodimi", salary=Decimal("2000000"), start_month=date(2020, 3, 1),
+        )
+        self._spend("1500000", category="Oylik / xodim", employee=worker)
+        Expense.objects.create(
+            date=date(2020, 4, 5), wage_month=date(2020, 3, 1), amount=Decimal("500000"),
+            category="Oylik / xodim", method=Payment.Method.CASH, created_by=self.admin,
+            employee=worker,
+        )
+        response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
+        (march,) = response.context["wages"]
+        self.assertEqual((march["paid"], march["remaining"]), (Decimal("2000000"), Decimal("0")))
+        # The screen's «Berilgan» is only what March itself handed over
+        self.assertEqual(
+            (march["paid_now"], march["paid_later"]), (Decimal("1500000"), Decimal("500000"))
+        )
+        # The paper reads March's full wage, however it was split between the months
+        self.assertContains(response, "<tr><td>Hisobot xodimi</td><td>2\xa0000\xa0000</td></tr>")
+        april = self.client.get(reverse("monthly_report"), {"oy": "2020-04"})
+        (row,) = april.context["wages"]
+        self.assertEqual((row["carried"], row["paid"]), (Decimal("0"), Decimal("0")))
+        # …and April's paper carries April's wage alone, not March's 500 000 on top
+        self.assertContains(april, "<tr><td>Hisobot xodimi</td><td>2\xa0000\xa0000</td></tr>")
+
+    def test_money_a_worker_spent_for_the_firm_stays_an_expense(self):
+        worker = Employee.objects.create(
+            name="Hisobot xodimi", salary=Decimal("2000000"), start_month=date(2020, 3, 1),
+        )
+        self._spend("70000", employee=worker, counts_against_salary=False)
+        ctx = self._report()
+        self.assertEqual(ctx["expense_total"], Decimal("70000"))
+        self.assertEqual(ctx["employee_debtors"], [])
+
+    def test_a_category_spelled_two_ways_is_one_line(self):
+        self._spend("1000", category="СУВ")
+        self._spend("2000", category=" сув ")
+        self._spend("500", category="МОЙКА")
+        rows = self._report()["expenses"]
+        self.assertEqual([(r["amount"], r["count"]) for r in rows], [
+            (Decimal("3000"), 2), (Decimal("500"), 1),
+        ])
+
+    def test_expenses_add_into_the_papers_lines(self):
+        self._spend("1000", category="Benzin / transport")
+        self._spend("200", category="С/Т")                       # car costs: Прочие
+        self._spend("100", category="МОЙКА")
+        self._spend("500", category="Ovqat (obed)")
+        self._spend("60", category="СУВ")                        # water rides with lunch
+        self._spend("300", category="СУВ, Ovqat (obed)")
+        self._spend("50", category="Boshqa, СУВ")                # Boshqa gives way: Обед
+        self._spend("20", category="Boshqa")                     # alone it is Прочие
+        self._spend("400", category="констовар")                 # names none of them
+        self._spend("7000", category="ФОАМЛИНЕ ФОЙДА")
+        ctx = self._report()
+        self.assertEqual(len(ctx["expenses"]), 10)               # the page keeps them all
+        lines = [(g["label"], g["amount"]) for g in ctx["expense_groups"]]
+        self.assertEqual(lines, [
+            ("Бензин", Decimal("1000")),
+            ("Обед", Decimal("910")),
+            ("Прочие", Decimal("720")),
+            ("Клиент фойда", Decimal("7000")),
+        ])
+        self.assertEqual(sum(a for _, a in lines), ctx["expense_total"])
+
+    def test_printed_sheet_carries_every_expense_line_even_an_empty_one(self):
+        self._spend("1000", category="Benzin / transport")
+        response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
+        self.assertContains(response, "<tr><td>Бензин</td><td>1\xa0000</td></tr>")
+        self.assertContains(response, "<tr><td>Клиент фойда</td><td>0</td></tr>")
+        # The bank's cut is not a chiqim: its own line, never folded into Прочие
+        self.assertContains(response, "<tr><td>Перечис процент</td><td>0</td></tr>")
+
+    def test_page_carries_the_one_page_print_sheet(self):
+        self._sell()
+        response = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
+        self.assertContains(response, 'class="print-sheet"')
+        self.assertContains(response, "size: A4 portrait")
+        # Laid out as the firm's paper form: its headings, dated the month's last day
+        self.assertContains(response, "ОЙЛИК ХИСОБОТИ")
+        self.assertContains(response, '<div class="ps-date">31.03.2020</div>')
+        self.assertContains(response, "Ахмаджондан олинган юк")
+
+    def test_printed_sheet_carries_the_street_balance_and_the_debt_to_production(self):
+        self._sell(is_debt=True)                             # 200 000 owed; tannarx 100 000
+        ProductionRemittance.objects.create(
+            seller=self.sales1, amount=Decimal("30000"), method=Payment.Method.CASH,
+            created_by=self.sales1, date=self.DAY,
+        )
+        html = self.client.get(reverse("monthly_report"), {"oy": self.MONTH}).content.decode()
+        # The paper's column beside Расход, in its order: goods taken, money given,
+        # what the clients still owe, and what the firm still owes Ahmadjon.
+        boxes = [
+            ("Ахмаджондан олинган юк", "100\xa0000"),
+            ("Ахмаджонга берилган пул", "30\xa0000"),
+            ("Кўчадаги остатка", "200\xa0000"),
+            ("Ахмаджондан қарз", "70\xa0000"),
+        ]
+        for label, amount in boxes:
+            self.assertInHTML(
+                f'<table class="ps-grid ps-box"><tr><th>{label}</th></tr>'
+                f"<tr><td>{amount}</td></tr></table>",
+                html,
+            )
+        at = [html.index(label) for label, _ in boxes]
+        self.assertEqual(at, sorted(at))
+
+    def test_page_shows_the_same_column_as_a_table_under_the_production_block(self):
+        self._sell(is_debt=True)
+        ProductionRemittance.objects.create(
+            seller=self.sales1, amount=Decimal("30000"), method=Payment.Method.CASH,
+            created_by=self.sales1, date=self.DAY,
+        )
+        html = self.client.get(reverse("monthly_report"), {"oy": self.MONTH}).content.decode()
+        self.assertInHTML(
+            '<table class="rep-table rep-ledger">'
+            '<tr><td>Ahmadjondan olingan yuk</td><td class="num">100\xa0000</td></tr>'
+            '<tr><td>Ahmadjonga berilgan pul</td><td class="num">30\xa0000</td></tr>'
+            "<tr><td>Ko'chadagi ostatka</td><td class=\"num\">200\xa0000</td></tr>"
+            '<tr class="rep-total"><td>Ahmadjondan qarz</td><td class="num">70\xa0000</td></tr>'
+            "</table>",
+            html,
+        )
+        self.assertLess(
+            html.index("Ishlab chiqarish bilan hisob-kitob"), html.index("Ahmadjondan olingan yuk"),
+        )
+
+    def test_client_debt_is_read_as_of_the_months_last_day(self):
+        sale = self._sell(is_debt=True)                      # 200 000 owed from 10.03
+        Payment.objects.create(
+            sale=sale, amount=Decimal("50000"), method=Payment.Method.CASH,
+            kind=Payment.Kind.DEBT, date=date(2020, 4, 5), created_by=self.sales1,
+        )
+        march = self._report()
+        self.assertEqual(march["client_debt_opening"], Decimal("0"))
+        self.assertEqual(march["client_debt_closing"], Decimal("200000"))
+        april = self._report("2020-04")
+        self.assertEqual(april["client_debt_opening"], Decimal("200000"))
+        self.assertEqual(april["client_debt_closing"], Decimal("150000"))
+
+    def _prepay(self, client, seller, amount, day):
+        return Payment.objects.create(
+            client=client, amount=Decimal(amount), method=Payment.Method.CASH,
+            kind=Payment.Kind.ADVANCE_IN, date=day, created_by=seller,
+        )
+
+    def test_street_balance_is_the_debt_less_what_clients_prepaid(self):
+        self._sell(is_debt=True)                             # client1 owes 200 000
+        # Someone else's prepayment comes off too: the figure is the whole street's.
+        self._prepay(self.client2, self.sales1, "20000", self.DAY)
+        self._prepay(self.client2, self.sales1, "5000", date(2020, 4, 5))
+        ctx = self._report()
+        self.assertEqual(ctx["client_debt_closing"], Decimal("200000"))
+        self.assertEqual(ctx["client_advance_closing"], Decimal("20000"))
+        self.assertEqual(ctx["street_balance_closing"], Decimal("180000"))
+        html = self.client.get(reverse("monthly_report"), {"oy": self.MONTH}).content.decode()
+        self.assertInHTML(
+            '<table class="ps-grid ps-box"><tr><th>Кўчадаги остатка</th></tr>'
+            "<tr><td>180\xa0000</td></tr></table>",
+            html,
+        )
+        self.assertInHTML("<tr><td>Ko'chadagi ostatka</td><td class=\"num\">180\xa0000</td></tr>", html)
+        # The next month opens on what this one closed on, and takes the April deposit.
+        april = self._report("2020-04")
+        self.assertEqual(april["street_balance_opening"], Decimal("180000"))
+        self.assertEqual(april["street_balance_closing"], Decimal("175000"))
+
+    def test_an_advance_spent_on_a_receipt_comes_off_the_street_balance_only_once(self):
+        sale = self._sell(is_debt=True)                      # 200 000 owed
+        self._prepay(self.client1, self.sales1, "50000", self.DAY)
+        Payment.objects.create(
+            sale=sale, client=self.client1, amount=Decimal("30000"),
+            method=Payment.Method.CASH, kind=Payment.Kind.ADVANCE_USED,
+            date=self.DAY, created_by=self.sales1,
+        )
+        ctx = self._report()
+        self.assertEqual(ctx["client_debt_closing"], Decimal("170000"))
+        self.assertEqual(ctx["client_advance_closing"], Decimal("20000"))
+        self.assertEqual(ctx["street_balance_closing"], Decimal("150000"))
+
+    def test_a_seller_filter_takes_off_only_that_sellers_advances(self):
+        self._sell(is_debt=True)
+        self._prepay(self.client1, self.sales1, "20000", self.DAY)
+        self._prepay(self.client2, self.sales2, "7000", self.DAY)
+        url = reverse("monthly_report")
+        ctx = self.client.get(url, {"oy": self.MONTH, "rep": self.sales1.pk}).context
+        self.assertEqual(ctx["street_balance_closing"], Decimal("180000"))
+        ctx = self.client.get(url, {"oy": self.MONTH, "rep": self.sales2.pk}).context
+        self.assertEqual(ctx["street_balance_closing"], Decimal("-7000"))
+
+    def test_export_shows_the_debt_the_advance_and_the_street_balance(self):
+        self._sell(is_debt=True)
+        self._prepay(self.client2, self.sales1, "20000", self.DAY)
+        response = self.client.get(reverse("monthly_report_export"), {"oy": self.MONTH})
+        book = load_workbook(BytesIO(response.content))
+        summary = dict(list(book["Xulosa"].iter_rows(values_only=True))[1:])
+        self.assertEqual(summary["Mijozlar qarzi: oy oxirida"], 200000)
+        self.assertEqual(summary["Oldindan to'langan: oy oxirida"], 20000)
+        self.assertEqual(summary["Ko'chadagi ostatka: oy oxirida"], 180000)
+
+    def test_todays_client_debt_is_the_qarzlar_total(self):
+        self._sell(is_debt=True)
+        make_sale(self.client2, self.sales2, self.p, weight="3", price="20000", is_debt=True)
+        owed = Sale.objects.outstanding().aggregate(s=Sum("remaining"))["s"]
+        today = timezone.localdate()
+        ctx = self._report(f"{today:%Y-%m}")
+        self.assertEqual(ctx["client_debt_closing"], owed)
+        self.assertTrue(ctx["is_open_month"])
+
+    def test_production_block_adds_up_to_the_kassa_debt(self):
+        self._sell()
+        ProductionRemittance.objects.create(
+            seller=self.sales1, amount=Decimal("30000"), method=Payment.Method.CASH,
+            created_by=self.sales1, date=self.DAY,
+        )
+        p = self._report()["production"]
+        self.assertEqual(p["opening"], Decimal("0"))
+        self.assertEqual(p["taken"], Decimal("100000"))
+        self.assertEqual(p["paid"], Decimal("30000"))
+        self.assertEqual(p["closing"], Decimal("70000"))
+        self.assertEqual(
+            p["closing"],
+            _kassa_summary(date(2020, 3, 1), date(2020, 3, 31))["production_debt"],
+        )
+        # ...and the next month opens on what this one closed on
+        self.assertEqual(self._report("2020-04")["production"]["opening"], Decimal("70000"))
+
+    def test_page_is_for_admin_and_manager_only(self):
+        url = reverse("monthly_report")
+        self.assertContains(self.client.get(url, {"oy": self.MONTH}), "Sof foyda")
+        self.client.force_login(self.manager)
+        self.assertEqual(self.client.get(url).status_code, 200)
+        self.client.force_login(self.sales1)
+        self.assertEqual(self.client.get(url).status_code, 403)
+        self.assertEqual(self.client.get(reverse("monthly_report_export")).status_code, 403)
+        self.assertNotContains(self.client.get(reverse("sale_list")), "Oylik hisobot")
+
+    def test_export_carries_the_summary_and_the_tables_behind_it(self):
+        self._sell()
+        self._spend("30000")
+        response = self.client.get(reverse("monthly_report_export"), {"oy": self.MONTH})
+        self.assertEqual(response["Content-Type"], XLSX_CONTENT_TYPE)
+        book = load_workbook(BytesIO(response.content))
+        self.assertEqual(
+            book.sheetnames, ["Xulosa", "Sotilgan yuk", "Mahsulotlar", "Rasxod", "Xodimlar"]
+        )
+        summary = dict(list(book["Xulosa"].iter_rows(values_only=True))[1:])
+        self.assertEqual(summary["Foyda"], 100000)
+        self.assertEqual(summary["Jami rasxod"], 30000)
+        self.assertEqual(summary["Sof foyda"], 70000)
+        sold = list(book["Sotilgan yuk"].iter_rows(values_only=True))
+        self.assertEqual(sold[1], ("Hisobot test", 10, 200000, 100000, 100000))
+        self.assertEqual(sold[-1][0], "Jami")
+
+    def test_a_seller_filter_narrows_the_month_to_that_seller(self):
+        self._sell()                                                     # sales1, 10 kg
+        make_sale(
+            self.client2, self.sales2, self.p, weight="3", price="20000",
+            date=self.DAY, is_debt=True,
+        )
+        for seller, amount in ((self.sales1, "30000"), (self.sales2, "7000")):
+            Expense.objects.create(
+                date=self.DAY, amount=Decimal(amount), category="Benzin / transport",
+                method=Payment.Method.CASH, created_by=seller,
+            )
+        url = reverse("monthly_report")
+        self.assertEqual(self._report()["totals"]["kg"], Decimal("13"))
+        ctx = self.client.get(url, {"oy": self.MONTH, "rep": self.sales2.pk}).context
+        self.assertEqual(ctx["totals"]["kg"], Decimal("3"))
+        self.assertEqual(ctx["expense_total"], Decimal("7000"))
+        self.assertEqual(ctx["production"]["taken"], Decimal("30000"))
+        self.assertEqual(ctx["client_debt_closing"], Decimal("60000"))
+        ctx = self.client.get(url, {"oy": self.MONTH, "rep": self.sales1.pk}).context
+        self.assertEqual(ctx["totals"]["kg"], Decimal("10"))
+        self.assertEqual(ctx["expense_total"], Decimal("30000"))
+        self.assertEqual(ctx["client_debt_closing"], Decimal("0"))
+
+    def test_a_sellers_report_carries_the_workers_their_till_paid(self):
+        mine = Employee.objects.create(
+            name="Birinchining xodimi", salary=Decimal("2000000"), start_month=date(2020, 3, 1),
+        )
+        theirs = Employee.objects.create(
+            name="Ikkinchining xodimi", salary=Decimal("1000000"), start_month=date(2020, 3, 1),
+        )
+        for worker, seller in ((mine, self.sales1), (theirs, self.sales2)):
+            Expense.objects.create(
+                date=self.DAY, amount=Decimal("100000"), category="Oylik / xodim",
+                method=Payment.Method.CASH, created_by=seller, employee=worker,
+            )
+        url = reverse("monthly_report")
+        ctx = self.client.get(url, {"oy": self.MONTH, "rep": self.sales1.pk}).context
+        self.assertEqual([w["employee"] for w in ctx["wages"]], [mine])
+        self.assertEqual(ctx["wage_total"], Decimal("2000000"))
+        # Ticking workers overrides the guess
+        ctx = self.client.get(
+            url, {"oy": self.MONTH, "rep": self.sales1.pk, "xodim": [theirs.pk]}
+        ).context
+        self.assertEqual([w["employee"] for w in ctx["wages"]], [theirs])
+        # No seller: the whole firm, every worker
+        self.assertEqual(len(self._report()["wages"]), 2)
+
+    def test_the_printed_heading_and_the_export_are_the_sellers(self):
+        self.sales2.first_name, self.sales2.last_name = "Umida", "Ismaylova"
+        self.sales2.firm_name = "Polimer111"
+        self.sales2.save()
+        params = {"oy": self.MONTH, "rep": self.sales2.pk}
+        response = self.client.get(reverse("monthly_report"), params)
+        self.assertContains(response, '<div class="ps-firm">ООО “POLIMER111” MCHJ</div>')
+        self.assertContains(response, "УМИДА ИСМАЙЛОВА&emsp;ОЙЛИК ХИСОБОТИ")
+        export = self.client.get(reverse("monthly_report_export"), params)
+        self.assertIn("oylik-hisobot-2020-03-t_sales2.xlsx", export["Content-Disposition"])
+        # The whole firm's report is no one seller's
+        whole = self.client.get(reverse("monthly_report"), {"oy": self.MONTH})
+        self.assertNotContains(whole, 'class="ps-firm"')
+        self.assertEqual(_uz_cyrillic("G'ayrat O'ktamov Eshmatov"), "ҒАЙРАТ ЎКТАМОВ ЭШМАТОВ")
