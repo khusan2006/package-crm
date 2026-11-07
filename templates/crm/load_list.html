@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Yetkazish · Paket CRM{% endblock %}
+{% block topbar_title %}Yetkazish{% endblock %}
+{% block fab %}<a class="fab" href="{% url 'load_create' %}?sana={{ day|date:'Y-m-d' }}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi yuk</a>{% endblock %}
+{% block content %}
+
+{% comment %}
+  Kunning yuklari. Yuk qo'lda tuziladi: mijozlar va rulon soni, kg tortilgandan
+  keyin kiritiladi. Sotuvlarga bog'lanmagan.
+{% endcomment %}
+<div class="table-toolbar">
+  <div class="toolbar-left">
+    <div class="month-pick" role="group" aria-label="Kun tanlash">
+      <a class="datebar-btn" href="?sana={{ prev_day }}" title="Oldingi kun" aria-label="Oldingi kun">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </a>
+      <form method="get" class="month-pick-form">
+        <input type="date" name="sana" value="{{ day|date:'Y-m-d' }}" aria-label="Sana" onchange="this.form.submit()">
+        <noscript><button type="submit" class="btn btn-sm">Ko'rsat</button></noscript>
+      </form>
+      <a class="datebar-btn" href="?sana={{ next_day }}" title="Keyingi kun" aria-label="Keyingi kun">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </a>
+    </div>
+    {% if not is_today %}<a class="btn btn-sm btn-ghost" href="?">Bugun</a>{% endif %}
+  </div>
+  <div class="toolbar-right">
+    {% if user.is_admin_role %}<a class="btn btn-sm btn-ghost" href="{% url 'truck_list' %}">Mashinalar va ombor</a>{% endif %}
+  </div>
+</div>
+
+{% if loads %}
+<div class="table-wrap">
+<table>
+  <tr><th class="sticky-col">Yuk</th><th>Mashina</th><th class="num">Mijozlar</th><th class="num">Rulon</th><th class="num">Og'irligi</th><th>Tartib</th></tr>
+  {% for load in loads %}
+  <tr>
+    <td class="sticky-col"><a href="{% url 'load_detail' load.pk %}"><strong>Yuk #{{ load.pk }}</strong></a>{% if load.note %}<span class="cell-sub">{{ load.note }}</span>{% endif %}</td>
+    <td>{{ load.truck.name|default:"—" }}</td>
+    <td class="num">{{ load.client_count }}</td>
+    <td class="num">{{ load.roll_total|default:0 }}</td>
+    <td class="num">{% if load.kg_total %}{{ load.kg_total|floatformat:"0g" }} kg{% else %}—{% endif %}{% if load.unweighed and load.client_count %}<span class="cell-sub route-pending">{{ load.unweighed }} tasi tortilmagan</span>{% endif %}</td>
+    <td>{% if load.ordered_at %}<span class="badge badge-paid">Saqlangan</span>{% else %}<span class="badge badge-warning">Taklif</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% else %}
+<div class="card"><p class="muted">{{ day|date:"d.m.Y" }} kuni uchun yuk yo'q. «Yangi yuk» tugmasi bilan yarating.</p></div>
+{% endif %}
+{% endblock %}

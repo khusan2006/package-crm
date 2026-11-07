@@ -65,6 +65,9 @@ from .forms import (
     SaleItemFormSet,
     StockAdjustForm,
     StockEntryForm,
+    LoadForm,
+    LoadItemEditForm,
+    LoadItemForm,
     TruckForm,
     WarehouseForm,
     parse_return_rows,
@@ -91,7 +94,6 @@ from .models import (
     Attendance,
     AuditLog,
     Client,
-    DeliveryRoute,
     DayHours,
     Employee,
     Expense,
@@ -110,7 +112,8 @@ from .models import (
     SaleItem,
     SalaryRate,
     StockEntry,
-    RouteStop,
+    Load,
+    LoadItem,
     Truck,
     Warehouse,
     davomad_start,
@@ -10546,10 +10549,10 @@ def truck_edit(request, pk):
 
 @role_required(User.Role.ADMIN)
 def truck_delete(request, pk):
-    """Remove a truck. One that has driven a saved route is switched off instead —
-    deleting it would wipe it out of those days' plans."""
+    """Remove a truck. One that a load was put on is switched off instead —
+    deleting it would wipe it out of those loads."""
     truck = get_object_or_404(Truck, pk=pk)
-    used = truck.route_stops.exists()
+    used = truck.loads.exists()
     if request.method == "POST":
         if used:
             truck.is_active = False
@@ -10564,7 +10567,7 @@ def truck_delete(request, pk):
             messages.success(request, f"“{name}” o'chirildi.")
         return form_reload(request, reverse("truck_list"))
     if used:
-        body = (f"“{truck.name}” saqlangan yetkazish rejalarida bor, shuning uchun butunlay "
+        body = (f"“{truck.name}” yuklarda ishlatilgan, shuning uchun butunlay "
                 f"o'chirib bo'lmaydi. Uning o'rniga faol emas deb belgilanadi: yangi "
                 f"marshrutlarga qo'shilmaydi. Davom etasizmi?")
         button = "Ha, faol emas qilish"
@@ -10594,427 +10597,305 @@ def warehouse_edit(request):
     return form_response(request, form, title)
 
 
-# --- Delivery: the day's route ------------------------------------------------------
+# --- Delivery: loads (yuk) and their route ----------------------------------------
+# A load is put together by hand — clients and rolls, kg once weighed — and is not
+# tied to sales. Its route is suggested by crm/routing.py, by road when
+# OpenRouteService is set up (crm/road.py). Capacity and splitting a load across
+# trucks are still to be decided, so each load is one route.
 
-#: Truck 1 / truck 2 colours on the map and the route columns — CSS custom properties,
-#: so the pins follow the light/dark theme like everything else.
-ROUTE_COLORS = ("--accent", "--violet")
-
-
-def _sale_load(sale):
-    """(kg that can go on the truck, kg still waiting for stock) for one sale.
-    Only the in-stock part of a line goes: `fulfilled_kg`, capped at the line's weight."""
-    items = list(sale.items.all())
-    loaded = sum((min(i.fulfilled_kg, i.weight_kg) for i in items), Decimal("0"))
-    pending = sum((i.pending_kg for i in items), Decimal("0"))
-    return loaded, pending
+#: The route's colour on the map and the stop numbers — a CSS custom property, so the
+#: pins follow the light/dark theme like everything else.
+ROUTE_COLOR = "--accent"
 
 
-def _delivery_day(route):
-    """The sales the operator put into this day's delivery, gathered per client into
-    what the route needs. A sale with nothing in stock yet (a pure zakaz) waits.
-    Returns (visits, missing, waiting): `visits` maps client pk → {client, sales, kg,
-    pending_kg}, `missing` are clients with goods to deliver but no joylashuv, and
-    `waiting` are the chosen sales with nothing to load."""
-    if route is None:
-        return {}, [], []
-    sales = (
-        route.sales.real()
-        .select_related("client", "sales_rep")
-        .prefetch_related("items")
+def _load_url(load):
+    return reverse("load_detail", args=[load.pk])
+
+
+def _load_list_url(day):
+    return f"{reverse('load_list')}?sana={day.isoformat()}"
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def load_list(request):
+    """Yetkazish: the day's loads, each with its clients, rolls and known kg."""
+    day = _parse_date(request.GET.get("sana")) or timezone.localdate()
+    loads = (
+        Load.objects.filter(date=day).select_related("truck", "created_by")
+        .annotate(
+            client_count=Count("items"),
+            roll_total=Sum("items__rolls"),
+            kg_total=Sum("items__kg"),
+            unweighed=Count("items", filter=Q(items__kg__isnull=True)),
+        )
         .order_by("created_at")
     )
-    visits, waiting = {}, []
-    for sale in sales:
-        loaded, pending = _sale_load(sale)
-        if loaded <= 0:
-            waiting.append(sale)
-            continue
-        visit = visits.setdefault(sale.client_id, {
-            "client": sale.client, "sales": [], "kg": Decimal("0"), "pending_kg": Decimal("0"),
-        })
-        visit["sales"].append(sale)
-        visit["kg"] += loaded
-        visit["pending_kg"] += pending
-    missing = [v["client"] for v in visits.values() if not v["client"].has_location]
-    return visits, missing, waiting
+    return render(request, "crm/load_list.html", {
+        "day": day,
+        "prev_day": (day - timedelta(days=1)).isoformat(),
+        "next_day": (day + timedelta(days=1)).isoformat(),
+        "is_today": day == timezone.localdate(),
+        "loads": loads,
+    })
 
 
-#: How many not-yet-chosen sales the Yetkazish page lists at once.
-CANDIDATE_LIMIT = 200
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def load_create(request):
+    day = _parse_date(request.GET.get("sana")) or timezone.localdate()
+    form = LoadForm(request.POST or None, initial={"date": day})
+    title = "Yangi yuk"
+    if request.method == "POST":
+        if form.is_valid():
+            load = form.save(commit=False)
+            load.created_by = request.user
+            load.save()
+            AuditLog.record(request.user, AuditLog.Action.CREATE, "Yuk", load.pk,
+                            f"Yuk #{load.pk} ({load.date:%d.%m.%Y}) yaratildi")
+            messages.success(request, f"Yuk #{load.pk} yaratildi — endi mijozlarni qo'shing.")
+            return form_success(request, _load_url(load))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
 
 
-def _delivery_candidates(day, q=""):
-    """Sales the operator can still put into a delivery.
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def load_edit(request, pk):
+    load = get_object_or_404(Load, pk=pk)
+    form = LoadForm(request.POST or None, instance=load)
+    title = f"Yuk #{load.pk}"
+    if request.method == "POST":
+        if form.is_valid():
+            changes = form_changes(form)
+            form.save()
+            if changes:
+                AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
+                                f"Yuk #{load.pk}: {changes}"[:255])
+            messages.success(request, "Yuk yangilandi.")
+            return form_success(request, _load_url(load))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
 
-    PROVISIONAL — which sales belong in this list is still to be decided (only
-    those made after go-live? a window of days?). For now: every real sale not yet
-    in any delivery, dated up to the chosen day, newest first."""
-    sales = (
-        Sale.objects.real().filter(delivery__isnull=True, date__lte=day)
-        .select_related("client", "sales_rep")
-        .prefetch_related("items")
-        .order_by("-date", "-created_at")
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def load_delete(request, pk):
+    load = get_object_or_404(Load, pk=pk)
+    if request.method == "POST":
+        day = load.date
+        load.delete()
+        AuditLog.record(request.user, AuditLog.Action.DELETE, "Yuk", pk,
+                        f"Yuk #{pk} ({day:%d.%m.%Y}) o'chirildi")
+        messages.success(request, f"Yuk #{pk} o'chirildi.")
+        return form_success(request, _load_list_url(day))
+    return render_confirm(
+        request, "Yukni o'chirish",
+        f"Yuk #{load.pk} va undagi {load.items.count()} ta mijoz o'chiriladi. Davom etasizmi?",
+        "Ha, o'chirish", confirm_class="btn-danger",
     )
-    if q:
-        sales = sales.filter(
-            Q(client__name__icontains=q) | Q(client__company__icontains=q)
-            | Q(sales_rep__first_name__icontains=q) | Q(sales_rep__last_name__icontains=q)
-            | Q(sales_rep__username__icontains=q)
-        )
-    total = sales.count()
-    rows = []
-    for sale in sales[:CANDIDATE_LIMIT]:
-        loaded, pending = _sale_load(sale)
-        rows.append({"sale": sale, "kg": loaded, "pending_kg": pending})
-    return rows, total
 
 
-def _route_context(plan, visits):
-    """The plan as the template and the map draw it: numbered stops per truck."""
-    routes = []
-    for n, route in enumerate(plan.routes):
-        stops = []
-        for pos, stop in enumerate(route.stops, start=1):
-            visit = visits[stop.key]
-            stops.append({
-                "n": pos, "client": visit["client"], "kg": visit["kg"],
-                "pending_kg": visit["pending_kg"], "sales": visit["sales"],
-                "sellers": sorted({str(s.sales_rep) for s in visit["sales"]}),
-            })
-        capacity = route.truck.capacity_kg
-        routes.append({
-            "truck": route.truck, "stops": stops, "kg": route.kg, "km": route.km,
-            "load_pct": min(100, round(route.kg / capacity * 100)) if capacity else 0,
-            "over": route.kg > capacity,
-            "color": ROUTE_COLORS[n % len(ROUTE_COLORS)], "index": n + 1,
-        })
-    return routes
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def load_item_add(request, pk):
+    """Add a client to the load. If the order was already saved, they join the end
+    of it, so the saved route stays as it was."""
+    load = get_object_or_404(Load, pk=pk)
+    form = LoadItemForm(request.POST or None, load=load)
+    title = f"Yuk #{load.pk} — mijoz qo'shish"
+    if request.method == "POST":
+        if form.is_valid():
+            item = form.save(commit=False)
+            item.load = load
+            if load.ordered_at:
+                last = load.items.aggregate(m=Max("position"))["m"] or 0
+                item.position = last + 1
+            item.save()
+            AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
+                            f"Yuk #{load.pk}: {item.client.name} qo'shildi — {item.rolls} rulon"[:255])
+            messages.success(request, f"“{item.client.name}” qo'shildi.")
+            return form_success(request, _load_url(load))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
 
 
-def _attach_driver_share(routes, day, warehouse):
-    """Give each truck what its driver is sent: the stops in order as a message,
-    and links that open the route in Google Maps (in legs) or Yandex (whole)."""
-    depot = (float(warehouse.latitude), float(warehouse.longitude))
-    for r in routes:
-        points = [(float(s["client"].latitude), float(s["client"].longitude)) for s in r["stops"]]
-        google = route_share.google_route_links(depot, points)
-        yandex = route_share.yandex_route_link(depot, points)
-        text = route_share.driver_message(
-            day, r["truck"].name, r["kg"],
-            [{"n": s["n"], "name": s["client"].name, "kg": s["kg"],
-              "address": s["client"].address, "phone": s["client"].phone,
-              "map_url": s["client"].google_maps_url} for s in r["stops"]],
-            google, yandex,
-        )
-        r["share"] = {
-            "text": text, "google_links": google, "yandex_link": yandex,
-            "title": f"Yetkazish {day:%d.%m.%Y} — {r['truck'].name}",
-            **route_share.share_urls(text, google[0] if google else yandex),
-        }
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def load_item_edit(request, pk, item_pk):
+    item = get_object_or_404(LoadItem.objects.select_related("client", "load"), pk=item_pk, load_id=pk)
+    form = LoadItemEditForm(request.POST or None, instance=item)
+    title = item.client.name
+    if request.method == "POST":
+        if form.is_valid():
+            changes = form_changes(form)
+            form.save()
+            if changes:
+                AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", pk,
+                                f"Yuk #{pk}, {item.client.name}: {changes}"[:255])
+            messages.success(request, "Saqlandi.")
+            return form_success(request, _load_url(item.load))
+        return form_response(request, form, title, invalid=True)
+    return form_response(request, form, title)
 
 
-def _delivery_distance(depot, visits):
-    """The distance the day is planned with: by road when OpenRouteService answers,
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def load_item_delete(request, pk, item_pk):
+    item = get_object_or_404(LoadItem.objects.select_related("client", "load"), pk=item_pk, load_id=pk)
+    if request.method == "POST":
+        name = item.client.name
+        item.delete()
+        AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", pk,
+                        f"Yuk #{pk}: {name} olib tashlandi")
+        messages.success(request, f"“{name}” olib tashlandi.")
+        return form_reload(request, _load_url(item.load))
+    return render_confirm(
+        request, "Mijozni yukdan olib tashlash",
+        f"“{item.client.name}” ({item.rolls} rulon) bu yukdan olib tashlanadi. Davom etasizmi?",
+        "Ha, olib tashlash", confirm_class="btn-danger",
+    )
+
+
+def _road_distance(points):
+    """The distance the route is planned with: by road when OpenRouteService answers,
     straight lines otherwise. Returns (dist, by_road, note) — `note` says why it fell
     back, when a key is set but the roads couldn't be had."""
-    points = [depot] + [
-        (float(v["client"].latitude), float(v["client"].longitude))
-        for v in visits.values() if v["client"].has_location
-    ]
     if not road.enabled():
         return routing.distance_km, False, ""
     try:
         return road.distance_for(points), True, ""
     except road.RoadError:
         return (routing.distance_km, False,
-                "Yo'l masofalarini olib bo'lmadi — reja to'g'ri chiziq bo'yicha tuzildi.")
+                "Yo'l masofalarini olib bo'lmadi — marshrut to'g'ri chiziq bo'yicha tuzildi.")
 
 
-def _stop_for(client_pk, visit):
-    c = visit["client"]
-    return routing.Stop(client_pk, float(c.latitude), float(c.longitude), visit["kg"])
+def _point(client):
+    return (float(client.latitude), float(client.longitude))
 
 
-def _saved_plan(saved, visits, depot, dist=routing.distance_km):
-    """A saved plan read against the day's sales as they are now.
-
-    The order and the trucks come from what was saved; the kg comes from the sales,
-    so an edited sale shows its true load. A saved stop whose client has nothing left
-    to deliver drops out, and a client sold to after saving is returned in
-    `unplanned` — the plan doesn't quietly take them in. Returns (plan, unplanned,
-    dropped)."""
-    groups, planned, dropped = {}, set(), 0
-    for rs in saved.stops.select_related("truck"):
-        visit = visits.get(rs.client_id)
-        if visit is None or not visit["client"].has_location:
-            dropped += 1
-            continue
-        groups.setdefault(rs.truck, []).append(_stop_for(rs.client_id, visit))
-        planned.add(rs.client_id)
-    unplanned = [v["client"] for pk, v in visits.items()
-                 if pk not in planned and v["client"].has_location]
-    trucks = sorted(groups, key=lambda t: (-t.capacity_kg, t.pk))  # bigger truck first
-    plan = routing.Plan([routing.build_route(t, groups[t], depot, dist=dist) for t in trucks])
-    return plan, unplanned, dropped
-
-
-def _delivery_url(day):
-    return f"{reverse('delivery_plan')}?sana={day.isoformat()}"
+def _amount(item):
+    """"12 rulon · 340 kg", or "12 rulon" before it is weighed."""
+    text = f"{item.rolls} rulon"
+    if item.kg is not None:
+        text += f" · {route_share._kg(item.kg)} kg"
+    return text
 
 
 @transaction.atomic
-def _save_delivery_plan(request, day, visits):
-    """Save the plan exactly as the page posted it: `stop` = "truck:client", in
-    visiting order. Anything the page could not have shown is refused rather than
-    guessed at — a stale tab is reloaded, not half-saved."""
-    located = {pk for pk, v in visits.items() if v["client"].has_location}
-    # Active trucks, plus any already in this day's plan: a truck switched off since
-    # can keep the stops it has, but a stale tab can't hand it new ones elsewhere.
-    trucks = {t.pk: t for t in Truck.objects.filter(
-        Q(is_active=True) | Q(route_stops__route__date=day)).distinct()}
-    rows, seen = [], set()
+def _save_load_order(request, load, items):
+    """Save the order exactly as the page posted it: `stop` = item pk, in visiting
+    order. Anything the page could not have shown is refused rather than guessed at
+    — a stale tab is reloaded, not half-saved."""
+    located = {i.pk: i for i in items if i.client.has_location}
+    order = []
     for raw in request.POST.getlist("stop"):
         try:
-            truck_pk, client_pk = (int(part) for part in raw.split(":"))
+            pk = int(raw)
         except ValueError:
-            truck_pk = client_pk = None
-        if truck_pk not in trucks or client_pk not in located or client_pk in seen:
-            messages.error(request, "Reja eskirgan — sahifa yangilandi, qaytadan saqlang.")
-            return redirect(_delivery_url(day))
-        seen.add(client_pk)
-        rows.append((trucks[truck_pk], client_pk))
-    if not rows:
-        messages.error(request, "Saqlash uchun rejada manzil yo'q.")
-        return redirect(_delivery_url(day))
-
-    route = DeliveryRoute.objects.get(date=day)
-    route.created_by = request.user
-    route.save(update_fields=["created_by", "updated_at"])
-    route.stops.all().delete()
-    positions = {}
-    stops = []
-    for truck, client_pk in rows:
-        positions[truck.pk] = positions.get(truck.pk, 0) + 1
-        stops.append(RouteStop(route=route, truck=truck, client_id=client_pk,
-                               position=positions[truck.pk]))
-    RouteStop.objects.bulk_create(stops)
-    AuditLog.record(
-        request.user, AuditLog.Action.UPDATE, "Yetkazish", route.pk,
-        f"{day:%d.%m.%Y} rejasi saqlandi — {len(positions)} ta mashina, {len(stops)} ta manzil",
-    )
-    messages.success(request, "Yetkazish rejasi saqlandi.")
-    return redirect(_delivery_url(day))
+            pk = None
+        if pk not in located or pk in order:
+            messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
+            return redirect(_load_url(load))
+        order.append(pk)
+    if not order:
+        messages.error(request, "Saqlash uchun marshrutda mijoz yo'q.")
+        return redirect(_load_url(load))
+    load.items.update(position=None)
+    for n, pk in enumerate(order, start=1):
+        LoadItem.objects.filter(pk=pk).update(position=n)
+    load.ordered_at = timezone.now()
+    load.save(update_fields=["ordered_at"])
+    AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
+                    f"Yuk #{load.pk} tartibi saqlandi — {len(order)} ta manzil")
+    messages.success(request, "Tartib saqlandi.")
+    return redirect(_load_url(load))
 
 
-def _reset_delivery_plan(request, day):
-    """Forget the saved order; the chosen sales stay in the day's delivery."""
-    route = DeliveryRoute.objects.filter(date=day).first()
-    if route and route.stops.exists():
-        route.stops.all().delete()
-        AuditLog.record(
-            request.user, AuditLog.Action.UPDATE, "Yetkazish", route.pk,
-            f"{day:%d.%m.%Y} tartibi o'chirildi — qaytadan hisoblanadi",
-        )
+def _reset_load_order(request, load):
+    if load.ordered_at:
+        load.items.update(position=None)
+        load.ordered_at = None
+        load.save(update_fields=["ordered_at"])
+        AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
+                        f"Yuk #{load.pk} tartibi o'chirildi — qaytadan hisoblanadi")
         messages.success(request, "Tartib qaytadan hisoblandi. Ma'qul bo'lsa, saqlang.")
-    return redirect(_delivery_url(day))
+    return redirect(_load_url(load))
 
 
-@transaction.atomic
-def _add_to_delivery(request, day):
-    """Put the ticked sales into this day's delivery. Only sales still in no delivery
-    are taken — a sale added to another day in the meantime is left where it is."""
-    try:
-        pks = {int(pk) for pk in request.POST.getlist("sale")}
-    except ValueError:
-        pks = set()
-    free = Sale.objects.real().filter(pk__in=pks, delivery__isnull=True)
-    if not pks or not free.exists():
-        messages.error(request, "Qo'shish uchun sotuv tanlanmagan.")
-        return redirect(_delivery_url(day))
-    route, _ = DeliveryRoute.objects.get_or_create(date=day, defaults={"created_by": request.user})
-    names = list(free.values_list("client__name", flat=True))
-    added = free.update(delivery=route)
-    AuditLog.record(
-        request.user, AuditLog.Action.UPDATE, "Yetkazish", route.pk,
-        f"{day:%d.%m.%Y} yetkazishiga {added} ta sotuv qo'shildi: {', '.join(names)}"[:255],
-    )
-    skipped = len(pks) - added
-    msg = f"{added} ta sotuv {day:%d.%m.%Y} yetkazishiga qo'shildi."
-    if skipped:
-        msg += f" {skipped} tasi allaqachon boshqa yetkazishda edi."
-    messages.success(request, msg)
-    return redirect(_delivery_url(day))
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def load_detail(request, pk):
+    """One load: its clients with rolls and kg, and the route through them.
 
-
-@transaction.atomic
-def _remove_from_delivery(request, day):
-    """Take one sale out of the day's delivery, back to the list to choose from. If
-    it was the client's last sale that day, their stop leaves the saved order too."""
-    route = DeliveryRoute.objects.filter(date=day).first()
-    sale = Sale.objects.filter(pk=request.POST.get("sale") or 0, delivery=route).first() if route else None
-    if sale is None:
-        messages.error(request, "Bu sotuv shu kungi yetkazishda emas — sahifa yangilandi.")
-        return redirect(_delivery_url(day))
-    sale.delivery = None
-    sale.save(update_fields=["delivery"])
-    if not route.sales.filter(client_id=sale.client_id).exists():
-        route.stops.filter(client_id=sale.client_id).delete()
-    AuditLog.record(
-        request.user, AuditLog.Action.UPDATE, "Yetkazish", route.pk,
-        f"{day:%d.%m.%Y} yetkazishidan olib tashlandi: {sale.client.name} (sotuv #{sale.pk})"[:255],
-    )
-    messages.success(request, f"“{sale.client.name}” sotuvi olib tashlandi.")
-    return redirect(_delivery_url(day))
-
-
-def _delivery_for_seller(request, day, warehouse, visits, missing, waiting):
-    """A seller's read-only view of the day: where their own clients sit in the
-    saved plan — which truck, which place in its order — and nothing about anyone
-    else's. Only a saved plan is shown: a suggestion still moves around."""
-    seller = request.user
-    mine = {pk: v for pk, v in visits.items()
-            if any(s.sales_rep_id == seller.pk for s in v["sales"])}
-    route = DeliveryRoute.objects.filter(date=day).first()
-    saved = route if route and route.stops.exists() else None
-    rows, placed = [], set()
-    if saved and warehouse.has_location:
-        depot = (float(warehouse.latitude), float(warehouse.longitude))
-        plan, _, _ = _saved_plan(saved, visits, depot)
-        for route in plan.routes:
-            for pos, stop in enumerate(route.stops, start=1):
-                if stop.key in mine:
-                    placed.add(stop.key)
-                    rows.append({"client": mine[stop.key]["client"], "truck": route.truck,
-                                 "position": pos, "of": len(route.stops),
-                                 "sales": [s for s in mine[stop.key]["sales"]
-                                           if s.sales_rep_id == seller.pk]})
-    return render(request, "crm/delivery_mine.html", {
-        "day": day,
-        "prev_day": (day - timedelta(days=1)).isoformat(),
-        "next_day": (day + timedelta(days=1)).isoformat(),
-        "is_today": day == timezone.localdate(),
-        "saved": saved,
-        "rows": rows,
-        "unplanned": [v["client"] for pk, v in mine.items()
-                      if pk not in placed and v["client"].has_location],
-        "missing": [c for c in missing if c.pk in mine],
-        "waiting": [s for s in waiting if s.sales_rep_id == seller.pk],
-        "has_sales": bool(mine) or any(s.sales_rep_id == seller.pk for s in waiting),
-    })
-
-
-def delivery_plan(request):
-    """Yetkazish: for a chosen day, which truck takes which client and in what order.
-
-    The operator chooses the day's sales by hand ("Shu kunga qo'shish"); only those
-    are planned. Until the order is saved, the page shows the one crm/routing.py
-    suggests, worked out afresh on every visit. Saving fixes it — with any stops the operator
-    moved by hand — and "Qayta hisoblash" throws the saved plan away for a new
-    suggestion. It mixes every seller's sales, since the trucks and the warehouse are
-    shared, which is why only admins and managers plan it. A seller gets a
-    read-only view of where their own clients are in the saved plan."""
-    source = request.POST if request.method == "POST" else request.GET
-    day = _parse_date(source.get("sana")) or timezone.localdate()
-    if not request.user.can_see_all_records and request.method == "POST":
-        raise PermissionDenied
-
-    warehouse = Warehouse.load()
-    trucks = list(Truck.objects.filter(is_active=True))
-    route = DeliveryRoute.objects.filter(date=day).select_related("created_by").first()
-    visits, missing, waiting = _delivery_day(route)
-
-    if not request.user.can_see_all_records:
-        return _delivery_for_seller(request, day, warehouse, visits, missing, waiting)
+    Until the order is saved the page shows the one crm/routing.py suggests, worked
+    out afresh on every visit; saving fixes it (with any stops moved by hand) and
+    «Qayta hisoblash» throws it away for a new suggestion. A client added after
+    saving joins the end of the saved order. Every client needs a joylashuv before
+    the route can be drawn."""
+    load = get_object_or_404(Load.objects.select_related("truck", "created_by"), pk=pk)
+    items = list(load.items.select_related("client", "client__owner").order_by("created_at"))
 
     if request.method == "POST":
-        action = source.get("action")
-        if action == "add":
-            return _add_to_delivery(request, day)
-        if action == "remove":
-            return _remove_from_delivery(request, day)
-        if action == "reset":
-            return _reset_delivery_plan(request, day)
-        if route is None:
-            messages.error(request, "Bu kunga hali sotuv qo'shilmagan.")
-            return redirect(_delivery_url(day))
-        return _save_delivery_plan(request, day, visits)
+        if request.POST.get("action") == "reset":
+            return _reset_load_order(request, load)
+        return _save_load_order(request, load, items)
 
-    total_kg = sum((v["kg"] for v in visits.values()), Decimal("0"))
-    # "Saved" means the order is saved; a delivery with chosen sales but no saved
-    # order still shows the suggested one.
-    saved = route if route and route.stops.exists() else None
-    q = request.GET.get("q", "").strip()
-    candidates, candidate_total = _delivery_candidates(day, q)
-    chosen = []
-    if route:
-        for sale in (route.sales.real().select_related("client", "sales_rep")
-                     .prefetch_related("items").order_by("client__name", "created_at")):
-            loaded, pending = _sale_load(sale)
-            chosen.append({"sale": sale, "kg": loaded, "pending_kg": pending})
-
-    routes, error, unplanned, dropped = [], "", [], 0
-    by_road, road_note = False, ""
+    warehouse = Warehouse.load()
+    missing = [i.client for i in items if not i.client.has_location]
+    stops, km, error, by_road, road_note, path = [], 0.0, "", False, "", None
     if not warehouse.has_location:
         error = "Ombor joylashuvi belgilanmagan. Uni Mashinalar sahifasida belgilang."
-    elif saved or (visits and not missing):
+    elif items and not missing:
         depot = (float(warehouse.latitude), float(warehouse.longitude))
-        dist, by_road, road_note = _delivery_distance(depot, visits)
-        if saved:
-            plan, unplanned, dropped = _saved_plan(saved, visits, depot, dist)
-            routes = _route_context(plan, visits)
+        dist, by_road, road_note = _road_distance([depot] + [_point(i.client) for i in items])
+        by_pk = {i.pk: i for i in items}
+        points = [routing.Stop(i.pk, *_point(i.client), i.kg or Decimal("0")) for i in items]
+        if load.ordered_at:
+            # The saved order; anyone without a place (shouldn't happen — added
+            # clients join the end) goes last in the order they were added.
+            points.sort(key=lambda s: (by_pk[s.key].position is None, by_pk[s.key].position or 0))
         else:
-            stops = [_stop_for(pk, v) for pk, v in visits.items()]
-            try:
-                routes = _route_context(routing.plan_routes(depot, stops, trucks, dist=dist), visits)
-            except routing.RoutingError as err:
-                error = str(err)
+            points, _ = routing.order_stops(depot, points, dist=dist)
+        km = routing.build_route(load.truck, points, depot, dist=dist).km
+        stops = [{"n": n, "item": by_pk[p.key], "client": by_pk[p.key].client}
+                 for n, p in enumerate(points, start=1)]
+        if by_road:
+            path = road.path([depot] + [_point(s["client"]) for s in stops] + [depot])
 
-    map_data = None
-    if routes:
-        _attach_driver_share(routes, day, warehouse)
+    share = map_data = None
+    if stops:
+        depot = (float(warehouse.latitude), float(warehouse.longitude))
+        google = route_share.google_route_links(depot, [_point(s["client"]) for s in stops])
+        yandex = route_share.yandex_route_link(depot, [_point(s["client"]) for s in stops])
+        title = f"Yuk #{load.pk} — {load.date:%d.%m.%Y}" + (f" — {load.truck.name}" if load.truck else "")
+        text = route_share.driver_message(
+            title, [{"n": s["n"], "name": s["client"].name, "amount": _amount(s["item"]),
+                     "address": s["client"].address, "phone": s["client"].phone,
+                     "map_url": s["client"].google_maps_url} for s in stops],
+            google, yandex,
+        )
+        share = {"text": text, "title": title, "google_links": google, "yandex_link": yandex,
+                 **route_share.share_urls(text, google[0] if google else yandex)}
         map_data = {
-            "depot": [float(warehouse.latitude), float(warehouse.longitude)],
-            "routes": [
-                {"color": r["color"],
-                 # The road the truck drives, when OpenRouteService gave one; the
-                 # map draws straight lines between the pins otherwise.
-                 "path": road.path([depot] + [
-                     (float(s["client"].latitude), float(s["client"].longitude))
-                     for s in r["stops"]] + [depot]) if by_road else None,
-                 "stops": [
-                    {"n": s["n"], "name": s["client"].name,
-                     "lat": float(s["client"].latitude), "lng": float(s["client"].longitude)}
-                    for s in r["stops"]
-                ]}
-                for r in routes
-            ],
+            "depot": list(depot),
+            "routes": [{"color": ROUTE_COLOR, "path": path, "stops": [
+                {"n": s["n"], "name": s["client"].name,
+                 "lat": _point(s["client"])[0], "lng": _point(s["client"])[1]}
+                for s in stops]}],
         }
 
-    return render(request, "crm/delivery_plan.html", {
-        "day": day,
-        "prev_day": (day - timedelta(days=1)).isoformat(),
-        "next_day": (day + timedelta(days=1)).isoformat(),
-        "is_today": day == timezone.localdate(),
+    kg_known = [i.kg for i in items if i.kg is not None]
+    kg_total = sum(kg_known, Decimal("0"))
+    capacity = load.truck.capacity_kg if load.truck else None
+    return render(request, "crm/load_detail.html", {
+        "load": load,
+        "items": items,
         "warehouse": warehouse,
-        "trucks": trucks,
-        "visit_count": len(visits),
-        "sale_count": sum(len(v["sales"]) for v in visits.values()),
-        "total_kg": total_kg,
+        "roll_total": sum(i.rolls for i in items),
+        "kg_total": kg_total,
+        "unweighed": len(items) - len(kg_known),
+        "load_pct": min(100, round(kg_total / capacity * 100)) if capacity else None,
+        "over": bool(capacity) and kg_total > capacity,
         "missing": missing,
-        "waiting": waiting,
-        "routes": routes,
-        "plan_km": sum(r["km"] for r in routes),
-        "error": error,
-        "map_data": map_data,
-        "saved": saved,
-        "unplanned": unplanned,
-        "dropped": dropped,
+        "stops": stops,
+        "km": km,
         "by_road": by_road,
         "road_note": road_note,
-        "chosen": chosen,
-        "candidates": candidates,
-        "candidate_total": candidate_total,
-        "candidate_limit": CANDIDATE_LIMIT,
-        "q": q,
+        "error": error,
+        "share": share,
+        "map_data": map_data,
+        "route_color": ROUTE_COLOR,
     })

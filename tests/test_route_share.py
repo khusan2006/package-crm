@@ -1,7 +1,5 @@
 """crm/route_share.py — the driver's message and the map links for one truck."""
 
-from datetime import date
-from decimal import Decimal
 from urllib.parse import parse_qs, unquote, urlparse
 
 from crm.route_share import (
@@ -73,24 +71,24 @@ def test_yandex_link_has_the_whole_route_in_order():
 
 def test_driver_message_lists_the_stops_in_order():
     stops = [
-        {"n": 1, "name": "Anvar", "kg": Decimal("450"), "address": "Chilonzor 5",
+        {"n": 1, "name": "Anvar", "amount": "12 rulon · 450 kg", "address": "Chilonzor 5",
          "phone": "+998 90 111 22 33", "map_url": "https://www.google.com/maps?q=41.3,69.25"},
-        {"n": 2, "name": "Botir", "kg": Decimal("900.5"), "address": "", "phone": ""},
+        {"n": 2, "name": "Botir", "amount": "3 rulon", "address": "", "phone": ""},
     ]
-    text = driver_message(date(2026, 11, 7), "Isuzu", Decimal("1350.5"), stops,
+    text = driver_message("Yuk #4 — 07.11.2026 — Isuzu", stops,
                           ["https://g/1", "https://g/2"], "https://y/1")
     lines = text.splitlines()
-    assert lines[0] == "Yetkazish 07.11.2026 — Isuzu"
-    assert lines[1] == "2 ta manzil, 1 350 kg"
-    assert "1. Anvar — 450 kg" in lines and "2. Botir — 900 kg" in lines
-    assert lines.index("1. Anvar — 450 kg") < lines.index("2. Botir — 900 kg")
+    assert lines[0] == "Yuk #4 — 07.11.2026 — Isuzu"
+    assert lines[1] == "2 ta manzil"
+    assert "1. Anvar — 12 rulon · 450 kg" in lines and "2. Botir — 3 rulon" in lines
+    assert lines.index("1. Anvar — 12 rulon · 450 kg") < lines.index("2. Botir — 3 rulon")
     assert "   Chilonzor 5" in lines and "   +998 90 111 22 33" in lines
     assert "1-qism: https://g/1" in lines and "2-qism: https://g/2" in lines
     assert "Marshrut (Yandex): https://y/1" in lines
 
 
 def test_one_google_link_is_not_called_a_part():
-    text = driver_message(date(2026, 11, 7), "Isuzu", Decimal(1), [], ["https://g/1"], "")
+    text = driver_message("Yuk #1", [], ["https://g/1"], "")
     assert "Marshrut (Google Maps): https://g/1" in text
     assert "qism" not in text
 

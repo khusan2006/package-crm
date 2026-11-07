@@ -31,6 +31,8 @@ from .models import (
     Sale,
     SaleItem,
     StockEntry,
+    Load,
+    LoadItem,
     Truck,
     Warehouse,
     seller_cash_on_hand,
@@ -321,6 +323,62 @@ class TruckForm(forms.ModelForm):
             "name": forms.TextInput(attrs={"placeholder": "Masalan: Isuzu 01 A 123 BC"}),
             "capacity_kg": forms.NumberInput(attrs={"min": 1, "inputmode": "numeric"}),
         }
+
+
+class LoadForm(forms.ModelForm):
+    """A yuk: its day, the truck it goes on (optional for now), and a note."""
+
+    class Meta:
+        model = Load
+        fields = ["date", "truck", "note"]
+        widgets = {
+            "date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "note": forms.TextInput(attrs={"placeholder": "Ixtiyoriy"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        trucks = Truck.objects.filter(is_active=True)
+        if self.instance.truck_id:  # a truck switched off since keeps its loads
+            trucks = Truck.objects.filter(pk=self.instance.truck_id) | trucks
+        self.fields["truck"].queryset = trucks.order_by("name")
+        self.fields["truck"].required = False
+
+
+class LoadItemForm(forms.ModelForm):
+    """A client added to a load, with the rolls going to them. The kg can wait until
+    the goods are weighed."""
+
+    class Meta:
+        model = LoadItem
+        fields = ["client", "rolls", "kg"]
+        widgets = {
+            "rolls": forms.NumberInput(attrs={"min": 1, "inputmode": "numeric"}),
+            "kg": forms.NumberInput(attrs={"min": 0, "step": "0.001", "inputmode": "decimal"}),
+        }
+
+    def __init__(self, *args, load=None, **kwargs):
+        self.load = load
+        super().__init__(*args, **kwargs)
+        self.fields["client"].queryset = Client.objects.order_by("name")
+        _searchable_select(self.fields["client"], "Mijozni tanlang")
+
+    def clean_client(self):
+        client = self.cleaned_data["client"]
+        if self.load and self.load.items.filter(client=client).exclude(pk=self.instance.pk).exists():
+            raise forms.ValidationError(
+                f"«{client.name}» bu yukda allaqachon bor — rulon sonini o'sha qatorda o'zgartiring."
+            )
+        return client
+
+
+class LoadItemEditForm(forms.ModelForm):
+    """Rolls and kg of a client already in the load."""
+
+    class Meta:
+        model = LoadItem
+        fields = ["rolls", "kg"]
+        widgets = LoadItemForm.Meta.widgets
 
 
 class WarehouseForm(forms.ModelForm):

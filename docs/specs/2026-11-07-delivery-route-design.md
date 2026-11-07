@@ -1,5 +1,18 @@
 # Delivery route planning — design
 
+> **Changed 2026-11-08 — loads (yuk), not sales.** Delivery is now built from
+> loads put together by hand: an admin or manager creates a load (date, optional
+> truck, note), adds clients with a number of rolls, and enters the kg later once
+> weighed. A day can have several loads. Loads are **not tied to sales** for now.
+> Kept: the route algorithm (by road via OpenRouteService), the map, ↑↓ order with
+> Saqlash / Qayta hisoblash, and the driver's message. Each load is one route —
+> **truck capacity and splitting a load across trucks are still to be decided**
+> (crm/routing.py keeps `choose_trucks` / `split_two` for that). Sellers have no
+> Yetkazish view for now. Models: `Load`, `LoadItem` (migration 0054); the
+> sale-based `DeliveryRoute`, `RouteStop` and `Sale.delivery` were removed.
+> Much of the text below describes the earlier sale-based design.
+
+
 Status: built — trucks and warehouse, routing, the Yetkazish page, saving and hand
 corrections, the driver's message and map links, and the sellers' read-only view
 of their own stops. Still open: road distances (OSRM), a "deliver first" flag,

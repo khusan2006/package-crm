@@ -510,13 +510,6 @@ class Sale(models.Model):
         "Qarz muddati (kun)", null=True, blank=True
     )
     note = models.CharField("Izoh", max_length=255, blank=True)
-    # Which day's delivery (Yetkazish) the operator put this sale into — chosen by
-    # hand on the Yetkazish page, never from the sale date. Empty until then; a
-    # sale is in at most one delivery, so it can't be sent twice.
-    delivery = models.ForeignKey(
-        "DeliveryRoute", on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="sales", verbose_name="Yetkazish",
-    )
     # An opening balance carried over from before go-live: a client's old debt that
     # was never a CRM sale. Such a "sale" has NO line items — the debt is this amount
     # alone, and it flows into `debt_remaining`/`remaining` only. Because it has no
@@ -2583,46 +2576,59 @@ class Warehouse(models.Model):
         return self.name
 
 
-class DeliveryRoute(models.Model):
-    """A day's delivery — one for the whole company, since the trucks and the
-    warehouse are shared. The operator chooses its sales by hand (`Sale.delivery`).
-    Its `stops` are the saved order: until they exist, the Yetkazish page shows the
-    order crm/routing.py suggests; saving fixes it (with any hand corrections) so it
-    no longer shifts as the page is reopened."""
+class Load(models.Model):
+    """A yuk: one trip's worth of clients to deliver to, put together by hand by an
+    admin or manager. Not tied to sales — each client gets a number of rolls now, and
+    the kg once it's weighed. A day can have several loads (one per truck or trip).
 
-    date = models.DateField("Sana", unique=True)
+    The route through its clients is suggested by crm/routing.py (by road when
+    OpenRouteService is set up); saving the order writes `LoadItem.position`."""
+
+    date = models.DateField("Sana", default=timezone.localdate)
+    truck = models.ForeignKey(
+        Truck, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="loads", verbose_name="Mashina",
+    )
+    note = models.CharField("Izoh", max_length=255, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
-        related_name="delivery_routes", verbose_name="Kim saqladi",
+        related_name="loads", verbose_name="Kim yaratdi",
     )
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    # When the stop order was last saved; empty while the page only suggests one.
+    ordered_at = models.DateTimeField("Tartib saqlangan", null=True, blank=True)
 
     class Meta:
-        ordering = ["-date"]
-        verbose_name = "Yetkazish rejasi"
-        verbose_name_plural = "Yetkazish rejalari"
+        ordering = ["-date", "created_at"]
+        verbose_name = "Yuk"
+        verbose_name_plural = "Yuklar"
 
     def __str__(self):
-        return f"Yetkazish {self.date:%d.%m.%Y}"
+        return f"Yuk #{self.pk} · {self.date:%d.%m.%Y}"
 
 
-class RouteStop(models.Model):
-    """One client visit in a saved plan: which truck, and its place in that truck's
-    order. A visit, not a sale — several sales to one client on the day are one
-    stop. The load itself is not stored: it is read from the sales each time, so a
-    sale edited after saving still shows its true kg."""
+class LoadItem(models.Model):
+    """One client in a load: how many rolls go to them, and — once weighed — the kg.
+    `position` is their place in the saved route; empty until the order is saved, or
+    for a client added after it was."""
 
-    route = models.ForeignKey(DeliveryRoute, on_delete=models.CASCADE, related_name="stops")
-    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="route_stops")
-    # PROTECT: a truck that has driven a saved route is switched off, not deleted.
-    truck = models.ForeignKey(Truck, on_delete=models.PROTECT, related_name="route_stops")
-    position = models.PositiveIntegerField("Tartib")
+    load = models.ForeignKey(Load, on_delete=models.CASCADE, related_name="items")
+    client = models.ForeignKey(Client, on_delete=models.PROTECT, related_name="load_items",
+                               verbose_name="Mijoz")
+    rolls = models.PositiveIntegerField("Rulon soni", validators=[MinValueValidator(1)])
+    kg = models.DecimalField("Og'irligi (kg)", max_digits=12, decimal_places=3,
+                             null=True, blank=True,
+                             help_text="Tortilgandan keyin kiritiladi")
+    position = models.PositiveIntegerField("Tartib", null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["truck_id", "position"]
+        ordering = ["created_at"]
         constraints = [
-            models.UniqueConstraint(fields=["route", "client"], name="unique_route_client"),
+            models.UniqueConstraint(fields=["load", "client"], name="unique_load_client"),
         ]
-        verbose_name = "Marshrut nuqtasi"
-        verbose_name_plural = "Marshrut nuqtalari"
+        verbose_name = "Yuk qatori"
+        verbose_name_plural = "Yuk qatorlari"
+
+    def __str__(self):
+        return f"{self.client} — {self.rolls} rulon"

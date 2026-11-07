@@ -55,17 +55,14 @@ def _kg(value):
     return f"{value:,.0f}".replace(",", " ")
 
 
-def driver_message(day, truck_name, kg, stops, google_links, yandex_link):
+def driver_message(title, stops, google_links, yandex_link):
     """The text the driver is sent: every stop in order, then the route links.
 
-    `stops` are dicts with n, name, kg, and optionally address, phone and map_url."""
-    lines = [
-        f"Yetkazish {day:%d.%m.%Y} — {truck_name}",
-        f"{len(stops)} ta manzil, {_kg(kg)} kg",
-        "",
-    ]
+    `stops` are dicts with n, name, amount ("12 rulon · 340 kg"), and optionally
+    address, phone and map_url."""
+    lines = [title, f"{len(stops)} ta manzil", ""]
     for s in stops:
-        lines.append(f"{s['n']}. {s['name']} — {_kg(s['kg'])} kg")
+        lines.append(f"{s['n']}. {s['name']} — {s['amount']}")
         for key in ("address", "phone", "map_url"):
             if s.get(key):
                 lines.append(f"   {s[key]}")

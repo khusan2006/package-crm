@@ -5327,17 +5327,13 @@ a.cell-loc--map:hover { color: var(--accent); }
 .route-over-note { margin: -8px 0 12px; color: var(--danger); font-size: 13px; }
 .route-over-note[hidden] { display: none; }
 .route-hint { margin-top: 8px; font-size: 13px; }
+.route-loadcard { padding: 12px 16px; }
+.route-loadcard .route-load { margin-bottom: 0; }
 /* Haydovchiga: the driver's message and route links under each truck. */
 .route-share { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
 .route-share h3 { margin: 0 0 8px; font-size: 14px; }
 .route-share[hidden], .route-share-stale[hidden] { display: none; }
 .route-share-stale { margin-top: 14px; color: var(--warning); }
-.route-mine-place { text-align: right; flex: 0 0 auto; }
-.route-mine-place .cell-sub { display: block; }
-/* Yetkazish: choosing the day's sales. */
-/* Outside a toolbar row the pill would shrink to its content — give it a width. */
-.route-search { display: flex; width: 100%; max-width: 420px; margin-bottom: 12px; }
-.route-pick-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
 
 /* ── Davomad jadvali ───────────────────────────────────────────────────────────
    31 ta ustun — jadval albatta gorizontal siljiydi, shuning uchun ism ustuni va

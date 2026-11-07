@@ -55,8 +55,7 @@
   </div>
 </div>
 
-{% url "delivery_plan" as delivery_url %}
-{% include "crm/_filter_toolbar.html" with show_daterange_picker=True keep_daterange=True show_search=True export_url=sale_export_url delivery_url=delivery_url %}
+{% include "crm/_filter_toolbar.html" with show_daterange_picker=True keep_daterange=True show_search=True export_url=sale_export_url %}
 
 {% include "crm/_sale_table.html" with sales=page %}
 {% include "crm/_pagination.html" %}

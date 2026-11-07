@@ -127,7 +127,15 @@ urlpatterns = [
     path("mashinalar/<int:pk>/edit/", crm_views.truck_edit, name="truck_edit"),
     path("mashinalar/<int:pk>/delete/", crm_views.truck_delete, name="truck_delete"),
     path("mashinalar/ombor/", crm_views.warehouse_edit, name="warehouse_edit"),
-    path("yetkazish/", crm_views.delivery_plan, name="delivery_plan"),
+    # delivery: loads (yuk) and their route
+    path("yetkazish/", crm_views.load_list, name="load_list"),
+    path("yetkazish/yangi/", crm_views.load_create, name="load_create"),
+    path("yetkazish/<int:pk>/", crm_views.load_detail, name="load_detail"),
+    path("yetkazish/<int:pk>/edit/", crm_views.load_edit, name="load_edit"),
+    path("yetkazish/<int:pk>/delete/", crm_views.load_delete, name="load_delete"),
+    path("yetkazish/<int:pk>/mijoz/", crm_views.load_item_add, name="load_item_add"),
+    path("yetkazish/<int:pk>/mijoz/<int:item_pk>/edit/", crm_views.load_item_edit, name="load_item_edit"),
+    path("yetkazish/<int:pk>/mijoz/<int:item_pk>/delete/", crm_views.load_item_delete, name="load_item_delete"),
     path("xodimlar/", crm_views.employee_list, name="employee_list"),
     path("xodimlar/export/", crm_views.employee_export, name="employee_export"),
     # Davomad: oylik shu jadvaldan hisoblanadi
