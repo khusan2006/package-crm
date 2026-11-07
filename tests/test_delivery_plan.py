@@ -187,3 +187,170 @@ def test_sotuvlar_links_to_it_for_admins_only(client, admin_user, seller_user):
     assert "/yetkazish/" in client.get("/sales/").content.decode()
     client.force_login(seller_user)
     assert "/yetkazish/" not in client.get("/sales/").content.decode()
+
+
+# --- saving and hand corrections ----------------------------------------------------
+
+from crm.models import AuditLog, DeliveryRoute, RouteStop  # noqa: E402
+
+
+def save(client, user, stops, day=None, action="save"):
+    client.force_login(user)
+    return client.post("/yetkazish/", {
+        "sana": (day or TODAY()).isoformat(), "action": action,
+        "stop": [f"{t.pk}:{c.pk}" for t, c in stops],
+    })
+
+
+@pytest.fixture
+def three(db, seller_user, product, warehouse):
+    truck = Truck.objects.create(name="Isuzu", capacity_kg=3000)
+    clients = [make_client(seller_user, n, d) for n, d in (("A", 0.01), ("B", 0.02), ("C", 0.03))]
+    for c in clients:
+        sell(c, product, 100)
+    return truck, clients
+
+
+def names(resp, route=0):
+    return [s["client"].name for s in resp.context["routes"][route]["stops"]]
+
+
+def test_unsaved_plan_is_a_suggestion(client, admin_user, three):
+    resp = page(client, admin_user)
+    assert resp.context["saved"] is None
+    assert "Taklif" in resp.content.decode()
+
+
+def test_saving_keeps_the_order_given(client, admin_user, three):
+    truck, (a, b, c) = three
+    resp = save(client, admin_user, [(truck, c), (truck, a), (truck, b)])
+    assert resp.status_code == 302 and resp.url == f"/yetkazish/?sana={TODAY().isoformat()}"
+    route = DeliveryRoute.objects.get(date=TODAY())
+    assert route.created_by == admin_user
+    assert [(s.client.name, s.position) for s in route.stops.all()] == [("C", 1), ("A", 2), ("B", 3)]
+    assert AuditLog.objects.filter(target_type="Yetkazish", target_id=route.pk).exists()
+    # Reopened, the page shows the saved order, not a fresh suggestion.
+    resp = page(client, admin_user)
+    assert resp.context["saved"] == route
+    assert names(resp) == ["C", "A", "B"]
+    assert "Saqlangan" in resp.content.decode()
+
+
+def test_saving_again_replaces_the_plan(client, admin_user, three):
+    truck, (a, b, c) = three
+    save(client, admin_user, [(truck, a), (truck, b), (truck, c)])
+    save(client, admin_user, [(truck, b), (truck, a), (truck, c)])
+    assert DeliveryRoute.objects.count() == 1
+    assert names(page(client, admin_user)) == ["B", "A", "C"]
+
+
+@pytest.fixture
+def two_trucks(db, seller_user, product, warehouse):
+    big = Truck.objects.create(name="Katta", capacity_kg=1000)
+    small = Truck.objects.create(name="Kichik", capacity_kg=1000)
+    a, b = make_client(seller_user, "A", 0.01), make_client(seller_user, "B", 0.02)
+    sell(a, product, 600)
+    sell(b, product, 600)
+    return big, small, a, b
+
+
+def test_a_stop_moved_to_the_other_truck_stays_there(client, admin_user, two_trucks):
+    big, small, a, b = two_trucks
+    save(client, admin_user, [(small, a), (big, b)])
+    routes = {r["truck"].name: [s["client"].name for s in r["stops"]]
+              for r in page(client, admin_user).context["routes"]}
+    assert routes == {"Katta": ["B"], "Kichik": ["A"]}
+
+
+def test_overloading_by_hand_is_saved_but_flagged(client, admin_user, two_trucks):
+    big, small, a, b = two_trucks
+    save(client, admin_user, [(big, a), (big, b)])
+    resp = page(client, admin_user)
+    routes = resp.context["routes"]
+    assert len(routes) == 1 and routes[0]["truck"] == big
+    assert routes[0]["kg"] == Decimal(1200) and routes[0]["over"]
+    assert "sig'imidan oshib ketdi" in resp.content.decode()
+
+
+@pytest.mark.parametrize("bad", ["unknown client", "duplicate", "garbage", "nothing"])
+def test_a_stale_or_broken_post_saves_nothing(client, admin_user, seller_user, three, bad):
+    truck, (a, b, c) = three
+    stranger = make_client(seller_user, "Begona", 0.04)  # no sale today
+    client.force_login(admin_user)
+    stops = {
+        "unknown client": [f"{truck.pk}:{a.pk}", f"{truck.pk}:{stranger.pk}"],
+        "duplicate": [f"{truck.pk}:{a.pk}", f"{truck.pk}:{a.pk}"],
+        "garbage": ["abc"],
+        "nothing": [],
+    }[bad]
+    resp = client.post("/yetkazish/", {"sana": TODAY().isoformat(), "action": "save", "stop": stops})
+    assert resp.status_code == 302
+    assert not DeliveryRoute.objects.exists()
+
+
+def test_a_sale_after_saving_is_flagged_not_slipped_in(client, admin_user, seller_user,
+                                                       product, three):
+    truck, (a, b, c) = three
+    save(client, admin_user, [(truck, a), (truck, b), (truck, c)])
+    late = make_client(seller_user, "Kechikkan", 0.05)
+    sell(late, product, 100)
+    resp = page(client, admin_user)
+    assert names(resp) == ["A", "B", "C"]
+    assert resp.context["unplanned"] == [late]
+    assert "Kechikkan" in resp.content.decode()
+
+
+def test_a_cancelled_sale_drops_out_of_the_saved_plan(client, admin_user, three):
+    truck, (a, b, c) = three
+    save(client, admin_user, [(truck, a), (truck, b), (truck, c)])
+    b.sales.all().delete()
+    resp = page(client, admin_user)
+    assert names(resp) == ["A", "C"]
+    assert resp.context["dropped"] == 1
+
+
+def test_saved_plan_reads_the_load_from_the_sales_as_they_are(client, admin_user, three, product):
+    truck, (a, b, c) = three
+    save(client, admin_user, [(truck, a), (truck, b), (truck, c)])
+    sell(a, product, 50)  # a second sale to A after saving
+    stops = page(client, admin_user).context["routes"][0]["stops"]
+    assert stops[0]["kg"] == Decimal(150)
+
+
+def test_reset_throws_the_saved_plan_away(client, admin_user, three):
+    truck, (a, b, c) = three
+    save(client, admin_user, [(truck, c), (truck, b), (truck, a)])
+    resp = save(client, admin_user, [], action="reset")
+    assert resp.status_code == 302
+    assert not DeliveryRoute.objects.exists() and not RouteStop.objects.exists()
+    assert page(client, admin_user).context["saved"] is None
+
+
+def test_sellers_cannot_save(client, seller_user, three):
+    truck, (a, b, c) = three
+    assert save(client, seller_user, [(truck, a)]).status_code == 403
+    assert not DeliveryRoute.objects.exists()
+
+
+def test_a_truck_in_a_saved_plan_is_switched_off_not_deleted(client, admin_user, three):
+    truck, (a, b, c) = three
+    save(client, admin_user, [(truck, a)])
+    client.post(f"/mashinalar/{truck.pk}/delete/")
+    truck.refresh_from_db()
+    assert not truck.is_active
+    assert RouteStop.objects.filter(truck=truck).exists()
+
+
+def test_ids_and_capacity_are_written_without_a_thousands_separator(client, admin_user,
+                                                                    seller_user, product,
+                                                                    warehouse):
+    # USE_THOUSAND_SEPARATOR would print 1500 as "1 500", which the page's script
+    # reads as 1 — and a "truck:client" pair like that can't be saved.
+    truck = Truck.objects.create(pk=1200, name="Isuzu", capacity_kg=3000)
+    c = Client.objects.create(pk=1500, name="Katta raqam", owner=seller_user,
+                              latitude=Decimal("41.31"), longitude=Decimal("69.25"))
+    sell(c, product, 100)
+    body = page(client, admin_user).content.decode()
+    assert 'value="1200:1500"' in body
+    assert 'data-capacity="3000"' in body
+    assert 'data-route-truck="1200"' in body

@@ -80,6 +80,7 @@ from .models import (
     REVENUE,
     AuditLog,
     Client,
+    DeliveryRoute,
     Employee,
     Expense,
     Payment,
@@ -95,6 +96,7 @@ from .models import (
     SaleItem,
     SalaryRate,
     StockEntry,
+    RouteStop,
     Truck,
     Warehouse,
     month_span,
@@ -7841,18 +7843,32 @@ def truck_edit(request, pk):
 
 @role_required(User.Role.ADMIN)
 def truck_delete(request, pk):
+    """Remove a truck. One that has driven a saved route is switched off instead —
+    deleting it would wipe it out of those days' plans."""
     truck = get_object_or_404(Truck, pk=pk)
+    used = truck.route_stops.exists()
     if request.method == "POST":
-        name = truck.name
-        truck.delete()
-        AuditLog.record(request.user, AuditLog.Action.DELETE, "Mashina", pk, f"{name} o'chirildi")
-        messages.success(request, f"“{name}” o'chirildi.")
+        if used:
+            truck.is_active = False
+            truck.save(update_fields=["is_active"])
+            AuditLog.record(request.user, AuditLog.Action.UPDATE, "Mashina", pk,
+                            f"{truck.name} faol emas deb belgilandi")
+            messages.success(request, f"“{truck.name}” faol emas deb belgilandi.")
+        else:
+            name = truck.name
+            truck.delete()
+            AuditLog.record(request.user, AuditLog.Action.DELETE, "Mashina", pk, f"{name} o'chirildi")
+            messages.success(request, f"“{name}” o'chirildi.")
         return form_reload(request, reverse("truck_list"))
-    return render_confirm(
-        request, "Mashinani o'chirish",
-        f"“{truck.name}” ro'yxatdan o'chiriladi. Davom etasizmi?",
-        "Ha, o'chirish", confirm_class="btn-danger",
-    )
+    if used:
+        body = (f"“{truck.name}” saqlangan yetkazish rejalarida bor, shuning uchun butunlay "
+                f"o'chirib bo'lmaydi. Uning o'rniga faol emas deb belgilanadi: yangi "
+                f"marshrutlarga qo'shilmaydi. Davom etasizmi?")
+        button = "Ha, faol emas qilish"
+    else:
+        body = f"“{truck.name}” ro'yxatdan o'chiriladi. Davom etasizmi?"
+        button = "Ha, o'chirish"
+    return render_confirm(request, "Mashinani o'chirish", body, button, confirm_class="btn-danger")
 
 
 @role_required(User.Role.ADMIN)
@@ -7930,33 +7946,131 @@ def _route_context(plan, visits):
         routes.append({
             "truck": route.truck, "stops": stops, "kg": route.kg, "km": route.km,
             "load_pct": min(100, round(route.kg / capacity * 100)) if capacity else 0,
+            "over": route.kg > capacity,
             "color": ROUTE_COLORS[n % len(ROUTE_COLORS)], "index": n + 1,
         })
     return routes
+
+
+def _stop_for(client_pk, visit):
+    c = visit["client"]
+    return routing.Stop(client_pk, float(c.latitude), float(c.longitude), visit["kg"])
+
+
+def _saved_plan(saved, visits, depot):
+    """A saved plan read against the day's sales as they are now.
+
+    The order and the trucks come from what was saved; the kg comes from the sales,
+    so an edited sale shows its true load. A saved stop whose client has nothing left
+    to deliver drops out, and a client sold to after saving is returned in
+    `unplanned` — the plan doesn't quietly take them in. Returns (plan, unplanned,
+    dropped)."""
+    groups, planned, dropped = {}, set(), 0
+    for rs in saved.stops.select_related("truck"):
+        visit = visits.get(rs.client_id)
+        if visit is None or not visit["client"].has_location:
+            dropped += 1
+            continue
+        groups.setdefault(rs.truck, []).append(_stop_for(rs.client_id, visit))
+        planned.add(rs.client_id)
+    unplanned = [v["client"] for pk, v in visits.items()
+                 if pk not in planned and v["client"].has_location]
+    trucks = sorted(groups, key=lambda t: (-t.capacity_kg, t.pk))  # bigger truck first
+    plan = routing.Plan([routing.build_route(t, groups[t], depot) for t in trucks])
+    return plan, unplanned, dropped
+
+
+def _delivery_url(day):
+    return f"{reverse('delivery_plan')}?sana={day.isoformat()}"
+
+
+@transaction.atomic
+def _save_delivery_plan(request, day, visits):
+    """Save the plan exactly as the page posted it: `stop` = "truck:client", in
+    visiting order. Anything the page could not have shown is refused rather than
+    guessed at — a stale tab is reloaded, not half-saved."""
+    located = {pk for pk, v in visits.items() if v["client"].has_location}
+    trucks = {t.pk: t for t in Truck.objects.all()}
+    rows, seen = [], set()
+    for raw in request.POST.getlist("stop"):
+        try:
+            truck_pk, client_pk = (int(part) for part in raw.split(":"))
+        except ValueError:
+            truck_pk = client_pk = None
+        if truck_pk not in trucks or client_pk not in located or client_pk in seen:
+            messages.error(request, "Reja eskirgan — sahifa yangilandi, qaytadan saqlang.")
+            return redirect(_delivery_url(day))
+        seen.add(client_pk)
+        rows.append((trucks[truck_pk], client_pk))
+    if not rows:
+        messages.error(request, "Saqlash uchun rejada manzil yo'q.")
+        return redirect(_delivery_url(day))
+
+    route, _ = DeliveryRoute.objects.update_or_create(
+        date=day, defaults={"created_by": request.user}
+    )
+    route.stops.all().delete()
+    positions = {}
+    stops = []
+    for truck, client_pk in rows:
+        positions[truck.pk] = positions.get(truck.pk, 0) + 1
+        stops.append(RouteStop(route=route, truck=truck, client_id=client_pk,
+                               position=positions[truck.pk]))
+    RouteStop.objects.bulk_create(stops)
+    AuditLog.record(
+        request.user, AuditLog.Action.UPDATE, "Yetkazish", route.pk,
+        f"{day:%d.%m.%Y} rejasi saqlandi — {len(positions)} ta mashina, {len(stops)} ta manzil",
+    )
+    messages.success(request, "Yetkazish rejasi saqlandi.")
+    return redirect(_delivery_url(day))
+
+
+def _reset_delivery_plan(request, day):
+    route = DeliveryRoute.objects.filter(date=day).first()
+    if route:
+        pk = route.pk
+        route.delete()
+        AuditLog.record(
+            request.user, AuditLog.Action.DELETE, "Yetkazish", pk,
+            f"{day:%d.%m.%Y} rejasi o'chirildi — qaytadan hisoblanadi",
+        )
+        messages.success(request, "Reja qaytadan hisoblandi. Ma'qul bo'lsa, saqlang.")
+    return redirect(_delivery_url(day))
 
 
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
 def delivery_plan(request):
     """Yetkazish: for a chosen day, which truck takes which client and in what order.
 
-    Read-only for now — nothing is saved; the plan is worked out each time the page
-    opens (crm/routing.py). It mixes every seller's sales, since the trucks and the
-    warehouse are shared, which is why it is admins and managers only."""
-    day = _parse_date(request.GET.get("sana")) or timezone.localdate()
+    Until the day's plan is saved, the page shows the one crm/routing.py suggests,
+    worked out afresh on every visit. Saving fixes it — with any stops the operator
+    moved by hand — and "Qayta hisoblash" throws the saved plan away for a new
+    suggestion. It mixes every seller's sales, since the trucks and the warehouse are
+    shared, which is why it is admins and managers only."""
+    source = request.POST if request.method == "POST" else request.GET
+    day = _parse_date(source.get("sana")) or timezone.localdate()
 
     warehouse = Warehouse.load()
     trucks = list(Truck.objects.filter(is_active=True))
     visits, missing, waiting = _delivery_day(day)
-    total_kg = sum((v["kg"] for v in visits.values()), Decimal("0"))
 
-    routes, error = [], ""
+    if request.method == "POST":
+        if source.get("action") == "reset":
+            return _reset_delivery_plan(request, day)
+        return _save_delivery_plan(request, day, visits)
+
+    total_kg = sum((v["kg"] for v in visits.values()), Decimal("0"))
+    saved = DeliveryRoute.objects.filter(date=day).select_related("created_by").first()
+
+    routes, error, unplanned, dropped = [], "", [], 0
     if not warehouse.has_location:
         error = "Ombor joylashuvi belgilanmagan. Uni Mashinalar sahifasida belgilang."
+    elif saved:
+        depot = (float(warehouse.latitude), float(warehouse.longitude))
+        plan, unplanned, dropped = _saved_plan(saved, visits, depot)
+        routes = _route_context(plan, visits)
     elif visits and not missing:
-        stops = [
-            routing.Stop(pk, float(v["client"].latitude), float(v["client"].longitude), v["kg"])
-            for pk, v in visits.items()
-        ]
+        stops = [_stop_for(pk, v) for pk, v in visits.items()]
         depot = (float(warehouse.latitude), float(warehouse.longitude))
         try:
             routes = _route_context(routing.plan_routes(depot, stops, trucks), visits)
@@ -7993,4 +8107,7 @@ def delivery_plan(request):
         "plan_km": sum(r["km"] for r in routes),
         "error": error,
         "map_data": map_data,
+        "saved": saved,
+        "unplanned": unplanned,
+        "dropped": dropped,
     })

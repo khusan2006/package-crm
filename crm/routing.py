@@ -237,7 +237,9 @@ def _pack_heaviest_first(D, kg, cap_a, cap_b, closed):
     return len_a + len_b, route_a, route_b
 
 
-def _route(truck, stops, depot, closed, dist):
+def build_route(truck, stops, depot, closed=True, dist=distance_km):
+    """A TruckRoute for `stops` in exactly the order given — used for a plan the
+    operator has adjusted by hand, so its kg and km are measured, not re-optimised."""
     D = _matrix([depot] + [s.point for s in stops], dist)
     length = 0.0
     path = [0] + list(range(1, len(stops) + 1)) + ([0] if closed else [])
@@ -270,5 +272,5 @@ def plan_routes(depot, stops, trucks, return_to_depot=True, dist=distance_km):
     else:
         groups = list(split_two(depot, stops, chosen[0].capacity_kg,
                                 chosen[1].capacity_kg, return_to_depot, dist))
-    return Plan(routes=[_route(t, g, depot, return_to_depot, dist)
+    return Plan(routes=[build_route(t, g, depot, return_to_depot, dist)
                         for t, g in zip(chosen, groups)])

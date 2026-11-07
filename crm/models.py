@@ -1909,3 +1909,47 @@ class Warehouse(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class DeliveryRoute(models.Model):
+    """A day's saved delivery plan — one for the whole company, since the trucks and
+    the warehouse are shared. Until it is saved, the Yetkazish page only shows the
+    plan crm/routing.py suggests; saving fixes the order (and any hand corrections)
+    so it no longer shifts as the page is reopened."""
+
+    date = models.DateField("Sana", unique=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+        related_name="delivery_routes", verbose_name="Kim saqladi",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-date"]
+        verbose_name = "Yetkazish rejasi"
+        verbose_name_plural = "Yetkazish rejalari"
+
+    def __str__(self):
+        return f"Yetkazish {self.date:%d.%m.%Y}"
+
+
+class RouteStop(models.Model):
+    """One client visit in a saved plan: which truck, and its place in that truck's
+    order. A visit, not a sale — several sales to one client on the day are one
+    stop. The load itself is not stored: it is read from the sales each time, so a
+    sale edited after saving still shows its true kg."""
+
+    route = models.ForeignKey(DeliveryRoute, on_delete=models.CASCADE, related_name="stops")
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="route_stops")
+    # PROTECT: a truck that has driven a saved route is switched off, not deleted.
+    truck = models.ForeignKey(Truck, on_delete=models.PROTECT, related_name="route_stops")
+    position = models.PositiveIntegerField("Tartib")
+
+    class Meta:
+        ordering = ["truck_id", "position"]
+        constraints = [
+            models.UniqueConstraint(fields=["route", "client"], name="unique_route_client"),
+        ]
+        verbose_name = "Marshrut nuqtasi"
+        verbose_name_plural = "Marshrut nuqtalari"

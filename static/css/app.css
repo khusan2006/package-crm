@@ -5166,3 +5166,22 @@ a.cell-loc--map:hover { color: var(--accent); }
   .route-map { height: 55vh; min-height: 280px; }
   .route-grid { grid-template-columns: 1fr; }
 }
+/* Saving and hand corrections on the Yetkazish route. */
+.route-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap; padding: 12px 16px;
+}
+.route-bar-actions { display: flex; gap: 8px; }
+.route-dirty { color: var(--warning); font-weight: 600; }
+.route-dirty[hidden] { display: none; }
+.route-notice { background: var(--warning-soft); border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
+.route-side { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.route-moves { display: flex; gap: 4px; }
+.route-moves .icon-action { width: 30px; height: 30px; font-size: 15px; }
+/* .icon-action sets its own display, which would beat the hidden attribute. */
+.route-moves [hidden] { display: none; }
+.route-load.is-over .route-load-bar span { background: var(--danger); }
+.route-load.is-over { color: var(--danger); font-weight: 600; }
+.route-over-note { margin: -8px 0 12px; color: var(--danger); font-size: 13px; }
+.route-over-note[hidden] { display: none; }
+.route-hint { margin-top: 8px; font-size: 13px; }

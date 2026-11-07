@@ -1,6 +1,11 @@
 # Delivery route planning — design
 
-Status: plan only, nothing built yet.
+Status: build steps 1–5 done (trucks and warehouse, routing, Yetkazish page, saving
+and hand corrections). Next: the driver's share list and map links, then the
+sellers' read-only view of their own stops.
+
+Hand corrections use ↑ / ↓ / ⇄ buttons rather than drag-and-drop: HTML5 drag is
+unreliable on phones, and the project has no drag library.
 
 ## Goal
 
