@@ -43,12 +43,16 @@ def test_reorder_move_and_save(login, admin_user, live_server, day_with_two_truc
     first, second = cards(page).nth(0), cards(page).nth(1)
     before = stop_names(first)
     assert len(before) == 2 and len(stop_names(second)) == 2
+    assert first.locator("[data-route-share]").is_visible()
 
     # ↓ on the first stop swaps the two, and the numbers follow.
     first.locator("[data-route-stop]").nth(0).locator('[data-move="down"]').click()
     assert stop_names(first) == before[::-1]
     assert first.locator("[data-route-n]").all_inner_texts() == ["1", "2"]
     assert page.locator("[data-route-dirty]").is_visible()
+    # The driver's message still holds the old order, so it steps aside until saved.
+    assert not first.locator("[data-route-share]").is_visible()
+    assert first.locator("[data-route-share-stale]").is_visible()
 
     # ⇄ moves it to the other truck: 3 × 450 kg is over its 1 000 kg.
     moved = stop_names(first)[0]

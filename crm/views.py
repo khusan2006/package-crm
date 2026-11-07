@@ -33,7 +33,7 @@ from openpyxl.utils import get_column_letter
 from accounts.decorators import role_required
 from accounts.models import User
 
-from . import routing
+from . import route_share, routing
 from .forms import (
     DEFAULT_DEBT_DAYS,
     AdvanceEditForm,
@@ -7952,6 +7952,28 @@ def _route_context(plan, visits):
     return routes
 
 
+def _attach_driver_share(routes, day, warehouse):
+    """Give each truck what its driver is sent: the stops in order as a message,
+    and links that open the route in Google Maps (in legs) or Yandex (whole)."""
+    depot = (float(warehouse.latitude), float(warehouse.longitude))
+    for r in routes:
+        points = [(float(s["client"].latitude), float(s["client"].longitude)) for s in r["stops"]]
+        google = route_share.google_route_links(depot, points)
+        yandex = route_share.yandex_route_link(depot, points)
+        text = route_share.driver_message(
+            day, r["truck"].name, r["kg"],
+            [{"n": s["n"], "name": s["client"].name, "kg": s["kg"],
+              "address": s["client"].address, "phone": s["client"].phone,
+              "map_url": s["client"].google_maps_url} for s in r["stops"]],
+            google, yandex,
+        )
+        r["share"] = {
+            "text": text, "google_links": google, "yandex_link": yandex,
+            "title": f"Yetkazish {day:%d.%m.%Y} — {r['truck'].name}",
+            **route_share.share_urls(text, google[0] if google else yandex),
+        }
+
+
 def _stop_for(client_pk, visit):
     c = visit["client"]
     return routing.Stop(client_pk, float(c.latitude), float(c.longitude), visit["kg"])
@@ -8079,6 +8101,7 @@ def delivery_plan(request):
 
     map_data = None
     if routes:
+        _attach_driver_share(routes, day, warehouse)
         map_data = {
             "depot": [float(warehouse.latitude), float(warehouse.longitude)],
             "routes": [

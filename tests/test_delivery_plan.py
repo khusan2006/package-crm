@@ -354,3 +354,13 @@ def test_ids_and_capacity_are_written_without_a_thousands_separator(client, admi
     assert 'value="1200:1500"' in body
     assert 'data-capacity="3000"' in body
     assert 'data-route-truck="1200"' in body
+
+
+def test_each_truck_has_the_drivers_message_and_links(client, admin_user, three):
+    resp = page(client, admin_user)
+    share = resp.context["routes"][0]["share"]
+    assert share["text"].startswith(f"Yetkazish {TODAY():%d.%m.%Y} — Isuzu")
+    assert "1. A — 100 kg" in share["text"]
+    assert len(share["google_links"]) == 1 and share["yandex_link"]
+    body = resp.content.decode()
+    assert "Haydovchiga" in body and "t.me/share/url" in body

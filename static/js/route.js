@@ -43,6 +43,10 @@
 
   function changed() {
     if (dirty) { dirty.hidden = false; }
+    // The driver's message and links describe the plan as the server drew it; after
+    // a move they're out of date until saved, so they step aside.
+    form.querySelectorAll('[data-route-share]').forEach(function (el) { el.hidden = true; });
+    form.querySelectorAll('[data-route-share-stale]').forEach(function (el) { el.hidden = false; });
   }
 
   form.addEventListener('click', function (e) {
