@@ -48,13 +48,12 @@
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span>
           <span>{% if user.can_see_all_records %}Sotuvlar{% else %}Mening sotuvlarim{% endif %}</span>
         </a>
-        {% comment %}Yetkazish: loads (yuk) and their route — admins and managers.{% endcomment %}
-        {% if user.can_see_all_records %}
+        {% comment %}Yetkazish: loads (yuk) and their route — every role; sellers change
+        only their own clients' stops.{% endcomment %}
         <a class="nav-item {% if 'load' in url_name %}active{% endif %}" href="{% url 'load_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg></span>
           <span>Yetkazish</span>
         </a>
-        {% endif %}
         <a class="nav-item {% if 'debt' in url_name %}active{% endif %}" href="{% url 'debt_list' %}">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
           <span>{% if user.can_see_all_records %}Qarzlar{% else %}Mening qarzlarim{% endif %}</span>

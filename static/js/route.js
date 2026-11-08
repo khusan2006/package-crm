@@ -30,6 +30,9 @@
 
     function changed() {
       if (dirty) { dirty.hidden = false; }
+      // The way back to the system's order, now that there is something to undo.
+      var suggest = scope.querySelector('[data-route-suggest]');
+      if (suggest) { suggest.hidden = false; }
       // The driver's message and links describe the order as the server drew it;
       // after a move they're out of date until saved, so they step aside.
       form.querySelectorAll('[data-route-share]').forEach(function (el) { el.hidden = true; });
@@ -64,7 +67,8 @@
     if (reset) { reset.addEventListener('submit', function () { submitting = true; }); }
     window.addEventListener('pageshow', function () { submitting = false; });
     window.addEventListener('beforeunload', function (e) {
-      if (dirty && !dirty.hidden && !submitting) { e.preventDefault(); e.returnValue = ''; }
+      // A re-fetched route replaces this form; its warning goes with it.
+      if (form.isConnected && dirty && !dirty.hidden && !submitting) { e.preventDefault(); e.returnValue = ''; }
     });
   }
 

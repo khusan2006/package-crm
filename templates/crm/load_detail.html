@@ -6,10 +6,10 @@
 {% block content %}
 
 {% comment %}
-  Bitta yuk. Yuk tarkibi: mavjud qatorlarda rulon va kg katakchalari, pastida yangi
-  qatorlar (mijoz + rulon), «+» yana bir qator qo'shadi, bitta «Saqlash» hammasini
-  saqlaydi. Marshrut «Marshrut tuzish» tugmasi bilan olinadi (yo'l masofalari
-  so'raladi) — tartib saqlangan bo'lsa, o'zi ochiladi.
+  Bitta yuk. Har bir mijoz — bitta to'xtash joyi: maqsad (yetkazish / pul olish /
+  ikkalasi) va mahsulotlar (rulon, narx, tortilgach kg). Kg kiritilgach ✓ shu mijozni
+  sotuvga aylantiradi. Sotuvchi hammasini ko'radi, faqat o'z mijozlarini o'zgartiradi.
+  Bitta «Saqlash» hammasini saqlaydi. Marshrut «Marshrut tuzish» bilan olinadi.
 {% endcomment %}
 <div class="load-head">
   <div class="load-head-info">
@@ -19,10 +19,12 @@
     </span>
     {% if load.note %}<span class="load-head-note">{{ load.note }}</span>{% endif %}
   </div>
+  {% if may_change_load %}
   <span class="ra-slots">
     <a class="icon-action act-edit" href="{% url 'load_edit' load.pk %}" data-modal title="Sana va izohni o'zgartirish" aria-label="Sana va izohni o'zgartirish">{% include "crm/_ico_edit.html" %}</a>
-    <a class="icon-action danger" href="{% url 'load_delete' load.pk %}" data-modal title="Yukni o'chirish" aria-label="Yukni o'chirish">{% include "crm/_ico_trash.html" %}</a>
+    {% if not confirmed %}<a class="icon-action danger" href="{% url 'load_delete' load.pk %}" data-modal title="Yukni o'chirish" aria-label="Yukni o'chirish">{% include "crm/_ico_trash.html" %}</a>{% endif %}
   </span>
+  {% endif %}
 </div>
 
 <div class="kpi-grid">
@@ -34,12 +36,17 @@
   <div class="kpi kpi--violet">
     <div class="kpi-head"><span class="kpi-label">Rulon</span></div>
     <div class="kpi-value">{{ roll_total }}<span class="unit">ta</span></div>
-    <div class="kpi-meta muted">jami yukda</div>
+    <div class="kpi-meta muted">{{ line_count }} ta mahsulot qatori</div>
   </div>
   <div class="kpi kpi--gold">
     <div class="kpi-head"><span class="kpi-label">Og'irligi</span></div>
-    <div class="kpi-value">{% if unweighed == items|length %}—{% else %}{{ kg_total|floatformat:"0g" }}<span class="unit">kg</span>{% endif %}</div>
-    <div class="kpi-meta muted">{% if unweighed %}{{ unweighed }} ta mijoz hali tortilmagan{% elif items %}hammasi tortilgan{% else %}—{% endif %}</div>
+    <div class="kpi-value">{% if unweighed == line_count %}—{% else %}{{ kg_total|floatformat:"0g" }}<span class="unit">kg</span>{% endif %}</div>
+    <div class="kpi-meta muted">{% if unweighed %}{{ unweighed }} ta mahsulot hali tortilmagan{% elif line_count %}hammasi tortilgan{% else %}—{% endif %}</div>
+  </div>
+  <div class="kpi kpi--green">
+    <div class="kpi-head"><span class="kpi-label">Sotuvga aylangan</span></div>
+    <div class="kpi-value">{{ confirmed }}<span class="unit">/ {{ items|length }}</span></div>
+    <div class="kpi-meta muted">kg kiritilgach ✓ bilan</div>
   </div>
 </div>
 
@@ -64,35 +71,22 @@
   {% csrf_token %}
   <input type="hidden" name="action" value="items">
   {% if items %}
-  <div class="table-wrap">
-  <table class="load-table">
-    <tr><th class="sticky-col">Mijoz</th><th>Sotuvchi</th><th class="num">Rulon</th><th class="num">Og'irligi, kg</th><th>Joylashuv</th><th></th></tr>
-    {% for item in items %}
-    <tr>
-      <td class="sticky-col"><strong>{{ item.client.name }}</strong>{% if item.client.address %}<span class="cell-sub">{{ item.client.address }}</span>{% endif %}</td>
-      <td>{{ item.client.owner }}</td>
-      <td class="num"><input type="text" inputmode="numeric" class="pick-rolls{% if item.rolls_bad %} is-bad{% endif %}" name="rolls_{{ item.pk|unlocalize }}" value="{{ item.rolls_input }}" aria-label="{{ item.client.name }} — rulon soni"{% if item.rolls_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
-      <td class="num"><input type="text" inputmode="decimal" class="pick-kg{% if item.kg_bad %} is-bad{% endif %}" name="kg_{{ item.pk|unlocalize }}" value="{{ item.kg_input }}" placeholder="—" title="Tortilgandan keyin kiriting" aria-label="{{ item.client.name }} — kg (tortilgach)"{% if item.kg_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
-      <td>{% if item.client.has_location %}<a href="{% url 'client_location' item.client.pk %}" data-modal><span class="badge badge-paid">Bor</span></a>{% else %}<span class="badge badge-warning">Yo'q</span>{% endif %}</td>
-      <td class="row-actions">
-        <span class="ra-slots">
-          <a class="icon-action danger" href="{% url 'load_item_delete' load.pk item.pk %}" data-modal title="Olib tashlash" aria-label="{{ item.client.name }} — yukdan olib tashlash">{% include "crm/_ico_trash.html" %}</a>
-        </span>
-      </td>
-    </tr>
-    {% endfor %}
-  </table>
+  <div class="stops">
+    {% for item in items %}{% include "crm/_load_stop.html" %}{% endfor %}
   </div>
   {% else %}
-  <p class="muted">Yuk hali bo'sh. Mijozni tanlang va rulon sonini yozing — kg keyin, tortilgach.</p>
+  <p class="muted">Yuk hali bo'sh. Mijozni, maqsadni, mahsulot va rulon sonini kiriting — kg keyin, tortilgach.</p>
   {% endif %}
 
-  {% comment %}New rows: a client and a rulon count each. «+» adds another pair.{% endcomment %}
+  {% comment %}New stops: a client, a purpose, and the first product with its rulon.
+  More products are added on the stop once it's saved. «+» adds another row.{% endcomment %}
+  <h3 class="new-rows-title">Yangi mijoz qo'shish</h3>
   <div class="new-rows" data-new-rows>
     {% for row in new_rows %}{% include "crm/_load_new_row.html" with row=row %}{% endfor %}
   </div>
   <button type="button" class="new-row-add" data-new-row-add><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yana mijoz</button>
   <template data-new-row-template>{% include "crm/_load_new_row.html" with row=None %}</template>
+  <template data-add-line-template>{% include "crm/_load_add_line.html" with item_pk="__ITEM__" row=None %}</template>
 
   <div class="items-actions">
     <span class="route-dirty" data-items-dirty{% if not failed %} hidden{% endif %}>O'zgartirildi — saqlang.</span>

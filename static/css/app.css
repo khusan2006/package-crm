@@ -6692,3 +6692,45 @@ input.is-bad:focus, .new-row:has(select.is-bad) .combobox-input:focus {
 @media (max-width: 560px) {
   .new-row input.new-row-rolls { flex-basis: 76px; width: 76px; max-width: 76px; }
 }
+/* Yuk tarkibi as stops: a card per client — who, why, ✓ — and its product lines. */
+.stops { display: flex; flex-direction: column; gap: 12px; }
+.stop {
+  border: 1px solid var(--border); border-radius: var(--r); padding: 12px 14px;
+  background: var(--surface);
+}
+.stop.is-confirmed { background: var(--surface-2); }
+.stop-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.stop-who { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.stop-who .cell-sub { overflow-wrap: anywhere; }
+.stop-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.stop-tools select.stop-purpose { width: auto; max-width: 220px; height: 32px; padding: 4px 8px; }
+.stop-confirm { white-space: nowrap; }
+.stop-lines { margin-top: 10px; }
+.stop-lines th { font-size: 11px; }
+input.pick-price { width: 120px; max-width: 120px; height: 32px; text-align: right; padding: 5px 8px;
+  border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--input); color: var(--text); font: inherit; }
+.line-drop { display: inline-grid; place-items: center; width: 32px; height: 32px; cursor: pointer;
+  border: 1px solid var(--border-strong); border-radius: var(--r-sm); color: var(--text-muted); position: relative; }
+.line-drop input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.line-drop:has(input:checked) { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
+.line-drop:has(input:focus-visible) { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
+tr:has(.line-drop input:checked) td:not(.row-actions) { text-decoration: line-through; color: var(--text-faint); }
+.add-lines { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.line-add {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 5px 10px;
+  border: 1px dashed var(--border-strong); border-radius: var(--r-sm); background: transparent;
+  color: var(--accent); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.line-add:hover { background: var(--accent-soft); border-color: var(--accent); }
+.line-add svg { width: 14px; height: 14px; }
+.stop-collect { margin: 10px 0 0; font-size: 13px; color: var(--text-muted); }
+.new-rows-title { margin: 18px 0 0; font-size: 14px; }
+.new-stop select.new-stop-purpose { flex: 0 0 auto; width: auto; max-width: 200px; height: 40px; }
+.new-stop .combobox:nth-of-type(2) { flex: 0 1 220px; }
+.route-collect { color: var(--warning); }
+.strategy-switch { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.strategy-switch .seg-btn { font-size: 12px; }
+@media (max-width: 760px) {
+  .new-stop { flex-wrap: wrap; }
+  .new-stop .combobox, .new-stop select.new-stop-purpose { flex: 1 1 100%; max-width: none; }
+}

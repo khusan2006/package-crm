@@ -292,12 +292,15 @@ def build_route(truck, stops, depot, closed=True, dist=distance_km):
     return TruckRoute(truck, stops, sum((s.kg for s in stops), Decimal("0")), length)
 
 
-def plan_routes(depot, stops, trucks, return_to_depot=True, dist=distance_km):
+def plan_routes(depot, stops, trucks, return_to_depot=True, dist=distance_km, prefer_two=False):
     """The whole day: choose trucks, split if two, order each truck's stops.
 
     `depot` is the warehouse as (lat, lng); `trucks` are the active trucks (any
-    objects with `capacity_kg`). Raises a RoutingError when the day can't be planned
-    automatically; its message says why, for the operator."""
+    objects with `capacity_kg`). By default one truck goes when it holds everything
+    (fill one first); `prefer_two` sends two in parallel, each taking one side of the
+    city, to finish sooner — falling back to the default when there aren't two trucks
+    or the stops can't be divided. Raises a RoutingError when the day can't be
+    planned automatically; its message says why, for the operator."""
     stops = merge_stops(stops)
     if not stops:
         return Plan(routes=[])
@@ -309,6 +312,15 @@ def plan_routes(depot, stops, trucks, return_to_depot=True, dist=distance_km):
         raise StopTooHeavy(too_heavy, biggest)
 
     total = sum((s.kg for s in stops), Decimal("0"))
+    if prefer_two and len(trucks) >= 2 and len(stops) >= 2:
+        for pair in truck_pairs(total, trucks):
+            try:
+                groups = split_two(depot, stops, pair[0].capacity_kg, pair[1].capacity_kg,
+                                   return_to_depot, dist)
+            except SplitImpossible:
+                continue
+            return Plan(routes=[build_route(t, g, depot, return_to_depot, dist)
+                                for t, g in zip(pair, groups)])
     chosen = choose_trucks(total, sorted(trucks, key=lambda t: t.capacity_kg))
     if len(chosen) == 1:
         ordered, _ = order_stops(depot, stops, return_to_depot, dist)

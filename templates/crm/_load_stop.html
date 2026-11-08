@@ -1,0 +1,69 @@
+{% load l10n %}
+{% comment %}
+  One stop of a load: the client, why the truck goes there, and its products.
+  `item.editable` (own client, not yet a sale) decides inputs vs. plain text. ✓ saves
+  the whole form, then turns this stop into a sale; afterwards it is locked and links
+  to the sale. Every value comes back as typed after a failed save (`*_input`), and a
+  wrong box is marked `is-bad`.
+{% endcomment %}
+<section class="stop{% if item.sale %} is-confirmed{% endif %}" id="stop-{{ item.pk|unlocalize }}">
+  <header class="stop-head">
+    <div class="stop-who">
+      <strong>{{ item.client.name }}</strong>
+      <span class="cell-sub">
+        {% if item.client.address %}{{ item.client.address }} · {% endif %}{{ item.client.owner }}
+        · {% if item.client.has_location %}<a href="{% url 'client_location' item.client.pk %}" data-modal>joylashuv</a>{% else %}<span class="route-pending">joylashuv yo'q</span>{% endif %}
+      </span>
+    </div>
+    <div class="stop-tools">
+      {% if item.sale %}
+      <span class="badge badge-neutral">{{ item.get_purpose_display }}</span>
+      <a class="badge badge-paid" href="{% url 'sale_detail' item.sale.pk %}" title="Sotuvni ochish">✓ Sotuv #{{ item.sale.pk|unlocalize }}</a>
+      {% elif item.editable %}
+      <select name="purpose_{{ item.pk|unlocalize }}" class="stop-purpose{% if item.purpose_bad %} is-bad{% endif %}" aria-label="{{ item.client.name }} — maqsad"{% if item.purpose_bad %} aria-invalid="true"{% endif %}>
+        {% for value, label in purposes %}<option value="{{ value }}"{% if value == item.purpose_input %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+      {% if item.delivers and item.line_list %}
+      <button type="submit" name="confirm" value="{{ item.pk|unlocalize }}" class="btn btn-sm stop-confirm"
+              title="Saqlab, shu mijozni sotuvga aylantirish (hamma kg kiritilgan bo'lishi kerak)">✓ Sotuvga</button>
+      {% endif %}
+      <a class="icon-action danger" href="{% url 'load_item_delete' load.pk item.pk %}" data-modal title="Yukdan olib tashlash" aria-label="{{ item.client.name }} — yukdan olib tashlash">{% include "crm/_ico_trash.html" %}</a>
+      {% else %}
+      <span class="badge badge-neutral">{{ item.get_purpose_display }}</span>
+      {% endif %}
+    </div>
+  </header>
+
+  {% if item.line_list or item.editable and item.delivers %}
+  <div class="table-wrap">
+  <table class="stop-lines">
+    <tr><th>Mahsulot</th><th class="num">Rulon</th><th class="num">Narx, so'm/kg</th><th class="num">Og'irligi, kg</th>{% if item.editable %}<th><span class="visually-hidden">Olib tashlash</span></th>{% endif %}</tr>
+    {% for line in item.line_list %}
+    <tr>
+      <td>{{ line.product.name }}</td>
+      {% if item.editable %}
+      <td class="num"><input type="text" inputmode="numeric" class="pick-rolls{% if line.rolls_bad %} is-bad{% endif %}" name="rolls_{{ line.pk|unlocalize }}" value="{{ line.rolls_input }}" aria-label="{{ item.client.name }}, {{ line.product.name }} — rulon"{% if line.rolls_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
+      <td class="num"><input type="text" inputmode="decimal" class="pick-price{% if line.price_bad %} is-bad{% endif %}" name="price_{{ line.pk|unlocalize }}" value="{{ line.price_input }}" data-money aria-label="{{ item.client.name }}, {{ line.product.name }} — narx"{% if line.price_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
+      <td class="num"><input type="text" inputmode="decimal" class="pick-kg{% if line.kg_bad %} is-bad{% endif %}" name="kg_{{ line.pk|unlocalize }}" value="{{ line.kg_input }}" placeholder="—" title="Tortilgandan keyin kiriting" aria-label="{{ item.client.name }}, {{ line.product.name }} — kg (tortilgach)"{% if line.kg_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
+      <td class="row-actions"><label class="line-drop" title="Bu mahsulotni olib tashlash"><input type="checkbox" name="drop_{{ line.pk|unlocalize }}" value="1"{% if line.dropped %} checked{% endif %}><span aria-hidden="true">×</span><span class="visually-hidden">{{ line.product.name }} — olib tashlash</span></label></td>
+      {% else %}
+      <td class="num">{{ line.rolls }}</td>
+      <td class="num">{{ line.price|floatformat:"0g" }}</td>
+      <td class="num">{% if line.kg is not None %}{{ line.kg|floatformat:"-3g" }}{% else %}<span class="muted">tortilmagan</span>{% endif %}</td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% if item.editable %}
+  <div class="add-lines" data-add-lines data-item="{{ item.pk|unlocalize }}">
+    {% for row in item.added_input %}{% if row.product or row.rolls %}{% include "crm/_load_add_line.html" with item_pk=item.pk row=row %}{% endif %}{% endfor %}
+  </div>
+  <button type="button" class="line-add" data-add-line="{{ item.pk|unlocalize }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Mahsulot</button>
+  {% endif %}
+  {% endif %}
+
+  {% if item.collects %}
+  <p class="stop-collect">Pul olish{% if item.debt %}: hozirgi qarzi <strong>{{ item.debt|floatformat:"0g" }}</strong> so'm{% else %}: hozir qarzi yo'q{% endif %}</p>
+  {% endif %}
+</section>

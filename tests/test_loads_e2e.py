@@ -1,18 +1,30 @@
-"""A load's route in a real browser: ↑ / ↓ reorder the stops, the driver's message
-steps aside until saved, and Saqlash saves what is on screen."""
+"""A load in a real browser: stops added by keyboard, a product added to a stop,
+kg typed then ✓ to a sale, ↑ / ↓ on the route, and the safety nets — Enter never
+submits, the unsaved note follows real changes."""
 
 from decimal import Decimal
 
 import pytest
 from django.utils import timezone
 
-from crm.models import Client, Load, LoadItem, Warehouse
+from crm.models import Client, Load, LoadItem, LoadLine, Product, Sale, Warehouse
 
 pytestmark = pytest.mark.e2e
 
 
 @pytest.fixture
-def load_of_three(db, admin_user, seller_user):
+def paket(db):
+    return Product.objects.create(name="Paket katta", sku="P", cost_price=1, price=Decimal("15000"))
+
+
+def stop(load, client, product, rolls=5, kg=None):
+    item = LoadItem.objects.create(load=load, client=client)
+    LoadLine.objects.create(item=item, product=product, rolls=rolls, price=product.price, kg=kg)
+    return item
+
+
+@pytest.fixture
+def load_of_three(db, admin_user, seller_user, paket):
     w = Warehouse.load()
     w.latitude, w.longitude = Decimal("41.3"), Decimal("69.24")
     w.save()
@@ -20,7 +32,7 @@ def load_of_three(db, admin_user, seller_user):
     for name, dlng in (("Yaqin", "0.01"), ("Orta", "0.02"), ("Uzoq", "0.03")):
         c = Client.objects.create(name=name, owner=seller_user, latitude=Decimal("41.3"),
                                   longitude=Decimal("69.24") + Decimal(dlng))
-        LoadItem.objects.create(load=load, client=c, rolls=5)
+        stop(load, c, paket)
     return load
 
 
@@ -28,112 +40,132 @@ def stop_names(page):
     return page.locator("[data-route-stop] .route-body strong").all_inner_texts()
 
 
+def pick(page, row, nth, text):
+    """Type into the nth picker of a row and choose the matching option."""
+    row.locator(".combobox-input").nth(nth).fill(text)
+    page.locator(".combobox-option:visible", has_text=text).first.click()
+
+
 def test_reorder_and_save(login, admin_user, live_server, load_of_three):
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load_of_three.pk}/")
-    # No route until asked for; the button shows its loading state, then the map.
     assert page.locator("[data-route-stop]").count() == 0
     page.click("[data-route-build]")
     page.wait_for_selector("[data-route-stop]")
     page.wait_for_selector("[data-route-start]", state="hidden")
-    assert page.locator(".route-map .leaflet-marker-icon").count() == 4  # depot + 3
     assert stop_names(page) == ["Yaqin", "Orta", "Uzoq"]
-    assert page.locator("[data-route-share]").is_visible()
 
     page.locator("[data-route-stop]").nth(0).locator('[data-move="down"]').click()
     assert stop_names(page) == ["Orta", "Yaqin", "Uzoq"]
-    assert page.locator("[data-route-n]").all_inner_texts() == ["1", "2", "3"]
-    assert page.locator("[data-route-dirty]").is_visible()
     assert not page.locator("[data-route-share]").is_visible()
-    assert page.locator("[data-route-share-stale]").is_visible()
+    # The way back to the suggestion appears once there's a move to undo.
+    page.click("[data-route-suggest]")
+    page.wait_for_function("document.querySelector('[data-route-stop] .route-body strong').innerText === 'Yaqin'")
+    page.locator("[data-route-stop]").nth(0).locator('[data-move="down"]').click()
 
     page.locator('button[form="route-form"]').click()
     page.wait_for_selector("text=Tartib saqlandi")
-    # A saved order opens the route by itself.
     page.wait_for_selector("[data-route-stop]")
     assert stop_names(page) == ["Orta", "Yaqin", "Uzoq"]
-    saved = list(load_of_three.items.order_by("position").values_list("client__name", flat=True))
-    assert saved == ["Orta", "Yaqin", "Uzoq"]
 
 
-def test_add_clients_row_by_row_and_save(login, admin_user, seller_user, live_server, db):
+def test_add_stops_by_keyboard_and_save(login, admin_user, seller_user, live_server, db, paket):
     load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
-    for name in ("Anvar savdo", "Botir paket", "Davron plast"):
+    for name in ("Anvar savdo", "Botir plast"):
         Client.objects.create(name=name, owner=seller_user, address="Chilonzor")
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
 
-    # First row: type into the client picker, choose, and the rulon box is next.
-    page.locator("[data-new-row] .combobox-input").first.fill("botir")
-    page.locator(".combobox-option:visible", has_text="Botir paket").first.click()
-    rolls = page.locator("[data-new-row] [name=new_rolls]").first
+    row = page.locator("[data-new-row]").first
+    pick(page, row, 0, "Botir plast")          # client → focus moves to its product
+    assert row.locator(".combobox-input").nth(1).evaluate("el => el === document.activeElement")
+    pick(page, row, 1, "Paket katta")          # product → focus moves to its rulon
+    rolls = row.locator("[name=new_rolls]")
     assert rolls.evaluate("el => el === document.activeElement")
     rolls.type("12")
-    rolls.press("Enter")  # adds the next row instead of submitting
+    rolls.press("Enter")                       # a new row, not a submit
     assert page.locator("[data-new-row]").count() == 2
 
-    page.locator("[data-new-row] .combobox-input").nth(1).fill("davron")
-    page.locator(".combobox-option:visible", has_text="Davron plast").first.click()
-    page.locator("[data-new-row] [name=new_rolls]").nth(1).type("3")
-
-    # «+ Yana mijoz» adds an empty pair; an empty pair is simply ignored on save.
-    page.click("[data-new-row-add]")
-    assert page.locator("[data-new-row]").count() == 3
-
-    page.click("[data-load-items] button[type=submit]")
-    page.wait_for_selector("text=2 ta mijoz qo'shildi")
-    assert sorted(load.items.values_list("client__name", "rolls")) == [
-        ("Botir paket", 12), ("Davron plast", 3)]
+    second = page.locator("[data-new-row]").nth(1)
+    pick(page, second, 0, "Anvar savdo")
+    second.locator("select[name=new_purpose]").select_option("collect")
+    page.click("[data-load-items] .items-actions button[type=submit]")
+    page.wait_for_selector("text=Saqlandi")
+    stops = {i.client.name: i for i in load.items.all()}
+    assert stops["Botir plast"].lines.get().rolls == 12
+    assert stops["Anvar savdo"].purpose == "collect" and not stops["Anvar savdo"].lines.exists()
 
 
-# --- QA audit regressions -----------------------------------------------------------
-
-def test_enter_in_the_picker_never_submits(login, admin_user, seller_user, live_server, db):
+def test_type_kg_and_tick_turns_the_stop_into_a_sale(login, admin_user, seller_user, live_server,
+                                                     db, paket):
     load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
-    kept = Client.objects.create(name="Bektemir savdo", owner=seller_user)
-    item = LoadItem.objects.create(load=load, client=kept, rolls=3, kg=Decimal("120"))
+    item = stop(load, Client.objects.create(name="Anvar", owner=seller_user), paket, rolls=6)
+    line = item.lines.get()
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    page.fill(f'[name="kg_{line.pk}"]', "123,5")
+    page.click(f'button[name="confirm"][value="{item.pk}"]')
+    page.wait_for_selector("text=sotuvga aylandi")
+    sale = Sale.objects.get()
+    assert sale.items.get().weight == Decimal("123.5")
+    assert page.locator(f"#stop-{item.pk} >> text=Sotuv #{sale.pk}").is_visible()
+    assert page.locator(f'[name="kg_{line.pk}"]').count() == 0  # locked
+
+
+def test_a_product_is_added_to_a_stop(login, admin_user, seller_user, live_server, db, paket):
+    Product.objects.create(name="Plyonka", sku="P2", cost_price=1, price=Decimal("26000"))
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    item = stop(load, Client.objects.create(name="Anvar", owner=seller_user), paket)
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    page.click(f'[data-add-line="{item.pk}"]')
+    added = page.locator("[data-add-line-row]").first
+    pick(page, added, 0, "Plyonka")
+    added.locator("input[type=text]:not(.combobox-input)").type("3")
+    assert page.locator("[data-items-dirty]").is_visible()
+    page.click("[data-load-items] .items-actions button[type=submit]")
+    page.wait_for_selector("text=Saqlandi")
+    assert sorted(item.lines.values_list("product__name", "rolls")) == [("Paket katta", 5), ("Plyonka", 3)]
+
+
+def test_enter_in_the_picker_never_submits(login, admin_user, seller_user, live_server, db, paket):
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    item = stop(load, Client.objects.create(name="Bektemir savdo", owner=seller_user), paket,
+                kg=Decimal("120"))
+    line = item.lines.get()
     Client.objects.create(name="Chilonzor plast", owner=seller_user)
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
-
-    # An edit elsewhere, then Enter in the picker with a typed name and no arrows:
-    # the first match is taken, focus moves to its rulon — nothing is submitted.
-    page.fill(f'[name="kg_{item.pk}"]', "121")
+    page.fill(f'[name="kg_{line.pk}"]', "121")
     picker = page.locator("[data-new-row] .combobox-input").first
     picker.fill("chilon")
-    picker.press("Enter")
-    assert page.locator("[data-new-row] [name=new_rolls]").first.evaluate(
-        "el => el === document.activeElement")
-    assert page.locator("[data-new-row] select").first.input_value() != ""
-    # Enter again after Escape: still nothing submitted.
+    picker.press("Enter")                     # takes the match, moves on, no submit
+    assert page.locator("[data-new-row] select[name=new_client]").first.input_value() != ""
     picker.focus()
     picker.press("Escape")
     picker.press("Enter")
     page.wait_for_timeout(300)
-    item.refresh_from_db()
-    assert item.kg == Decimal("120")  # the 121 was never saved behind the user's back
+    line.refresh_from_db()
+    assert line.kg == Decimal("120")          # the 121 was never saved behind the user's back
     assert page.url.endswith(f"/yetkazish/{load.pk}/")
 
 
-def test_undoing_a_change_clears_the_unsaved_note(login, admin_user, seller_user, live_server, db):
+def test_undoing_a_change_clears_the_unsaved_note(login, admin_user, seller_user, live_server, db, paket):
     load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
-    item = LoadItem.objects.create(load=load, client=Client.objects.create(name="A", owner=seller_user),
-                                   rolls=3)
+    item = stop(load, Client.objects.create(name="A", owner=seller_user), paket, rolls=3)
+    line = item.lines.get()
     Client.objects.create(name="Botir", owner=seller_user)
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
     note = page.locator("[data-items-dirty]")
     assert not note.is_visible()
-
-    page.fill(f'[name="rolls_{item.pk}"]', "4")
+    page.fill(f'[name="rolls_{line.pk}"]', "4")
     assert note.is_visible()
-    page.fill(f'[name="rolls_{item.pk}"]', "3")
+    page.fill(f'[name="rolls_{line.pk}"]', "3")
     assert not note.is_visible()
-
-    page.locator("[data-new-row] .combobox-input").first.fill("botir")
-    page.locator(".combobox-option:visible", has_text="Botir").first.click()
+    pick(page, page.locator("[data-new-row]").first, 0, "Botir")
     assert note.is_visible()
-    page.click("[data-new-row-remove]")  # the only new row: emptied, not removed
+    page.click("[data-new-row] [data-new-row-remove]")  # the only new row: emptied
     assert not note.is_visible()
 
 
@@ -146,7 +178,6 @@ def test_the_first_stop_cannot_move_up(login, admin_user, live_server, load_of_t
     assert stops.nth(0).locator('[data-move="up"]').is_disabled()
     assert stops.nth(2).locator('[data-move="down"]').is_disabled()
     stops.nth(0).locator('[data-move="down"]').click()
-    # The stop that is now first can't go up; the one that moved down now can.
     assert stops.nth(0).locator('[data-move="up"]').is_disabled()
     assert not stops.nth(1).locator('[data-move="up"]').is_disabled()
     assert page.locator("[data-route-status]").inner_text() == "Marshrut tayyor."

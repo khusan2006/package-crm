@@ -112,6 +112,7 @@ from .models import (
     StockEntry,
     Load,
     LoadItem,
+    LoadLine,
     Truck,
     Warehouse,
     davomad_start,
@@ -9777,6 +9778,25 @@ def _product_price_map():
     }
 
 
+def _finish_new_sale(user, sale, seller, summary_extra=""):
+    """Everything a freshly saved sale (header and items written) goes through,
+    wherever it was entered — the sale form, or ✓ on a Yetkazish load stop — so the
+    two can never drift apart. Returns the advance spent on it (so'm)."""
+    # No warehouse stock to check against — every line is fulfilled on sale.
+    _mark_fulfilment(sale, [])
+    # If the client has prepaid this seller, spend that advance on the new
+    # receipt (oldest first) — the sale opens already part/fully paid.
+    applied = _apply_advance_to_open_sales(sale.client, seller)
+    # A backdated receipt may predate a repayment the client has already made.
+    recompute_client_debt_deadlines(sale.client_id)
+    AuditLog.record(
+        user, AuditLog.Action.CREATE, "Sotuv", sale.pk,
+        (f"Mijoz {sale.client.name}, {sale.items.count()} ta mahsulot "
+         f"— {sale.total_price:,.0f} so'm{_on_behalf(user, seller)}{summary_extra}")[:255],
+    )
+    return applied
+
+
 def sale_create(request):
     form = SaleForm(
         request.POST or None, user=request.user, initial=_acting_initial(request)
@@ -9791,18 +9811,7 @@ def sale_create(request):
             sale.save()
             formset.instance = sale
             formset.save()
-            # No warehouse stock to check against — every line is fulfilled on sale.
-            _mark_fulfilment(sale, [])
-            # If the client has prepaid this seller, spend that advance on the new
-            # receipt (oldest first) — the sale opens already part/fully paid.
-            applied = _apply_advance_to_open_sales(sale.client, seller)
-            # A backdated receipt may predate a repayment the client has already made.
-            recompute_client_debt_deadlines(sale.client_id)
-            AuditLog.record(
-                request.user, AuditLog.Action.CREATE, "Sotuv", sale.pk,
-                f"Mijoz {sale.client.name}, {sale.items.count()} ta mahsulot "
-                f"— {sale.total_price:,.0f} so'm{_on_behalf(request.user, seller)}",
-            )
+            applied = _finish_new_sale(request.user, sale, seller)
             if applied > 0:
                 messages.success(
                     request,
@@ -10591,10 +10600,12 @@ def warehouse_edit(request):
 
 
 # --- Delivery: loads (yuk) and their route ----------------------------------------
-# A load is put together by hand — clients and rolls, kg once weighed — and is not
-# tied to sales. Its route is suggested by crm/routing.py, by road when
-# OpenRouteService is set up (crm/road.py). The truck isn't picked by hand: once every
-# client is weighed the system picks one truck, or two with the load split by area.
+# Sellers put a load together the day before: stops (a client, why the truck goes —
+# deliver, collect money, or both) with the products agreed on the call. On delivery
+# day kg is entered once weighed, and ✓ turns a stop into a real sale. The route is
+# suggested by crm/routing.py, by road when OpenRouteService is set up (crm/road.py);
+# trucks are chosen by the system from kg — estimated from past sales until weighed —
+# following the load's strategy. Design: docs/specs/2026-11-08-loads-to-sales.md.
 
 #: Truck 1 / truck 2 colours on the map and the route cards — CSS custom properties,
 #: so the pins follow the light/dark theme like everything else.
@@ -10620,17 +10631,29 @@ def _load_list_url(day):
     return f"{reverse('load_list')}?sana={day.isoformat()}"
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def _may_edit_stop(user, item):
+    """Sellers add, edit, remove and confirm only their own clients' stops; admins
+    and managers any. A stop already turned into a sale is locked for everyone."""
+    return item.sale_id is None and (user.can_see_all_records or item.client.owner_id == user.pk)
+
+
+def _may_change_load(user, load):
+    """The load itself (date, note, deleting it): admins/managers, or the seller who
+    created it."""
+    return user.can_see_all_records or load.created_by_id == user.pk
+
+
 def load_list(request):
     """Yetkazish: the day's loads, each with its clients, rolls and known kg."""
     day = _load_day(request.GET.get("sana"))
     loads = (
         Load.objects.filter(date=day).select_related("created_by")
         .annotate(
-            client_count=Count("items"),
-            roll_total=Sum("items__rolls"),
-            kg_total=Sum("items__kg"),
-            unweighed=Count("items", filter=Q(items__kg__isnull=True)),
+            client_count=Count("items", distinct=True),
+            roll_total=Sum("items__lines__rolls"),
+            kg_total=Sum("items__lines__kg"),
+            unweighed=Count("items__lines", filter=Q(items__lines__kg__isnull=True)),
+            confirmed=Count("items", filter=Q(items__sale__isnull=False), distinct=True),
         )
         .order_by("created_at")
     )
@@ -10643,7 +10666,6 @@ def load_list(request):
     })
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
 def load_create(request):
     """«Yangi yuk»: one click makes an empty load for the day on screen and opens it —
     there is nothing to ask first (a note can be added later with «Tahrirlash»)."""
@@ -10657,9 +10679,10 @@ def load_create(request):
     return redirect(_load_url(load))
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
 def load_edit(request, pk):
     load = get_object_or_404(Load, pk=pk)
+    if not _may_change_load(request.user, load):
+        raise PermissionDenied
     form = LoadForm(request.POST or None, instance=load)
     title = f"Yuk #{load.pk}"
     if request.method == "POST":
@@ -10675,9 +10698,15 @@ def load_edit(request, pk):
     return form_response(request, form, title)
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
 def load_delete(request, pk):
+    """Delete a load — not once any stop has become a sale: those sales belong to
+    this delivery, and the record of it should stay."""
     load = get_object_or_404(Load, pk=pk)
+    if not _may_change_load(request.user, load):
+        raise PermissionDenied
+    if load.items.filter(sale__isnull=False).exists():
+        messages.error(request, "Bu yukda sotuvga aylangan mijozlar bor — yukni o'chirib bo'lmaydi.")
+        return form_reload(request, _load_url(load))
     if request.method == "POST":
         day = load.date
         load.delete()
@@ -10692,20 +10721,24 @@ def load_delete(request, pk):
     )
 
 
-#: Limits on what a load row accepts — inside the database columns (a 32-bit rulon
-#: count, kg as numeric(12, 3)) and well past anything real.
+#: Limits on what a load accepts — inside the database columns (a 32-bit rulon
+#: count, kg as numeric(12, 3), price as numeric(14, 2)) and well past anything real.
 ROLLS_MAX = 100_000
 KG_MAX = Decimal("999999999.999")
-#: Clients in one load: the road service takes 59 points per request (the warehouse
-#: plus 58 clients), and it keeps the truck split quick.
+PRICE_MAX = Decimal("999999999999.99")
+#: Stops in one load: the road service takes 59 points per request (the warehouse
+#: plus 58 stops), and it keeps the truck split quick.
 LOAD_MAX_ITEMS = 58
+#: Product lines on one stop.
+STOP_MAX_LINES = 30
 _DIGITS = re.compile(r"[0-9]+")
 _KG = re.compile(r"[0-9]+(?:\.[0-9]{1,3})?")
+_PRICE = re.compile(r"[0-9]+(?:\.[0-9]{1,2})?")
 
 
 def _squeeze(raw):
     """Typed text without the spaces people use to group digits ("1 000")."""
-    return re.sub(r"[\s\u00a0\u202f]", "", raw or "")
+    return re.sub(r"[\s  ]", "", raw or "")
 
 
 def _whole_rolls(raw):
@@ -10738,128 +10771,288 @@ def _kg_value(raw):
     return kg
 
 
-def _read_load_items(request, items):
-    """Read Yuk tarkibi as posted — the rows already in the load and the new rows
-    below them — without saving anything.
+def _price_value(raw):
+    """A price per kg typed into a box ("15 000", "15000,50"): a Decimal from 0 to
+    PRICE_MAX with at most two decimals, or ValueError. Empty is an error too — every
+    line has a price (it starts from the product's)."""
+    raw = _squeeze(raw).replace(",", ".")
+    if not raw or not _PRICE.fullmatch(raw):
+        raise ValueError(raw)
+    price = Decimal(raw)
+    if price > PRICE_MAX:
+        raise ValueError(raw)
+    return price
 
-    Every row keeps exactly what was typed (`rolls_input`, `kg_input`, the new rows'
-    client and rulon), and anything wrong is marked on its own box, so a failed save
-    can show the page again as the person left it. Returns (changes, new_rows,
-    posted_new, problems)."""
-    changes, problems = [], []
+
+def _plain(value):
+    """A Decimal as the box shows it: "160", "340.5" — never "160.000000" or "160,000"."""
+    return f"{value.normalize():f}" if value is not None else ""
+
+
+def _post_rows(request, *names):
+    """Parallel lists posted under `names`, as rows of stripped strings — zip's
+    silent truncation of uneven lists is fine here: a row needs all its parts."""
+    return [tuple(v.strip() for v in row) for row in zip(*(request.POST.getlist(n) for n in names))]
+
+
+def _read_load_items(request, load, items, products):
+    """Read Yuk tarkibi as posted, without saving anything.
+
+    Stops the user may edit: their purpose, each line's rulon / price / kg (or the
+    line removed), and lines added to the stop. Then the new stops below (client,
+    purpose, first product and rulon). Every box keeps exactly what was typed and is
+    marked if wrong, so a failed save can show the page again as it was left.
+    Returns (plan, problems) — `plan` lists the writes for `_save_load_items`."""
+    user = request.user
+    plan = {"stops": [], "lines": [], "drop": [], "add": [], "new": []}
+    problems = []
+
+    def product_of(raw):
+        return products.get(int(raw)) if _DIGITS.fullmatch(raw or "") else None
+
     for item in items:
-        raw_rolls = request.POST.get(f"rolls_{item.pk}")
-        if raw_rolls is None:  # a row added in another tab since this page was drawn
+        if not item.editable:
             continue
-        raw_kg = request.POST.get(f"kg_{item.pk}", "")
-        item.rolls_input, item.kg_input = raw_rolls, raw_kg
-        try:
-            rolls = _whole_rolls(raw_rolls)
-            if rolls is None:
-                raise ValueError("empty")
-        except ValueError:
-            rolls = None
-            item.rolls_bad = True
-            problems.append(f"{item.client.name} — rulon")
-        try:
-            kg = _kg_value(raw_kg)
-        except (ValueError, ArithmeticError):
-            kg = None
-            item.kg_bad = True
-            problems.append(f"{item.client.name} — kg")
-        if not getattr(item, "rolls_bad", False) and not getattr(item, "kg_bad", False) \
-                and (rolls, kg) != (item.rolls, item.kg):
-            changes.append((item, rolls, kg))
+        name = item.client.name
+        raw_purpose = request.POST.get(f"purpose_{item.pk}")
+        if raw_purpose is None:  # a stop added in another tab since this page was drawn
+            continue
+        if raw_purpose not in LoadItem.Purpose.values:
+            item.purpose_bad = True
+            problems.append(f"{name} — maqsad")
+            continue
+        item.purpose_input = raw_purpose
+        delivers = raw_purpose != LoadItem.Purpose.COLLECT
+        kept = 0
+        for line in item.line_list:
+            line.rolls_input = request.POST.get(f"rolls_{line.pk}", line.rolls_input)
+            line.price_input = request.POST.get(f"price_{line.pk}", line.price_input)
+            line.kg_input = request.POST.get(f"kg_{line.pk}", line.kg_input)
+            if request.POST.get(f"drop_{line.pk}"):
+                line.dropped = True
+                plan["drop"].append(line)
+                continue
+            kept += 1
+            values = {}
+            for field, parse in (("rolls", _whole_rolls), ("price", _price_value), ("kg", _kg_value)):
+                try:
+                    values[field] = parse(getattr(line, f"{field}_input"))
+                    if field == "rolls" and values[field] is None:
+                        raise ValueError("empty")
+                except (ValueError, ArithmeticError):
+                    setattr(line, f"{field}_bad", True)
+                    problems.append(f"{name}, {line.product.name} — {dict(rolls='rulon', price='narx', kg='kg')[field]}")
+            if len(values) == 3 and (values["rolls"], values["price"], values["kg"]) != (line.rolls, line.price, line.kg):
+                plan["lines"].append((line, values))
+        added = []
+        for raw_product, raw_rolls in _post_rows(request, f"addline_{item.pk}_product", f"addline_{item.pk}_rolls"):
+            row = {"product": raw_product, "rolls": raw_rolls, "product_bad": False, "rolls_bad": False}
+            added.append(row)
+            if not raw_product and not raw_rolls:
+                continue
+            product = product_of(raw_product)
+            try:
+                rolls = _whole_rolls(raw_rolls)
+            except ValueError:
+                rolls = None
+            if product is None:
+                row["product_bad"] = True
+                problems.append(f"{name} — yangi qatorda mahsulot tanlanmagan")
+            if not rolls:
+                row["rolls_bad"] = True
+                problems.append(f"{name} — yangi mahsulot rulon soni")
+            if product and rolls:
+                plan["add"].append((item, product, rolls))
+                kept += 1
+        item.added_input = added
+        if delivers and not kept:
+            item.purpose_bad = True
+            problems.append(f"{name} — yetkazish uchun kamida bitta mahsulot kerak "
+                            f"(yoki maqsadni «Pul olish» qiling)")
+        if not delivers and kept:
+            item.purpose_bad = True
+            problems.append(f"{name} — «Pul olish»da mahsulot bo'lmaydi: mahsulotlarni olib tashlang")
+        if raw_purpose != item.purpose:
+            plan["stops"].append((item, raw_purpose))
 
-    saved = {i.client_id for i in items}
-    picked = set()  # clients chosen in this save's new rows
-    new_rows, posted_new = [], []
-    pairs = list(zip(request.POST.getlist("new_client"), request.POST.getlist("new_rolls")))
-    for n, (raw_client, raw_rolls) in enumerate(pairs, start=1):
-        row = {"client": raw_client.strip(), "rolls": raw_rolls, "client_bad": False, "rolls_bad": False}
+    in_load = {i.client_id for i in items}
+    picked = set()
+    posted_new = []
+    for n, (raw_client, raw_purpose, raw_product, raw_rolls) in enumerate(
+            _post_rows(request, "new_client", "new_purpose", "new_product", "new_rolls"), start=1):
+        row = {"client": raw_client, "purpose": raw_purpose or LoadItem.Purpose.DELIVER,
+               "product": raw_product, "rolls": raw_rolls,
+               "client_bad": False, "product_bad": False, "rolls_bad": False}
         posted_new.append(row)
-        if not row["client"] and not raw_rolls.strip():
+        if not raw_client and not raw_product and not raw_rolls:
             continue  # an untouched empty row
-        client = (Client.objects.filter(pk=row["client"]).first()
-                  if _DIGITS.fullmatch(row["client"]) else None)
-        try:
-            rolls = _whole_rolls(raw_rolls)
-        except ValueError:
-            rolls = None
+        clients = Client.objects.all() if user.can_see_all_records else Client.objects.filter(owner=user)
+        client = clients.filter(pk=raw_client).first() if _DIGITS.fullmatch(raw_client) else None
+        label = client.name if client else f"{n}-yangi qator"
         if client is None:
             row["client_bad"] = True
             problems.append(f"{n}-yangi qator — mijoz tanlanmagan")
-        elif client.pk in saved:
+        elif client.pk in in_load:
             row["client_bad"] = True
             problems.append(f"{client.name} yukda allaqachon bor")
         elif client.pk in picked:
             row["client_bad"] = True
             problems.append(f"{client.name} ikki qatorda tanlangan")
-        if not rolls:
-            row["rolls_bad"] = True
-            problems.append(f"{client.name if client else str(n) + '-yangi qator'} — rulon")
-        if client and rolls and not row["client_bad"]:
+        purpose = row["purpose"] if row["purpose"] in LoadItem.Purpose.values else LoadItem.Purpose.DELIVER
+        product, rolls = None, None
+        if purpose == LoadItem.Purpose.COLLECT:
+            if raw_product or raw_rolls:
+                row["product_bad"] = bool(raw_product)
+                row["rolls_bad"] = bool(raw_rolls)
+                problems.append(f"{label} — «Pul olish»da mahsulot bo'lmaydi")
+        else:
+            product = product_of(raw_product)
+            try:
+                rolls = _whole_rolls(raw_rolls)
+            except ValueError:
+                rolls = None
+            if product is None:
+                row["product_bad"] = True
+                problems.append(f"{label} — mahsulot tanlanmagan")
+            if not rolls:
+                row["rolls_bad"] = True
+                problems.append(f"{label} — rulon soni")
+        if client and not row["client_bad"] and not row["product_bad"] and not row["rolls_bad"]:
             picked.add(client.pk)
-            new_rows.append((client, rolls))
-    if len(items) + len(new_rows) > LOAD_MAX_ITEMS:
+            plan["new"].append((client, purpose, product, rolls))
+    if len(items) + len(plan["new"]) > LOAD_MAX_ITEMS:
         problems.append(f"bitta yukda ko'pi bilan {LOAD_MAX_ITEMS} ta mijoz bo'ladi — "
                         f"qolganini boshqa yukka qo'shing")
-    return changes, new_rows, posted_new, problems
+    for item in items:
+        if item.editable and len([l for l in item.line_list if not getattr(l, "dropped", False)]) \
+                + sum(1 for st, *_ in plan["add"] if st is item) > STOP_MAX_LINES:
+            problems.append(f"{item.client.name} — bitta mijozga ko'pi bilan {STOP_MAX_LINES} ta mahsulot")
+    return plan, posted_new, problems
+
+
+def _write_load_plan(load, plan):
+    """Apply what `_read_load_items` read, in one transaction (the caller's)."""
+    for item, purpose in plan["stops"]:
+        item.purpose = purpose
+        item.save(update_fields=["purpose"])
+    for line in plan["drop"]:
+        line.delete()
+    for line, values in plan["lines"]:
+        line.rolls, line.price, line.kg = values["rolls"], values["price"], values["kg"]
+        line.save(update_fields=["rolls", "price", "kg"])
+    for item, product, rolls in plan["add"]:
+        LoadLine.objects.create(item=item, product=product, rolls=rolls, price=product.price)
+    position = (load.items.aggregate(m=Max("position"))["m"] or 0) if load.ordered_at else None
+    for client, purpose, product, rolls in plan["new"]:
+        if position is not None:
+            position += 1
+        item = LoadItem.objects.create(load=load, client=client, purpose=purpose, position=position)
+        if product:
+            LoadLine.objects.create(item=item, product=product, rolls=rolls, price=product.price)
+
+
+def _plan_summary(load, plan):
+    parts = [f"{i.client.name}: {i.get_purpose_display()}" for i, _ in plan["stops"]]
+    parts += [f"{l.item.client.name}, {l.product.name}: {v['rolls']} rulon"
+              + (f" {v['kg']:f} kg" if v["kg"] is not None else "") for l, v in plan["lines"]]
+    parts += [f"{l.item.client.name}, {l.product.name} olib tashlandi" for l in plan["drop"]]
+    parts += [f"{i.client.name} + {p.name} {r} rulon" for i, p, r in plan["add"]]
+    parts += [f"+ {c.name}" + (f" ({p.name} {r} rulon)" if p else " (pul olish)")
+              for c, _, p, r in plan["new"]]
+    return parts
 
 
 def _save_load_items(request, load, items):
-    """One Saqlash for the whole Yuk tarkibi: the rulon and kg typed into the rows
-    already in the load, and the new rows below them (a client picked and a rulon
-    count each). Nothing is saved if any box is wrong — the page comes back with
-    everything as typed and the wrong boxes marked. New clients join the end of a
-    saved order, so the saved route stays as it was."""
+    """One Saqlash for the whole Yuk tarkibi. Nothing is saved if any box is wrong —
+    the page comes back with everything as typed and the wrong boxes marked. With
+    `confirm` (the ✓ on a stop), that stop then becomes a sale — after the save, so
+    kg typed just before pressing ✓ counts."""
     if len(request.POST.getlist("new_client")) > LOAD_MAX_ITEMS:
         # No real page sends this many rows; don't echo them all back either.
         messages.error(request, f"Bir yo'la ko'pi bilan {LOAD_MAX_ITEMS} ta yangi qator saqlanadi.")
         return redirect(_load_url(load))
-    changes, new_rows, posted_new, problems = _read_load_items(request, items)
+    products = {p.pk: p for p in Product.objects.filter(is_active=True)}
+    plan, posted_new, problems = _read_load_items(request, load, items, products)
     if problems:
-        messages.error(request, "Saqlanmadi — qizil kataklarni to'g'rilang (rulon butun son, "
-                                "kg musbat son): " + "; ".join(problems))
+        messages.error(request, "Saqlanmadi — qizil kataklarni to'g'rilang: " + "; ".join(problems))
         return _render_load_detail(request, load, items, posted_new=posted_new)
-
     try:
         with transaction.atomic():
-            for item, rolls, kg in changes:
-                item.rolls, item.kg = rolls, kg
-                item.save(update_fields=["rolls", "kg"])
-            position = (load.items.aggregate(m=Max("position"))["m"] or 0) if load.ordered_at else None
-            for client, rolls in new_rows:
-                if position is not None:
-                    position += 1
-                LoadItem.objects.create(load=load, client=client, rolls=rolls, position=position)
+            _write_load_plan(load, plan)
     except (IntegrityError, DatabaseError):
-        # Someone else changed this load at the same moment (added the same client,
-        # removed a row). Nothing of this save was kept.
+        # Someone else changed this load at the same moment. Nothing was kept.
         messages.error(request, "Yuk shu payt boshqa joyda o'zgardi — sahifa yangilandi, "
                                 "qaytadan kiriting.")
         return redirect(_load_url(load))
-
-    parts = [f"{i.client.name} {r} rulon" + (f" {k:f} kg" if k is not None else "")
-             for i, r, k in changes]
-    parts += [f"+ {c.name} {r} rulon" for c, r in new_rows]
+    parts = _plan_summary(load, plan)
     if parts:
         AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                         f"Yuk #{load.pk}: {', '.join(parts)}"[:255])
-        said = []
-        if new_rows:
-            said.append(f"{len(new_rows)} ta mijoz qo'shildi")
-        if changes:
-            said.append(f"{len(changes)} ta qator o'zgardi")
-        messages.success(request, ", ".join(said).capitalize() + ".")
+    confirm = request.POST.get("confirm", "")
+    if _DIGITS.fullmatch(confirm):
+        return _confirm_stop(request, load, int(confirm))
+    if parts:
+        messages.success(request, "Saqlandi.")
     else:
         messages.info(request, "O'zgarish yo'q.")
     return redirect(_load_url(load))
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def _confirm_stop(request, load, item_pk):
+    """✓: turn a delivery stop into a real sale, exactly as the sale form would make
+    it (`_finish_new_sale`), and lock the stop. Every line needs its kg first. Run
+    under a row lock, so a double click or a second tab can't make two sales."""
+    with transaction.atomic():
+        item = (LoadItem.objects.select_for_update().select_related("client", "client__owner")
+                .filter(pk=item_pk, load=load).first())
+        if item is None:
+            messages.error(request, "Bu mijoz yukda topilmadi — sahifa yangilandi.")
+            return redirect(_load_url(load))
+        name = item.client.name
+        if item.sale_id:
+            messages.info(request, f"“{name}” allaqachon sotuvga aylangan.")
+            return redirect(_load_url(load))
+        if not _may_edit_stop(request.user, item):
+            raise PermissionDenied
+        lines = list(item.lines.select_related("product"))
+        if not item.delivers or not lines:
+            messages.error(request, f"“{name}”: sotuv uchun mahsulot yo'q.")
+            return redirect(_load_url(load))
+        unweighed = [l.product.name for l in lines if l.kg is None]
+        if unweighed:
+            messages.error(request, f"“{name}”: avval kg kiriting — {', '.join(unweighed)}.")
+            return redirect(_load_url(load))
+        seller = item.client.owner
+        if seller.role != User.Role.SALES:
+            messages.error(request, f"“{name}” sotuvchiga biriktirilmagan — sotuv kimning "
+                                    f"nomiga yozilishi noma'lum. Mijozni sotuvchiga o'tkazing.")
+            return redirect(_load_url(load))
+        sale = Sale(date=load.date, client=item.client, sales_rep=seller,
+                    debt_term_days=DEFAULT_DEBT_DAYS, note=f"Yuk #{load.pk}")
+        sale.recompute_debt_deadline(commit=False)
+        sale.save()
+        for line in lines:
+            SaleItem.objects.create(
+                sale=sale, product=line.product, dimension=Sale.Dimension.KG, weight=line.kg,
+                rolls=line.rolls, price=line.price, cost_price=line.product.cost_price,
+            )
+        item.sale = sale
+        item.save(update_fields=["sale"])
+        applied = _finish_new_sale(request.user, sale, seller, summary_extra=f" (Yuk #{load.pk})")
+    text = f"“{name}” sotuvga aylandi — {sale.total_price:,.0f} so'm."
+    if applied > 0:
+        text += f" Avansdan {applied:,.0f} so'm yechildi."
+    messages.success(request, text)
+    return redirect(_load_url(load))
+
+
 def load_item_delete(request, pk, item_pk):
     item = get_object_or_404(LoadItem.objects.select_related("client", "load"), pk=item_pk, load_id=pk)
+    if item.sale_id:
+        messages.error(request, f"“{item.client.name}” sotuvga aylangan — yukdan olib bo'lmaydi.")
+        return form_reload(request, _load_url(item.load))
+    if not _may_edit_stop(request.user, item):
+        raise PermissionDenied
     if request.method == "POST":
         name = item.client.name
         item.delete()
@@ -10869,7 +11062,7 @@ def load_item_delete(request, pk, item_pk):
         return form_reload(request, _load_url(item.load))
     return render_confirm(
         request, "Mijozni yukdan olib tashlash",
-        f"“{item.client.name}” ({item.rolls} rulon) bu yukdan olib tashlanadi. Davom etasizmi?",
+        f"“{item.client.name}” va uning mahsulotlari bu yukdan olib tashlanadi. Davom etasizmi?",
         "Ha, olib tashlash", confirm_class="btn-danger",
     )
 
@@ -10891,12 +11084,46 @@ def _point(client):
     return (float(client.latitude), float(client.longitude))
 
 
-def _amount(item):
-    """"12 rulon · 340 kg", or "12 rulon" before it is weighed."""
-    text = f"{item.rolls} rulon"
-    if item.kg is not None:
-        text += f" · {route_share._kg(item.kg)} kg"
-    return text
+def _kg_per_roll(product_ids):
+    """Estimated kg per rulon for each product, from its past sales: all the kg
+    over all the rolls of sale lines that recorded rolls. Products with no such
+    history are left out — there is nothing to estimate from."""
+    rows = (SaleItem.objects.filter(product_id__in=product_ids, rolls__gt=0)
+            .values("product_id").annotate(kg=Sum(ITEM_WEIGHT_KG), rolls=Sum("rolls")))
+    return {r["product_id"]: r["kg"] / r["rolls"] for r in rows if r["rolls"] and r["kg"]}
+
+
+def _stop_weight(item, per_roll):
+    """(kg, estimated, unknown) for a stop: weighed kg where entered, else rolls ×
+    the product's estimate. `unknown` when a line has neither — the trucks can't be
+    planned then. A money-only stop weighs nothing."""
+    if not item.delivers:
+        return Decimal("0"), False, False
+    kg, estimated, unknown = Decimal("0"), False, False
+    for line in item.line_list:
+        if line.kg is not None:
+            kg += line.kg
+        elif line.product_id in per_roll:
+            kg += per_roll[line.product_id] * line.rolls
+            estimated = True
+        else:
+            unknown = True
+    return kg, estimated, unknown
+
+
+def _amount(item, debt):
+    """What the driver reads for a stop: "12 rulon · 340 kg", "+ pul: 1 200 000 so'm"."""
+    parts = []
+    if item.delivers and item.line_list:
+        rolls = sum(l.rolls for l in item.line_list)
+        weighed = [l.kg for l in item.line_list if l.kg is not None]
+        text = f"{rolls} rulon"
+        if weighed and len(weighed) == len(item.line_list):
+            text += f" · {route_share._kg(sum(weighed))} kg"
+        parts.append(text)
+    if item.collects:
+        parts.append(f"pul olish: {debt:,.0f} so'm".replace(",", " ") if debt else "pul olish")
+    return " + ".join(parts) or "—"
 
 
 @transaction.atomic
@@ -10934,31 +11161,42 @@ def _save_load_order(request, load, items):
 
 
 def _reset_load_order(request, load):
+    """«Tavsiya etilgan tartib» on a saved order: forget it, back to the suggestion."""
     if load.ordered_at:
         load.items.update(position=None)
         load.ordered_at = None
         load.save(update_fields=["ordered_at"])
         AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
-                        f"Yuk #{load.pk} tartibi o'chirildi — qaytadan hisoblanadi")
-        messages.success(request, "Tartib qaytadan hisoblandi. Ma'qul bo'lsa, saqlang.")
+                        f"Yuk #{load.pk} tartibi o'chirildi — tavsiya etilgan tartibga qaytdi")
+        messages.success(request, "Tavsiya etilgan tartibga qaytildi. Ma'qul bo'lsa, saqlang.")
     return redirect(_load_url(load) + "?marshrut=1")
 
 
-def _load_groups(load, items, depot, dist):
+def _set_strategy(request, load):
+    raw = request.POST.get("strategy")
+    if raw in Load.Strategy.values and raw != load.strategy:
+        load.strategy = raw
+        load.save(update_fields=["strategy"])
+        AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
+                        f"Yuk #{load.pk}: mashinalar — {load.get_strategy_display()}")
+    return redirect(_load_url(load) + "?marshrut=1")
+
+
+def _load_groups(load, items, depot, dist, weights):
     """Split the load's stops into routes: [(truck or None, [Stop, …])] and an error.
 
-    The truck is chosen by the system from the kg, and only once every client is
-    weighed: the smallest active truck that holds the load, or two trucks with the
-    clients split by area (crm/routing.py). Until then — or when the trucks can't take
-    it — the load is one route with no truck. A saved order is kept inside each
-    route; the split itself is always worked out afresh."""
+    The trucks are chosen by the system from the stops' kg (weighed, or estimated
+    from past sales — `weights`), following the load's strategy: fill one truck
+    first, or two in parallel to finish sooner. When a product has neither kg nor an
+    estimate — or the trucks can't take the load — it is one route with no truck. A
+    saved order is kept inside each route; the split is always worked out afresh."""
     by_pk = {i.pk: i for i in items}
-    stops = [routing.Stop(i.pk, *_point(i.client), i.kg or Decimal("0")) for i in items]
+    stops = [routing.Stop(i.pk, *_point(i.client), weights[i.pk][0]) for i in items]
     groups, error = None, ""
-    if all(i.kg is not None for i in items):
+    if not any(weights[i.pk][2] for i in items):
         try:
             plan = routing.plan_routes(depot, stops, list(Truck.objects.filter(is_active=True)),
-                                       dist=dist)
+                                       dist=dist, prefer_two=load.strategy == Load.Strategy.FAST)
             groups = [(r.truck, list(r.stops)) for r in plan.routes]
         except routing.RoutingError as err:
             error = str(err)
@@ -10973,25 +11211,52 @@ def _load_groups(load, items, depot, dist):
     return groups, error
 
 
+def _load_items(load, user):
+    """The load's stops with their lines, each marked `editable` for this user."""
+    items = list(load.items.select_related("client", "client__owner", "sale")
+                 .prefetch_related("lines__product").order_by("created_at"))
+    for item in items:
+        item.line_list = list(item.lines.all())
+        item.editable = _may_edit_stop(user, item)
+        item.purpose_input = item.purpose
+        item.added_input = []
+        for line in item.line_list:
+            line.rolls_input = str(line.rolls)
+            line.price_input = _plain(line.price)
+            line.kg_input = _plain(line.kg)
+    return items
+
+
 def _render_load_detail(request, load, items, posted_new=None):
     """The load's page. After a failed save, `items` carry what was typed and
     `posted_new` the new rows as posted, so nothing the person entered is lost."""
-    for item in items:
-        if not hasattr(item, "rolls_input"):
-            item.rolls_input = str(item.rolls)
-            # "160", "340.5" — plain, never "160.000000" or "160,000".
-            item.kg_input = f"{item.kg.normalize():f}" if item.kg is not None else ""
+    user = request.user
     in_load = {i.client_id for i in items}
-    kg_known = [i.kg for i in items if i.kg is not None]
-    new_rows = [r for r in (posted_new or []) if r["client"] or r["rolls"].strip()] or [{}]
+    clients = Client.objects.order_by("name")
+    if not user.can_see_all_records:
+        clients = clients.filter(owner=user)
+    lines = [l for i in items if i.delivers for l in i.line_list]
+    kg_known = [l.kg for l in lines if l.kg is not None]
+    new_rows = [r for r in (posted_new or []) if r["client"] or r["product"] or r["rolls"]] or [{}]
+    debts = dict(
+        Sale.objects.filter(client_id__in=[i.client_id for i in items if i.collects])
+        .outstanding().values("client_id").annotate(s=Sum("remaining")).values_list("client_id", "s")
+    )
+    for item in items:
+        item.debt = debts.get(item.client_id) or Decimal("0")
     return render(request, "crm/load_detail.html", {
         "load": load,
         "items": items,
-        "roll_total": sum(i.rolls for i in items),
+        "may_change_load": _may_change_load(user, load),
+        "roll_total": sum(l.rolls for l in lines),
         "kg_total": sum(kg_known, Decimal("0")),
-        "unweighed": len(items) - len(kg_known),
+        "unweighed": len(lines) - len(kg_known),
+        "line_count": len(lines),
+        "confirmed": sum(1 for i in items if i.sale_id),
         "missing": [i.client for i in items if not i.client.has_location],
-        "clients": [c for c in Client.objects.order_by("name") if c.pk not in in_load],
+        "clients": [c for c in clients if c.pk not in in_load],
+        "products": Product.objects.filter(is_active=True).order_by("name"),
+        "purposes": LoadItem.Purpose.choices,
         "new_rows": new_rows,
         "failed": posted_new is not None,
         "auto_route": bool(items) and posted_new is None
@@ -10999,19 +11264,22 @@ def _render_load_detail(request, load, items, posted_new=None):
     })
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
 def load_detail(request, pk):
-    """One load: its clients with rulon and kg, edited in place, and new rows added
-    with a client picker and a rulon box each. The route isn't worked out here —
-    «Marshrut tuzish» fetches it (`load_route`), so opening the page costs no road
-    lookups; it opens by itself once the order has been saved."""
+    """One load: its stops — a client, a purpose, product lines with rulon, price
+    and (once weighed) kg — edited in place, new stops added below, and ✓ to turn a
+    stop into a sale. Sellers see everything and change only their own clients'
+    stops. The route isn't worked out here — «Marshrut tuzish» fetches it
+    (`load_route`), so opening the page costs no road lookups; it opens by itself
+    once the order has been saved."""
     load = get_object_or_404(Load.objects.select_related("created_by"), pk=pk)
-    items = list(load.items.select_related("client", "client__owner").order_by("created_at"))
+    items = _load_items(load, request.user)
 
     if request.method == "POST":
         action = request.POST.get("action")
         if action == "reset":
             return _reset_load_order(request, load)
+        if action == "strategy":
+            return _set_strategy(request, load)
         if action == "items":
             return _save_load_items(request, load, items)
         return _save_load_order(request, load, items)
@@ -11019,17 +11287,17 @@ def load_detail(request, pk):
     return _render_load_detail(request, load, items)
 
 
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
 def load_route(request, pk):
     """«Marshrut tuzish»: the load's route as a page fragment — the truck(s), the
     order, the map and the driver's message. Until the order is saved it's the one
     crm/routing.py suggests, worked out afresh each time; trucks are chosen by
-    `_load_groups`. Every client needs a joylashuv first."""
+    `_load_groups`. Every stop needs a joylashuv first."""
     load = get_object_or_404(Load, pk=pk)
-    items = list(load.items.select_related("client", "client__owner").order_by("created_at"))
+    items = _load_items(load, request.user)
     warehouse = Warehouse.load()
     missing = [i.client for i in items if not i.client.has_location]
     routes, error, by_road, road_note = [], "", False, ""
+    estimated = unknown = False
     if not warehouse.has_location:
         error = ("Ombor joylashuvi belgilanmagan. Uni Mashinalar sahifasida belgilang."
                  if request.user.is_admin_role else
@@ -11038,32 +11306,45 @@ def load_route(request, pk):
     elif items and not missing:
         depot = (float(warehouse.latitude), float(warehouse.longitude))
         dist, by_road, road_note = _road_distance([depot] + [_point(i.client) for i in items])
+        per_roll = _kg_per_roll({l.product_id for i in items for l in i.line_list})
+        weights = {i.pk: _stop_weight(i, per_roll) for i in items}
+        estimated = any(w[1] for w in weights.values())
+        unknown = any(w[2] for w in weights.values())
+        debts = dict(
+            Sale.objects.filter(client_id__in=[i.client_id for i in items if i.collects])
+            .outstanding().values("client_id").annotate(s=Sum("remaining")).values_list("client_id", "s")
+        )
         by_pk = {i.pk: i for i in items}
-        groups, error = _load_groups(load, items, depot, dist)
+        groups, error = _load_groups(load, items, depot, dist, weights)
         for n, (truck, group) in enumerate(groups):
             measured = routing.build_route(truck, group, depot, dist=dist)
-            stops = [{"n": k, "item": by_pk[st.key], "client": by_pk[st.key].client}
-                     for k, st in enumerate(group, start=1)]
+            stops = []
+            for k, st in enumerate(group, start=1):
+                item = by_pk[st.key]
+                stops.append({
+                    "n": k, "item": item, "client": item.client,
+                    "rolls": sum(l.rolls for l in item.line_list) if item.delivers else 0,
+                    "kg": weights[item.pk][0], "estimated": weights[item.pk][1],
+                    "unknown": weights[item.pk][2],
+                    "amount": _amount(item, debts.get(item.client_id)),
+                })
             points = [_point(st["client"]) for st in stops]
             google = route_share.google_route_links(depot, points)
             yandex = route_share.yandex_route_link(depot, points)
             title = f"Yuk #{load.pk} — {load.date:%d.%m.%Y}" + (f" — {truck.name}" if truck else "")
-            def message(map_url, google_links):
-                return route_share.driver_message(
-                    title, [{"n": st["n"], "name": st["client"].name, "amount": _amount(st["item"]),
-                             "address": st["client"].address, "phone": st["client"].phone,
-                             "map_url": map_url(st["client"])} for st in stops],
-                    google_links, yandex,
-                )
-            text = message(lambda c: c.google_maps_url, google)
+
+            def driver_stops(map_url, stops=stops):
+                return [{"n": st["n"], "name": st["client"].name, "amount": st["amount"],
+                         "address": st["client"].address, "phone": st["client"].phone,
+                         "map_url": map_url(st["client"])} for st in stops]
+
+            text = route_share.driver_message(title, driver_stops(lambda c: c.google_maps_url),
+                                              google, yandex)
             # Telegram goes to drivers who open it in Yandex: Yandex links only —
             # each stop and the whole route (one link, no Google legs) — trimmed to
             # Telegram's message length.
             telegram_text = route_share.fit_for_telegram(
-                title, [{"n": st["n"], "name": st["client"].name, "amount": _amount(st["item"]),
-                         "address": st["client"].address, "phone": st["client"].phone,
-                         "map_url": st["client"].yandex_maps_url} for st in stops],
-                yandex)
+                title, driver_stops(lambda c: c.yandex_maps_url), yandex)
             capacity = truck.capacity_kg if truck else None
             routes.append({
                 "truck": truck, "stops": stops, "km": measured.km, "kg": measured.kg,
@@ -11098,5 +11379,8 @@ def load_route(request, pk):
         "road_note": road_note,
         "error": error,
         "map_data": map_data,
-        "unweighed": sum(1 for i in items if i.kg is None),
+        "estimated": estimated,
+        "unknown": unknown,
+        "strategies": Load.Strategy.choices,
+        "unweighed": sum(1 for i in items if i.delivers for l in i.line_list if l.kg is None),
     })

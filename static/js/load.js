@@ -1,10 +1,11 @@
 /* Yetkazish — one load's page.
  *
- * Yuk tarkibi (data-load-items): new rows are a client picker and a rulon box;
- * «+ Yana mijoz» adds another pair, × drops one. Picking a client moves to its
- * rulon box; Enter in the last rulon box adds the next row. Enter never submits
- * the form — not in a rulon/kg box, not in the client picker. Leaving with unsaved
- * changes asks first; "unsaved" is what actually differs from what was saved.
+ * Yuk tarkibi (data-load-items): each stop has product lines (rulon, narx, kg) and
+ * «+ Mahsulot» for more; new stops below are client + purpose + product + rulon,
+ * «+ Yana mijoz» adds another, × drops one. Picking a client moves to its product,
+ * a product to its rulon; Enter in the last new rulon adds the next row. Enter never
+ * submits the form. Leaving with unsaved changes asks first; "unsaved" is what
+ * actually differs from what was saved.
  *
  * Marshrut (data-load-route): «Marshrut tuzish» fetches the route fragment and
  * shows a loading state until it is on the page and its map is drawn.
@@ -17,6 +18,7 @@
   if (items) {
     var list = items.querySelector('[data-new-rows]');
     var tmpl = items.querySelector('[data-new-row-template]');
+    var lineTmpl = items.querySelector('[data-add-line-template]');
     var addButton = items.querySelector('[data-new-row-add]');
     var dirtyNote = items.querySelector('[data-items-dirty]');
     // After a failed save the page shows what was typed — still unsaved as a whole.
@@ -27,12 +29,20 @@
     // or a rulon in it. Worked out each time, so undoing a change clears it again.
     var isDirty = function () {
       if (failed) { return true; }
-      var edited = Array.prototype.some.call(
-        items.querySelectorAll('.load-table input[type=text]'),
-        function (box) { return box.value !== box.defaultValue; });
-      if (edited) { return true; }
-      return Array.prototype.some.call(list.querySelectorAll('[data-new-row]'), function (row) {
-        return row.querySelector('select').value || row.querySelector('[name=new_rolls]').value.trim();
+      var some = function (sel, test) { return Array.prototype.some.call(items.querySelectorAll(sel), test); };
+      // Boxes on saved stops: changed text, a ticked "remove", another purpose.
+      // Compared without spaces: money boxes are regrouped ("15 000") as the page loads.
+      var plain = function (v) { return v.replace(/\s/g, ''); };
+      if (some('.stops input[type=text]', function (b) { return plain(b.value) !== plain(b.defaultValue); })) { return true; }
+      if (some('.stops input[type=checkbox]', function (b) { return b.checked !== b.defaultChecked; })) { return true; }
+      if (some('.stops select.stop-purpose', function (s) {
+        return Array.prototype.some.call(s.options, function (o) { return o.selected !== o.defaultSelected; });
+      })) { return true; }
+      // New stops and added products: anything chosen or typed (the purpose select
+      // on a new row has a default, so it alone isn't a change).
+      return some('[data-new-row], [data-add-line-row]', function (row) {
+        return Array.prototype.some.call(row.querySelectorAll('select[data-combobox]'), function (s) { return s.value; }) ||
+          Array.prototype.some.call(row.querySelectorAll('input[type=text]:not(.combobox-input)'), function (b) { return b.value.trim(); });
       });
     };
     var refreshDirty = function () {
@@ -62,35 +72,65 @@
 
     addButton.addEventListener('click', addRow);
 
+    // «+ Mahsulot» on a stop: a product picker and a rulon box for that stop.
+    items.addEventListener('click', function (e) {
+      var add = e.target.closest('[data-add-line]');
+      if (!add) { return; }
+      var stop = add.getAttribute('data-add-line');
+      var holder = items.querySelector('[data-add-lines][data-item="' + stop + '"]');
+      var row = lineTmpl.content.firstElementChild.cloneNode(true);
+      row.querySelectorAll('[name]').forEach(function (el) {
+        el.name = el.name.replace('__ITEM__', stop);
+      });
+      holder.appendChild(row);
+      if (window.enhanceComboboxes) { window.enhanceComboboxes(row); }
+      focusClient(row);
+    });
+
     items.addEventListener('click', function (e) {
       var remove = e.target.closest('[data-new-row-remove]');
       if (!remove) { return; }
+      var lineRow = remove.closest('[data-add-line-row]');
+      if (lineRow) {
+        // An added product row simply goes; the stop keeps its saved lines.
+        var addBtn = items.querySelector('[data-add-line="' + lineRow.parentNode.getAttribute('data-item') + '"]');
+        lineRow.remove();
+        if (addBtn) { addBtn.focus(); }
+        refreshDirty();
+        return;
+      }
       var row = remove.closest('[data-new-row]');
       if (list.querySelectorAll('[data-new-row]').length > 1) {
         row.remove();
         addButton.focus();  // focus stays on the form, not lost to the page
       } else {
-        // Keep one empty pair to type into.
-        var select = row.querySelector('select');
-        select.value = '';
-        var box = row.querySelector('.combobox-input');
-        if (box) { box.value = ''; }
-        row.querySelector('[name=new_rolls]').value = '';
-        unmark(select);
-        unmark(row.querySelector('[name=new_rolls]'));
+        // Keep one empty row to type into.
+        row.querySelectorAll('select[data-combobox]').forEach(function (s) { s.value = ''; unmark(s); });
+        row.querySelectorAll('.combobox-input').forEach(function (b) { b.value = ''; });
+        var rollsBox = row.querySelector('[name=new_rolls]');
+        rollsBox.value = '';
+        unmark(rollsBox);
         focusClient(row);
       }
       refreshDirty();
     });
 
-    // A client picked (mouse or keys): its red mark goes, and on to its rulon.
+    // Picked (mouse or keys): the red mark goes, and on to the next box — a client
+    // to its product, a product to its rulon.
     items.addEventListener('change', function (e) {
-      if (e.target.matches('select[name=new_client]')) {
-        unmark(e.target);
-        if (e.target.value) {
-          var rolls = e.target.closest('[data-new-row]').querySelector('[name=new_rolls]');
-          rolls.focus();
-          rolls.select();
+      var t = e.target;
+      if (t.matches('select[data-combobox]')) {
+        unmark(t);
+        var row = t.closest('[data-new-row], [data-add-line-row]');
+        if (t.value && row) {
+          if (t.name === 'new_client') {
+            var productBox = row.querySelector('select[name=new_product]');
+            var box = productBox && productBox.closest('.combobox') ? productBox.closest('.combobox').querySelector('.combobox-input') : productBox;
+            if (box) { box.focus(); }
+          } else {
+            var rolls = row.querySelector('input[type=text]:not(.combobox-input)');
+            if (rolls) { rolls.focus(); rolls.select(); }
+          }
         }
       }
       refreshDirty();
@@ -110,7 +150,7 @@
         return;
       }
       e.preventDefault();  // never a surprise submit
-      if (e.target.matches('[name=new_rolls]')) {
+      if (e.target.matches('[data-new-row] [name=new_rolls]')) {
         var row = e.target.closest('[data-new-row]');
         var next = row.nextElementSibling;
         if (next) { focusClient(next); } else { addRow(); }
@@ -192,6 +232,10 @@
     };
 
     button.addEventListener('click', build);
+    // «Tavsiya etilgan tartib» on an unsaved order: drop the moves, fetch it again.
+    card.addEventListener('click', function (e) {
+      if (e.target.closest('[data-route-suggest]')) { build(); }
+    });
     if (card.hasAttribute('data-auto')) { build(); }
   }
 })();

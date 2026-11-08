@@ -2577,16 +2577,27 @@ class Warehouse(models.Model):
 
 
 class Load(models.Model):
-    """A yuk: one trip's worth of clients to deliver to, put together by hand by an
-    admin or manager. Not tied to sales — each client gets a number of rolls now, and
-    the kg once it's weighed. A day can have several loads. Which truck carries it is
-    not picked by hand: the system is to decide it from the load.
+    """A yuk: one trip's worth of stops, put together by sellers (and admins/managers)
+    the day before. Each stop is a client with the products agreed on the call; kg is
+    entered on delivery day once the goods are weighed, and ✓ turns the stop into a
+    real sale (`LoadItem.sale`). A day can have several loads. The trucks aren't
+    picked by hand: the system chooses them from the kg — estimated from past sales
+    until everything is weighed — following the load's `strategy`.
 
-    The route through its clients is suggested by crm/routing.py (by road when
-    OpenRouteService is set up); saving the order writes `LoadItem.position`."""
+    The route through its stops is suggested by crm/routing.py (by road when
+    OpenRouteService is set up); saving the order writes `LoadItem.position`.
+    Design: docs/specs/2026-11-08-loads-to-sales.md."""
+
+    class Strategy(models.TextChoices):
+        FILL = "fill", "Bitta mashinani to'ldirish"
+        FAST = "fast", "Tezroq tugatish (ikki mashina)"
 
     date = models.DateField("Sana", default=timezone.localdate)
     note = models.CharField("Izoh", max_length=255, blank=True)
+    # How trucks are used: one first and a second only when it doesn't fit (fill),
+    # or two in parallel, each taking one side of the city, to finish sooner (fast).
+    strategy = models.CharField("Mashinalar", max_length=8, choices=Strategy.choices,
+                                default=Strategy.FILL)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
         related_name="loads", verbose_name="Kim yaratdi",
@@ -2605,17 +2616,27 @@ class Load(models.Model):
 
 
 class LoadItem(models.Model):
-    """One client in a load: how many rolls go to them, and — once weighed — the kg.
-    `position` is their place in the saved route; empty until the order is saved, or
-    for a client added after it was."""
+    """One stop in a load: a client, why the truck goes there (deliver goods, collect
+    money, or both), and — for goods — its product lines (`lines`).
+
+    ✓ turns a delivery stop into a real sale; `sale` is set then and the stop is
+    locked. Deleting that sale in Sotuvlar (SET_NULL) unlocks it again. `position`
+    is the stop's place in the saved route; empty until the order is saved."""
+
+    class Purpose(models.TextChoices):
+        DELIVER = "deliver", "Yetkazish"
+        COLLECT = "collect", "Pul olish"
+        BOTH = "both", "Yetkazish + pul olish"
 
     load = models.ForeignKey(Load, on_delete=models.CASCADE, related_name="items")
     client = models.ForeignKey(Client, on_delete=models.PROTECT, related_name="load_items",
                                verbose_name="Mijoz")
-    rolls = models.PositiveIntegerField("Rulon soni", validators=[MinValueValidator(1)])
-    kg = models.DecimalField("Og'irligi (kg)", max_digits=12, decimal_places=3,
-                             null=True, blank=True,
-                             help_text="Tortilgandan keyin kiritiladi")
+    purpose = models.CharField("Maqsad", max_length=8, choices=Purpose.choices,
+                               default=Purpose.DELIVER)
+    sale = models.OneToOneField(
+        "Sale", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="load_item", verbose_name="Sotuv",
+    )
     position = models.PositiveIntegerField("Tartib", null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -2627,5 +2648,36 @@ class LoadItem(models.Model):
         verbose_name = "Yuk qatori"
         verbose_name_plural = "Yuk qatorlari"
 
+    @property
+    def delivers(self):
+        return self.purpose in (self.Purpose.DELIVER, self.Purpose.BOTH)
+
+    @property
+    def collects(self):
+        return self.purpose in (self.Purpose.COLLECT, self.Purpose.BOTH)
+
     def __str__(self):
-        return f"{self.client} — {self.rolls} rulon"
+        return f"{self.client} — {self.get_purpose_display()}"
+
+
+class LoadLine(models.Model):
+    """A product going to a stop: agreed on the call (product, rulon, price), then
+    weighed on delivery day (kg). On ✓ each line becomes a line of the sale."""
+
+    item = models.ForeignKey(LoadItem, on_delete=models.CASCADE, related_name="lines")
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="load_lines",
+                                verbose_name="Mahsulot")
+    rolls = models.PositiveIntegerField("Rulon soni", validators=[MinValueValidator(1)])
+    price = models.DecimalField("Narxi (1 kg, so'm)", max_digits=14, decimal_places=2)
+    kg = models.DecimalField("Og'irligi (kg)", max_digits=12, decimal_places=3,
+                             null=True, blank=True,
+                             help_text="Tortilgandan keyin kiritiladi")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "pk"]
+        verbose_name = "Yuk mahsuloti"
+        verbose_name_plural = "Yuk mahsulotlari"
+
+    def __str__(self):
+        return f"{self.product} — {self.rolls} rulon"

@@ -29,15 +29,23 @@ belong to rather than as loose lines above it.{% endcomment %}
   <div class="route-summary-item">
     <span class="route-summary-label">Mashina</span>
     {% if routes.0.truck %}
-    <strong class="route-summary-value">{% for r in routes %}{{ r.truck.name }}{% if not forloop.last %} + {% endif %}{% endfor %}</strong>
-    <span class="route-summary-sub">{% if routes|length > 1 %}yuk sig'madi — {{ routes|length }} mashinaga bo'lindi{% else %}sig'adiganlarning eng kichigi{% endif %}. Tizim kg bo'yicha o'zi tanlaydi.</span>
+    <strong class="route-summary-value">{% for r in routes %}{{ r.truck.name }}{% if not forloop.last %} + {% endif %}{% endfor %}{% if estimated %} <span class="badge badge-warning" title="Kg hali hammasi tortilmagan — o'tgan sotuvlardagi o'rtacha kg/rulon bo'yicha">taxminiy</span>{% endif %}</strong>
+    <span class="route-summary-sub">{% if routes|length > 1 %}{% if load.strategy == "fast" %}tezroq tugatish uchun ikkiga bo'lindi{% else %}bittasiga sig'madi — ikkiga bo'lindi{% endif %}{% else %}sig'adiganlarning eng kichigi{% endif %}.{% if estimated %} Tortilgach qayta hisoblanadi.{% endif %}</span>
     {% elif error %}
     <strong class="route-summary-value is-bad-text">Sig'maydi</strong>
     <span class="route-summary-sub is-bad-text">{{ error }}</span>
     {% else %}
     <strong class="route-summary-value is-warn">Hali tanlanmagan</strong>
-    <span class="route-summary-sub">{{ unweighed }} ta mijoz tortilmagan — hammasi tortilgach tanlanadi</span>
+    <span class="route-summary-sub">Ba'zi mahsulotlarning kg'i ham, o'tgan sotuvlardan taxmini ham yo'q — tortilgach tanlanadi.</span>
     {% endif %}
+    {% comment %}How the trucks are used — fill one first, or two in parallel.{% endcomment %}
+    <form method="post" action="{% url 'load_detail' load.pk %}" class="strategy-switch" role="group" aria-label="Mashinalar qanday ishlatilsin">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="strategy">
+      {% for value, label in strategies %}
+      <button type="submit" name="strategy" value="{{ value }}" class="seg-btn{% if load.strategy == value %} is-active{% endif %}"{% if load.strategy == value %} aria-pressed="true"{% else %} aria-pressed="false"{% endif %}>{{ label }}</button>
+      {% endfor %}
+    </form>
   </div>
   <div class="route-summary-item">
     <span class="route-summary-label">Tartib</span>
@@ -51,13 +59,16 @@ belong to rather than as loose lines above it.{% endcomment %}
     <span class="route-summary-sub route-dirty" data-route-dirty hidden>O'zgartirildi — saqlang. Xarita va km saqlangach yangilanadi.</span>
   </div>
   <div class="route-summary-actions">
-    {% if load.ordered_at %}<button type="submit" class="btn btn-sm btn-ghost" form="route-reset">Qayta hisoblash</button>{% endif %}
+    {% comment %}Back to the system's order: a saved order is forgotten (route-reset);
+    unsaved moves are just thrown away by fetching the suggestion again.{% endcomment %}
+    {% if load.ordered_at %}<button type="submit" class="btn btn-sm btn-ghost" form="route-reset">Tavsiya etilgan tartib</button>
+    {% else %}<button type="button" class="btn btn-sm btn-ghost" data-route-suggest hidden>Tavsiya etilgan tartib</button>{% endif %}
     <button type="submit" class="btn btn-sm" form="route-form">Tartibni saqlash</button>
   </div>
 </div>
 {% if load.ordered_at %}
 <form method="post" id="route-reset" action="{% url 'load_detail' load.pk %}"
-      onsubmit="return confirm('Saqlangan tartib o\'chirilib, qaytadan hisoblanadi. Davom etasizmi?')">
+      onsubmit="return confirm('Saqlangan tartib o\'chirilib, tavsiya etilgan tartib qaytadi. Davom etasizmi?')">
   {% csrf_token %}
   <input type="hidden" name="action" value="reset">
 </form>
@@ -81,7 +92,7 @@ belong to rather than as loose lines above it.{% endcomment %}
     {% if r.truck %}
     <div class="route-load{% if r.over %} is-over{% endif %}" title="Yuk / sig'im">
       <div class="route-load-bar"><span style="width: {{ r.load_pct }}%"></span></div>
-      <span>{{ r.kg|floatformat:"0g" }} / {{ r.truck.capacity_kg|floatformat:"0g" }} kg</span>
+      <span>{% if estimated %}≈ {% endif %}{{ r.kg|floatformat:"0g" }} / {{ r.truck.capacity_kg|floatformat:"0g" }} kg</span>
     </div>
     {% if r.over %}<p class="route-over-note">Mashina sig'imidan oshib ketdi.</p>{% endif %}
     {% endif %}
@@ -97,7 +108,7 @@ belong to rather than as loose lines above it.{% endcomment %}
           <span class="cell-sub">{% if s.client.phone %}<a href="tel:{{ s.client.phone|cut:' ' }}">{{ s.client.phone }}</a> · {% endif %}{{ s.client.owner }}</span>
         </span>
         <span class="route-side">
-          <span class="route-kg">{{ s.item.rolls }} rulon{% if s.item.kg is not None %}<span class="cell-sub">{{ s.item.kg|floatformat:"0g" }} kg</span>{% endif %}</span>
+          <span class="route-kg">{% if s.item.delivers %}{{ s.rolls }} rulon<span class="cell-sub">{% if s.unknown %}kg noma'lum{% else %}{% if s.estimated %}≈ {% endif %}{{ s.kg|floatformat:"0g" }} kg{% endif %}</span>{% endif %}{% if s.item.collects %}<span class="cell-sub route-collect">pul olish</span>{% endif %}</span>
           <span class="route-moves">
             <button type="button" class="icon-action" data-move="up" title="Oldinroq" aria-label="{{ s.client.name }} — oldinroq"{% if forloop.first %} disabled{% endif %}>↑</button>
             <button type="button" class="icon-action" data-move="down" title="Keyinroq" aria-label="{{ s.client.name }} — keyinroq"{% if forloop.last %} disabled{% endif %}>↓</button>
