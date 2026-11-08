@@ -8,7 +8,7 @@
 > Saqlash / Qayta hisoblash, and the driver's message. Each load is one route —
 > **truck capacity and splitting a load across trucks are still to be decided**
 > (crm/routing.py keeps `choose_trucks` / `split_two` for that). Sellers have no
-> Yetkazish view for now. Models: `Load`, `LoadItem` (migration 0054); the
+> Yetkazish view for now. **Superseded 2026-11-08** by docs/specs/2026-11-08-loads-to-sales.md: stops have product lines and become sales; sellers use Yetkazish (own stops editable). Models: `Load`, `LoadItem` (migration 0054); the
 > sale-based `DeliveryRoute`, `RouteStop` and `Sale.delivery` were removed.
 > Much of the text below describes the earlier sale-based design.
 

@@ -58,7 +58,7 @@
     {% for c in missing %}
     <li>
       <span><strong>{{ c.name }}</strong>{% if c.address %} <span class="cell-sub">{{ c.address }}</span>{% endif %}</span>
-      <a class="btn btn-sm" href="{% url 'client_edit' c.pk %}" data-modal>Joylashuv qo'shish</a>
+      {% if c.mine %}<a class="btn btn-sm" href="{% url 'client_edit' c.pk %}" data-modal>Joylashuv qo'shish</a>{% else %}<span class="muted">{{ c.owner }} qo'shadi</span>{% endif %}
     </li>
     {% endfor %}
   </ul>
@@ -70,6 +70,10 @@
   <form method="post" action="{% url 'load_detail' load.pk %}" data-load-items{% if failed %} data-unsaved{% endif %}>
   {% csrf_token %}
   <input type="hidden" name="action" value="items">
+  {% comment %}The form's default button. Enter in a box presses the FIRST submit
+  button of a form — without this, that would be the first stop's ✓, turning it into
+  a sale if the page's script ever failed to load.{% endcomment %}
+  <button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true">Saqlash</button>
   {% if items %}
   <div class="stops">
     {% for item in items %}{% include "crm/_load_stop.html" %}{% endfor %}

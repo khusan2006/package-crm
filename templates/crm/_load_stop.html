@@ -12,13 +12,13 @@
       <strong>{{ item.client.name }}</strong>
       <span class="cell-sub">
         {% if item.client.address %}{{ item.client.address }} · {% endif %}{{ item.client.owner }}
-        · {% if item.client.has_location %}<a href="{% url 'client_location' item.client.pk %}" data-modal>joylashuv</a>{% else %}<span class="route-pending">joylashuv yo'q</span>{% endif %}
+        · {% if not item.client.has_location %}<span class="route-pending">joylashuv yo'q</span>{% elif item.mine %}<a href="{% url 'client_location' item.client.pk %}" data-modal>joylashuv</a>{% else %}joylashuv bor{% endif %}
       </span>
     </div>
     <div class="stop-tools">
       {% if item.sale %}
       <span class="badge badge-neutral">{{ item.get_purpose_display }}</span>
-      <a class="badge badge-paid" href="{% url 'sale_detail' item.sale.pk %}" title="Sotuvni ochish">✓ Sotuv #{{ item.sale.pk|unlocalize }}</a>
+      {% if item.mine %}<a class="badge badge-paid" href="{% url 'sale_detail' item.sale.pk %}" title="Sotuvni ochish">✓ Sotuv #{{ item.sale.pk|unlocalize }}</a>{% else %}<span class="badge badge-paid">✓ Sotuv #{{ item.sale.pk|unlocalize }}</span>{% endif %}
       {% elif item.editable %}
       <select name="purpose_{{ item.pk|unlocalize }}" class="stop-purpose{% if item.purpose_bad %} is-bad{% endif %}" aria-label="{{ item.client.name }} — maqsad"{% if item.purpose_bad %} aria-invalid="true"{% endif %}>
         {% for value, label in purposes %}<option value="{{ value }}"{% if value == item.purpose_input %} selected{% endif %}>{{ label }}</option>{% endfor %}

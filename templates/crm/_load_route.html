@@ -31,6 +31,11 @@ belong to rather than as loose lines above it.{% endcomment %}
     {% if routes.0.truck %}
     <strong class="route-summary-value">{% for r in routes %}{{ r.truck.name }}{% if not forloop.last %} + {% endif %}{% endfor %}{% if estimated %} <span class="badge badge-warning" title="Kg hali hammasi tortilmagan — o'tgan sotuvlardagi o'rtacha kg/rulon bo'yicha">taxminiy</span>{% endif %}</strong>
     <span class="route-summary-sub">{% if routes|length > 1 %}{% if load.strategy == "fast" %}tezroq tugatish uchun ikkiga bo'lindi{% else %}bittasiga sig'madi — ikkiga bo'lindi{% endif %}{% else %}sig'adiganlarning eng kichigi{% endif %}.{% if estimated %} Tortilgach qayta hisoblanadi.{% endif %}</span>
+    {% elif error and estimated %}
+    {% comment %}On estimated kg the day before, "doesn't fit" may well change once
+    weighed — a warning, not an alarm.{% endcomment %}
+    <strong class="route-summary-value is-warn">Sig'maydi <span class="badge badge-warning">taxminiy</span></strong>
+    <span class="route-summary-sub">{{ error }} (taxminiy kg bo'yicha — tortilgach qayta hisoblanadi)</span>
     {% elif error %}
     <strong class="route-summary-value is-bad-text">Sig'maydi</strong>
     <span class="route-summary-sub is-bad-text">{{ error }}</span>
@@ -103,7 +108,7 @@ belong to rather than as loose lines above it.{% endcomment %}
         <input type="hidden" name="stop" value="{{ s.item.pk|unlocalize }}">
         <span class="route-n" data-route-n>{{ s.n }}</span>
         <span class="route-body">
-          <a href="{% url 'client_location' s.client.pk %}" data-modal><strong>{{ s.client.name }}</strong></a>
+          {% if s.item.mine %}<a href="{% url 'client_location' s.client.pk %}" data-modal><strong>{{ s.client.name }}</strong></a>{% else %}<strong>{{ s.client.name }}</strong>{% endif %}
           {% if s.client.address %}<span class="cell-sub">{{ s.client.address }}</span>{% endif %}
           <span class="cell-sub">{% if s.client.phone %}<a href="tel:{{ s.client.phone|cut:' ' }}">{{ s.client.phone }}</a> · {% endif %}{{ s.client.owner }}</span>
         </span>

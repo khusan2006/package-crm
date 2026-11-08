@@ -1,6 +1,13 @@
 # Yetkazish: loads that become sales — spec
 
-Status: decisions settled 2026-11-08; being built in phases. Builds on the loads feature
+Status: built 2026-11-08 (commit b3f16a4 and follow-ups), not yet deployed.
+
+Choices made while building, to confirm with the client:
+- A line's price may be 0 (a free line becomes a 0-so'm sale line).
+- Any seller can reorder, save or reset the route and switch the truck strategy of
+  a load, including loads that hold other sellers' stops (load-level, shared).
+- A seller sees other sellers' stops but gets no links into those clients' pages
+  (location, sale), which they couldn't open. Builds on the loads feature
 (`Load`, `LoadItem`, route by road, trucks chosen from kg).
 
 ## What the client asked for

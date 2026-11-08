@@ -11218,6 +11218,9 @@ def _load_items(load, user):
     for item in items:
         item.line_list = list(item.lines.all())
         item.editable = _may_edit_stop(user, item)
+        # Whether this user may open the client's own pages (location, sale): a seller
+        # sees other sellers' stops in a shared load, but not their clients' records.
+        item.mine = user.can_see_all_records or item.client.owner_id == user.pk
         item.purpose_input = item.purpose
         item.added_input = []
         for line in item.line_list:
@@ -11225,6 +11228,11 @@ def _load_items(load, user):
             line.price_input = _plain(line.price)
             line.kg_input = _plain(line.kg)
     return items
+
+
+def _mark_mine(client, mine):
+    client.mine = mine
+    return client
 
 
 def _render_load_detail(request, load, items, posted_new=None):
@@ -11253,7 +11261,7 @@ def _render_load_detail(request, load, items, posted_new=None):
         "unweighed": len(lines) - len(kg_known),
         "line_count": len(lines),
         "confirmed": sum(1 for i in items if i.sale_id),
-        "missing": [i.client for i in items if not i.client.has_location],
+        "missing": [_mark_mine(i.client, i.mine) for i in items if not i.client.has_location],
         "clients": [c for c in clients if c.pk not in in_load],
         "products": Product.objects.filter(is_active=True).order_by("name"),
         "purposes": LoadItem.Purpose.choices,

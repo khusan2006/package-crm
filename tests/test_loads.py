@@ -539,3 +539,42 @@ def test_telegram_sends_yandex_links_only(client, admin_user, seller_user, load,
     tg = parse_qs(urlparse(share["telegram_url"]).query)
     assert tg["url"] == [share["yandex_link"]]
     assert "yandex.uz/maps" in tg["text"][0] and "google" not in tg["text"][0]
+
+
+# --- review follow-ups --------------------------------------------------------------
+
+def test_enter_in_a_box_saves_rather_than_ticking_the_first_stop(client, admin_user, load, weighed):
+    # Browsers press the FIRST submit button on Enter; it must be Saqlash, not a ✓.
+    import re
+    body = detail(client, admin_user, load).content.decode()
+    form = body[body.index("data-load-items"):]
+    first_submit = re.search(r'<button[^>]*type="submit"[^>]*>', form).group(0)
+    assert 'name="confirm"' not in first_submit
+
+
+def test_a_seller_gets_no_links_into_another_sellers_client(client, seller_user, other_seller,
+                                                            admin_user, load, paket):
+    theirs_client = make_client(other_seller, "Begona", 0.02)
+    theirs = stop(load, theirs_client, (paket, 7, 100))
+    nowhere = make_client(other_seller, "Joysiz begona")
+    stop(load, nowhere, (paket, 1))
+    save(client, admin_user, load, confirm=str(theirs.pk))
+    sale = Sale.objects.get()
+    body = detail(client, seller_user, load).content.decode()
+    assert f"/clients/{theirs_client.pk}/location/" not in body
+    assert f"/sales/{sale.pk}/" not in body and f"Sotuv #{sale.pk}" in body
+    assert f"/clients/{nowhere.pk}/edit/" not in body
+    # An admin, who can open them, still gets the links.
+    admin_body = detail(client, admin_user, load).content.decode()
+    assert f"/sales/{sale.pk}/" in admin_body and f"/clients/{nowhere.pk}/edit/" in admin_body
+
+
+def test_over_capacity_on_estimates_is_a_warning_not_an_alarm(client, admin_user, seller_user,
+                                                              load, three, paket):
+    Truck.objects.create(name="Kichik", capacity_kg=100)
+    past = Sale.objects.create(client=three[0].client, sales_rep=seller_user,
+                               date=TODAY() - timedelta(days=9))
+    SaleItem.objects.create(sale=past, product=paket, weight=Decimal("200"), rolls=10,
+                            price=Decimal("1"), cost_price=Decimal("1"))
+    body = route(client, admin_user, load).content.decode()
+    assert "taxminiy kg bo" in body and "is-bad-text" not in body
