@@ -14,6 +14,9 @@
     var stops = card.querySelectorAll('[data-route-stop]');
     stops.forEach(function (li, i) {
       li.querySelector('[data-route-n]').textContent = i + 1;
+      // Nothing above the first stop or below the last: those buttons are off.
+      li.querySelector('[data-move="up"]').disabled = i === 0;
+      li.querySelector('[data-move="down"]').disabled = i === stops.length - 1;
     });
     var count = card.querySelector('[data-route-count]');
     if (count) { count.textContent = stops.length; }
@@ -49,12 +52,17 @@
       }
       renumber(li.closest('[data-route-truck]'));
       changed();
-      btn.focus();
+      // Keep focus on the moved stop's button, or its other one at the very end.
+      (btn.disabled ? li.querySelector('[data-move]:not([disabled])') : btn).focus();
     });
 
-    // Leaving with moves not saved loses them; say so, like any unsaved form.
+    // Leaving with moves not saved loses them; say so, like any unsaved form. Saving
+    // the order, or «Qayta hisoblash» (which asks on its own), is not leaving.
     var submitting = false;
     form.addEventListener('submit', function () { submitting = true; });
+    var reset = document.getElementById('route-reset');
+    if (reset) { reset.addEventListener('submit', function () { submitting = true; }); }
+    window.addEventListener('pageshow', function () { submitting = false; });
     window.addEventListener('beforeunload', function (e) {
       if (dirty && !dirty.hidden && !submitting) { e.preventDefault(); e.returnValue = ''; }
     });

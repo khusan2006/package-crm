@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Mashinalar · Paket CRM{% endblock %}
 {% block topbar_title %}Mashinalar{% endblock %}
-{% block fab %}<a class="fab" href="{% url 'truck_create' %}" data-modal><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi mashina</a>{% endblock %}
+{% block fab %}<a class="fab" href="{% url 'truck_create' %}" data-modal><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi mashina</a>{% endblock %}
 {% block content %}
 
 {% comment %}
@@ -34,8 +34,8 @@
     <td>{% if truck.is_active %}<span class="badge badge-paid">Faol</span>{% else %}<span class="badge badge-cancelled">Faol emas</span>{% endif %}</td>
     <td class="row-actions">
       <span class="ra-slots">
-        <a class="icon-action act-edit" href="{% url 'truck_edit' truck.pk %}" data-modal title="Tahrirlash">{% include "crm/_ico_edit.html" %}</a>
-        <a class="icon-action danger" href="{% url 'truck_delete' truck.pk %}" data-modal title="O'chirish">{% include "crm/_ico_trash.html" %}</a>
+        <a class="icon-action act-edit" href="{% url 'truck_edit' truck.pk %}" data-modal title="Tahrirlash" aria-label="{{ truck.name }} — tahrirlash">{% include "crm/_ico_edit.html" %}</a>
+        <a class="icon-action danger" href="{% url 'truck_delete' truck.pk %}" data-modal title="O'chirish" aria-label="{{ truck.name }} — o'chirish">{% include "crm/_ico_trash.html" %}</a>
       </span>
     </td>
   </tr>

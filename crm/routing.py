@@ -131,14 +131,22 @@ def choose_trucks(total_kg, trucks):
     for truck in trucks:
         if truck.capacity_kg >= total_kg:
             return [truck]
-    pairs = [p for p in combinations(trucks, 2)
-             if p[0].capacity_kg + p[1].capacity_kg >= total_kg]
+    pairs = truck_pairs(total_kg, trucks)
     if pairs:
-        best = min(pairs, key=lambda p: p[0].capacity_kg + p[1].capacity_kg)
-        # Bigger truck first, so it is "Mashina 1" on screen.
-        return sorted(best, key=lambda t: t.capacity_kg, reverse=True)
+        return pairs[0]
     biggest = sum(t.capacity_kg for t in trucks[-2:])
     raise OverCapacity(total_kg - biggest)
+
+
+def truck_pairs(total_kg, trucks):
+    """Every pair of trucks that holds `total_kg` between them, smallest total
+    capacity first, each pair bigger truck first ("Mashina 1" on screen). The first
+    is the one to use; the rest are for when its stops can't be divided to fit."""
+    pairs = [p for p in combinations(trucks, 2)
+             if p[0].capacity_kg + p[1].capacity_kg >= total_kg]
+    pairs.sort(key=lambda p: (p[0].capacity_kg + p[1].capacity_kg,
+                              -max(p[0].capacity_kg, p[1].capacity_kg)))
+    return [sorted(p, key=lambda t: t.capacity_kg, reverse=True) for p in pairs]
 
 
 def _matrix(points, dist):
@@ -222,10 +230,41 @@ def split_two(depot, stops, cap_a, cap_b, return_to_depot=True, dist=distance_km
             if best is None or len_a + len_b < best[0] - 1e-9:
                 best = (len_a + len_b, route_a, route_b)
 
+    if best is None and n <= EXACT_SPLIT_MAX:
+        best = _exact_split(D, kg, cap_a, cap_b, return_to_depot)
     if best is None:
         best = _pack_heaviest_first(D, kg, cap_a, cap_b, return_to_depot)
     _, route_a, route_b = best
     return [by_angle[i - 1] for i in route_a], [by_angle[i - 1] for i in route_b]
+
+
+#: Up to this many stops, a split the sweep can't find is searched for exactly
+#: (every way of dividing them: 2^16 = 65 536 sums, milliseconds).
+EXACT_SPLIT_MAX = 16
+#: How many of the splits that fit get their routes measured, most even first.
+EXACT_SPLIT_TRIES = 40
+
+
+def _exact_split(D, kg, cap_a, cap_b, closed):
+    """When no arc of the circle fits: try every division of the stops, keep the
+    ones whose loads fit both trucks, and measure the most even of them. None if
+    none fits."""
+    n = len(kg)
+    total = sum(kg)
+    fits = []
+    for mask in range(1, (1 << n) - 1):
+        a_kg = sum(kg[i] for i in range(n) if mask >> i & 1)
+        if a_kg <= cap_a and total - a_kg <= cap_b:
+            fits.append((abs(a_kg / cap_a - (total - a_kg) / cap_b), mask))
+    if not fits:
+        return None
+    best = None
+    for _, mask in sorted(fits)[:EXACT_SPLIT_TRIES]:
+        route_a, len_a = _order(D, [i + 1 for i in range(n) if mask >> i & 1], closed)
+        route_b, len_b = _order(D, [i + 1 for i in range(n) if not mask >> i & 1], closed)
+        if best is None or len_a + len_b < best[0] - 1e-9:
+            best = (len_a + len_b, route_a, route_b)
+    return best
 
 
 def _pack_heaviest_first(D, kg, cap_a, cap_b, closed):
@@ -270,12 +309,18 @@ def plan_routes(depot, stops, trucks, return_to_depot=True, dist=distance_km):
         raise StopTooHeavy(too_heavy, biggest)
 
     total = sum((s.kg for s in stops), Decimal("0"))
-    chosen = choose_trucks(total, trucks)
+    chosen = choose_trucks(total, sorted(trucks, key=lambda t: t.capacity_kg))
     if len(chosen) == 1:
         ordered, _ = order_stops(depot, stops, return_to_depot, dist)
-        groups = [ordered]
-    else:
-        groups = list(split_two(depot, stops, chosen[0].capacity_kg,
-                                chosen[1].capacity_kg, return_to_depot, dist))
-    return Plan(routes=[build_route(t, g, depot, return_to_depot, dist)
-                        for t, g in zip(chosen, groups)])
+        return Plan(routes=[build_route(chosen[0], ordered, depot, return_to_depot, dist)])
+    # Two trucks: the cheapest pair whose stops can actually be divided to fit —
+    # 700 + 800 kg holds 1 500 kg on paper, but not three 500 kg stops.
+    for pair in truck_pairs(total, trucks):
+        try:
+            groups = split_two(depot, stops, pair[0].capacity_kg, pair[1].capacity_kg,
+                               return_to_depot, dist)
+        except SplitImpossible:
+            continue
+        return Plan(routes=[build_route(t, g, depot, return_to_depot, dist)
+                            for t, g in zip(pair, groups)])
+    raise SplitImpossible()

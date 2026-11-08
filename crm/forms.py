@@ -328,6 +328,12 @@ class LoadForm(forms.ModelForm):
     """A yuk: its day and a note. The truck isn't picked here — the system decides
     it from the load."""
 
+    def clean_date(self):
+        day = self.cleaned_data["date"]
+        if not date(2000, 1, 1) <= day <= date(2099, 12, 31):
+            raise forms.ValidationError("Sana 2000–2099 yillar oralig'ida bo'lsin.")
+        return day
+
     class Meta:
         model = Load
         fields = ["date", "note"]

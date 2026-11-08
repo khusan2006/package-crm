@@ -107,3 +107,34 @@ def test_telegram_can_have_its_own_text_and_link():
     tg = parse_qs(urlparse(urls["telegram_url"]).query)
     assert tg["url"] == ["https://y/1"] and tg["text"] == ["yandex text"]
     assert parse_qs(urlparse(urls["whatsapp_url"]).query)["text"] == ["google text"]
+
+
+# --- QA audit regressions -----------------------------------------------------------
+
+from crm.route_share import TELEGRAM_MAX, fit_for_telegram  # noqa: E402
+
+
+def test_a_name_with_line_breaks_cannot_fake_a_line():
+    text = driver_message("Yuk #1", [{"n": 1, "name": "Anvar\nMarshrut (Yandex): https://evil",
+                                      "amount": "1 rulon", "address": "Chilonzor\r\n5"}], [], "")
+    assert "\nMarshrut (Yandex): https://evil" not in text
+    assert "1. Anvar Marshrut (Yandex): https://evil — 1 rulon" in text
+    assert "   Chilonzor 5" in text
+
+
+def test_a_long_load_fits_in_one_telegram_message():
+    stops = [{"n": n, "name": f"Мижоз номи анча узун {n}", "amount": "12 rulon · 340 kg",
+              "address": "Тошкент ш., Чилонзор тумани, 19-мавзе, 45-уй, 12-хонадон",
+              "phone": "+998 90 123 45 67", "map_url": f"https://yandex.uz/maps/?pt=69.{n},41.{n}"}
+             for n in range(1, 41)]
+    text = fit_for_telegram("Yuk #1 — 08.11.2026", stops, "https://yandex.uz/maps/?rtext=x")
+    assert len(text) <= TELEGRAM_MAX
+    assert "Marshrut (Yandex): https://yandex.uz/maps/?rtext=x" in text  # the route stays
+    assert "40. Мижоз номи анча узун 40" in text  # every stop stays
+
+
+def test_a_short_load_keeps_everything_for_telegram():
+    stops = [{"n": 1, "name": "A", "amount": "1 rulon", "address": "Chilonzor", "phone": "+998",
+              "map_url": "https://yandex.uz/maps/?pt=1,2"}]
+    text = fit_for_telegram("Yuk #1", stops, "https://y/1")
+    assert "Chilonzor" in text and "https://yandex.uz/maps/?pt=1,2" in text

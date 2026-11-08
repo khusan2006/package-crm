@@ -1873,6 +1873,8 @@
       input.setAttribute('aria-autocomplete', 'list');
       input.setAttribute('aria-expanded', 'false');
       input.placeholder = select.dataset.placeholder || '';
+      // The visible box is what a screen reader lands on: give it the select's label.
+      if (select.getAttribute('aria-label')) { input.setAttribute('aria-label', select.getAttribute('aria-label')); }
       var pop = document.createElement('div');
       pop.className = 'combobox-pop';
       pop.setAttribute('role', 'listbox');

@@ -51,6 +51,16 @@ def yandex_route_link(depot, points, return_to_depot=True):
     return "https://yandex.uz/maps/?rtext=" + "~".join(_ll(p) for p in path) + "&rtt=auto"
 
 
+#: Telegram cuts a message at 4 096 characters; leave room for its own link line.
+TELEGRAM_MAX = 3500
+
+
+def _one_line(value):
+    """Typed text on one line — a client name with a line break can't fake an extra
+    line ("Marshrut: https://…") in the driver's message."""
+    return " ".join(str(value).split())
+
+
 def _kg(value):
     return f"{value:,.0f}".replace(",", " ")
 
@@ -62,10 +72,10 @@ def driver_message(title, stops, google_links, yandex_link):
     address, phone and map_url."""
     lines = [title, f"{len(stops)} ta manzil", ""]
     for s in stops:
-        lines.append(f"{s['n']}. {s['name']} — {s['amount']}")
+        lines.append(f"{s['n']}. {_one_line(s['name'])} — {s['amount']}")
         for key in ("address", "phone", "map_url"):
             if s.get(key):
-                lines.append(f"   {s[key]}")
+                lines.append(f"   {_one_line(s[key])}")
     if google_links:
         lines.append("")
         if len(google_links) == 1:
@@ -76,6 +86,19 @@ def driver_message(title, stops, google_links, yandex_link):
     if yandex_link:
         lines.append(f"Marshrut (Yandex): {yandex_link}")
     return "\n".join(lines)
+
+
+def fit_for_telegram(title, stops, yandex_link):
+    """The Telegram message — Yandex links only — short enough for Telegram: when it
+    would be too long, each stop's own map link goes first, then the addresses. The
+    whole-route link always stays."""
+    for keep in (("address", "phone", "map_url"), ("address", "phone"), ("phone",)):
+        trimmed = [{k: v for k, v in s.items() if k in ("n", "name", "amount") or k in keep}
+                   for s in stops]
+        text = driver_message(title, trimmed, [], yandex_link)
+        if len(text) <= TELEGRAM_MAX:
+            return text
+    return text
 
 
 def share_urls(text, link, telegram_text=None, telegram_link=None):

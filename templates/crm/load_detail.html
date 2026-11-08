@@ -72,11 +72,11 @@
       <td class="sticky-col"><strong>{{ item.client.name }}</strong>{% if item.client.address %}<span class="cell-sub">{{ item.client.address }}</span>{% endif %}</td>
       <td>{{ item.client.owner }}</td>
       <td class="num"><input type="text" inputmode="numeric" class="pick-rolls{% if item.rolls_bad %} is-bad{% endif %}" name="rolls_{{ item.pk|unlocalize }}" value="{{ item.rolls_input }}" aria-label="{{ item.client.name }} — rulon soni"{% if item.rolls_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
-      <td class="num"><input type="text" inputmode="decimal" class="pick-kg{% if item.kg_bad %} is-bad{% endif %}" name="kg_{{ item.pk|unlocalize }}" value="{{ item.kg_input }}" placeholder="tortilmagan" aria-label="{{ item.client.name }} — kg"{% if item.kg_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
+      <td class="num"><input type="text" inputmode="decimal" class="pick-kg{% if item.kg_bad %} is-bad{% endif %}" name="kg_{{ item.pk|unlocalize }}" value="{{ item.kg_input }}" placeholder="—" title="Tortilgandan keyin kiriting" aria-label="{{ item.client.name }} — kg (tortilgach)"{% if item.kg_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
       <td>{% if item.client.has_location %}<a href="{% url 'client_location' item.client.pk %}" data-modal><span class="badge badge-paid">Bor</span></a>{% else %}<span class="badge badge-warning">Yo'q</span>{% endif %}</td>
       <td class="row-actions">
         <span class="ra-slots">
-          <a class="icon-action danger" href="{% url 'load_item_delete' load.pk item.pk %}" data-modal title="Olib tashlash">{% include "crm/_ico_trash.html" %}</a>
+          <a class="icon-action danger" href="{% url 'load_item_delete' load.pk item.pk %}" data-modal title="Olib tashlash" aria-label="{{ item.client.name }} — yukdan olib tashlash">{% include "crm/_ico_trash.html" %}</a>
         </span>
       </td>
     </tr>
@@ -95,7 +95,7 @@
   <template data-new-row-template>{% include "crm/_load_new_row.html" with row=None %}</template>
 
   <div class="items-actions">
-    <span class="route-dirty" data-items-dirty{% if not failed %} hidden{% endif %}>o'zgartirildi, saqlanmagan</span>
+    <span class="route-dirty" data-items-dirty{% if not failed %} hidden{% endif %}>O'zgartirildi — saqlang.</span>
     <button type="submit" class="btn">Saqlash</button>
   </div>
   </form>
@@ -116,7 +116,10 @@ worked out on every page load. A saved order opens by itself.{% endcomment %}
     </button>
   </div>
   <p class="route-share-stale" data-route-failed hidden role="alert">Marshrutni olib bo'lmadi — qaytadan urinib ko'ring.</p>
-  <div data-route-slot aria-live="polite"></div>
+  {% comment %}A short spoken status ("tuzilmoqda…", "tayyor") — the route itself isn't
+  a live region, or a screen reader would read every stop aloud.{% endcomment %}
+  <span class="visually-hidden" data-route-status role="status" aria-live="polite"></span>
+  <div data-route-slot></div>
 </div>
 {% endif %}
 

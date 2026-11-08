@@ -122,3 +122,27 @@ def test_path_comes_back_as_lat_lng(key, ors):
 def test_path_failure_just_means_no_path(key, ors):
     ors.answers["/directions/driving-car/geojson"] = urllib.error.URLError("down")
     assert road.path([A, B]) is None
+
+
+# --- QA audit regressions -----------------------------------------------------------
+
+def test_after_a_failure_the_service_is_left_alone_for_a_while(key, ors):
+    ors.answers["/matrix/driving-car"] = urllib.error.URLError("down")
+    with pytest.raises(road.RoadError):
+        road.matrix_km([A, B])
+    calls = len(ors.calls)
+    with pytest.raises(road.RoadError):
+        road.matrix_km([A, C])  # different points, same outage
+    assert road.path([A, B]) is None
+    assert len(ors.calls) == calls  # nobody waited on the timeout again
+
+
+def test_distances_that_are_not_numbers_are_refused(key, ors):
+    ors.answers["/matrix/driving-car"] = {"distances": [[0, "ten"], [9.9, 0]]}
+    with pytest.raises(road.RoadError):
+        road.matrix_km([A, B])
+
+
+def test_the_timeout_leaves_room_under_the_web_worker():
+    # A page asks at most three times; gunicorn kills a worker at 30 s.
+    assert road.TIMEOUT * 3 < 30

@@ -6,7 +6,7 @@
 <div class="load-route" data-load-route-content>
 {% if error and not routes %}
 <div class="overdue-banner" role="alert">
-  <span class="ob-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+  <span class="ob-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
   <span class="ob-text">{{ error }}</span>
 </div>
 {% endif %}
@@ -19,7 +19,7 @@
 {% comment %}One summary for the route: distance, truck(s), order — each a labelled
 block — with the order's buttons in the corner. Problems sit in the block they
 belong to rather than as loose lines above it.{% endcomment %}
-<div class="route-summary">
+<div class="route-summary" tabindex="-1">
   <div class="route-summary-item">
     <span class="route-summary-label">Masofa</span>
     <strong class="route-summary-value">≈ {{ km|floatformat:1 }} km</strong>
@@ -64,7 +64,7 @@ belong to rather than as loose lines above it.{% endcomment %}
 {% endif %}
 
 <div class="card route-mapcard">
-  <div class="geo-map route-map" data-geo-route data-route-json="route-data" role="img" aria-label="Marshrut xaritasi"></div>
+  <div class="geo-map route-map" data-geo-route data-route-json="route-data" role="region" aria-label="Marshrut xaritasi"></div>
   {{ map_data|json_script:"route-data" }}
 </div>
 
@@ -99,8 +99,8 @@ belong to rather than as loose lines above it.{% endcomment %}
         <span class="route-side">
           <span class="route-kg">{{ s.item.rolls }} rulon{% if s.item.kg is not None %}<span class="cell-sub">{{ s.item.kg|floatformat:"0g" }} kg</span>{% endif %}</span>
           <span class="route-moves">
-            <button type="button" class="icon-action" data-move="up" title="Oldinga" aria-label="Oldinga">↑</button>
-            <button type="button" class="icon-action" data-move="down" title="Orqaga" aria-label="Orqaga">↓</button>
+            <button type="button" class="icon-action" data-move="up" title="Oldinroq" aria-label="{{ s.client.name }} — oldinroq"{% if forloop.first %} disabled{% endif %}>↑</button>
+            <button type="button" class="icon-action" data-move="down" title="Keyinroq" aria-label="{{ s.client.name }} — keyinroq"{% if forloop.last %} disabled{% endif %}>↓</button>
           </span>
         </span>
       </li>
@@ -132,7 +132,7 @@ belong to rather than as loose lines above it.{% endcomment %}
         <span class="geo-status" data-share-status role="status" aria-live="polite"></span>
       </div>
     </div>
-    <p class="muted route-share-stale" data-route-share-stale hidden>Tartib o'zgardi — haydovchiga yuborishdan oldin saqlang.</p>
+    <p class="muted route-share-stale" data-route-share-stale hidden>O'zgartirildi — haydovchiga yuborishdan oldin saqlang.</p>
   </section>
   {% endfor %}
 </div>

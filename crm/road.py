@@ -12,6 +12,8 @@ caller falls back to straight lines: the plan is never blocked by it.
 
 import hashlib
 import json
+import logging
+import math
 import urllib.error
 import urllib.request
 
@@ -20,9 +22,17 @@ from django.core.cache import cache
 
 from .routing import distance_km
 
+log = logging.getLogger(__name__)
+
 API = "https://api.openrouteservice.org/v2"
-TIMEOUT = 10  # seconds
+#: Per request. A page asks at most three times (one matrix, a path per truck), so
+#: even a hanging service costs well under the web worker's 30 s.
+TIMEOUT = 6  # seconds
 CACHE_SECONDS = 24 * 60 * 60
+#: After a failure, skip the service for this long: pages go straight to straight
+#: lines instead of each waiting out the timeout again.
+DOWN_SECONDS = 5 * 60
+_DOWN_KEY = "road:down"
 #: The public matrix endpoint takes at most 3 500 pairs per request: 59² = 3 481.
 MAX_MATRIX_POINTS = 59
 #: The public directions endpoint takes at most 50 points per request.
@@ -43,6 +53,17 @@ def _cache_key(kind, points):
 
 
 def _post(path, body):
+    if cache.get(_DOWN_KEY):
+        raise RoadError("OpenRouteService yaqinda javob bermadi — biroz kutiladi")
+    try:
+        return _send(path, body)
+    except RoadError as err:
+        log.warning("OpenRouteService failed, straight lines for %s s: %s", DOWN_SECONDS, err)
+        cache.set(_DOWN_KEY, True, DOWN_SECONDS)
+        raise
+
+
+def _send(path, body):
     request = urllib.request.Request(
         f"{API}{path}", data=json.dumps(body).encode(), method="POST",
         headers={
@@ -80,14 +101,22 @@ def matrix_km(points):
     try:
         rows = data["distances"]
         result = [
-            [rows[i][j] if rows[i][j] is not None else distance_km(points[i], points[j])
+            [_km(rows[i][j]) if rows[i][j] is not None else distance_km(points[i], points[j])
              for j in range(len(points))]
             for i in range(len(points))
         ]
-    except (KeyError, IndexError, TypeError) as err:
+    except (KeyError, IndexError, TypeError, ValueError) as err:
         raise RoadError(f"OpenRouteService matrix: kutilmagan javob ({err})") from err
     cache.set(key, result, CACHE_SECONDS)
     return result
+
+
+def _km(value):
+    """A distance cell as a float — never a string or NaN to blow up later."""
+    km = float(value)
+    if not math.isfinite(km) or km < 0:
+        raise ValueError(value)
+    return km
 
 
 def distance_for(points):

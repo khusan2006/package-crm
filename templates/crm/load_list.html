@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Yetkazish · Paket CRM{% endblock %}
 {% block topbar_title %}Yetkazish{% endblock %}
-{% block fab %}{% comment %}One click, no pop-up: the load is made for the day on screen and opened.{% endcomment %}<form method="post" action="{% url 'load_create' %}" class="fab-form">{% csrf_token %}<input type="hidden" name="sana" value="{{ day|date:'Y-m-d' }}"><button type="submit" class="fab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi yuk</button></form>{% endblock %}
+{% block fab %}{% comment %}One click, no pop-up: the load is made for the day on screen and opened.{% endcomment %}<form method="post" action="{% url 'load_create' %}" class="fab-form">{% csrf_token %}<input type="hidden" name="sana" value="{{ day|date:'Y-m-d' }}"><button type="submit" class="fab"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi yuk</button></form>{% endblock %}
 {% block content %}
 
 {% comment %}
@@ -39,7 +39,7 @@
     <td class="num">{{ load.client_count }}</td>
     <td class="num">{{ load.roll_total|default:0 }}</td>
     <td class="num">{% if load.kg_total %}{{ load.kg_total|floatformat:"0g" }} kg{% else %}—{% endif %}{% if load.unweighed and load.client_count %}<span class="cell-sub route-pending">{{ load.unweighed }} tasi tortilmagan</span>{% endif %}</td>
-    <td>{% if not load.client_count %}<span class="muted">—</span>{% elif load.ordered_at %}<span class="badge badge-paid">Saqlangan</span>{% else %}<span class="badge badge-warning">Taklif</span>{% endif %}</td>
+    <td>{% if load.ordered_at %}<span class="badge badge-paid">Saqlangan</span>{% else %}<span class="muted">saqlanmagan</span>{% endif %}</td>
     <td class="row-actions">
       <span class="ra-slots">
         <a class="icon-action danger" href="{% url 'load_delete' load.pk %}" data-modal title="Yukni o'chirish" aria-label="Yuk #{{ load.pk }} ni o'chirish">{% include "crm/_ico_trash.html" %}</a>

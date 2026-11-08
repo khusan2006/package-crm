@@ -53,7 +53,9 @@
   function newMap(el, center, zoom, zoomAt) {
     var map = L.map(el, { center: center, zoom: zoom, scrollWheelZoom: true, zoomControl: false });
     // The picker keeps its top edge for the search bar, so its zoom goes low.
-    L.control.zoom({ position: zoomAt || 'topleft' }).addTo(map);
+    L.control.zoom({
+      position: zoomAt || 'topleft', zoomInTitle: 'Kattalashtirish', zoomOutTitle: 'Kichiklashtirish'
+    }).addTo(map);
     L.tileLayer(TILES, {
       maxZoom: 19, attribution: ATTRIBUTION, referrerPolicy: REFERRER
     }).addTo(map);
@@ -350,9 +352,11 @@
   }
 
   function pin(label, color, extraClass) {
+    // Light pins on the dark theme's lighter accents need dark numbers to be read.
+    var ink = document.documentElement.getAttribute('data-theme') === 'dark' ? '#0b1020' : '#fff';
     return L.divIcon({
       className: '',
-      html: '<div class="route-pin ' + (extraClass || '') + '" style="background:' + color + '">' + label + '</div>',
+      html: '<div class="route-pin ' + (extraClass || '') + '" style="background:' + color + ';color:' + ink + '">' + label + '</div>',
       iconSize: [26, 26], iconAnchor: [13, 13]
     });
   }
@@ -361,7 +365,11 @@
     if (el.__geo) { return; }
     el.__geo = true;
     var source = document.getElementById(el.getAttribute('data-route-json'));
-    if (!source) { el.hidden = true; return; }
+    if (!source) {
+      el.hidden = true;
+      el.dispatchEvent(new CustomEvent('route:map-ready', { bubbles: true }));
+      return;
+    }
     var data = JSON.parse(source.textContent);
     loadLeaflet().then(function () {
       var map = newMap(el, data.depot, HOME_ZOOM);
@@ -412,6 +420,11 @@
       if (window.ResizeObserver) { new ResizeObserver(fit).observe(el); }
       else { setTimeout(fit, 300); window.addEventListener('resize', fit); }
     }).catch(function () {
+      // No map (Leaflet didn't load): say so rather than leave an empty frame.
+      var note = document.createElement('p');
+      note.className = 'muted route-map-failed';
+      note.textContent = "Xarita yuklanmadi — marshrut ro'yxati quyida.";
+      el.parentNode.insertBefore(note, el);
       el.hidden = true;
       el.dispatchEvent(new CustomEvent('route:map-ready', { bubbles: true }));
     });

@@ -9,7 +9,7 @@ from urllib.parse import quote, urlencode
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied
 from django.core.paginator import Paginator
-from django.db import transaction
+from django.db import DatabaseError, IntegrityError, transaction
 from django.db.models import (
     BooleanField,
     Case,
@@ -1488,6 +1488,12 @@ def client_delete(request, pk):
     `sale_delete`, nothing is blocked: the confirm dialog spells out what will go."""
     client = get_object_or_404(_visible_clients(request.user), pk=pk)
     records, balances = _client_delete_extras(client)
+    # Delivery loads they're in: they come out of those too (LoadItem → Client is
+    # PROTECT, so a planned delivery is never emptied without being said here).
+    loads = sorted(set(client.load_items.values_list("load_id", flat=True)))
+    if loads:
+        records = records + [f"{len(loads)} ta yukdagi qatori (Yuk " +
+                             ", ".join(f"#{n}" for n in loads) + ")"]
     if request.method == "POST":
         summary = f"{client.name} o'chirildi"
         if records or balances:
@@ -1496,6 +1502,7 @@ def client_delete(request, pk):
             # Sale → Client is PROTECT, so the sales go first; their items, payments
             # and returns cascade. Advance movements cascade with the client itself.
             Sale.objects.filter(client=client).delete()
+            client.load_items.all().delete()
             client.delete()
         AuditLog.record(
             request.user, AuditLog.Action.DELETE, "Mijoz", pk, summary[:255]
@@ -10547,31 +10554,20 @@ def truck_edit(request, pk):
 
 @role_required(User.Role.ADMIN)
 def truck_delete(request, pk):
-    """Remove a truck."""
+    """Remove a truck. Nothing stores a truck (loads get theirs worked out from kg each
+    time), so it simply goes."""
     truck = get_object_or_404(Truck, pk=pk)
-    used = False  # nothing refers to trucks yet; loads don't pick one by hand
     if request.method == "POST":
-        if used:
-            truck.is_active = False
-            truck.save(update_fields=["is_active"])
-            AuditLog.record(request.user, AuditLog.Action.UPDATE, "Mashina", pk,
-                            f"{truck.name} faol emas deb belgilandi")
-            messages.success(request, f"“{truck.name}” faol emas deb belgilandi.")
-        else:
-            name = truck.name
-            truck.delete()
-            AuditLog.record(request.user, AuditLog.Action.DELETE, "Mashina", pk, f"{name} o'chirildi")
-            messages.success(request, f"“{name}” o'chirildi.")
+        name = truck.name
+        truck.delete()
+        AuditLog.record(request.user, AuditLog.Action.DELETE, "Mashina", pk, f"{name} o'chirildi")
+        messages.success(request, f"“{name}” o'chirildi.")
         return form_reload(request, reverse("truck_list"))
-    if used:
-        body = (f"“{truck.name}” yuklarda ishlatilgan, shuning uchun butunlay "
-                f"o'chirib bo'lmaydi. Uning o'rniga faol emas deb belgilanadi: yangi "
-                f"marshrutlarga qo'shilmaydi. Davom etasizmi?")
-        button = "Ha, faol emas qilish"
-    else:
-        body = f"“{truck.name}” ro'yxatdan o'chiriladi. Davom etasizmi?"
-        button = "Ha, o'chirish"
-    return render_confirm(request, "Mashinani o'chirish", body, button, confirm_class="btn-danger")
+    return render_confirm(
+        request, "Mashinani o'chirish",
+        f"“{truck.name}” ro'yxatdan o'chiriladi. Davom etasizmi?",
+        "Ha, o'chirish", confirm_class="btn-danger",
+    )
 
 
 @role_required(User.Role.ADMIN)
@@ -10605,6 +10601,17 @@ def warehouse_edit(request):
 ROUTE_COLORS = ("--accent", "--violet")
 
 
+#: Days the load pages accept — anything outside is a typo or a crafted URL, and
+#: the far ends would overflow the ±1 day arrows.
+LOAD_FIRST_DAY, LOAD_LAST_DAY = date(2000, 1, 1), date(2099, 12, 31)
+
+
+def _load_day(value):
+    """The day asked for (`sana`), or today when it is missing or out of range."""
+    day = _parse_date(value)
+    return day if day and LOAD_FIRST_DAY <= day <= LOAD_LAST_DAY else timezone.localdate()
+
+
 def _load_url(load):
     return reverse("load_detail", args=[load.pk])
 
@@ -10616,7 +10623,7 @@ def _load_list_url(day):
 @role_required(User.Role.ADMIN, User.Role.MANAGER)
 def load_list(request):
     """Yetkazish: the day's loads, each with its clients, rolls and known kg."""
-    day = _parse_date(request.GET.get("sana")) or timezone.localdate()
+    day = _load_day(request.GET.get("sana"))
     loads = (
         Load.objects.filter(date=day).select_related("created_by")
         .annotate(
@@ -10642,7 +10649,7 @@ def load_create(request):
     there is nothing to ask first (a note can be added later with «Tahrirlash»)."""
     if request.method != "POST":
         return redirect(reverse("load_list"))
-    day = _parse_date(request.POST.get("sana")) or timezone.localdate()
+    day = _load_day(request.POST.get("sana"))
     load = Load.objects.create(date=day, created_by=request.user)
     AuditLog.record(request.user, AuditLog.Action.CREATE, "Yuk", load.pk,
                     f"Yuk #{load.pk} ({load.date:%d.%m.%Y}) yaratildi")
@@ -10685,16 +10692,50 @@ def load_delete(request, pk):
     )
 
 
+#: Limits on what a load row accepts — inside the database columns (a 32-bit rulon
+#: count, kg as numeric(12, 3)) and well past anything real.
+ROLLS_MAX = 100_000
+KG_MAX = Decimal("999999999.999")
+#: Clients in one load: the road service takes 59 points per request (the warehouse
+#: plus 58 clients), and it keeps the truck split quick.
+LOAD_MAX_ITEMS = 58
+_DIGITS = re.compile(r"[0-9]+")
+_KG = re.compile(r"[0-9]+(?:\.[0-9]{1,3})?")
+
+
+def _squeeze(raw):
+    """Typed text without the spaces people use to group digits ("1 000")."""
+    return re.sub(r"[\s\u00a0\u202f]", "", raw or "")
+
+
 def _whole_rolls(raw):
-    """A rulon count typed into a box: None for an empty box, an int ≥ 1, or
-    ValueError for anything else."""
-    raw = (raw or "").strip().replace(" ", "")
+    """A rulon count typed into a box: None for an empty box, an int from 1 to
+    ROLLS_MAX, or ValueError for anything else — "3.5", "+5", "1_000", "1e3" and
+    non-Latin digits included."""
+    raw = _squeeze(raw)
     if not raw:
         return None
-    rolls = int(raw)  # ValueError for "3.5", "abc"
-    if rolls < 1:
+    if not _DIGITS.fullmatch(raw):
+        raise ValueError(raw)
+    rolls = int(raw)
+    if not 1 <= rolls <= ROLLS_MAX:
         raise ValueError(raw)
     return rolls
+
+
+def _kg_value(raw):
+    """Kg typed into a box: None for an empty box, a Decimal above 0 with at most
+    three decimals (comma or point) up to KG_MAX, or ValueError — "1e3", "0" and
+    "12.3456" included."""
+    raw = _squeeze(raw).replace(",", ".")
+    if not raw:
+        return None
+    if not _KG.fullmatch(raw):
+        raise ValueError(raw)
+    kg = Decimal(raw)
+    if not Decimal("0") < kg <= KG_MAX:
+        raise ValueError(raw)
+    return kg
 
 
 def _read_load_items(request, items):
@@ -10721,10 +10762,7 @@ def _read_load_items(request, items):
             item.rolls_bad = True
             problems.append(f"{item.client.name} — rulon")
         try:
-            clean = raw_kg.strip().replace(" ", "").replace(",", ".")
-            kg = Decimal(clean).quantize(Decimal("0.001")) if clean else None
-            if kg is not None and kg < 0:
-                raise ValueError(raw_kg)
+            kg = _kg_value(raw_kg)
         except (ValueError, ArithmeticError):
             kg = None
             item.kg_bad = True
@@ -10733,15 +10771,17 @@ def _read_load_items(request, items):
                 and (rolls, kg) != (item.rolls, item.kg):
             changes.append((item, rolls, kg))
 
-    in_load = {i.client_id for i in items}
+    saved = {i.client_id for i in items}
+    picked = set()  # clients chosen in this save's new rows
     new_rows, posted_new = [], []
-    pairs = zip(request.POST.getlist("new_client"), request.POST.getlist("new_rolls"))
+    pairs = list(zip(request.POST.getlist("new_client"), request.POST.getlist("new_rolls")))
     for n, (raw_client, raw_rolls) in enumerate(pairs, start=1):
         row = {"client": raw_client.strip(), "rolls": raw_rolls, "client_bad": False, "rolls_bad": False}
         posted_new.append(row)
         if not row["client"] and not raw_rolls.strip():
             continue  # an untouched empty row
-        client = Client.objects.filter(pk=row["client"]).first() if row["client"].isdigit() else None
+        client = (Client.objects.filter(pk=row["client"]).first()
+                  if _DIGITS.fullmatch(row["client"]) else None)
         try:
             rolls = _whole_rolls(raw_rolls)
         except ValueError:
@@ -10749,39 +10789,56 @@ def _read_load_items(request, items):
         if client is None:
             row["client_bad"] = True
             problems.append(f"{n}-yangi qator — mijoz tanlanmagan")
-        elif client.pk in in_load:
+        elif client.pk in saved:
             row["client_bad"] = True
             problems.append(f"{client.name} yukda allaqachon bor")
+        elif client.pk in picked:
+            row["client_bad"] = True
+            problems.append(f"{client.name} ikki qatorda tanlangan")
         if not rolls:
             row["rolls_bad"] = True
             problems.append(f"{client.name if client else str(n) + '-yangi qator'} — rulon")
         if client and rolls and not row["client_bad"]:
-            in_load.add(client.pk)
+            picked.add(client.pk)
             new_rows.append((client, rolls))
+    if len(items) + len(new_rows) > LOAD_MAX_ITEMS:
+        problems.append(f"bitta yukda ko'pi bilan {LOAD_MAX_ITEMS} ta mijoz bo'ladi — "
+                        f"qolganini boshqa yukka qo'shing")
     return changes, new_rows, posted_new, problems
 
 
-@transaction.atomic
 def _save_load_items(request, load, items):
     """One Saqlash for the whole Yuk tarkibi: the rulon and kg typed into the rows
     already in the load, and the new rows below them (a client picked and a rulon
     count each). Nothing is saved if any box is wrong — the page comes back with
     everything as typed and the wrong boxes marked. New clients join the end of a
     saved order, so the saved route stays as it was."""
+    if len(request.POST.getlist("new_client")) > LOAD_MAX_ITEMS:
+        # No real page sends this many rows; don't echo them all back either.
+        messages.error(request, f"Bir yo'la ko'pi bilan {LOAD_MAX_ITEMS} ta yangi qator saqlanadi.")
+        return redirect(_load_url(load))
     changes, new_rows, posted_new, problems = _read_load_items(request, items)
     if problems:
         messages.error(request, "Saqlanmadi — qizil kataklarni to'g'rilang (rulon butun son, "
                                 "kg musbat son): " + "; ".join(problems))
         return _render_load_detail(request, load, items, posted_new=posted_new)
 
-    for item, rolls, kg in changes:
-        item.rolls, item.kg = rolls, kg
-        item.save(update_fields=["rolls", "kg"])
-    position = (load.items.aggregate(m=Max("position"))["m"] or 0) if load.ordered_at else None
-    for client, rolls in new_rows:
-        if position is not None:
-            position += 1
-        LoadItem.objects.create(load=load, client=client, rolls=rolls, position=position)
+    try:
+        with transaction.atomic():
+            for item, rolls, kg in changes:
+                item.rolls, item.kg = rolls, kg
+                item.save(update_fields=["rolls", "kg"])
+            position = (load.items.aggregate(m=Max("position"))["m"] or 0) if load.ordered_at else None
+            for client, rolls in new_rows:
+                if position is not None:
+                    position += 1
+                LoadItem.objects.create(load=load, client=client, rolls=rolls, position=position)
+    except (IntegrityError, DatabaseError):
+        # Someone else changed this load at the same moment (added the same client,
+        # removed a row). Nothing of this save was kept.
+        messages.error(request, "Yuk shu payt boshqa joyda o'zgardi — sahifa yangilandi, "
+                                "qaytadan kiriting.")
+        return redirect(_load_url(load))
 
     parts = [f"{i.client.name} {r} rulon" + (f" {k:f} kg" if k is not None else "")
              for i, r, k in changes]
@@ -10860,6 +10917,10 @@ def _save_load_order(request, load, items):
         order.append(pk)
     if not order:
         messages.error(request, "Saqlash uchun marshrutda mijoz yo'q.")
+        return redirect(_load_url(load))
+    if set(order) != set(located):
+        # The page was drawn before a client was added or removed — don't save half.
+        messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
         return redirect(_load_url(load))
     load.items.update(position=None)
     for n, pk in enumerate(order, start=1):
@@ -10970,7 +11031,10 @@ def load_route(request, pk):
     missing = [i.client for i in items if not i.client.has_location]
     routes, error, by_road, road_note = [], "", False, ""
     if not warehouse.has_location:
-        error = "Ombor joylashuvi belgilanmagan. Uni Mashinalar sahifasida belgilang."
+        error = ("Ombor joylashuvi belgilanmagan. Uni Mashinalar sahifasida belgilang."
+                 if request.user.is_admin_role else
+                 "Ombor joylashuvi belgilanmagan — uni administrator Mashinalar sahifasida "
+                 "belgilashi kerak.")
     elif items and not missing:
         depot = (float(warehouse.latitude), float(warehouse.longitude))
         dist, by_road, road_note = _road_distance([depot] + [_point(i.client) for i in items])
@@ -10993,8 +11057,13 @@ def load_route(request, pk):
                 )
             text = message(lambda c: c.google_maps_url, google)
             # Telegram goes to drivers who open it in Yandex: Yandex links only —
-            # each stop and the whole route (one link, no Google legs).
-            telegram_text = message(lambda c: c.yandex_maps_url, [])
+            # each stop and the whole route (one link, no Google legs) — trimmed to
+            # Telegram's message length.
+            telegram_text = route_share.fit_for_telegram(
+                title, [{"n": st["n"], "name": st["client"].name, "amount": _amount(st["item"]),
+                         "address": st["client"].address, "phone": st["client"].phone,
+                         "map_url": st["client"].yandex_maps_url} for st in stops],
+                yandex)
             capacity = truck.capacity_kg if truck else None
             routes.append({
                 "truck": truck, "stops": stops, "km": measured.km, "kg": measured.kg,

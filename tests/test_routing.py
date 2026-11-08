@@ -235,3 +235,34 @@ def test_forty_stops_plan_quickly():
     plan = plan_routes(DEPOT, stops, [FakeTruck("A", 2500), FakeTruck("B", 2500)])
     assert time.perf_counter() - started < 5
     assert len(plan.routes) == 2
+
+
+# --- QA audit regressions -----------------------------------------------------------
+
+def _round(n, kgs, r=0.03):
+    import math as m
+    return [Stop(i, DEPOT[0] + r * m.sin(m.radians(i * 360 / n)),
+                 DEPOT[1] + r * m.cos(m.radians(i * 360 / n)), Decimal(k))
+            for i, k in enumerate(kgs)]
+
+
+def test_another_pair_is_tried_when_the_cheapest_cannot_divide_the_stops():
+    # 700 + 800 holds 1 500 kg on paper, but not three 500 kg stops; 1000 + 700 can.
+    trucks = [FakeTruck("a", 700), FakeTruck("b", 800), FakeTruck("c", 1000)]
+    plan = plan_routes(DEPOT, _round(3, [500, 500, 500]), trucks)
+    assert sorted(r.truck.name for r in plan.routes) == ["a", "c"]
+    assert all(r.kg <= r.truck.capacity_kg for r in plan.routes)
+
+
+def test_a_split_the_sweep_misses_is_found_exactly():
+    # By direction the weights run 2, 2, 3, 2, 3: no arc fits two 6 kg trucks,
+    # but {3, 3} and {2, 2, 2} do.
+    a, b = routing.split_two(DEPOT, _round(5, [2, 2, 3, 2, 3]), 6, 6)
+    assert sorted([sorted(float(s.kg) for s in a), sorted(float(s.kg) for s in b)]) == [
+        [2.0, 2.0, 2.0], [3.0, 3.0]]
+
+
+def test_truck_pairs_come_cheapest_first():
+    trucks = [FakeTruck("a", 700), FakeTruck("b", 800), FakeTruck("c", 1000)]
+    pairs = routing.truck_pairs(Decimal(1500), trucks)
+    assert [[t.name for t in p] for p in pairs] == [["b", "a"], ["c", "a"], ["c", "b"]]
