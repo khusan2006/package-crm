@@ -29,9 +29,11 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
+from django.utils.safestring import mark_safe
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
+import segno
 
 from accounts.decorators import payroll_required, role_required
 from accounts.models import User
@@ -9654,8 +9656,20 @@ def sale_print(request, pk):
             "items": items,
             "blank_rows": range(len(items) + 1, first_money_no),
             "money_rows": money_rows,
+            "route_qr": _route_qr(sale.client),
         },
     )
+
+
+def _route_qr(client):
+    """The QR on the yuk xati: the driver scans it and Yandex leads him to the
+    client. Drawn here as inline SVG, so it prints sharp and needs no internet.
+    None when the client has no location yet — there is nowhere to lead to."""
+    if not client.has_location:
+        return None
+    svg = segno.make(client.yandex_route_url, error="m").svg_inline(
+        omitsize=True, border=0, svgclass="nak-qr-code", lineclass=None)
+    return mark_safe(svg)  # segno's own markup; the URL is built from two numbers
 
 
 def _print_money_rows(request, sale):

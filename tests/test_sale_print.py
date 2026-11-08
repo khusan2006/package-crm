@@ -217,3 +217,28 @@ def test_seller_reads_only_the_balance_they_can_see(
 
     assert "300\xa0000" not in body
     assert "100\xa0000" in body
+
+
+def test_qr_leads_the_driver_to_the_client(client, admin_user, sample_data):
+    """Scanning the QR on the yuk xati opens Yandex navigation to the client, on
+    both halves of the sheet — the driver's half is the one that matters."""
+    c = sample_data["client"]
+    c.latitude, c.longitude = Decimal("41.311081"), Decimal("69.240562")
+    c.save(update_fields=["latitude", "longitude"])
+    assert c.yandex_route_url == "https://yandex.uz/maps/?rtext=~41.311081,69.240562&rtt=auto"
+    client.force_login(admin_user)
+    body = client.get(f"/sales/{sample_data['sale'].pk}/yuk-xati/").content.decode()
+
+    assert body.count('class="nak-qr-code"') == 2
+    assert body.count("Manzilga yo'l") == 2
+
+
+def test_no_qr_without_a_location(client, admin_user, sample_data):
+    c = sample_data["client"]
+    c.latitude = c.longitude = None
+    c.save(update_fields=["latitude", "longitude"])
+    client.force_login(admin_user)
+    body = client.get(f"/sales/{sample_data['sale'].pk}/yuk-xati/").content.decode()
+
+    assert 'class="nak-qr-code"' not in body
+    assert "Manzilga yo'l" not in body

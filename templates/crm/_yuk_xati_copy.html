@@ -68,8 +68,18 @@ and carries no ids that would clash between the two copies.
     </tbody>
   </table>
 
-  <div class="nak-sign">
-    <span>Berdim/Отпустил ______________</span>
-    <span>Oldim/Получил________________</span>
+  <div class="nak-foot">
+    <div class="nak-sign">
+      <span>Berdim/Отпустил ______________</span>
+      <span>Oldim/Получил________________</span>
+    </div>
+    {% comment %}Scanned by the driver: Yandex opens the way to the client. Left off
+    when the client has no location yet.{% endcomment %}
+    {% if route_qr %}
+    <div class="nak-qr">
+      {{ route_qr }}
+      <span>Manzilga yo'l<br>(Yandex)</span>
+    </div>
+    {% endif %}
   </div>
 </div>

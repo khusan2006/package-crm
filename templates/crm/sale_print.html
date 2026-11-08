@@ -69,7 +69,11 @@
 
   .nak-total td { font-weight: 700; }
 
-  .nak-sign { display: flex; justify-content: space-between; gap: 2mm; margin-top: 4mm; }
+  .nak-foot { display: flex; align-items: flex-end; gap: 4mm; margin-top: 4mm; }
+  .nak-sign { flex: 1; display: flex; justify-content: space-between; gap: 2mm; }
+  /* Big enough for a phone camera at arm's length; the quiet zone is the padding. */
+  .nak-qr { display: flex; align-items: center; gap: 1.5mm; font-size: 7.5pt; line-height: 1.15; }
+  .nak-qr-code { display: block; width: 20mm; height: 20mm; padding: 1.5mm; background: #fff; }
 
   /* Screen-only toolbar; the paper never sees it. */
   .bar {

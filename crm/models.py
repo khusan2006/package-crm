@@ -131,6 +131,12 @@ class Client(models.Model):
         # Yandex writes the point longitude first.
         return f"https://yandex.uz/maps/?pt={self._lng},{self._lat}&z=17&l=map"
 
+    @property
+    def yandex_route_url(self):
+        """Yandex navigation from wherever the phone is to the client — what the QR
+        on the yuk xati opens. rtext is "from~to"; an empty "from" is "here"."""
+        return f"https://yandex.uz/maps/?rtext=~{self._lat},{self._lng}&rtt=auto"
+
     def __str__(self):
         return self.name
 
