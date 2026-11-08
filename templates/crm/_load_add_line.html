@@ -1,12 +1,13 @@
 {% load l10n %}
-{% comment %}A product added to an existing stop: product and rulon. Its price starts
-from the product's catalogue price and can be changed once saved. As a <template>,
+{% comment %}A product added to an existing stop: product, rulon and price — the price
+fills in with the catalogue price when the product is picked, and can be changed. As a <template>,
 `item_pk` is "__ITEM__" and the script fills in the stop.{% endcomment %}
 <div class="new-row add-line" data-add-line-row>
   <select name="addline_{{ item_pk|unlocalize }}_product" data-combobox data-placeholder="Mahsulotni tanlang" aria-label="Mahsulot"{% if row.product_bad %} class="is-bad" aria-invalid="true"{% endif %}>
     <option value=""></option>
-    {% for p in products %}<option value="{{ p.pk|unlocalize }}"{% if row.product == p.pk|stringformat:"d" %} selected{% endif %}>{{ p.name }}</option>{% endfor %}
+    {% for p in products %}<option value="{{ p.pk|unlocalize }}" data-price="{{ p.price|floatformat:"-2u" }}"{% if row.product == p.pk|stringformat:"d" %} selected{% endif %}>{{ p.name }}</option>{% endfor %}
   </select>
   <input type="text" name="addline_{{ item_pk|unlocalize }}_rolls" inputmode="numeric" class="new-row-rolls{% if row.rolls_bad %} is-bad{% endif %}" placeholder="Rulon" aria-label="Rulon soni" value="{{ row.rolls|default:'' }}"{% if row.rolls_bad %} aria-invalid="true"{% endif %} autocomplete="off">
+  <input type="text" name="addline_{{ item_pk|unlocalize }}_price" inputmode="decimal" class="new-row-price{% if row.price_bad %} is-bad{% endif %}" placeholder="Narx" data-money aria-label="Narx, so'm/kg (bo'sh qolsa — katalog narxi)" value="{{ row.price|default:'' }}"{% if row.price_bad %} aria-invalid="true"{% endif %} autocomplete="off">
   <button type="button" class="icon-action new-row-remove" data-new-row-remove title="Qatorni olib tashlash" aria-label="Qatorni olib tashlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
 </div>

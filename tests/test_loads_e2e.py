@@ -121,7 +121,9 @@ def test_a_product_is_added_to_a_stop(login, admin_user, seller_user, live_serve
     page.click(f'[data-add-line="{item.pk}"]')
     added = page.locator("[data-add-line-row]").first
     pick(page, added, 0, "Plyonka")
-    added.locator("input[type=text]:not(.combobox-input)").type("3")
+    added.locator("input[name$=_rolls]").type("3")
+    # The Narx box filled itself with the catalogue price.
+    assert added.locator("input[name$=_price]").input_value().replace(" ", "").replace("\u00a0", "") == "26000"
     assert page.locator("[data-items-dirty]").is_visible()
     page.click("[data-load-items] .items-actions button[type=submit]")
     page.wait_for_selector("text=Saqlandi")
@@ -181,3 +183,27 @@ def test_the_first_stop_cannot_move_up(login, admin_user, live_server, load_of_t
     assert stops.nth(0).locator('[data-move="up"]').is_disabled()
     assert not stops.nth(1).locator('[data-move="up"]').is_disabled()
     assert page.locator("[data-route-status]").inner_text() == "Marshrut tayyor."
+
+
+def test_picking_a_product_fills_its_price_and_a_typed_price_stays(login, admin_user, seller_user,
+                                                                   live_server, db, paket):
+    Product.objects.create(name="Plyonka", sku="P2", cost_price=1, price=Decimal("26000"))
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    Client.objects.create(name="Anvar", owner=seller_user)
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    row = page.locator("[data-new-row]").first
+    price = row.locator("[name=new_price]")
+    pick(page, row, 0, "Anvar")
+    pick(page, row, 1, "Paket katta")
+    assert price.input_value().replace(" ", "").replace(" ", "") == "15000"
+    pick(page, row, 1, "Plyonka")            # an automatic price follows the product
+    assert price.input_value().replace(" ", "").replace(" ", "") == "26000"
+    price.fill("24500")                      # typed by hand: stays
+    pick(page, row, 1, "Paket katta")
+    assert price.input_value().replace(" ", "").replace(" ", "") == "24500"
+    row.locator("[name=new_rolls]").fill("3")
+    page.click("[data-load-items] .items-actions button[type=submit]")
+    page.wait_for_selector("text=Saqlandi")
+    line = LoadLine.objects.get()
+    assert (line.product.name, line.price) == ("Paket katta", Decimal("24500"))

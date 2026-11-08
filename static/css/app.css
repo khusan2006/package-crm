@@ -6726,11 +6726,18 @@ tr:has(.line-drop input:checked) td:not(.row-actions) { text-decoration: line-th
 .stop-collect { margin: 10px 0 0; font-size: 13px; color: var(--text-muted); }
 .new-rows-title { margin: 18px 0 0; font-size: 14px; }
 .new-stop select.new-stop-purpose { flex: 0 0 auto; width: auto; max-width: 200px; height: 40px; }
-.new-stop .combobox:nth-of-type(2) { flex: 0 1 220px; }
+/* New stop row: client | purpose | product | rulon | price | ×. The product box
+   is wide enough for names like «Mayka paket 28×50». */
+.new-row .combobox:nth-of-type(2) { flex: 0 1 280px; }
+.new-row input.new-row-price {
+  flex: 0 0 120px; width: 120px; max-width: 120px; height: 40px; text-align: right;
+}
+.new-stop .combobox:first-of-type { flex: 1 1 200px; }
 .route-collect { color: var(--warning); }
 .strategy-switch { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
 .strategy-switch .seg-btn { font-size: 12px; }
 @media (max-width: 760px) {
   .new-stop { flex-wrap: wrap; }
   .new-stop .combobox, .new-stop select.new-stop-purpose { flex: 1 1 100%; max-width: none; }
+  .new-stop input.new-row-rolls, .new-stop input.new-row-price { flex: 1 1 0; max-width: none; }
 }

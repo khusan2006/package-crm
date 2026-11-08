@@ -578,3 +578,43 @@ def test_over_capacity_on_estimates_is_a_warning_not_an_alarm(client, admin_user
                             price=Decimal("1"), cost_price=Decimal("1"))
     body = route(client, admin_user, load).content.decode()
     assert "taxminiy kg bo" in body and "is-bad-text" not in body
+
+
+# --- price on new rows --------------------------------------------------------------
+
+def test_a_price_typed_on_a_new_stop_is_kept(client, admin_user, seller_user, load, paket):
+    c = make_client(seller_user, "Anvar", 0.01)
+    save(client, admin_user, load, new_client=[c.pk], new_purpose=[DELIVER], new_product=[paket.pk],
+         new_rolls=["12"], new_price=["16 500"])
+    assert load.items.get().lines.get().price == Decimal("16500")
+
+
+def test_an_empty_price_takes_the_catalogue_price(client, admin_user, seller_user, load, paket):
+    c = make_client(seller_user, "Anvar", 0.01)
+    save(client, admin_user, load, new_client=[c.pk], new_purpose=[DELIVER], new_product=[paket.pk],
+         new_rolls=["12"], new_price=[""])
+    assert load.items.get().lines.get().price == Decimal("15000")
+
+
+@pytest.mark.parametrize("raw", ["abc", "-5", "1e4", "15000.123"])
+def test_a_wrong_new_price_is_a_red_box(client, admin_user, seller_user, load, paket, raw):
+    c = make_client(seller_user, "Anvar", 0.01)
+    resp = save(client, admin_user, load, new_client=[c.pk], new_purpose=[DELIVER],
+                new_product=[paket.pk], new_rolls=["12"], new_price=[raw])
+    assert resp.status_code == 200 and not load.items.exists()
+    row = resp.context["new_rows"][0]
+    assert row["price_bad"] and row["price"] == raw
+
+
+def test_a_product_added_to_a_stop_takes_its_typed_price(client, admin_user, seller_user, load,
+                                                         paket, plyonka):
+    item = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 5))
+    save(client, admin_user, load, **{f"addline_{item.pk}_product": [plyonka.pk],
+                                      f"addline_{item.pk}_rolls": ["2"],
+                                      f"addline_{item.pk}_price": ["25000"]})
+    assert item.lines.get(product=plyonka).price == Decimal("25000")
+
+
+def test_product_options_carry_their_catalogue_price(client, admin_user, load, paket):
+    body = detail(client, admin_user, load).content.decode()
+    assert f'value="{paket.pk}" data-price="15000"' in body

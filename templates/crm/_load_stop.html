@@ -57,7 +57,7 @@
   </div>
   {% if item.editable %}
   <div class="add-lines" data-add-lines data-item="{{ item.pk|unlocalize }}">
-    {% for row in item.added_input %}{% if row.product or row.rolls %}{% include "crm/_load_add_line.html" with item_pk=item.pk row=row %}{% endif %}{% endfor %}
+    {% for row in item.added_input %}{% if row.product or row.rolls or row.price %}{% include "crm/_load_add_line.html" with item_pk=item.pk row=row %}{% endif %}{% endfor %}
   </div>
   <button type="button" class="line-add" data-add-line="{{ item.pk|unlocalize }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Mahsulot</button>
   {% endif %}

@@ -1,6 +1,7 @@
 {% load l10n %}
 {% comment %}One new stop in Yuk tarkibi: a client, the purpose, and its first product
-with a rulon count (no product for «Pul olish»). More products go on the stop once
+with a rulon count and price (no product for «Pul olish»). Picking a product fills
+the price with its catalogue price; it can be changed, and left empty it is that. More products go on the stop once
 it's saved. `row` holds what was posted when a save failed, so the row comes back
 exactly as it was left; empty for a fresh row.{% endcomment %}
 <div class="new-row new-stop" data-new-row>
@@ -13,8 +14,9 @@ exactly as it was left; empty for a fresh row.{% endcomment %}
   </select>
   <select name="new_product" data-combobox data-placeholder="Mahsulot" aria-label="Mahsulot"{% if row.product_bad %} class="is-bad" aria-invalid="true"{% endif %}>
     <option value=""></option>
-    {% for p in products %}<option value="{{ p.pk|unlocalize }}"{% if row.product == p.pk|stringformat:"d" %} selected{% endif %}>{{ p.name }}</option>{% endfor %}
+    {% for p in products %}<option value="{{ p.pk|unlocalize }}" data-price="{{ p.price|floatformat:"-2u" }}"{% if row.product == p.pk|stringformat:"d" %} selected{% endif %}>{{ p.name }}</option>{% endfor %}
   </select>
   <input type="text" name="new_rolls" inputmode="numeric" class="new-row-rolls{% if row.rolls_bad %} is-bad{% endif %}" placeholder="Rulon" aria-label="Rulon soni" value="{{ row.rolls|default:'' }}"{% if row.rolls_bad %} aria-invalid="true"{% endif %} autocomplete="off">
+  <input type="text" name="new_price" inputmode="decimal" class="new-row-price{% if row.price_bad %} is-bad{% endif %}" placeholder="Narx" data-money aria-label="Narx, so'm/kg (bo'sh qolsa — katalog narxi)" title="So'm/kg. Mahsulot tanlanganda katalog narxi qo'yiladi — o'zgartirsa bo'ladi." value="{{ row.price|default:'' }}"{% if row.price_bad %} aria-invalid="true"{% endif %} autocomplete="off">
   <button type="button" class="icon-action new-row-remove" data-new-row-remove title="Qatorni olib tashlash" aria-label="Qatorni olib tashlash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
 </div>

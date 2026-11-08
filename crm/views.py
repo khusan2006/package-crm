@@ -4,6 +4,7 @@ import re
 import uuid
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from itertools import zip_longest
 from urllib.parse import quote, urlencode
 
 from django.contrib import messages
@@ -10784,15 +10785,30 @@ def _price_value(raw):
     return price
 
 
+def _new_line_price(raw, product, row):
+    """The price on a new product row: as typed, or the product's catalogue price
+    when the box is left empty. A wrong price marks the row's box (`price_bad`)."""
+    if not (raw or "").strip():
+        return product.price if product else None
+    try:
+        return _price_value(raw)
+    except (ValueError, ArithmeticError):
+        row["price_bad"] = True
+        return None
+
+
 def _plain(value):
     """A Decimal as the box shows it: "160", "340.5" — never "160.000000" or "160,000"."""
     return f"{value.normalize():f}" if value is not None else ""
 
 
 def _post_rows(request, *names):
-    """Parallel lists posted under `names`, as rows of stripped strings — zip's
-    silent truncation of uneven lists is fine here: a row needs all its parts."""
-    return [tuple(v.strip() for v in row) for row in zip(*(request.POST.getlist(n) for n in names))]
+    """Parallel lists posted under `names`, as rows of stripped strings. Uneven lists
+    are padded with "" rather than cut short: a part missing from a row (an older
+    page without a box, a crafted post) reads as empty and is judged like any empty
+    box, instead of the whole row silently vanishing."""
+    lists = [request.POST.getlist(n) for n in names]
+    return [tuple(v.strip() for v in row) for row in zip_longest(*lists, fillvalue="")]
 
 
 def _read_load_items(request, load, items, products):
@@ -10845,8 +10861,11 @@ def _read_load_items(request, load, items, products):
             if len(values) == 3 and (values["rolls"], values["price"], values["kg"]) != (line.rolls, line.price, line.kg):
                 plan["lines"].append((line, values))
         added = []
-        for raw_product, raw_rolls in _post_rows(request, f"addline_{item.pk}_product", f"addline_{item.pk}_rolls"):
-            row = {"product": raw_product, "rolls": raw_rolls, "product_bad": False, "rolls_bad": False}
+        for raw_product, raw_rolls, raw_price in _post_rows(
+                request, f"addline_{item.pk}_product", f"addline_{item.pk}_rolls",
+                f"addline_{item.pk}_price"):
+            row = {"product": raw_product, "rolls": raw_rolls, "price": raw_price,
+                   "product_bad": False, "rolls_bad": False, "price_bad": False}
             added.append(row)
             if not raw_product and not raw_rolls:
                 continue
@@ -10855,14 +10874,17 @@ def _read_load_items(request, load, items, products):
                 rolls = _whole_rolls(raw_rolls)
             except ValueError:
                 rolls = None
+            price = _new_line_price(raw_price, product, row)
             if product is None:
                 row["product_bad"] = True
                 problems.append(f"{name} — yangi qatorda mahsulot tanlanmagan")
             if not rolls:
                 row["rolls_bad"] = True
                 problems.append(f"{name} — yangi mahsulot rulon soni")
-            if product and rolls:
-                plan["add"].append((item, product, rolls))
+            if row["price_bad"]:
+                problems.append(f"{name} — yangi mahsulot narxi")
+            if product and rolls and not row["price_bad"]:
+                plan["add"].append((item, product, rolls, price))
                 kept += 1
         item.added_input = added
         if delivers and not kept:
@@ -10878,11 +10900,12 @@ def _read_load_items(request, load, items, products):
     in_load = {i.client_id for i in items}
     picked = set()
     posted_new = []
-    for n, (raw_client, raw_purpose, raw_product, raw_rolls) in enumerate(
-            _post_rows(request, "new_client", "new_purpose", "new_product", "new_rolls"), start=1):
+    for n, (raw_client, raw_purpose, raw_product, raw_rolls, raw_price) in enumerate(
+            _post_rows(request, "new_client", "new_purpose", "new_product", "new_rolls", "new_price"),
+            start=1):
         row = {"client": raw_client, "purpose": raw_purpose or LoadItem.Purpose.DELIVER,
-               "product": raw_product, "rolls": raw_rolls,
-               "client_bad": False, "product_bad": False, "rolls_bad": False}
+               "product": raw_product, "rolls": raw_rolls, "price": raw_price,
+               "client_bad": False, "product_bad": False, "rolls_bad": False, "price_bad": False}
         posted_new.append(row)
         if not raw_client and not raw_product and not raw_rolls:
             continue  # an untouched empty row
@@ -10899,11 +10922,12 @@ def _read_load_items(request, load, items, products):
             row["client_bad"] = True
             problems.append(f"{client.name} ikki qatorda tanlangan")
         purpose = row["purpose"] if row["purpose"] in LoadItem.Purpose.values else LoadItem.Purpose.DELIVER
-        product, rolls = None, None
+        product, rolls, price = None, None, None
         if purpose == LoadItem.Purpose.COLLECT:
-            if raw_product or raw_rolls:
+            if raw_product or raw_rolls or raw_price:
                 row["product_bad"] = bool(raw_product)
                 row["rolls_bad"] = bool(raw_rolls)
+                row["price_bad"] = bool(raw_price)
                 problems.append(f"{label} — «Pul olish»da mahsulot bo'lmaydi")
         else:
             product = product_of(raw_product)
@@ -10911,21 +10935,24 @@ def _read_load_items(request, load, items, products):
                 rolls = _whole_rolls(raw_rolls)
             except ValueError:
                 rolls = None
+            price = _new_line_price(raw_price, product, row)
             if product is None:
                 row["product_bad"] = True
                 problems.append(f"{label} — mahsulot tanlanmagan")
             if not rolls:
                 row["rolls_bad"] = True
                 problems.append(f"{label} — rulon soni")
-        if client and not row["client_bad"] and not row["product_bad"] and not row["rolls_bad"]:
+            if row["price_bad"]:
+                problems.append(f"{label} — narx")
+        if client and not any(row[k] for k in ("client_bad", "product_bad", "rolls_bad", "price_bad")):
             picked.add(client.pk)
-            plan["new"].append((client, purpose, product, rolls))
+            plan["new"].append((client, purpose, product, rolls, price))
     if len(items) + len(plan["new"]) > LOAD_MAX_ITEMS:
         problems.append(f"bitta yukda ko'pi bilan {LOAD_MAX_ITEMS} ta mijoz bo'ladi — "
                         f"qolganini boshqa yukka qo'shing")
     for item in items:
         if item.editable and len([l for l in item.line_list if not getattr(l, "dropped", False)]) \
-                + sum(1 for st, *_ in plan["add"] if st is item) > STOP_MAX_LINES:
+                + sum(1 for added in plan["add"] if added[0] is item) > STOP_MAX_LINES:
             problems.append(f"{item.client.name} — bitta mijozga ko'pi bilan {STOP_MAX_LINES} ta mahsulot")
     return plan, posted_new, problems
 
@@ -10940,15 +10967,15 @@ def _write_load_plan(load, plan):
     for line, values in plan["lines"]:
         line.rolls, line.price, line.kg = values["rolls"], values["price"], values["kg"]
         line.save(update_fields=["rolls", "price", "kg"])
-    for item, product, rolls in plan["add"]:
-        LoadLine.objects.create(item=item, product=product, rolls=rolls, price=product.price)
+    for item, product, rolls, price in plan["add"]:
+        LoadLine.objects.create(item=item, product=product, rolls=rolls, price=price)
     position = (load.items.aggregate(m=Max("position"))["m"] or 0) if load.ordered_at else None
-    for client, purpose, product, rolls in plan["new"]:
+    for client, purpose, product, rolls, price in plan["new"]:
         if position is not None:
             position += 1
         item = LoadItem.objects.create(load=load, client=client, purpose=purpose, position=position)
         if product:
-            LoadLine.objects.create(item=item, product=product, rolls=rolls, price=product.price)
+            LoadLine.objects.create(item=item, product=product, rolls=rolls, price=price)
 
 
 def _plan_summary(load, plan):
@@ -10956,9 +10983,9 @@ def _plan_summary(load, plan):
     parts += [f"{l.item.client.name}, {l.product.name}: {v['rolls']} rulon"
               + (f" {v['kg']:f} kg" if v["kg"] is not None else "") for l, v in plan["lines"]]
     parts += [f"{l.item.client.name}, {l.product.name} olib tashlandi" for l in plan["drop"]]
-    parts += [f"{i.client.name} + {p.name} {r} rulon" for i, p, r in plan["add"]]
+    parts += [f"{i.client.name} + {p.name} {r} rulon" for i, p, r, _ in plan["add"]]
     parts += [f"+ {c.name}" + (f" ({p.name} {r} rulon)" if p else " (pul olish)")
-              for c, _, p, r in plan["new"]]
+              for c, _, p, r, _ in plan["new"]]
     return parts
 
 
@@ -11245,7 +11272,8 @@ def _render_load_detail(request, load, items, posted_new=None):
         clients = clients.filter(owner=user)
     lines = [l for i in items if i.delivers for l in i.line_list]
     kg_known = [l.kg for l in lines if l.kg is not None]
-    new_rows = [r for r in (posted_new or []) if r["client"] or r["product"] or r["rolls"]] or [{}]
+    new_rows = [r for r in (posted_new or [])
+                if r["client"] or r["product"] or r["rolls"] or r.get("price")] or [{}]
     debts = dict(
         Sale.objects.filter(client_id__in=[i.client_id for i in items if i.collects])
         .outstanding().values("client_id").annotate(s=Sum("remaining")).values_list("client_id", "s")

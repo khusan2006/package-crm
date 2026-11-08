@@ -128,7 +128,16 @@
             var box = productBox && productBox.closest('.combobox') ? productBox.closest('.combobox').querySelector('.combobox-input') : productBox;
             if (box) { box.focus(); }
           } else {
-            var rolls = row.querySelector('input[type=text]:not(.combobox-input)');
+            // A product: its catalogue price goes in the Narx box — unless a price was
+            // typed by hand, which is never overwritten.
+            var price = row.querySelector('input[data-money]');
+            var opt = t.options[t.selectedIndex];
+            if (price && opt && opt.dataset.price && (!price.value.trim() || price.dataset.auto)) {
+              price.value = opt.dataset.price;
+              price.dataset.auto = '1';
+              price.dispatchEvent(new Event('input', { bubbles: true }));  // regroup "15 000"
+            }
+            var rolls = row.querySelector('input[type=text]:not(.combobox-input):not([data-money])');
             if (rolls) { rolls.focus(); rolls.select(); }
           }
         }
@@ -158,6 +167,8 @@
     });
 
     items.addEventListener('input', function (e) {
+      // A price typed by hand stays: picking another product won't replace it.
+      if (e.isTrusted && e.target.dataset) { delete e.target.dataset.auto; }
       // Typing a search into the picker isn't a change yet — choosing is.
       if (!e.target.closest('.combobox')) { unmark(e.target); }
       refreshDirty();
