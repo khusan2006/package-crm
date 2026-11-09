@@ -10,7 +10,7 @@ exactly as it was left; a fresh row has key "__KEY__", which the script replaces
     <input type="hidden" name="new_key" value="{{ row.key|default:'__KEY__' }}">
     <select name="new_client" data-combobox data-placeholder="Mijozni tanlang" aria-label="Mijoz"{% if row.client_bad %} class="is-bad" aria-invalid="true"{% endif %}>
       <option value=""></option>
-      {% for c in clients %}<option value="{{ c.pk|unlocalize }}"{% if row.client == c.pk|stringformat:"d" %} selected{% endif %}>{{ c.name }}{% if c.address %} — {{ c.address }}{% endif %}</option>{% endfor %}
+      {% for c in clients %}<option value="{{ c.pk|unlocalize }}" data-search="{{ c.search_text }}"{% if c.search_subtitle %} data-subtitle="{{ c.search_subtitle }}"{% endif %}{% if row.client == c.pk|stringformat:"d" %} selected{% endif %}>{{ c.name }}</option>{% endfor %}
     </select>
     <select name="new_purpose" class="new-stop-purpose" aria-label="Maqsad">
       {% for value, label in purposes %}<option value="{{ value }}"{% if value == row.purpose %} selected{% endif %}>{{ label }}</option>{% endfor %}

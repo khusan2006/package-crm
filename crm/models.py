@@ -1,4 +1,5 @@
 import calendar
+import re
 from bisect import bisect_right
 from collections import namedtuple
 from datetime import date, time, timedelta
@@ -108,6 +109,23 @@ class Client(models.Model):
     @property
     def has_location(self):
         return self.latitude is not None and self.longitude is not None
+
+    @property
+    def search_text(self):
+        """What a client picker matches typed words against: name, company, phone
+        and address, lowercased, plus a digits-only copy of the phone so
+        "998901234567" finds a stored "+998 90 123 45 67"."""
+        phone = self.phone or ""
+        parts = [p for p in (self.name, self.company, phone, self.address) if p]
+        digits = re.sub(r"\D", "", phone)
+        if digits:
+            parts.append(digits)
+        return " ".join(parts).lower()
+
+    @property
+    def search_subtitle(self):
+        """"phone · address" — the muted second line of a picker result."""
+        return " · ".join(p for p in (self.phone, self.address) if p)
 
     @property
     def _lat(self):

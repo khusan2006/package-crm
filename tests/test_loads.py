@@ -6,6 +6,7 @@ kg is entered once weighed and ✓ turns a stop into a real sale. Sellers see th
 load and change only their own clients' stops. The route maths is in
 test_routing.py, the road service in test_road.py."""
 
+import re
 from datetime import timedelta
 from decimal import Decimal
 
@@ -279,7 +280,7 @@ def test_a_failed_save_keeps_everything_typed(client, admin_user, seller_user, l
     assert (line.rolls, line.kg) == (5, None)
     body = resp.content.decode()
     assert f'name="kg_{line.pk}" value="abc"' in body and f'name="rolls_{line.pk}" value="6"' in body
-    assert f'<option value="{b.pk}" selected>' in body
+    assert re.search(rf'<option value="{b.pk}"[^>]* selected>', body)
     assert resp.context["new_rows"][0]["rolls_bad"] and "data-unsaved" in body
 
 
@@ -743,6 +744,15 @@ def test_rulon_card_counts_each_product_and_variant(client, admin_user, seller_u
     body = resp.content.decode()
     assert '<span class="kb-count">5<small>ta</small></span>' in body
     assert '<span class="kb-tag" title="Mikron">05<small>mk</small></span>' in body
+
+
+def test_the_new_stop_client_picker_finds_a_client_by_phone(client, admin_user, seller_user, load):
+    c = make_client(seller_user, "Anvar", 0.01)
+    c.phone, c.address = "+998 90 123 45 67", "Chilonzor"
+    c.save()
+    body = detail(client, admin_user, load).content.decode()
+    assert ('data-search="anvar +998 90 123 45 67 chilonzor 998901234567" '
+            'data-subtitle="+998 90 123 45 67 · Chilonzor"') in body
 
 
 # --- moving a stop to the other truck by hand ---------------------------------------

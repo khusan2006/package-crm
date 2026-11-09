@@ -1680,13 +1680,8 @@ class ClientSelect(forms.Select):
         )
         client = getattr(value, "instance", None)
         if client is not None:
-            phone = client.phone or ""
-            digits = re.sub(r"\D", "", phone)
-            parts = [p for p in (client.name, client.company, phone, client.address) if p]
-            if digits:
-                parts.append(digits)
-            option["attrs"]["data-search"] = " ".join(parts).lower()
-            subtitle = " · ".join(p for p in (phone, client.address) if p)
+            option["attrs"]["data-search"] = client.search_text
+            subtitle = client.search_subtitle
             if subtitle:
                 option["attrs"]["data-subtitle"] = subtitle
             option["attrs"]["data-owner"] = client.owner_id
