@@ -832,22 +832,32 @@ def test_both_clients_go_with_one_driver(client, admin_user, seller_user, load, 
 
 def move(client, user, load, items, **extra):
     client.force_login(user)
-    data = {"action": "move", "move": [i.pk for i in items]}
+    data = {"move": [i.pk for i in items]}
     data.update(extra)
-    return client.post(f"/yetkazish/{load.pk}/", data)
+    return client.post(f"/yetkazish/{load.pk}/boshqa-kunga/", data)
+
+
+def test_the_dialog_opens_with_the_client_ticked(client, admin_user, seller_user, load, paket):
+    a = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 5))
+    b = stop(load, make_client(seller_user, "Botir", 0.02), (paket, 3))
+    page = detail(client, admin_user, load).content.decode()
+    assert f"/yetkazish/{load.pk}/boshqa-kunga/?mijoz={a.pk}" in page
+    resp = client.get(f"/yetkazish/{load.pk}/boshqa-kunga/?mijoz={a.pk}",
+                      HTTP_X_REQUESTED_WITH="XMLHttpRequest")
+    body = resp.content.decode()
+    assert resp.status_code == 200
+    assert f'value="{a.pk}" checked' in body and f'value="{b.pk}" checked' not in body
+    assert 'value="tomorrow" checked' in body and "Yangi yuk" in body
 
 
 def test_clients_move_to_a_new_load_tomorrow(client, admin_user, seller_user, load, paket, plyonka):
     a = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 5, 120), (plyonka, 2))
     b = stop(load, make_client(seller_user, "Botir", 0.02), (paket, 3))
     stays = stop(load, make_client(seller_user, "Qoldi", 0.03), (paket, 1))
-    page = detail(client, admin_user, load)
-    tomorrow = load.date + timedelta(days=1)
-    assert page.context["move_day"] == tomorrow and "data-move-pick" in page.content.decode()
-    resp = move(client, admin_user, load, [a, b], target="new", sana=tomorrow.isoformat())
+    resp = move(client, admin_user, load, [a, b], target="tomorrow")
     assert resp.status_code == 302
     new = Load.objects.exclude(pk=load.pk).get()
-    assert new.date == tomorrow and f"Yuk #{load.pk}" in new.note
+    assert new.date == load.date + timedelta(days=1) and f"Yuk #{load.pk}" in new.note
     assert sorted(new.items.values_list("client__name", flat=True)) == ["Anvar", "Botir"]
     assert list(load.items.all()) == [stays]
     # Products, prices and kg go with the client.
@@ -858,6 +868,14 @@ def test_clients_move_to_a_new_load_tomorrow(client, admin_user, seller_user, lo
                                    summary__contains=f"Yuk #{new.pk}").exists()
 
 
+def test_clients_move_to_another_date(client, admin_user, seller_user, load, paket):
+    a = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 5))
+    day = load.date + timedelta(days=5)
+    move(client, admin_user, load, [a], target="other", sana=day.isoformat())
+    a.refresh_from_db()
+    assert a.load.date == day
+
+
 def test_clients_join_a_planned_load_at_the_end_of_its_order(client, admin_user, seller_user,
                                                              load, paket):
     later = Load.objects.create(date=load.date + timedelta(days=2), created_by=admin_user,
@@ -866,7 +884,9 @@ def test_clients_join_a_planned_load_at_the_end_of_its_order(client, admin_user,
     LoadItem.objects.filter(pk=first.pk).update(position=1)
     a = stop(load, make_client(seller_user, "Anvar", 0.02), (paket, 5))
     LoadItem.objects.filter(pk=a.pk).update(route_group=1)
-    assert later in detail(client, admin_user, load).context["move_targets"]
+    client.force_login(admin_user)
+    dialog = client.get(f"/yetkazish/{load.pk}/boshqa-kunga/").content.decode()
+    assert f'value="{later.pk}"' in dialog and "1 mijoz" in dialog
     move(client, admin_user, load, [a], target=str(later.pk))
     a.refresh_from_db()
     assert (a.load, a.position, a.route_group) == (later, 2, None)
@@ -886,17 +906,37 @@ def test_a_client_already_in_the_target_stays(client, admin_user, seller_user, l
 def test_a_sold_or_others_client_does_not_move(client, seller_user, other_seller, load, paket):
     mine = stop(load, make_client(seller_user, "Mine", 0.01), (paket, 1))
     theirs = stop(load, make_client(other_seller, "Theirs", 0.02), (paket, 1))
-    page = detail(client, seller_user, load).content.decode()
-    assert f'name="move" value="{mine.pk}"' in page and f'name="move" value="{theirs.pk}"' not in page
-    move(client, seller_user, load, [mine, theirs], target="new",
-         sana=(load.date + timedelta(days=1)).isoformat())
+    client.force_login(seller_user)
+    dialog = client.get(f"/yetkazish/{load.pk}/boshqa-kunga/").content.decode()
+    assert f'value="{mine.pk}"' in dialog and f'value="{theirs.pk}"' not in dialog
+    resp = move(client, seller_user, load, [theirs], target="tomorrow")
+    assert resp.status_code == 200 and "kamida bitta" in resp.content.decode()
     assert load.items.count() == 2 and Load.objects.count() == 1
 
 
-def test_moving_needs_a_tick_and_a_good_date(client, admin_user, seller_user, load, paket):
+def test_only_others_clients_means_no_move_at_all(client, seller_user, other_seller, load, paket):
+    stop(load, make_client(other_seller, "Theirs", 0.02), (paket, 1))
+    assert "boshqa-kunga" not in detail(client, seller_user, load).content.decode()
+    assert client.get(f"/yetkazish/{load.pk}/boshqa-kunga/").status_code == 403
+
+
+def test_a_refused_move_keeps_the_choices(client, admin_user, seller_user, load, paket):
     a = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 1))
-    move(client, admin_user, load, [], target="new", sana="2026-11-10")
-    move(client, admin_user, load, [a], target="new", sana="3026-01-01")
-    move(client, admin_user, load, [a], target=str(load.pk))
-    move(client, admin_user, load, [a], target="nonsense")
+    client.force_login(admin_user)
+    url = f"/yetkazish/{load.pk}/boshqa-kunga/"
+    for data in ({"target": "tomorrow"}, {"move": [a.pk], "target": "other", "sana": "3026-01-01"},
+                 {"move": [a.pk], "target": str(load.pk)}, {"move": [a.pk], "target": "nonsense"}):
+        resp = client.post(url, data, HTTP_X_REQUESTED_WITH="XMLHttpRequest")
+        assert resp.status_code == 422
+    body = resp.content.decode()
+    assert f'value="{a.pk}" checked' in body and "flash-error" in body
     assert Load.objects.count() == 1 and list(load.items.all()) == [a]
+
+
+def test_a_load_planned_for_tomorrow_is_the_default(client, admin_user, seller_user, load, paket):
+    a = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 1))
+    planned = Load.objects.create(date=max(load.date, timezone.localdate()) + timedelta(days=1),
+                                  created_by=admin_user)
+    client.force_login(admin_user)
+    body = client.get(f"/yetkazish/{load.pk}/boshqa-kunga/?mijoz={a.pk}").content.decode()
+    assert f'value="{planned.pk}" checked' in body and 'value="tomorrow" checked' not in body

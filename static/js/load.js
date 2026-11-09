@@ -36,8 +36,7 @@
       // Compared without spaces: money boxes are regrouped ("15 000") as the page loads.
       var plain = function (v) { return v.replace(/\s/g, ''); };
       if (some('.stops input[type=text]', function (b) { return plain(b.value) !== plain(b.defaultValue); })) { return true; }
-      // (Ticks for «Boshqa kunga» pick stops to move; they change nothing here.)
-      if (some('.stops input[type=checkbox]:not([data-move-pick])', function (b) { return b.checked !== b.defaultChecked; })) { return true; }
+      if (some('.stops input[type=checkbox]', function (b) { return b.checked !== b.defaultChecked; })) { return true; }
       if (some('.stops select.stop-purpose', function (s) {
         return Array.prototype.some.call(s.options, function (o) { return o.selected !== o.defaultSelected; });
       })) { return true; }
@@ -228,33 +227,53 @@
     });
     syncVariants(items);
     refreshDirty();
-
-    // «Boshqa kunga»: O'tkazish counts the ticked clients and waits for one; the
-    // date is only for a new load.
-    var moveBar = items.querySelector('[data-move-bar]');
-    if (moveBar) {
-      var moveTarget = moveBar.querySelector('[data-move-target]');
-      var moveDay = moveBar.querySelector('[data-move-day]');
-      var moveSubmit = moveBar.querySelector('[data-move-submit]');
-      var moveCount = moveBar.querySelector('[data-move-count]');
-      var moveHint = moveBar.querySelector('[data-move-hint]');
-      var syncMove = function () {
-        var n = items.querySelectorAll('[data-move-pick]:checked').length;
-        moveSubmit.disabled = n === 0;
-        moveCount.textContent = n ? '\u00a0(' + n + ')' : '';
-        moveHint.hidden = n > 0;
-        moveDay.hidden = moveTarget.value !== 'new';
-        moveDay.required = moveTarget.value === 'new';
-        items.querySelectorAll('[data-move-pick]').forEach(function (b) {
-          b.closest('.stop').classList.toggle('is-picked', b.checked);
-        });
-      };
-      items.addEventListener('change', function (e) {
-        if (e.target.matches('[data-move-pick], [data-move-target]')) { syncMove(); }
-      });
-      syncMove();
-    }
   }
+
+  /* ---------- «Boshqa kunga» dialog ---------- */
+  // It arrives in the page's modal, so it is wired by delegation: the button says
+  // how many clients go and waits for one; touching the date picks «Boshqa sana».
+  var syncMoveDialog = function (form) {
+    var n = form.querySelectorAll('input[name=move]:checked').length;
+    var submit = form.querySelector('[data-move-submit]');
+    submit.disabled = n === 0;
+    submit.textContent = n ? n + ' ta mijozni o\'tkazish' : 'Mijozni belgilang';
+    var all = form.querySelector('[data-move-all]');
+    if (all) {
+      all.textContent = n === form.querySelectorAll('input[name=move]').length
+        ? 'Hammasini olib tashlash' : 'Hammasini belgilash';
+    }
+  };
+  document.addEventListener('change', function (e) {
+    var form = e.target.closest('[data-move-dialog]');
+    if (!form) { return; }
+    if (e.target.matches('[data-move-other]')) {
+      form.querySelector('[data-move-other-radio]').checked = true;
+    }
+    syncMoveDialog(form);
+  });
+  document.addEventListener('focusin', function (e) {
+    if (e.target.matches('[data-move-dialog] [data-move-other]')) {
+      e.target.closest('[data-move-dialog]').querySelector('[data-move-other-radio]').checked = true;
+    }
+  });
+  document.addEventListener('click', function (e) {
+    var all = e.target.closest('[data-move-all]');
+    if (!all) { return; }
+    var form = all.closest('[data-move-dialog]');
+    var boxes = form.querySelectorAll('input[name=move]');
+    var every = Array.prototype.every.call(boxes, function (b) { return b.checked; });
+    boxes.forEach(function (b) { b.checked = !every; });
+    syncMoveDialog(form);
+  });
+  var initMoveDialog = function (scope) {
+    var form = scope && scope.querySelector && scope.querySelector('[data-move-dialog]');
+    if (form) { syncMoveDialog(form); }
+  };
+  document.addEventListener('modal:loaded', function (e) { initMoveDialog(e.detail); });
+  // After a refused save the dialog is redrawn in place, without modal:loaded.
+  new MutationObserver(function () { initMoveDialog(document.getElementById('modal-body')); })
+    .observe(document.getElementById('modal-body') || document.createElement('div'), { childList: true });
+  initMoveDialog(document);
 
   /* ---------- Marshrut tuzish ---------- */
   var card = document.querySelector('[data-load-route]');

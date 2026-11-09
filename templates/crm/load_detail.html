@@ -19,10 +19,13 @@
     </span>
     {% if load.note %}<span class="load-head-note">{{ load.note }}</span>{% endif %}
   </div>
-  {% if may_change_load %}
+  {% if may_change_load or movable %}
   <span class="ra-slots">
+    {% if movable %}<a class="icon-action" href="{% url 'load_move' load.pk %}" data-modal title="Mijozlarni boshqa kunga o'tkazish" aria-label="Mijozlarni boshqa kunga o'tkazish">{% include "crm/_ico_move_day.html" %}</a>{% endif %}
+    {% if may_change_load %}
     <a class="icon-action act-edit" href="{% url 'load_edit' load.pk %}" data-modal title="Sana va izohni o'zgartirish" aria-label="Sana va izohni o'zgartirish">{% include "crm/_ico_edit.html" %}</a>
     {% if not confirmed %}<a class="icon-action danger" href="{% url 'load_delete' load.pk %}" data-modal title="Yukni o'chirish" aria-label="Yukni o'chirish">{% include "crm/_ico_trash.html" %}</a>{% endif %}
+    {% endif %}
   </span>
   {% endif %}
 </div>
@@ -75,20 +78,6 @@
   a sale if the page's script ever failed to load.{% endcomment %}
   <button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true">Saqlash</button>
   {% if items %}
-  {% if movable %}
-  {% comment %}«Boshqa kunga»: tick clients above their names, choose where, O'tkazish.
-  Its own form (load-move, below the card) — the boxes point at it with form=.{% endcomment %}
-  <div class="move-bar" data-move-bar>
-    <span class="move-bar-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><polyline points="10 14 13 17 10 20"/></svg>Boshqa kunga</span>
-    <select name="target" form="load-move" aria-label="Qaysi yukka" data-move-target>
-      <option value="new">Yangi yuk</option>
-      {% for t in move_targets %}<option value="{{ t.pk|unlocalize }}">Yuk #{{ t.pk|unlocalize }} · {{ t.date|date:"d.m.Y" }} · {{ t.n }} mijoz</option>{% endfor %}
-    </select>
-    <input type="date" name="sana" form="load-move" value="{{ move_day|date:'Y-m-d' }}" aria-label="Yangi yuk sanasi" data-move-day>
-    <button type="submit" form="load-move" class="btn btn-sm" data-move-submit disabled>O'tkazish<span data-move-count></span></button>
-    <span class="muted move-bar-hint" data-move-hint>mijozlarni belgilang</span>
-  </div>
-  {% endif %}
   <div class="stops">
     {% for item in items %}{% include "crm/_load_stop.html" %}{% endfor %}
   </div>
@@ -114,14 +103,6 @@
   </div>
   </form>
 </div>
-{% if movable %}
-<form method="post" id="load-move" action="{% url 'load_detail' load.pk %}" data-move-form
-      onsubmit="return confirm('Belgilangan mijozlar mahsulotlari bilan boshqa yukka o\'tkaziladi. Davom etasizmi?')">
-  {% csrf_token %}
-  <input type="hidden" name="action" value="move">
-</form>
-{% endif %}
-
 {% if items %}
 {% comment %}The route is fetched on demand — it asks the road service, so it isn't
 worked out on every page load. A saved order opens by itself.{% endcomment %}

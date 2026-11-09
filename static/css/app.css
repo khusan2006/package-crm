@@ -6728,22 +6728,47 @@ tr:has(.line-drop input:checked) td:not(.row-actions) { text-decoration: line-th
 }
 .line-add:hover { background: var(--accent-soft); border-color: var(--accent); }
 .line-add svg { width: 14px; height: 14px; }
-/* «Boshqa kunga»: tick clients, choose a load, O'tkazish. */
-.move-bar {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  margin-bottom: 12px; padding: 8px 10px;
-  border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2);
+/* «Boshqa kunga» dialog: 1 Kimlar? (a list to tick), 2 Qayerga? (cards to pick). */
+.move-dialog { display: flex; flex-direction: column; gap: 16px; }
+.modal form.move-dialog { padding: 16px 22px 22px; }
+.move-step { border: 0; margin: 0; padding: 0; min-width: 0; }
+.move-step legend { display: flex; align-items: center; gap: 8px; padding: 0; margin-bottom: 8px; font-weight: 600; }
+.move-step-n {
+  display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 700;
 }
-.move-bar-label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; }
-.move-bar-label svg { width: 16px; height: 16px; color: var(--text-muted); }
-.move-bar select { width: auto; max-width: 280px; height: 32px; padding: 4px 8px; }
-.move-bar input[type=date] { width: auto; height: 32px; padding: 4px 8px; }
-.move-bar [hidden] { display: none; }
-.move-bar-hint { font-size: 13px; }
-.stop-head { position: relative; }
-.stop-pick { display: inline-grid; place-items: center; width: 22px; height: 22px; margin-top: 1px; cursor: pointer; }
-.stop-pick input { width: 16px; height: 16px; margin: 0; cursor: pointer; accent-color: var(--accent); }
-.stop.is-picked { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.move-who {
+  display: flex; flex-direction: column; max-height: 240px; overflow: auto;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+}
+.move-who-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer; }
+.move-who-row + .move-who-row { border-top: 1px solid var(--border); }
+.move-who-row:hover { background: var(--surface-2); }
+.move-who-row:has(input:checked) { background: var(--accent-soft); }
+.move-who-row input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); flex: none; }
+.move-who-name { display: flex; flex-direction: column; min-width: 0; }
+.move-who-name strong { overflow-wrap: anywhere; }
+.move-all {
+  margin-top: 6px; padding: 0; border: 0; background: none; color: var(--accent);
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.move-where { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.move-card {
+  position: relative; display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px;
+  border: 1px solid var(--border-strong); border-radius: var(--r-sm); cursor: pointer;
+}
+.move-card:hover { border-color: var(--accent); }
+.move-card:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent); }
+.move-card:has(input:focus-visible) { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
+.move-card > input { margin: 3px 0 0; accent-color: var(--accent); flex: none; }
+.move-card-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.move-card-day { font-size: 13px; color: var(--text-muted); }
+.move-card-tag {
+  margin-left: 4px; padding: 1px 6px; border-radius: 999px; background: var(--surface-2);
+  color: var(--text-muted); font-size: 11px; font-weight: 600; white-space: nowrap;
+}
+.move-card--date input[type=date] { margin-top: 6px; height: 32px; padding: 4px 8px; width: 100%; max-width: 180px; }
+.move-dialog .modal-actions .btn:disabled { opacity: 0.55; cursor: default; }
 .stop-collect { margin: 10px 0 0; font-size: 13px; color: var(--text-muted); }
 .new-rows-title { margin: 18px 0 0; font-size: 14px; }
 .new-stop select.new-stop-purpose { flex: 0 0 auto; width: auto; max-width: 200px; height: 40px; }

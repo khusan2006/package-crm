@@ -132,6 +132,7 @@ urlpatterns = [
     path("yetkazish/yangi/", crm_views.load_create, name="load_create"),
     path("yetkazish/<int:pk>/", crm_views.load_detail, name="load_detail"),
     path("yetkazish/<int:pk>/edit/", crm_views.load_edit, name="load_edit"),
+    path("yetkazish/<int:pk>/boshqa-kunga/", crm_views.load_move, name="load_move"),
     path("yetkazish/<int:pk>/delete/", crm_views.load_delete, name="load_delete"),
     path("yetkazish/<int:pk>/marshrut/", crm_views.load_route, name="load_route"),
     path("yetkazish/<int:pk>/mijoz/<int:item_pk>/delete/", crm_views.load_item_delete, name="load_item_delete"),

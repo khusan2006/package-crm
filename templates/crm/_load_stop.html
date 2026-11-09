@@ -8,7 +8,6 @@
 {% endcomment %}
 <section class="stop{% if item.sale %} is-confirmed{% endif %}" id="stop-{{ item.pk|unlocalize }}">
   <header class="stop-head">
-    {% if item.editable %}<label class="stop-pick" title="Boshqa kunga o'tkazish uchun belgilash"><input type="checkbox" name="move" value="{{ item.pk|unlocalize }}" form="load-move" data-move-pick aria-label="{{ item.client.name }} — boshqa kunga o'tkazish uchun belgilash"></label>{% endif %}
     <div class="stop-who">
       <strong>{{ item.client.name }}</strong>
       <span class="cell-sub">
@@ -28,6 +27,7 @@
       <button type="submit" name="confirm" value="{{ item.pk|unlocalize }}" class="btn btn-sm stop-confirm"
               title="Saqlab, shu mijozni sotuvga aylantirish (hamma kg kiritilgan bo'lishi kerak)">✓ Sotuvga</button>
       {% endif %}
+      <a class="icon-action" href="{% url 'load_move' load.pk %}?mijoz={{ item.pk|unlocalize }}" data-modal title="Boshqa kunga o'tkazish" aria-label="{{ item.client.name }} — boshqa kunga o'tkazish">{% include "crm/_ico_move_day.html" %}</a>
       <a class="icon-action danger" href="{% url 'load_item_delete' load.pk item.pk %}" data-modal title="Yukdan olib tashlash" aria-label="{{ item.client.name }} — yukdan olib tashlash">{% include "crm/_ico_trash.html" %}</a>
       {% else %}
       <span class="badge badge-neutral">{{ item.get_purpose_display }}</span>

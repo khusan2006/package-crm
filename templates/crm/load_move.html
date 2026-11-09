@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Boshqa kunga o'tkazish · Paket CRM{% endblock %}
+{% block topbar_title %}Yuk #{{ load.pk }}{% endblock %}
+{% block content %}
+{% comment %}The move dialog as a page, for when it is opened without the script.{% endcomment %}
+<div class="card form-card">{% include "crm/_load_move_modal.html" %}</div>
+{% endblock %}

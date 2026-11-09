@@ -10681,38 +10681,72 @@ def load_list(request):
     })
 
 
-def _move_load_items(request, load, items):
-    """«Boshqa kunga»: the ticked stops leave this load for another — a new load on
-    the chosen day (tomorrow by default), or one already planned. For the unexpected
-    day: the truck broke down, the client wasn't there. Each stop goes with its
+UZ_WEEKDAYS = ["Dushanba", "Seshanba", "Chorshanba", "Payshanba", "Juma", "Shanba", "Yakshanba"]
+
+
+def _day_label(day):
+    """"Ertaga · Seshanba, 10.11" — how the move dialog names a day."""
+    today = timezone.localdate()
+    near = {today: "Bugun", today + timedelta(days=1): "Ertaga",
+            today + timedelta(days=2): "Indinga"}.get(day)
+    plain = f"{UZ_WEEKDAYS[day.weekday()]}, {day:%d.%m}"
+    return f"{near} · {plain}" if near else f"{plain}.{day:%Y}"
+
+
+def load_move(request, pk):
+    """«Boshqa kunga»: a dialog to move clients off this load, for the unexpected
+    day (a truck broke down, a client wasn't there). Who — the clients this user may
+    edit, the one it was opened from already ticked; where — a new load tomorrow, a
+    load already planned, or a new load on another date. Each client goes with its
     products, prices and any kg; it joins the end of a saved order there and loses
     its truck choice here. A client already in the target load stays put."""
+    load = get_object_or_404(Load, pk=pk)
+    items = [i for i in _load_items(load, request.user) if i.editable]
+    if not items:
+        raise PermissionDenied
+    tomorrow = max(load.date, timezone.localdate()) + timedelta(days=1)
+    targets = list(Load.objects.filter(date__gte=min(load.date, timezone.localdate()))
+                   .exclude(pk=load.pk).annotate(n=Count("items")).order_by("date", "pk")[:12])
+    for t in targets:
+        t.label = _day_label(t.date)
+    context = {"load": load, "items": items, "targets": targets,
+               "tomorrow": tomorrow, "tomorrow_label": _day_label(tomorrow),
+               "title": "Boshqa kunga o'tkazish"}
+
+    for item in items:
+        item.roll_sum = sum(l.rolls for l in item.line_list)
+
+    def again(error, picked, target, day):
+        context.update(error=error, picked=picked, target=target, other_day=day)
+        template = "crm/_load_move_modal.html" if is_ajax(request) else "crm/load_move.html"
+        return render(request, template, context, status=422 if error and is_ajax(request) else 200)
+
+    if request.method != "POST":
+        first = request.GET.get("mijoz", "")
+        # A load already planned for tomorrow is the likely place; else a new one.
+        planned = next((t for t in targets if t.date == tomorrow), None)
+        return again("", {first} if first else set(),
+                     str(planned.pk) if planned else "tomorrow", "")
+
     picked = set(request.POST.getlist("move"))
+    target_raw = request.POST.get("target", "")
+    other_raw = request.POST.get("sana", "")
     chosen = [i for i in items if str(i.pk) in picked]
     if not chosen:
-        messages.error(request, "Avval o'tkaziladigan mijozlarni belgilang.")
-        return redirect(_load_url(load))
-    locked = [i.client.name for i in chosen if not i.editable]
-    if locked:
-        messages.error(request, "O'tkazib bo'lmaydi (sotuvga aylangan yoki boshqa sotuvchiniki): "
-                                + ", ".join(locked))
-        return redirect(_load_url(load))
-
-    raw_target = request.POST.get("target", "")
-    target = None
-    if raw_target == "new":
-        day = _parse_date(request.POST.get("sana"))
+        return again("Kimni o'tkazish kerak — kamida bitta mijozni belgilang.", picked, target_raw, other_raw)
+    target, day = None, None
+    if target_raw == "tomorrow":
+        day = tomorrow
+    elif target_raw == "other":
+        day = _parse_date(other_raw)
         if not day or not LOAD_FIRST_DAY <= day <= LOAD_LAST_DAY:
-            messages.error(request, "O'tkazish uchun to'g'ri sana tanlang.")
-            return redirect(_load_url(load))
-    elif _DIGITS.fullmatch(raw_target):
-        target = Load.objects.filter(pk=int(raw_target)).exclude(pk=load.pk).first()
+            return again("Sanani tanlang.", picked, target_raw, other_raw)
+    elif _DIGITS.fullmatch(target_raw):
+        target = Load.objects.filter(pk=int(target_raw)).exclude(pk=load.pk).first()
         if target is None:
-            messages.error(request, "Bunday yuk topilmadi — sahifa yangilandi.")
-            return redirect(_load_url(load))
+            return again("Bu yuk endi yo'q — boshqasini tanlang.", picked, "tomorrow", other_raw)
     else:
-        messages.error(request, "Qaysi yukka o'tkazishni tanlang.")
-        return redirect(_load_url(load))
+        return again("Qayerga o'tkazishni tanlang.", picked, "tomorrow", other_raw)
 
     with transaction.atomic():
         if target is None:
@@ -10744,7 +10778,7 @@ def _move_load_items(request, load, items):
     if staying:
         messages.warning(request, "Yuk #{} da allaqachon bor, shu yerda qoldi: {}".format(
             target.pk, ", ".join(i.client.name for i in staying)))
-    return redirect(_load_url(load))
+    return form_success(request, _load_url(load))
 
 
 def load_create(request):
@@ -11480,11 +11514,7 @@ def _render_load_detail(request, load, items, posted_new=None):
         "products": Product.objects.filter(is_active=True).order_by("name"),
         "purposes": LoadItem.Purpose.choices,
         "size_suggestions": SIZE_SUGGESTIONS,
-        # Where ticked stops can go: a new load (tomorrow by default) or one planned.
         "movable": any(i.editable for i in items),
-        "move_day": load.date + timedelta(days=1),
-        "move_targets": Load.objects.filter(date__gte=min(load.date, timezone.localdate()))
-                        .exclude(pk=load.pk).annotate(n=Count("items")).order_by("date", "pk")[:30],
         "micron_suggestions": MICRON_SUGGESTIONS,
         "new_rows": new_rows,
         "failed": posted_new is not None,
@@ -11511,8 +11541,6 @@ def load_detail(request, pk):
             return _set_strategy(request, load)
         if action == "items":
             return _save_load_items(request, load, items)
-        if action == "move":
-            return _move_load_items(request, load, items)
         return _save_load_order(request, load, items)
 
     return _render_load_detail(request, load, items)

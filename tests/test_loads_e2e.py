@@ -277,21 +277,27 @@ def test_a_stop_moves_to_the_other_truck(login, admin_user, seller_user, live_se
     assert name in second and len(second) == 3
 
 
-def test_ticked_clients_move_to_tomorrow(login, admin_user, seller_user, live_server, db, paket):
+def test_a_client_moves_to_tomorrow_from_its_own_icon(login, admin_user, seller_user,
+                                                     live_server, db, paket):
     from datetime import timedelta
     load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
     a = stop(load, Client.objects.create(name="Anvar", owner=seller_user), paket)
-    stop(load, Client.objects.create(name="Botir", owner=seller_user), paket)
+    b = stop(load, Client.objects.create(name="Botir", owner=seller_user), paket)
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
-    button = page.locator("[data-move-submit]")
-    assert button.is_disabled()
-    page.check(f'[data-move-pick][value="{a.pk}"]')
-    assert button.text_content().replace("\u00a0", " ") == "O'tkazish (1)"
-    assert not page.locator("[data-items-dirty]").is_visible()  # a tick isn't an edit
-    page.on("dialog", lambda d: d.accept())
-    button.click()
-    page.wait_for_selector("text=1 ta mijoz")
+    page.click(f'#stop-{a.pk} a[href*="boshqa-kunga"]')
+    dialog = page.locator("[data-move-dialog]")
+    dialog.wait_for()
+    submit = dialog.locator("[data-move-submit]")
+    assert submit.inner_text() == "1 ta mijozni o'tkazish"
+    dialog.locator("[data-move-all]").click()
+    assert submit.inner_text() == "2 ta mijozni o'tkazish"
+    dialog.locator(f'input[name=move][value="{b.pk}"]').uncheck()
+    dialog.locator(f'input[name=move][value="{a.pk}"]').uncheck()
+    assert submit.is_disabled()
+    dialog.locator(f'input[name=move][value="{a.pk}"]').check()
+    submit.click()
+    page.wait_for_selector("text=1 ta mijoz Yuk")
     a.refresh_from_db()
     assert a.load != load and a.load.date == load.date + timedelta(days=1)
     assert list(load.items.values_list("client__name", flat=True)) == ["Botir"]
