@@ -10744,6 +10744,10 @@ PRICE_MAX = Decimal("999999999999.99")
 #: Stops in one load: the road service takes 59 points per request (the warehouse
 #: plus 58 stops), and it keeps the truck split quick.
 LOAD_MAX_ITEMS = 58
+#: A product row's boxes as posted (new_…, addline_<stop>_…, newline_<key>_…).
+ROW_FIELDS = ("product", "rolls", "price", "size", "micron")
+#: What a saved line's boxes change.
+LINE_FIELDS = ("rolls", "price", "kg", "size", "micron")
 #: Product lines on one stop.
 STOP_MAX_LINES = 30
 _DIGITS = re.compile(r"[0-9]+")
@@ -10811,6 +10815,71 @@ def _new_line_price(raw, product, row):
         return None
 
 
+#: Suggestions under the Metr / Mikron boxes — the values on most receipts. Anything
+#: else may still be typed ("240СМ", "05-08" are real).
+SIZE_SUGGESTIONS = ["1,5м", "2м", "6м"]
+MICRON_SUGGESTIONS = ["015", "01", "08", "06", "05", "04", "03", "02"]
+VARIANT_MAX = 20
+_BARE_METRES = re.compile(r"[0-9]+(?:[.,][0-9]+)?")
+
+
+def _variant_value(raw, has_it, metres=False):
+    """Metr or mikron as typed, on one line. Empty for a product that doesn't come
+    in it — a value left in a greyed box is not kept. A bare number of metres gets
+    its unit the way receipts write it: "1.5" → "1,5м". Too long → ValueError."""
+    value = " ".join((raw or "").split())
+    if not has_it:
+        return ""
+    if len(value) > VARIANT_MAX:
+        raise ValueError("too long")
+    if metres and _BARE_METRES.fullmatch(value):
+        value = value.replace(".", ",") + "м"
+    return value
+
+
+def _read_product_row(raw, product_of, label, problems):
+    """One product row typed under a stop (`raw` = product, rolls, price, size,
+    micron as posted). Returns (row, line): `row` keeps the boxes as typed with the
+    wrong ones marked, `line` is (product, rolls, price, size, micron) — or None for
+    an untouched row or a wrong one (then `problems` says why)."""
+    raw_product, raw_rolls, raw_price, raw_size, raw_micron = raw
+    row = {"product": raw_product, "rolls": raw_rolls, "price": raw_price,
+           "size": raw_size, "micron": raw_micron,
+           "product_bad": False, "rolls_bad": False, "price_bad": False,
+           "size_bad": False, "micron_bad": False}
+    if not raw_product and not raw_rolls:
+        return row, None  # untouched (a price alone is only ever the auto-filled one)
+    product = product_of(raw_product)
+    try:
+        rolls = _whole_rolls(raw_rolls)
+    except ValueError:
+        rolls = None
+    price = _new_line_price(raw_price, product, row)
+    variants = {}
+    for key, has_it, word in (("size", product is not None and product.has_size, "metr"),
+                              ("micron", product is not None and product.has_micron, "mikron")):
+        try:
+            variants[key] = _variant_value(row[key], has_it, metres=key == "size")
+        except ValueError:
+            row[f"{key}_bad"] = True
+            problems.append(f"{label} — {word} {VARIANT_MAX} belgidan uzun")
+    if product is None:
+        row["product_bad"] = True
+        problems.append(f"{label} — mahsulot tanlanmagan")
+    if not rolls:
+        row["rolls_bad"] = True
+        problems.append(f"{label} — rulon soni")
+    if row["price_bad"]:
+        problems.append(f"{label} — narx")
+    if any(row[k] for k in ("product_bad", "rolls_bad", "price_bad", "size_bad", "micron_bad")):
+        return row, None
+    return row, (product, rolls, price, variants["size"], variants["micron"])
+
+
+#: A new row's key names its extra product rows (newline_<key>_…); no page has more.
+NEW_KEY = re.compile(r"[0-9]{1,4}")
+
+
 def _plain(value):
     """A Decimal as the box shows it: "160", "340.5" — never "160.000000" or "160,000"."""
     return f"{value.normalize():f}" if value is not None else ""
@@ -10858,6 +10927,8 @@ def _read_load_items(request, load, items, products):
             line.rolls_input = request.POST.get(f"rolls_{line.pk}", line.rolls_input)
             line.price_input = request.POST.get(f"price_{line.pk}", line.price_input)
             line.kg_input = request.POST.get(f"kg_{line.pk}", line.kg_input)
+            line.size_input = request.POST.get(f"size_{line.pk}", line.size_input)
+            line.micron_input = request.POST.get(f"micron_{line.pk}", line.micron_input)
             if request.POST.get(f"drop_{line.pk}"):
                 line.dropped = True
                 plan["drop"].append(line)
@@ -10872,33 +10943,23 @@ def _read_load_items(request, load, items, products):
                 except (ValueError, ArithmeticError):
                     setattr(line, f"{field}_bad", True)
                     problems.append(f"{name}, {line.product.name} — {dict(rolls='rulon', price='narx', kg='kg')[field]}")
-            if len(values) == 3 and (values["rolls"], values["price"], values["kg"]) != (line.rolls, line.price, line.kg):
+            for field, has_it, word in (("size", line.product.has_size, "metr"),
+                                        ("micron", line.product.has_micron, "mikron")):
+                try:
+                    values[field] = _variant_value(getattr(line, f"{field}_input"), has_it,
+                                                   metres=field == "size")
+                except ValueError:
+                    setattr(line, f"{field}_bad", True)
+                    problems.append(f"{name}, {line.product.name} — {word} {VARIANT_MAX} belgidan uzun")
+            if len(values) == 5 and tuple(values[f] for f in LINE_FIELDS) != \
+                    tuple(getattr(line, f) for f in LINE_FIELDS):
                 plan["lines"].append((line, values))
         added = []
-        for raw_product, raw_rolls, raw_price in _post_rows(
-                request, f"addline_{item.pk}_product", f"addline_{item.pk}_rolls",
-                f"addline_{item.pk}_price"):
-            row = {"product": raw_product, "rolls": raw_rolls, "price": raw_price,
-                   "product_bad": False, "rolls_bad": False, "price_bad": False}
+        for raw in _post_rows(request, *(f"addline_{item.pk}_{f}" for f in ROW_FIELDS)):
+            row, line = _read_product_row(raw, product_of, f"{name} (yangi mahsulot)", problems)
             added.append(row)
-            if not raw_product and not raw_rolls:
-                continue
-            product = product_of(raw_product)
-            try:
-                rolls = _whole_rolls(raw_rolls)
-            except ValueError:
-                rolls = None
-            price = _new_line_price(raw_price, product, row)
-            if product is None:
-                row["product_bad"] = True
-                problems.append(f"{name} — yangi qatorda mahsulot tanlanmagan")
-            if not rolls:
-                row["rolls_bad"] = True
-                problems.append(f"{name} — yangi mahsulot rulon soni")
-            if row["price_bad"]:
-                problems.append(f"{name} — yangi mahsulot narxi")
-            if product and rolls and not row["price_bad"]:
-                plan["add"].append((item, product, rolls, price))
+            if line:
+                plan["add"].append((item, *line))
                 kept += 1
         item.added_input = added
         if delivers and not kept:
@@ -10914,14 +10975,21 @@ def _read_load_items(request, load, items, products):
     in_load = {i.client_id for i in items}
     picked = set()
     posted_new = []
-    for n, (raw_client, raw_purpose, raw_product, raw_rolls, raw_price) in enumerate(
-            _post_rows(request, "new_client", "new_purpose", "new_product", "new_rolls", "new_price"),
-            start=1):
+    rows = _post_rows(request, "new_client", "new_purpose", "new_key",
+                      *(f"new_{f}" for f in ROW_FIELDS))
+    for n, (raw_client, raw_purpose, raw_key, *first) in enumerate(rows, start=1):
         row = {"client": raw_client, "purpose": raw_purpose or LoadItem.Purpose.DELIVER,
-               "product": raw_product, "rolls": raw_rolls, "price": raw_price,
-               "client_bad": False, "product_bad": False, "rolls_bad": False, "price_bad": False}
+               "key": raw_key if NEW_KEY.fullmatch(raw_key) else str(n), "client_bad": False}
         posted_new.append(row)
-        if not raw_client and not raw_product and not raw_rolls:
+        # The first product sits on the row itself; «+ Mahsulot» adds more under it,
+        # posted as newline_<key>_… so they stay with their client.
+        raws = [tuple(first)]
+        if NEW_KEY.fullmatch(raw_key):
+            raws += _post_rows(request, *(f"newline_{raw_key}_{f}" for f in ROW_FIELDS))
+        typed = [r for r in raws if r[0] or r[1]]
+        if not raw_client and not typed:
+            row.update(_read_product_row(raws[0], product_of, "", [])[0])
+            row["extra"] = []
             continue  # an untouched empty row
         clients = Client.objects.all() if user.can_see_all_records else Client.objects.filter(owner=user)
         client = clients.filter(pk=raw_client).first() if _DIGITS.fullmatch(raw_client) else None
@@ -10934,33 +11002,36 @@ def _read_load_items(request, load, items, products):
             problems.append(f"{client.name} yukda allaqachon bor")
         elif client.pk in picked:
             row["client_bad"] = True
-            problems.append(f"{client.name} ikki qatorda tanlangan")
+            problems.append(f"{client.name} ikki qatorda tanlangan — bitta qatorga "
+                            f"«+ Mahsulot» bilan qo'shing")
         purpose = row["purpose"] if row["purpose"] in LoadItem.Purpose.values else LoadItem.Purpose.DELIVER
-        product, rolls, price = None, None, None
+        before = len(problems)
+        lines, product_rows = [], []
+        for raw in raws:
+            prow, line = _read_product_row(raw, product_of, label, problems)
+            product_rows.append(prow)
+            if line:
+                lines.append(line)
         if purpose == LoadItem.Purpose.COLLECT:
-            if raw_product or raw_rolls or raw_price:
-                row["product_bad"] = bool(raw_product)
-                row["rolls_bad"] = bool(raw_rolls)
-                row["price_bad"] = bool(raw_price)
+            del problems[before:]  # no product is wanted here at all
+            lines = []
+            for prow in product_rows:
+                for key in ("product", "rolls", "price"):
+                    prow[f"{key}_bad"] = bool(prow[key])
+            if any(any(r[:3]) for r in raws):
                 problems.append(f"{label} — «Pul olish»da mahsulot bo'lmaydi")
-        else:
-            product = product_of(raw_product)
-            try:
-                rolls = _whole_rolls(raw_rolls)
-            except ValueError:
-                rolls = None
-            price = _new_line_price(raw_price, product, row)
-            if product is None:
-                row["product_bad"] = True
-                problems.append(f"{label} — mahsulot tanlanmagan")
-            if not rolls:
-                row["rolls_bad"] = True
-                problems.append(f"{label} — rulon soni")
-            if row["price_bad"]:
-                problems.append(f"{label} — narx")
-        if client and not any(row[k] for k in ("client_bad", "product_bad", "rolls_bad", "price_bad")):
+        elif not typed:
+            # A delivery needs a product: the empty first row is what's wrong.
+            product_rows[0]["product_bad"] = product_rows[0]["rolls_bad"] = True
+            problems.append(f"{label} — mahsulot tanlanmagan")
+        if len(lines) > STOP_MAX_LINES:
+            problems.append(f"{label} — bitta mijozga ko'pi bilan {STOP_MAX_LINES} ta mahsulot")
+        row.update(product_rows[0])
+        # Empty extra rows are dropped from the echo; a typed one comes back as typed.
+        row["extra"] = [r for raw, r in zip(raws[1:], product_rows[1:]) if any(raw)]
+        if client and not row["client_bad"] and len(problems) == before:
             picked.add(client.pk)
-            plan["new"].append((client, purpose, product, rolls, price))
+            plan["new"].append((client, purpose, lines))
     if len(items) + len(plan["new"]) > LOAD_MAX_ITEMS:
         problems.append(f"bitta yukda ko'pi bilan {LOAD_MAX_ITEMS} ta mijoz bo'ladi — "
                         f"qolganini boshqa yukka qo'shing")
@@ -10979,17 +11050,24 @@ def _write_load_plan(load, plan):
     for line in plan["drop"]:
         line.delete()
     for line, values in plan["lines"]:
-        line.rolls, line.price, line.kg = values["rolls"], values["price"], values["kg"]
-        line.save(update_fields=["rolls", "price", "kg"])
-    for item, product, rolls, price in plan["add"]:
-        LoadLine.objects.create(item=item, product=product, rolls=rolls, price=price)
+        for field in LINE_FIELDS:
+            setattr(line, field, values[field])
+        line.save(update_fields=list(LINE_FIELDS))
+    for item, *line in plan["add"]:
+        _create_load_line(item, line)
     position = (load.items.aggregate(m=Max("position"))["m"] or 0) if load.ordered_at else None
-    for client, purpose, product, rolls, price in plan["new"]:
+    for client, purpose, lines in plan["new"]:
         if position is not None:
             position += 1
         item = LoadItem.objects.create(load=load, client=client, purpose=purpose, position=position)
-        if product:
-            LoadLine.objects.create(item=item, product=product, rolls=rolls, price=price)
+        for line in lines:
+            _create_load_line(item, line)
+
+
+def _create_load_line(item, line):
+    product, rolls, price, size, micron = line
+    LoadLine.objects.create(item=item, product=product, rolls=rolls, price=price,
+                            size=size, micron=micron)
 
 
 def _plan_summary(load, plan):
@@ -10997,9 +11075,10 @@ def _plan_summary(load, plan):
     parts += [f"{l.item.client.name}, {l.product.name}: {v['rolls']} rulon"
               + (f" {v['kg']:f} kg" if v["kg"] is not None else "") for l, v in plan["lines"]]
     parts += [f"{l.item.client.name}, {l.product.name} olib tashlandi" for l in plan["drop"]]
-    parts += [f"{i.client.name} + {p.name} {r} rulon" for i, p, r, _ in plan["add"]]
-    parts += [f"+ {c.name}" + (f" ({p.name} {r} rulon)" if p else " (pul olish)")
-              for c, _, p, r, _ in plan["new"]]
+    parts += [f"{i.client.name} + {p.name} {r} rulon" for i, p, r, *_ in plan["add"]]
+    parts += [f"+ {c.name} (" + (", ".join(f"{p.name} {r} rulon" for p, r, *_ in lines)
+                                 or "pul olish") + ")"
+              for c, _, lines in plan["new"]]
     return parts
 
 
@@ -11076,6 +11155,7 @@ def _confirm_stop(request, load, item_pk):
             SaleItem.objects.create(
                 sale=sale, product=line.product, dimension=Sale.Dimension.KG, weight=line.kg,
                 rolls=line.rolls, price=line.price, cost_price=line.product.cost_price,
+                size=line.size, micron=line.micron,
             )
         item.sale = sale
         item.save(update_fields=["sale"])
@@ -11268,6 +11348,8 @@ def _load_items(load, user):
             line.rolls_input = str(line.rolls)
             line.price_input = _plain(line.price)
             line.kg_input = _plain(line.kg)
+            line.size_input = line.size
+            line.micron_input = line.micron
     return items
 
 
@@ -11287,7 +11369,7 @@ def _render_load_detail(request, load, items, posted_new=None):
     lines = [l for i in items if i.delivers for l in i.line_list]
     kg_known = [l.kg for l in lines if l.kg is not None]
     new_rows = [r for r in (posted_new or [])
-                if r["client"] or r["product"] or r["rolls"] or r.get("price")] or [{}]
+                if r["client"] or r["product"] or r["rolls"] or r["extra"]] or [{"key": "1"}]
     debts = dict(
         Sale.objects.filter(client_id__in=[i.client_id for i in items if i.collects])
         .outstanding().values("client_id").annotate(s=Sum("remaining")).values_list("client_id", "s")
@@ -11307,6 +11389,8 @@ def _render_load_detail(request, load, items, posted_new=None):
         "clients": [c for c in clients if c.pk not in in_load],
         "products": Product.objects.filter(is_active=True).order_by("name"),
         "purposes": LoadItem.Purpose.choices,
+        "size_suggestions": SIZE_SUGGESTIONS,
+        "micron_suggestions": MICRON_SUGGESTIONS,
         "new_rows": new_rows,
         "failed": posted_new is not None,
         "auto_route": bool(items) and posted_new is None

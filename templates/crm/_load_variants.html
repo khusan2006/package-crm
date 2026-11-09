@@ -1,0 +1,6 @@
+{% comment %}Metr and mikron boxes of one product row, named `prefix`_size / _micron.
+Always on the page so the posted lists line up; the script greys them out (readonly)
+while the picked product doesn't come in that variant, and the server ignores them
+then. Suggestions come from the page's datalists.{% endcomment %}
+<input type="text" name="{{ prefix }}_size" class="new-row-variant{% if row.size_bad %} is-bad{% endif %}" data-variant="size" list="load-sizes" placeholder="Metr" aria-label="Metr (razmer)" title="Razmer: 1,5м, 2м, 6м…" value="{{ row.size|default:'' }}"{% if row.size_bad %} aria-invalid="true"{% endif %} autocomplete="off">
+<input type="text" name="{{ prefix }}_micron" class="new-row-variant{% if row.micron_bad %} is-bad{% endif %}" data-variant="micron" list="load-microns" placeholder="Mikron" aria-label="Mikron" title="Mikron: 015, 01, 08, 06, 05…" value="{{ row.micron|default:'' }}"{% if row.micron_bad %} aria-invalid="true"{% endif %} autocomplete="off">

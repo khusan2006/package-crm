@@ -207,3 +207,36 @@ def test_picking_a_product_fills_its_price_and_a_typed_price_stays(login, admin_
     page.wait_for_selector("text=Saqlandi")
     line = LoadLine.objects.get()
     assert (line.product.name, line.price) == ("Paket katta", Decimal("24500"))
+
+
+def test_a_new_client_gets_a_second_product_with_metr_and_mikron(login, admin_user, seller_user,
+                                                                 live_server, db, paket):
+    Product.objects.create(name="ОҚ плёнка", sku="oq", cost_price=1, price=Decimal("22000"),
+                           has_size=True, has_micron=True)
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    Client.objects.create(name="Anvar", owner=seller_user)
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    block = page.locator("[data-new-row]").first
+    first = block.locator(".new-stop-first")
+    pick(page, block, 0, "Anvar")
+    pick(page, first, 0, "Paket katta")
+    # A bag has no metr / mikron: greyed out, and focus skips to the rulon.
+    assert first.locator("[name=new_size]").evaluate("el => el.readOnly")
+    assert first.locator("[name=new_rolls]").evaluate("el => el === document.activeElement")
+    first.locator("[name=new_rolls]").fill("4")
+
+    block.locator("[data-add-new-line]").click()
+    extra = block.locator("[data-add-line-row]").first
+    pick(page, extra, 0, "ОҚ плёнка")
+    size = extra.locator("input[name$=_size]")
+    assert not size.evaluate("el => el.readOnly")
+    assert size.evaluate("el => el === document.activeElement")  # a film: on to its metr
+    size.fill("1,5м")
+    extra.locator("input[name$=_micron]").fill("05")
+    extra.locator("input[name$=_rolls]").fill("2")
+    page.click("[data-load-items] .items-actions button[type=submit]")
+    page.wait_for_selector("text=Saqlandi")
+    item = load.items.get()
+    assert sorted(item.lines.values_list("product__name", "size", "micron", "rolls")) == [
+        ("Paket katta", "", "", 4), ("ОҚ плёнка", "1,5м", "05", 2)]

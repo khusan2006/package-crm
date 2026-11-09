@@ -1,9 +1,11 @@
 /* Yetkazish — one load's page.
  *
- * Yuk tarkibi (data-load-items): each stop has product lines (rulon, narx, kg) and
- * «+ Mahsulot» for more; new stops below are client + purpose + product + rulon,
- * «+ Yana mijoz» adds another, × drops one. Picking a client moves to its product,
- * a product to its rulon; Enter in the last new rulon adds the next row. Enter never
+ * Yuk tarkibi (data-load-items): each stop has product lines (metr, mikron, rulon,
+ * narx, kg) and «+ Mahsulot» for more; new stops below are client + purpose + their
+ * products («+ Mahsulot» under the row adds another), «+ Yana mijoz» adds another
+ * client, × drops one. Metr / mikron boxes are greyed out unless the picked product
+ * comes in them. Picking a client moves to its product, a product to its first open
+ * box; Enter in the last new rulon adds the next row. Enter never
  * submits the form. Leaving with unsaved changes asks first; "unsaved" is what
  * actually differs from what was saved.
  *
@@ -56,15 +58,57 @@
       }
     };
 
+    // Metr / mikron only for a product that comes in it: otherwise greyed out and
+    // emptied (readonly, not disabled, so the posted lists stay in line).
+    var syncVariants = function (scope) {
+      var rows = Array.prototype.slice.call(scope.querySelectorAll('[data-product-row]'));
+      if (scope.matches && scope.matches('[data-product-row]')) { rows.push(scope); }
+      rows.forEach(function (row) {
+        var product = row.querySelector('select[data-combobox]:not([name=new_client])');
+        var opt = product && product.options[product.selectedIndex];
+        row.querySelectorAll('[data-variant]').forEach(function (box) {
+          var on = !!(opt && opt.value && opt.hasAttribute('data-' + box.getAttribute('data-variant')));
+          box.readOnly = !on;
+          box.tabIndex = on ? 0 : -1;
+          box.classList.toggle('is-off', !on);
+          if (!on && box.value && opt && opt.value) { box.value = ''; unmark(box); }
+        });
+      });
+    };
+
+    var addLine = function (holder, prefix) {
+      var row = lineTmpl.content.firstElementChild.cloneNode(true);
+      row.querySelectorAll('[name]').forEach(function (el) {
+        el.name = el.name.replace('__PREFIX__', prefix);
+      });
+      holder.appendChild(row);
+      if (window.enhanceComboboxes) { window.enhanceComboboxes(row); }
+      syncVariants(row);
+      focusClient(row);
+    };
+
     var focusClient = function (row) {
       // The picker turns the <select> into a text box; fall back to the select.
       var box = row.querySelector('.combobox-input') || row.querySelector('select');
       if (box) { box.focus(); }
     };
 
+    // Each new client row has a key; its extra products are posted as newline_<key>_….
+    var nextKey = function () {
+      var max = 0;
+      list.querySelectorAll('[data-new-row]').forEach(function (r) {
+        max = Math.max(max, parseInt(r.getAttribute('data-key'), 10) || 0);
+      });
+      return String(max + 1);
+    };
+
     var addRow = function () {
       var row = tmpl.content.firstElementChild.cloneNode(true);
+      var key = nextKey();
+      row.setAttribute('data-key', key);
+      row.querySelector('[name=new_key]').value = key;
       list.appendChild(row);
+      syncVariants(row);
       if (window.enhanceComboboxes) { window.enhanceComboboxes(row); }
       focusClient(row);
       return row;
@@ -72,19 +116,19 @@
 
     addButton.addEventListener('click', addRow);
 
-    // «+ Mahsulot» on a stop: a product picker and a rulon box for that stop.
+    // «+ Mahsulot» on a saved stop, or under a new client: one more product row.
     items.addEventListener('click', function (e) {
       var add = e.target.closest('[data-add-line]');
-      if (!add) { return; }
-      var stop = add.getAttribute('data-add-line');
-      var holder = items.querySelector('[data-add-lines][data-item="' + stop + '"]');
-      var row = lineTmpl.content.firstElementChild.cloneNode(true);
-      row.querySelectorAll('[name]').forEach(function (el) {
-        el.name = el.name.replace('__ITEM__', stop);
-      });
-      holder.appendChild(row);
-      if (window.enhanceComboboxes) { window.enhanceComboboxes(row); }
-      focusClient(row);
+      if (add) {
+        var stop = add.getAttribute('data-add-line');
+        addLine(items.querySelector('[data-add-lines][data-item="' + stop + '"]'), 'addline_' + stop);
+        return;
+      }
+      var addNew = e.target.closest('[data-add-new-line]');
+      if (addNew) {
+        var block = addNew.closest('[data-new-row]');
+        addLine(block.querySelector('[data-new-lines]'), 'newline_' + block.getAttribute('data-key'));
+      }
     });
 
     items.addEventListener('click', function (e) {
@@ -92,8 +136,10 @@
       if (!remove) { return; }
       var lineRow = remove.closest('[data-add-line-row]');
       if (lineRow) {
-        // An added product row simply goes; the stop keeps its saved lines.
-        var addBtn = items.querySelector('[data-add-line="' + lineRow.parentNode.getAttribute('data-item') + '"]');
+        // An added product row simply goes; the stop keeps its other lines.
+        var block = lineRow.closest('[data-new-row]');
+        var addBtn = block ? block.querySelector('[data-add-new-line]')
+          : items.querySelector('[data-add-line="' + lineRow.parentNode.getAttribute('data-item') + '"]');
         lineRow.remove();
         if (addBtn) { addBtn.focus(); }
         refreshDirty();
@@ -105,11 +151,10 @@
         addButton.focus();  // focus stays on the form, not lost to the page
       } else {
         // Keep one empty row to type into.
+        row.querySelectorAll('[data-add-line-row]').forEach(function (r) { r.remove(); });
         row.querySelectorAll('select[data-combobox]').forEach(function (s) { s.value = ''; unmark(s); });
-        row.querySelectorAll('.combobox-input').forEach(function (b) { b.value = ''; });
-        var rollsBox = row.querySelector('[name=new_rolls]');
-        rollsBox.value = '';
-        unmark(rollsBox);
+        row.querySelectorAll('input[type=text]').forEach(function (b) { b.value = ''; unmark(b); delete b.dataset.auto; });
+        syncVariants(row);
         focusClient(row);
       }
       refreshDirty();
@@ -121,7 +166,7 @@
       var t = e.target;
       if (t.matches('select[data-combobox]')) {
         unmark(t);
-        var row = t.closest('[data-new-row], [data-add-line-row]');
+        var row = t.name === 'new_client' ? t.closest('[data-new-row]') : t.closest('[data-product-row]');
         if (t.value && row) {
           if (t.name === 'new_client') {
             var productBox = row.querySelector('select[name=new_product]');
@@ -137,7 +182,9 @@
               price.dataset.auto = '1';
               price.dispatchEvent(new Event('input', { bubbles: true }));  // regroup "15 000"
             }
-            var rolls = row.querySelector('input[type=text]:not(.combobox-input):not([data-money])');
+            syncVariants(row.parentNode);
+            // On to metr when the product comes in it, else straight to rulon.
+            var rolls = row.querySelector('input[type=text]:not(.combobox-input):not([data-money]):not([readonly])');
             if (rolls) { rolls.focus(); rolls.select(); }
           }
         }
@@ -178,6 +225,7 @@
     window.addEventListener('beforeunload', function (e) {
       if (!submitting && isDirty()) { e.preventDefault(); e.returnValue = ''; }
     });
+    syncVariants(items);
     refreshDirty();
   }
 

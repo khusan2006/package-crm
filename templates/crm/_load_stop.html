@@ -37,16 +37,20 @@
   {% if item.line_list or item.editable and item.delivers %}
   <div class="table-wrap">
   <table class="stop-lines">
-    <tr><th>Mahsulot</th><th class="num">Rulon</th><th class="num">Narx, so'm/kg</th><th class="num">Og'irligi, kg</th>{% if item.editable %}<th><span class="visually-hidden">Olib tashlash</span></th>{% endif %}</tr>
+    <tr><th>Mahsulot</th><th>Metr</th><th>Mikron</th><th class="num">Rulon</th><th class="num">Narx, so'm/kg</th><th class="num">Og'irligi, kg</th>{% if item.editable %}<th><span class="visually-hidden">Olib tashlash</span></th>{% endif %}</tr>
     {% for line in item.line_list %}
     <tr>
       <td>{{ line.product.name }}</td>
       {% if item.editable %}
+      <td>{% if line.product.has_size %}<input type="text" class="pick-variant{% if line.size_bad %} is-bad{% endif %}" name="size_{{ line.pk|unlocalize }}" value="{{ line.size_input }}" list="load-sizes" placeholder="Metr" aria-label="{{ item.client.name }}, {{ line.product.name }} — metr"{% if line.size_bad %} aria-invalid="true"{% endif %} autocomplete="off">{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td>{% if line.product.has_micron %}<input type="text" class="pick-variant{% if line.micron_bad %} is-bad{% endif %}" name="micron_{{ line.pk|unlocalize }}" value="{{ line.micron_input }}" list="load-microns" placeholder="Mikron" aria-label="{{ item.client.name }}, {{ line.product.name }} — mikron"{% if line.micron_bad %} aria-invalid="true"{% endif %} autocomplete="off">{% else %}<span class="muted">—</span>{% endif %}</td>
       <td class="num"><input type="text" inputmode="numeric" class="pick-rolls{% if line.rolls_bad %} is-bad{% endif %}" name="rolls_{{ line.pk|unlocalize }}" value="{{ line.rolls_input }}" aria-label="{{ item.client.name }}, {{ line.product.name }} — rulon"{% if line.rolls_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
       <td class="num"><input type="text" inputmode="decimal" class="pick-price{% if line.price_bad %} is-bad{% endif %}" name="price_{{ line.pk|unlocalize }}" value="{{ line.price_input }}" data-money aria-label="{{ item.client.name }}, {{ line.product.name }} — narx"{% if line.price_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
       <td class="num"><input type="text" inputmode="decimal" class="pick-kg{% if line.kg_bad %} is-bad{% endif %}" name="kg_{{ line.pk|unlocalize }}" value="{{ line.kg_input }}" placeholder="—" title="Tortilgandan keyin kiriting" aria-label="{{ item.client.name }}, {{ line.product.name }} — kg (tortilgach)"{% if line.kg_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
       <td class="row-actions"><label class="line-drop" title="Bu mahsulotni olib tashlash"><input type="checkbox" name="drop_{{ line.pk|unlocalize }}" value="1"{% if line.dropped %} checked{% endif %}><span aria-hidden="true">×</span><span class="visually-hidden">{{ line.product.name }} — olib tashlash</span></label></td>
       {% else %}
+      <td>{{ line.size|default:"—" }}</td>
+      <td>{{ line.micron|default:"—" }}</td>
       <td class="num">{{ line.rolls }}</td>
       <td class="num">{{ line.price|floatformat:"0g" }}</td>
       <td class="num">{% if line.kg is not None %}{{ line.kg|floatformat:"-3g" }}{% else %}<span class="muted">tortilmagan</span>{% endif %}</td>
@@ -57,7 +61,7 @@
   </div>
   {% if item.editable %}
   <div class="add-lines" data-add-lines data-item="{{ item.pk|unlocalize }}">
-    {% for row in item.added_input %}{% if row.product or row.rolls or row.price %}{% include "crm/_load_add_line.html" with item_pk=item.pk row=row %}{% endif %}{% endfor %}
+    {% with pk=item.pk|stringformat:"d" %}{% for row in item.added_input %}{% if row.product or row.rolls %}{% include "crm/_load_add_line.html" with prefix="addline_"|add:pk row=row %}{% endif %}{% endfor %}{% endwith %}
   </div>
   <button type="button" class="line-add" data-add-line="{{ item.pk|unlocalize }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Mahsulot</button>
   {% endif %}

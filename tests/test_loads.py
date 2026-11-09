@@ -618,3 +618,107 @@ def test_a_product_added_to_a_stop_takes_its_typed_price(client, admin_user, sel
 def test_product_options_carry_their_catalogue_price(client, admin_user, load, paket):
     body = detail(client, admin_user, load).content.decode()
     assert f'value="{paket.pk}" data-price="15000"' in body
+
+
+# --- metr / mikron, and several products on a new client ----------------------------
+
+@pytest.fixture
+def oq(db):
+    """A film that comes in metr and mikron, like ОҚ / ҚОРА on the real catalogue."""
+    return Product.objects.create(name="ОҚ", sku="oq", cost_price=Decimal("18000"),
+                                  price=Decimal("22000"), has_size=True, has_micron=True)
+
+
+def test_a_new_client_gets_several_products_at_once(client, admin_user, seller_user, load,
+                                                    paket, oq):
+    c = make_client(seller_user, "Anvar", 0.01)
+    resp = save(client, admin_user, load, new_client=[c.pk], new_purpose=[DELIVER], new_key=["1"],
+                new_product=[oq.pk], new_size=["1.5"], new_micron=["05"], new_rolls=["4"],
+                new_price=[""],
+                newline_1_product=[oq.pk, paket.pk], newline_1_size=["2м", "9"],
+                newline_1_micron=["08", "06"], newline_1_rolls=["2", "6"],
+                newline_1_price=["21500", ""])
+    assert resp.status_code == 302
+    item = load.items.get()
+    got = sorted(item.lines.values_list("product__name", "size", "micron", "rolls", "price"))
+    # A bare "1.5" is written as receipts write it; a product without metr/mikron
+    # keeps none, whatever was left in its greyed boxes.
+    assert got == [("Paket", "", "", 6, Decimal("15000")),
+                   ("ОҚ", "1,5м", "05", 4, Decimal("22000")),
+                   ("ОҚ", "2м", "08", 2, Decimal("21500"))]
+
+
+def test_extra_products_stay_with_their_own_client(client, admin_user, seller_user, load, paket, oq):
+    a, b = make_client(seller_user, "Anvar", 0.01), make_client(seller_user, "Botir", 0.02)
+    save(client, admin_user, load, new_client=[a.pk, b.pk], new_purpose=[DELIVER, DELIVER],
+         new_key=["1", "2"], new_product=[paket.pk, paket.pk], new_rolls=["1", "2"],
+         newline_2_product=[oq.pk], newline_2_rolls=["7"])
+    lines = {i.client.name: sorted(i.lines.values_list("product__name", "rolls"))
+             for i in load.items.all()}
+    assert lines == {"Anvar": [("Paket", 1)], "Botir": [("Paket", 2), ("ОҚ", 7)]}
+
+
+def test_a_failed_save_brings_back_the_extra_products(client, admin_user, seller_user, load, paket, oq):
+    c = make_client(seller_user, "Anvar", 0.01)
+    resp = save(client, admin_user, load, new_client=[c.pk], new_purpose=[DELIVER], new_key=["3"],
+                new_product=[paket.pk], new_rolls=["1"],
+                newline_3_product=[oq.pk], newline_3_size=["1,5м"], newline_3_micron=["05"],
+                newline_3_rolls=["x"])
+    assert resp.status_code == 200 and not load.items.exists()
+    row = resp.context["new_rows"][0]
+    assert row["key"] == "3"
+    (extra,) = row["extra"]
+    assert (extra["size"], extra["micron"], extra["rolls"], extra["rolls_bad"]) == ("1,5м", "05", "x", True)
+    body = resp.content.decode()
+    assert 'name="newline_3_rolls"' in body and 'value="1,5м"' in body
+
+
+def test_a_money_only_client_refuses_extra_products(client, admin_user, seller_user, load, paket):
+    c = make_client(seller_user, "Anvar", 0.01)
+    resp = save(client, admin_user, load, new_client=[c.pk], new_purpose=[COLLECT], new_key=["1"],
+                new_product=[""], new_rolls=[""],
+                newline_1_product=[paket.pk], newline_1_rolls=["2"])
+    assert resp.status_code == 200 and not load.items.exists()
+    assert resp.context["new_rows"][0]["extra"][0]["product_bad"]
+
+
+def test_a_too_long_mikron_is_a_red_box(client, admin_user, seller_user, load, oq):
+    c = make_client(seller_user, "Anvar", 0.01)
+    resp = save(client, admin_user, load, new_client=[c.pk], new_purpose=[DELIVER], new_key=["1"],
+                new_product=[oq.pk], new_micron=["0" * 21], new_rolls=["2"])
+    assert resp.status_code == 200 and resp.context["new_rows"][0]["micron_bad"]
+
+
+def test_metr_and_mikron_are_edited_on_a_saved_line(client, admin_user, seller_user, load, paket, oq):
+    item = stop(load, make_client(seller_user, "Anvar", 0.01), (oq, 5), (paket, 1))
+    film, bag = item.lines.get(product=oq), item.lines.get(product=paket)
+    body = detail(client, admin_user, load).content.decode()
+    assert f'name="size_{film.pk}"' in body and f'name="size_{bag.pk}"' not in body
+    save(client, admin_user, load, **{f"size_{film.pk}": "6", f"micron_{film.pk}": "015",
+                                      f"size_{bag.pk}": "2м"})
+    film.refresh_from_db(), bag.refresh_from_db()
+    assert (film.size, film.micron, bag.size) == ("6м", "015", "")
+
+
+def test_products_added_to_a_stop_carry_metr_and_mikron(client, admin_user, seller_user, load, paket, oq):
+    item = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 5))
+    save(client, admin_user, load, **{f"addline_{item.pk}_product": [oq.pk],
+                                      f"addline_{item.pk}_size": ["2м"],
+                                      f"addline_{item.pk}_micron": ["06"],
+                                      f"addline_{item.pk}_rolls": ["3"]})
+    assert item.lines.filter(product=oq, size="2м", micron="06", rolls=3).exists()
+
+
+def test_the_sale_line_gets_metr_and_mikron(client, admin_user, seller_user, load, oq):
+    item = stop(load, make_client(seller_user, "Anvar", 0.01), (oq, 5, 120))
+    item.lines.update(size="1,5м", micron="05")
+    save(client, admin_user, load, confirm=str(item.pk))
+    line = SaleItem.objects.get()
+    assert (line.size, line.micron, line.variant_label) == ("1,5м", "05", "1,5м · 05")
+
+
+def test_product_options_say_which_variants_they_come_in(client, admin_user, load, paket, oq):
+    body = detail(client, admin_user, load).content.decode()
+    assert f'value="{oq.pk}" data-price="22000" data-size data-micron' in body
+    assert f'value="{paket.pk}" data-price="15000">' in body
+    assert 'id="load-sizes"' in body and '<option value="1,5м">' in body

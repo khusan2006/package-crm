@@ -6733,11 +6733,40 @@ tr:has(.line-drop input:checked) td:not(.row-actions) { text-decoration: line-th
   flex: 0 0 120px; width: 120px; max-width: 120px; height: 40px; text-align: right;
 }
 .new-stop .combobox:first-of-type { flex: 1 1 200px; }
+/* Metr / mikron beside the product: small boxes, greyed out while the product
+   doesn't come in them. */
+.new-row input.new-row-variant {
+  flex: 0 0 92px; width: 92px; max-width: 92px; height: 40px; text-align: center;
+}
+/* Keeps the first product's boxes in line with the rows under it, which have an ×. */
+.new-row-remove-gap { flex: 0 0 40px; }
+.new-row input.new-row-rolls { flex-basis: 90px; width: 90px; max-width: 90px; }
+input.new-row-variant.is-off {
+  background: var(--surface-2); color: var(--text-faint); border-style: dashed; cursor: not-allowed;
+}
+input.pick-variant { width: 84px; max-width: 84px; height: 32px; padding: 5px 8px; text-align: center;
+  border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--input); color: var(--text); font: inherit; }
+/* A new client: client and purpose on top, its products indented under it along a
+   guide line, then its own «+ Mahsulot». */
+.new-stop-block { display: flex; flex-direction: column; gap: 8px; }
+.new-stop-lines { display: flex; flex-direction: column; gap: 8px; }
+.new-stop-lines, .new-stop-block > .new-stop-line-add { margin-left: 18px; }
+.new-stop-lines { padding-left: 12px; border-left: 2px solid var(--border); }
+.new-stop-block > .new-stop-line-add { align-self: flex-start; margin-top: 0; }
+.new-stop-block + .new-stop-block { padding-top: 12px; border-top: 1px dashed var(--border); }
+.new-stop select.new-stop-purpose { width: 200px; }
 .route-collect { color: var(--warning); }
 .strategy-switch { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
 .strategy-switch .seg-btn { font-size: 12px; }
 @media (max-width: 760px) {
   .new-stop { flex-wrap: wrap; }
-  .new-stop .combobox, .new-stop select.new-stop-purpose { flex: 1 1 100%; max-width: none; }
-  .new-stop input.new-row-rolls, .new-stop input.new-row-price { flex: 1 1 0; max-width: none; }
+  .new-stop .combobox { flex: 1 1 100%; max-width: none; }
+  .new-stop select.new-stop-purpose { flex: 1 1 0; width: auto; max-width: none; }
+  .new-stop-first .new-row-remove-gap { display: none; }
+  .new-stop input.new-row-rolls, .new-stop input.new-row-price,
+  .new-stop input.new-row-variant { flex: 1 1 0; max-width: none; }
+  .add-line { flex-wrap: wrap; }
+  .add-line .combobox { flex: 1 1 100%; max-width: none; }
+  .add-line input.new-row-rolls, .add-line input.new-row-price,
+  .add-line input.new-row-variant { flex: 1 1 0; max-width: none; }
 }

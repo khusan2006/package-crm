@@ -2675,6 +2675,11 @@ class LoadLine(models.Model):
                                 verbose_name="Mahsulot")
     rolls = models.PositiveIntegerField("Rulon soni", validators=[MinValueValidator(1)])
     price = models.DecimalField("Narxi (1 kg, so'm)", max_digits=14, decimal_places=2)
+    # Razmer (roll width, "1,5м") and mikron ("05") — only for the products that come
+    # in them (Product.has_size / has_micron). Free text, as on the receipts: "240СМ"
+    # and "05-08" are real. Carried to the sale line on ✓.
+    size = models.CharField("Metr (razmer)", max_length=20, blank=True)
+    micron = models.CharField("Mikron", max_length=20, blank=True)
     kg = models.DecimalField("Og'irligi (kg)", max_digits=12, decimal_places=3,
                              null=True, blank=True,
                              help_text="Tortilgandan keyin kiritiladi")
@@ -2684,6 +2689,11 @@ class LoadLine(models.Model):
         ordering = ["created_at", "pk"]
         verbose_name = "Yuk mahsuloti"
         verbose_name_plural = "Yuk mahsulotlari"
+
+    @property
+    def variant_label(self):
+        """"1,5м · 05", or "" — the same label a sale line shows."""
+        return " · ".join(p for p in (self.size, self.micron) if p)
 
     def __str__(self):
         return f"{self.product} — {self.rolls} rulon"

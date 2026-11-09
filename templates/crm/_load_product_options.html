@@ -1,0 +1,1 @@
+{% load l10n %}{% for p in products %}<option value="{{ p.pk|unlocalize }}" data-price="{{ p.price|floatformat:"-2u" }}"{% if p.has_size %} data-size{% endif %}{% if p.has_micron %} data-micron{% endif %}{% if selected == p.pk|stringformat:"d" %} selected{% endif %}>{{ p.name }}</option>{% endfor %}

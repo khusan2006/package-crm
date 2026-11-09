@@ -82,15 +82,17 @@
   <p class="muted">Yuk hali bo'sh. Mijozni, maqsadni, mahsulot va rulon sonini kiriting — kg keyin, tortilgach.</p>
   {% endif %}
 
-  {% comment %}New stops: a client, a purpose, and the first product with its rulon.
-  More products are added on the stop once it's saved. «+» adds another row.{% endcomment %}
+  {% comment %}New stops: a client, a purpose, and its products («+ Mahsulot» under
+  the row for more). «Yana mijoz» adds another client.{% endcomment %}
   <h3 class="new-rows-title">Yangi mijoz qo'shish</h3>
   <div class="new-rows" data-new-rows>
     {% for row in new_rows %}{% include "crm/_load_new_row.html" with row=row %}{% endfor %}
   </div>
   <button type="button" class="new-row-add" data-new-row-add><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yana mijoz</button>
   <template data-new-row-template>{% include "crm/_load_new_row.html" with row=None %}</template>
-  <template data-add-line-template>{% include "crm/_load_add_line.html" with item_pk="__ITEM__" row=None %}</template>
+  <template data-add-line-template>{% include "crm/_load_add_line.html" with prefix="__PREFIX__" row=None %}</template>
+  <datalist id="load-sizes">{% for v in size_suggestions %}<option value="{{ v }}">{% endfor %}</datalist>
+  <datalist id="load-microns">{% for v in micron_suggestions %}<option value="{{ v }}">{% endfor %}</datalist>
 
   <div class="items-actions">
     <span class="route-dirty" data-items-dirty{% if not failed %} hidden{% endif %}>O'zgartirildi — saqlang.</span>
