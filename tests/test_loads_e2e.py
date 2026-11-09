@@ -322,7 +322,53 @@ def test_one_product_of_a_client_moves_to_tomorrow(login, admin_user, seller_use
     submit = dialog.locator("[data-move-submit]")
     assert submit.inner_text() == "1 ta mijozni o'tkazish (1 tasi qisman)"
     submit.click()
-    page.wait_for_selector("text=1 tasi qisman")
+    # The toast, not the button — its label says "(1 tasi qisman)" too.
+    page.wait_for_selector(".toast-msg:has-text('1 tasi qisman')")
     assert list(a.lines.values_list("product__name", flat=True)) == ["Paket katta"]
     moved = LoadLine.objects.get(product=film)
     assert moved.item.load != load and moved.item.client == a.client
+
+
+def test_another_product_starts_as_a_copy_of_the_last(login, admin_user, seller_user,
+                                                      live_server, db):
+    oq = Product.objects.create(name="ОҚ плёнка", sku="oq", cost_price=1, price=Decimal("22000"),
+                                has_size=True, has_micron=True)
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    saved = stop(load, Client.objects.create(name="Anvar", owner=seller_user), oq, rolls=2)
+    saved.lines.update(size="1,5м", micron="05", price=Decimal("23000"))
+    Client.objects.create(name="Bobur", owner=seller_user)
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+
+    # A saved stop: the copy has the saved line's product, metr, mikron, rulon and price,
+    # and the cursor waits in Metr.
+    page.click(f'[data-add-line="{saved.pk}"]')
+    copy = page.locator(f'[data-add-lines][data-item="{saved.pk}"] [data-add-line-row]').first
+    assert copy.locator(".combobox-input").input_value() == "ОҚ плёнка"
+    size = copy.locator("input[name$=_size]")
+    assert size.input_value() == "1,5м" and size.evaluate("el => el === document.activeElement")
+    assert copy.locator("input[name$=_micron]").input_value() == "05"
+    assert copy.locator("input[name$=_rolls]").input_value() == "2"
+    size.fill("2м")
+    copy.locator("input[name$=_micron]").fill("08")
+
+    # A new client: «+ Mahsulot» copies the row above it.
+    block = page.locator("[data-new-row]").first
+    first = block.locator(".new-stop-first")
+    pick(page, block, 0, "Bobur")
+    pick(page, first, 0, "ОҚ плёнка")
+    first.locator("[name=new_size]").fill("1,5м")
+    first.locator("[name=new_micron]").fill("06")
+    first.locator("[name=new_rolls]").fill("3")
+    block.locator("[data-add-new-line]").click()
+    extra = block.locator("[data-add-line-row]").first
+    assert extra.locator("input[name$=_size]").input_value() == "1,5м"
+    extra.locator("input[name$=_micron]").fill("08")
+
+    page.click("[data-load-items] .items-actions button[type=submit]")
+    page.wait_for_selector("text=Saqlandi")
+    assert sorted(saved.lines.values_list("size", "micron", "rolls", "price")) == [
+        ("1,5м", "05", 2, Decimal("23000")), ("2м", "08", 2, Decimal("23000"))]
+    bobur = load.items.get(client__name="Bobur")
+    assert sorted(bobur.lines.values_list("size", "micron", "rolls")) == [
+        ("1,5м", "06", 3), ("1,5м", "08", 3)]

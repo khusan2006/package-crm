@@ -40,7 +40,7 @@
   <table class="stop-lines">
     <tr><th>Mahsulot</th><th>Metr</th><th>Mikron</th><th class="num">Rulon</th><th class="num">Narx, so'm/kg</th><th class="num">Og'irligi, kg</th>{% if item.editable %}<th><span class="visually-hidden">Olib tashlash</span></th>{% endif %}</tr>
     {% for line in item.line_list %}
-    <tr>
+    <tr{% if item.editable %} data-line-product="{{ line.product_id|unlocalize }}"{% endif %}>
       <td>{{ line.product.name }}</td>
       {% if item.editable %}
       <td>{% if line.product.has_size %}<input type="text" class="pick-variant{% if line.size_bad %} is-bad{% endif %}" name="size_{{ line.pk|unlocalize }}" value="{{ line.size_input }}" list="load-sizes" placeholder="Metr" aria-label="{{ item.client.name }}, {{ line.product.name }} — metr"{% if line.size_bad %} aria-invalid="true"{% endif %} autocomplete="off">{% else %}<span class="muted">—</span>{% endif %}</td>

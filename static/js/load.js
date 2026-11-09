@@ -76,15 +76,51 @@
       });
     };
 
-    var addLine = function (holder, prefix) {
+    // The client's last product, to start the next one from: an added row with a
+    // product picked, else the stop's last saved line (not one ticked to go).
+    var lastLine = function (rows, saved) {
+      for (var i = rows.length - 1; i >= 0; i--) {
+        var product = rows[i].querySelector('select[data-combobox]');
+        if (product && product.value) {
+          var box = function (sel) { var b = rows[i].querySelector(sel); return b ? b.value : ''; };
+          return { product: product.value, size: box('[data-variant=size]'), micron: box('[data-variant=micron]'),
+                   rolls: box('.new-row-rolls'), price: box('.new-row-price') };
+        }
+      }
+      for (var j = saved.length - 1; j >= 0; j--) {
+        var tr = saved[j];
+        var drop = tr.querySelector('.line-drop input');
+        if (drop && drop.checked) { continue; }
+        var val = function (sel) { var b = tr.querySelector(sel); return b ? b.value : ''; };
+        return { product: tr.getAttribute('data-line-product'), size: val('[name^=size_]'),
+                 micron: val('[name^=micron_]'), rolls: val('.pick-rolls'), price: val('.pick-price') };
+      }
+      return null;
+    };
+
+    // «+ Mahsulot»: a new product row — a copy of the client's last product, so a
+    // second roll of the same film needs only its metr / mikron changed.
+    var addLine = function (holder, prefix, from) {
       var row = lineTmpl.content.firstElementChild.cloneNode(true);
       row.querySelectorAll('[name]').forEach(function (el) {
         el.name = el.name.replace('__PREFIX__', prefix);
       });
+      if (from) {
+        row.querySelector('select[data-combobox]').value = from.product;
+        var set = function (sel, v) { var b = row.querySelector(sel); if (b) { b.value = v || ''; } };
+        set('[data-variant=size]', from.size);
+        set('[data-variant=micron]', from.micron);
+        set('.new-row-rolls', from.rolls);
+        set('.new-row-price', from.price);
+        // Copied, not typed here: picking another product still brings its price.
+        if (from.price) { row.querySelector('.new-row-price').dataset.auto = '1'; }
+      }
       holder.appendChild(row);
       if (window.enhanceComboboxes) { window.enhanceComboboxes(row); }
       syncVariants(row);
-      focusClient(row);
+      var open = from && row.querySelector('[data-variant]:not([readonly])');
+      if (open) { open.focus(); open.select(); } else if (from) { var r = row.querySelector('.new-row-rolls'); r.focus(); r.select(); } else { focusClient(row); }
+      refreshDirty();
     };
 
     var focusClient = function (row) {
@@ -121,13 +157,16 @@
       var add = e.target.closest('[data-add-line]');
       if (add) {
         var stop = add.getAttribute('data-add-line');
-        addLine(items.querySelector('[data-add-lines][data-item="' + stop + '"]'), 'addline_' + stop);
+        var holder = items.querySelector('[data-add-lines][data-item="' + stop + '"]');
+        var saved = holder.closest('.stop') ? holder.closest('.stop').querySelectorAll('tr[data-line-product]') : [];
+        addLine(holder, 'addline_' + stop, lastLine(holder.querySelectorAll('[data-add-line-row]'), saved));
         return;
       }
       var addNew = e.target.closest('[data-add-new-line]');
       if (addNew) {
         var block = addNew.closest('[data-new-row]');
-        addLine(block.querySelector('[data-new-lines]'), 'newline_' + block.getAttribute('data-key'));
+        var lines = block.querySelector('[data-new-lines]');
+        addLine(lines, 'newline_' + block.getAttribute('data-key'), lastLine(lines.querySelectorAll('[data-product-row]'), []));
       }
     });
 
