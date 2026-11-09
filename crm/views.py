@@ -15,8 +15,10 @@ from django.db.models import (
     BooleanField,
     Case,
     Count,
+    Exists,
     F,
     Max,
+    OuterRef,
     ProtectedError,
     Q,
     Sum,
@@ -95,6 +97,7 @@ from .models import (
     Attendance,
     AuditLog,
     Client,
+    ClientPhone,
     DayHours,
     Employee,
     Expense,
@@ -148,7 +151,7 @@ from .utils import (
 
 
 def _visible_clients(user):
-    qs = Client.objects.select_related("owner")
+    qs = Client.objects.select_related("owner").prefetch_related("phones")
     return qs if user.can_see_all_records else qs.filter(owner=user)
 
 
@@ -1266,6 +1269,7 @@ def client_create(request):
             if not client.owner_id:
                 client.owner = request.user
             client.save()
+            form.save_phones(client)
             AuditLog.record(
                 request.user, AuditLog.Action.CREATE, "Mijoz", client.pk,
                 f"{client.name} qo'shildi (mas'ul: {client.owner})",
@@ -2136,11 +2140,17 @@ def _client_search(qs, term, base="", extra=None):
     if extra is not None:
         match |= extra
     digits = re.sub(r"\D", "", term)
+    # The client's extra numbers (worker, accountant…) and whose they are. As a
+    # subquery, not a join: a client with two numbers must not list twice.
+    extra_phone = Q(phone__icontains=term) | Q(label__icontains=term)
     if len(digits) >= 3:
         # `base` is a plain FK here, so annotating can't multiply rows.
         qs = qs.annotate(_phone_digits=_phone_digits_expr(f"{at}phone"))
         match |= Q(_phone_digits__contains=digits)
-    return qs.filter(match)
+        extra_phone |= Q(_digits__contains=digits)
+    phones = (ClientPhone.objects.filter(client_id=OuterRef(f"{at}pk"))
+              .annotate(_digits=_phone_digits_expr("phone")).filter(extra_phone))
+    return qs.filter(match | Q(Exists(phones)))
 
 
 def _picked_date_window(request):
@@ -11522,7 +11532,7 @@ def _load_groups(load, items, depot, dist, weights):
 def _load_items(load, user):
     """The load's stops with their lines, each marked `editable` for this user."""
     items = list(load.items.select_related("client", "client__owner", "sale")
-                 .prefetch_related("lines__product").order_by("created_at"))
+                 .prefetch_related("lines__product", "client__phones").order_by("created_at"))
     for item in items:
         item.line_list = list(item.lines.all())
         item.editable = _may_edit_stop(user, item)
@@ -11567,7 +11577,7 @@ def _render_load_detail(request, load, items, posted_new=None):
     `posted_new` the new rows as posted, so nothing the person entered is lost."""
     user = request.user
     in_load = {i.client_id for i in items}
-    clients = Client.objects.order_by("name")
+    clients = Client.objects.prefetch_related("phones").order_by("name")
     if not user.can_see_all_records:
         clients = clients.filter(owner=user)
     lines = [l for i in items if i.delivers for l in i.line_list]

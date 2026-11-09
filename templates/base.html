@@ -1854,6 +1854,27 @@
     else { document.addEventListener('DOMContentLoaded', restoreFocus); }
   })();
 
+  // Mijoz formasi — qo'shimcha telefonlar: «+ Telefon» adds a row from the field's
+  // <template>, × takes one away. Delegated, so it works in the modal too.
+  document.addEventListener('click', function (e) {
+    var add = e.target.closest && e.target.closest('[data-xphones-add]');
+    if (add) {
+      var box = add.closest('[data-xphones]');
+      var row = box.querySelector('[data-xphones-template]').content.firstElementChild.cloneNode(true);
+      box.querySelector('[data-xphones-rows]').appendChild(row);
+      if (window.enhancePhoneInputs) { window.enhancePhoneInputs(row); }
+      row.querySelector('input').focus();
+      return;
+    }
+    var remove = e.target.closest && e.target.closest('[data-xphones-remove]');
+    if (remove) {
+      var gone = remove.closest('[data-xphones-row]');
+      var addBtn = gone.closest('[data-xphones]').querySelector('[data-xphones-add]');
+      gone.remove();
+      addBtn.focus();
+    }
+  });
+
   // Searchable combobox: progressively enhances <select data-combobox> into a
   // type-to-filter input. The native <select> stays in the DOM (kept in sync)
   // so the form submits normally and existing change-listeners keep working.

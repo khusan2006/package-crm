@@ -17,6 +17,7 @@ from .utils import UZ_MONTH_NAMES, uz_month
 from .models import (
     DEFAULT_DEBT_DAYS,
     Client,
+    ClientPhone,
     Employee,
     Expense,
     Holiday,
@@ -241,11 +242,89 @@ def _read_location(value):
     return point, f"{lat.normalize():f}, {lng.normalize():f}"
 
 
+# How many extra numbers one mijoz may carry — a guard against a runaway form, not a
+# business rule; nobody has more than a handful.
+EXTRA_PHONES_MAX = 10
+
+
+class PhoneList(list):
+    """[(phone, label), ...] — a client's extra numbers as the form holds them. Reads
+    "+998 90 … (Aziz), …" so the audit line names them rather than printing tuples."""
+
+    def __str__(self):
+        return ", ".join(f"{phone} ({label})" if label else phone for phone, label in self)
+
+
+class ExtraPhonesWidget(forms.Widget):
+    """Rows of «kimning raqami» + number, with × on each and «+ Telefon» below. Posts
+    two parallel lists, `<name>_phone` and `<name>_label`, one pair per row; rows the
+    script adds come from the hidden template row."""
+
+    template_name = "crm/widgets/extra_phones.html"
+
+    def value_from_datadict(self, data, files, name):
+        phones = data.getlist(f"{name}_phone") if hasattr(data, "getlist") else []
+        labels = data.getlist(f"{name}_label") if hasattr(data, "getlist") else []
+        labels += [""] * (len(phones) - len(labels))
+        return list(zip(phones, labels))
+
+    def value_omitted_from_data(self, data, files, name):
+        return False  # no rows posted = every number removed
+
+    def get_context(self, name, value, attrs):
+        context = super().get_context(name, value, attrs)
+        context["rows"] = list(value or [])
+        return context
+
+    def render(self, name, value, attrs=None, renderer=None):
+        # Through the project's template engine, as LocationPickerWidget does.
+        return render_to_string(self.template_name, self.get_context(name, value, attrs))
+
+
+class ExtraPhonesField(forms.Field):
+    """The client's extra numbers: empty rows dropped, a row with a name but no number
+    refused, the same number twice kept once."""
+
+    widget = ExtraPhonesWidget
+
+    def to_python(self, value):
+        rows, seen = PhoneList(), set()
+        for phone, label in value or []:
+            phone, label = (phone or "").strip(), (label or "").strip()
+            if not phone:
+                if label:
+                    raise forms.ValidationError(f"«{label}» uchun raqam yozing.")
+                continue
+            digits = re.sub(r"\D", "", phone)
+            if len(digits) < 7:
+                raise forms.ValidationError(f"«{phone}» — telefon raqami to'liq emas.")
+            if len(phone) > 30 or len(label) > 100:
+                raise forms.ValidationError("Telefon yoki ism juda uzun.")
+            # The last nine digits are the number itself: "+998 91 …" and "91 …"
+            # are the same phone.
+            if digits[-9:] in seen:
+                continue
+            seen.add(digits[-9:])
+            rows.append((phone, label))
+        if len(rows) > EXTRA_PHONES_MAX:
+            raise forms.ValidationError(f"Ko'pi bilan {EXTRA_PHONES_MAX} ta qo'shimcha raqam.")
+        return rows
+
+    def has_changed(self, initial, data):
+        try:
+            return list(initial or []) != list(self.to_python(data))
+        except forms.ValidationError:
+            return True
+
+
 class ClientForm(forms.ModelForm):
     allow_duplicate = forms.BooleanField(
         label="Bir xil nomli mijoz bo'lsa ham, baribir qo'shilsin",
         required=False,
     )
+    extra_phones = ExtraPhonesField(
+        label="Qo'shimcha telefonlar", required=False,
+        help_text="Ishchisi, hisobchisi… — shu raqamlar bilan qidirilganda ham mijoz topiladi.")
     location = forms.CharField(
         label="Joylashuv", required=False, max_length=2000,
         help_text="Google Maps, Yandex, 2GIS havolasi yoki koordinata — "
@@ -254,7 +333,7 @@ class ClientForm(forms.ModelForm):
 
     class Meta:
         model = Client
-        fields = ["name", "company", "owner", "phone", "address", "location", "notes"]
+        fields = ["name", "company", "owner", "phone", "extra_phones", "address", "location", "notes"]
         widgets = {"notes": forms.Textarea(attrs={"rows": 3})}
 
     def __init__(self, *args, user=None, check_duplicates=True, **kwargs):
@@ -264,6 +343,8 @@ class ClientForm(forms.ModelForm):
         # On the form's own initial, not the field's: form_changes reads the "before"
         # side of the audit line from `form.initial`.
         self.initial.setdefault("location", self.instance.coordinates)
+        self.initial.setdefault("extra_phones", PhoneList(
+            (p.phone, p.label) for p in self.instance.phones.all()) if self.instance.pk else PhoneList())
         self._point = None
         self.fields["phone"].widget.attrs["data-phone"] = ""
         # «Sotuvchi» — whose client this is. Only admins/managers assign it; a seller's
@@ -303,13 +384,24 @@ class ClientForm(forms.ModelForm):
             )
         return cleaned
 
+    def save_phones(self, client):
+        """Write the extra numbers as the form has them — call after the client is
+        saved when saving with commit=False."""
+        client.phones.all().delete()
+        ClientPhone.objects.bulk_create(
+            ClientPhone(client=client, phone=phone, label=label)
+            for phone, label in self.cleaned_data.get("extra_phones") or [])
+
     def clean_location(self):
         self._point, text = _read_location(self.cleaned_data.get("location"))
         return text
 
     def save(self, commit=True):
         self.instance.latitude, self.instance.longitude = self._point or (None, None)
-        return super().save(commit)
+        client = super().save(commit)
+        if commit:
+            self.save_phones(client)
+        return client
 
 
 class TruckForm(forms.ModelForm):
@@ -1673,6 +1765,14 @@ class ClientSelect(forms.Select):
 
     The blank "— choose —" option has no client instance and is left untouched.
     """
+
+    def optgroups(self, name, value, attrs=None):
+        # Every option reads its client's extra phones (`search_text`): fetch them in
+        # one query rather than one per client.
+        queryset = getattr(self.choices, "queryset", None)
+        if queryset is not None:
+            self.choices.queryset = queryset.prefetch_related("phones")
+        return super().optgroups(name, value, attrs)
 
     def create_option(self, name, value, label, selected, index, subindex=None, attrs=None):
         option = super().create_option(

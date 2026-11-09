@@ -6893,3 +6893,17 @@ input.pick-variant { width: 84px; max-width: 84px; height: 32px; padding: 5px 8p
   .add-line input.new-row-rolls, .add-line input.new-row-price,
   .add-line input.new-row-variant { flex: 1 1 0; max-width: none; }
 }
+
+/* Mijoz formasi: qo'shimcha telefonlar — kimning raqami, raqam, × bir qatorda. */
+.xphones-rows { display: grid; gap: 8px; max-width: 480px; }
+.modal .xphones-rows { max-width: none; }
+.xphones-row { display: grid; grid-template-columns: minmax(0, 1fr) 170px 32px; gap: 8px; align-items: center; }
+.xphones-row input { min-width: 0; }
+.xphones-remove { width: 32px; height: 32px; }
+.xphones-add { margin-top: 8px; }
+@media (max-width: 520px) {
+  .xphones-row { grid-template-columns: minmax(0, 1fr) 32px; }
+  .xphones-row input[data-phone] { grid-column: 1; }
+  .xphones-row .xphones-remove { grid-row: 1 / span 2; grid-column: 2; }
+}
+

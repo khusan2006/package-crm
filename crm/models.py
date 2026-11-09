@@ -112,14 +112,14 @@ class Client(models.Model):
 
     @property
     def search_text(self):
-        """What a client picker matches typed words against: name, company, phone
-        and address, lowercased, plus a digits-only copy of the phone so
-        "998901234567" finds a stored "+998 90 123 45 67"."""
-        phone = self.phone or ""
-        parts = [p for p in (self.name, self.company, phone, self.address) if p]
-        digits = re.sub(r"\D", "", phone)
-        if digits:
-            parts.append(digits)
+        """What a client picker matches typed words against: name, company, phone,
+        the extra phones and whose they are, and address, lowercased, plus a
+        digits-only copy of each phone so "998901234567" finds a stored
+        "+998 90 123 45 67". Prefetch `phones` wherever many are listed."""
+        phones = [self.phone or ""] + [p.phone for p in self.phones.all()]
+        labels = [p.label for p in self.phones.all()]
+        parts = [p for p in (self.name, self.company, *phones, self.address, *labels) if p]
+        parts += [d for d in (re.sub(r"\D", "", p) for p in phones) if d]
         return " ".join(parts).lower()
 
     @property
@@ -157,6 +157,23 @@ class Client(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class ClientPhone(models.Model):
+    """Another number the mijoz is reached on — their worker's, their accountant's —
+    beside the main Telefon. Searching by it finds the client like the main one."""
+
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="phones")
+    phone = models.CharField("Telefon", max_length=30)
+    label = models.CharField("Kimning raqami", max_length=100, blank=True)
+
+    class Meta:
+        ordering = ["pk"]
+        verbose_name = "Qo'shimcha telefon"
+        verbose_name_plural = "Qo'shimcha telefonlar"
+
+    def __str__(self):
+        return f"{self.phone} ({self.label})" if self.label else self.phone
 
 
 class ProductQuerySet(models.QuerySet):

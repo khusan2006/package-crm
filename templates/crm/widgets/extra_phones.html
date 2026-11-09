@@ -1,0 +1,12 @@
+{% comment %}
+A client's extra numbers: one row per number — whose it is, the number, ×. «+ Telefon»
+adds a row from the <template> below (wired in base.html, since a <script> inside a
+modal never runs). Empty rows are simply dropped on save.
+{% endcomment %}
+<div class="xphones" data-xphones>
+  <div class="xphones-rows" data-xphones-rows>
+    {% for phone, label in rows %}{% include "crm/widgets/_extra_phone_row.html" with name=widget.name %}{% endfor %}
+  </div>
+  <template data-xphones-template>{% include "crm/widgets/_extra_phone_row.html" with name=widget.name phone="" label="" %}</template>
+  <button type="button" class="line-add xphones-add" data-xphones-add><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Telefon</button>
+</div>

@@ -11,6 +11,7 @@ operator usually wants one app and not a menu.
   <dl class="geo-facts">
     {% if client.address %}<dt>Manzil</dt><dd>{{ client.address }}</dd>{% endif %}
     {% if client.phone %}<dt>Telefon</dt><dd>{{ client.phone }}</dd>{% endif %}
+    {% for p in client.phones.all %}<dt>{{ p.label|default:"Telefon" }}</dt><dd>{{ p.phone }}</dd>{% endfor %}
     <dt>Koordinata</dt><dd><code>{{ client.coordinates }}</code></dd>
   </dl>
 

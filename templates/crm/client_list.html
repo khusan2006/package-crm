@@ -51,7 +51,7 @@
       </span>
     </td>
     <td>{{ client.company|default:"—" }}</td>
-    <td>{{ client.phone|default:"—" }}</td>
+    <td>{{ client.phone|default:"—" }}{% for p in client.phones.all %}<span class="cell-sub">{{ p.phone }}{% if p.label %} · {{ p.label }}{% endif %}</span>{% endfor %}</td>
     <td>
       {% comment %}With a saved joylashuv the whole cell opens it — the map and the
       Ulashish buttons; the pin turns blue to say it can be pressed.{% endcomment %}
