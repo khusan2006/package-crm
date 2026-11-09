@@ -42,7 +42,11 @@
     {% if roll_breakdown %}
     <ul class="kpi-breakdown">
       {% for r in roll_breakdown %}
-      <li><strong>{{ r.rolls }} ta</strong> {{ r.product }}{% if r.variant %} <span class="muted">· {{ r.variant }}</span>{% endif %}</li>
+      <li style="--share: {{ r.share }}%">
+        <span class="kb-count">{{ r.rolls }}<small>ta</small></span>
+        <span class="kb-name">{{ r.product }}</span>
+        {% if r.size or r.micron %}<span class="kb-tags">{% if r.size %}<span class="kb-tag" title="Metr">{{ r.size }}</span>{% endif %}{% if r.micron %}<span class="kb-tag" title="Mikron">{{ r.micron }}<small>mk</small></span>{% endif %}</span>{% endif %}
+      </li>
       {% endfor %}
     </ul>
     {% else %}

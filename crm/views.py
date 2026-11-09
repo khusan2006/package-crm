@@ -11547,15 +11547,18 @@ def _mark_mine(client, mine):
 
 def _roll_breakdown(lines):
     """Rulon per product and variant across the load — what the warehouse has to
-    load onto the truck: [{"rolls": 2, "product": "Oq", "variant": "2м · 1"}, ...],
-    largest first. Lines of the same product, metr and mikron are added up."""
+    load onto the truck: [{"rolls": 2, "product": "Oq", "size": "2м", "micron": "1",
+    "share": 40}, ...], largest first. Lines of the same product, metr and mikron are
+    added up; `share` is the row's percent of all rulon, for the bar behind it."""
     totals = {}
     for line in lines:
-        key = (line.product.name, line.variant_label)
+        key = (line.product.name, line.size, line.micron)
         totals[key] = totals.get(key, 0) + line.rolls
-    rows = [{"rolls": rolls, "product": name, "variant": variant}
-            for (name, variant), rolls in totals.items()]
-    rows.sort(key=lambda r: (-r["rolls"], r["product"], r["variant"]))
+    whole = sum(totals.values()) or 1
+    rows = [{"rolls": rolls, "product": name, "size": size, "micron": micron,
+             "share": round(rolls * 100 / whole)}
+            for (name, size, micron), rolls in totals.items()]
+    rows.sort(key=lambda r: (-r["rolls"], r["product"], r["size"], r["micron"]))
     return rows
 
 

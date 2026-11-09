@@ -736,12 +736,13 @@ def test_rulon_card_counts_each_product_and_variant(client, admin_user, seller_u
     second.save()
     resp = detail(client, admin_user, load)
     assert resp.context["roll_breakdown"] == [
-        {"rolls": 5, "product": "ОҚ", "variant": "2м · 1"},
-        {"rolls": 4, "product": "ОҚ", "variant": "1,5м · 05"},
-        {"rolls": 1, "product": paket.name, "variant": ""},
+        {"rolls": 5, "product": "ОҚ", "size": "2м", "micron": "1", "share": 50},
+        {"rolls": 4, "product": "ОҚ", "size": "1,5м", "micron": "05", "share": 40},
+        {"rolls": 1, "product": paket.name, "size": "", "micron": "", "share": 10},
     ]
     body = resp.content.decode()
-    assert "<strong>5 ta</strong> ОҚ" in body and "· 2м · 1" in body
+    assert '<span class="kb-count">5<small>ta</small></span>' in body
+    assert '<span class="kb-tag" title="Mikron">05<small>mk</small></span>' in body
 
 
 # --- moving a stop to the other truck by hand ---------------------------------------

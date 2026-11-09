@@ -630,21 +630,74 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
   color: var(--text-muted);
 }
 
-/* Yuk sahifasi: Rulon kartasida mahsulot bo'yicha taqsimot */
+/* Yuk sahifasi: Rulon kartasida mahsulot bo'yicha taqsimot. Har qator orqasidagi
+   och chiziq — shu qatorning umumiy rulondagi ulushi. */
 .kpi-breakdown {
   position: relative;
   list-style: none;
-  margin: 9px 0 0;
+  margin: 10px 0 0;
   padding: 0;
   display: grid;
-  gap: 3px;
-  font-size: 12.5px;
-  color: var(--text);
+  gap: 4px;
 }
 
-.kpi-breakdown strong {
-  color: var(--kpi);
+.kpi-breakdown li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 3px 8px 3px 4px;
+  border-radius: 8px;
+  font-size: 13px;
+  background:
+    linear-gradient(90deg,
+      color-mix(in srgb, var(--kpi) 13%, transparent) var(--share),
+      color-mix(in srgb, var(--kpi) 4%, transparent) var(--share));
+}
+
+.kb-count {
+  flex: none;
+  min-width: 38px;
+  text-align: right;
   font-weight: 700;
+  font-size: 14px;
+  color: var(--kpi);
+  font-variant-numeric: tabular-nums;
+}
+
+.kb-count small,
+.kb-tag small {
+  margin-left: 2px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.kb-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kb-tags {
+  flex: none;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.kb-tag {
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--kpi) 22%, var(--border));
+  background: var(--surface);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
 }
 
 /* Mini trend line under each KPI value (6-month sparkline, coloured per card) */
