@@ -275,3 +275,23 @@ def test_a_stop_moves_to_the_other_truck(login, admin_user, seller_user, live_se
     page.wait_for_selector("[data-route-stop]")
     second = page.locator("[data-route-truck]").nth(1).locator(".route-body strong").all_inner_texts()
     assert name in second and len(second) == 3
+
+
+def test_ticked_clients_move_to_tomorrow(login, admin_user, seller_user, live_server, db, paket):
+    from datetime import timedelta
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    a = stop(load, Client.objects.create(name="Anvar", owner=seller_user), paket)
+    stop(load, Client.objects.create(name="Botir", owner=seller_user), paket)
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    button = page.locator("[data-move-submit]")
+    assert button.is_disabled()
+    page.check(f'[data-move-pick][value="{a.pk}"]')
+    assert button.text_content().replace("\u00a0", " ") == "O'tkazish (1)"
+    assert not page.locator("[data-items-dirty]").is_visible()  # a tick isn't an edit
+    page.on("dialog", lambda d: d.accept())
+    button.click()
+    page.wait_for_selector("text=1 ta mijoz")
+    a.refresh_from_db()
+    assert a.load != load and a.load.date == load.date + timedelta(days=1)
+    assert list(load.items.values_list("client__name", flat=True)) == ["Botir"]

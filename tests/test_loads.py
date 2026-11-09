@@ -826,3 +826,77 @@ def test_both_clients_go_with_one_driver(client, admin_user, seller_user, load, 
     # …and back again.
     save_split(client, admin_user, load, resp, move=("East",))
     assert sorted(by_truck(route(client, admin_user, load))) == [["East"], ["West"]]
+
+
+# --- moving clients to another day ---------------------------------------------------
+
+def move(client, user, load, items, **extra):
+    client.force_login(user)
+    data = {"action": "move", "move": [i.pk for i in items]}
+    data.update(extra)
+    return client.post(f"/yetkazish/{load.pk}/", data)
+
+
+def test_clients_move_to_a_new_load_tomorrow(client, admin_user, seller_user, load, paket, plyonka):
+    a = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 5, 120), (plyonka, 2))
+    b = stop(load, make_client(seller_user, "Botir", 0.02), (paket, 3))
+    stays = stop(load, make_client(seller_user, "Qoldi", 0.03), (paket, 1))
+    page = detail(client, admin_user, load)
+    tomorrow = load.date + timedelta(days=1)
+    assert page.context["move_day"] == tomorrow and "data-move-pick" in page.content.decode()
+    resp = move(client, admin_user, load, [a, b], target="new", sana=tomorrow.isoformat())
+    assert resp.status_code == 302
+    new = Load.objects.exclude(pk=load.pk).get()
+    assert new.date == tomorrow and f"Yuk #{load.pk}" in new.note
+    assert sorted(new.items.values_list("client__name", flat=True)) == ["Anvar", "Botir"]
+    assert list(load.items.all()) == [stays]
+    # Products, prices and kg go with the client.
+    a.refresh_from_db()
+    assert sorted(a.lines.values_list("product__name", "rolls", "kg")) == [
+        ("Paket", 5, Decimal("120.000")), ("Plyonka", 2, None)]
+    assert AuditLog.objects.filter(target_type="Yuk", target_id=load.pk,
+                                   summary__contains=f"Yuk #{new.pk}").exists()
+
+
+def test_clients_join_a_planned_load_at_the_end_of_its_order(client, admin_user, seller_user,
+                                                             load, paket):
+    later = Load.objects.create(date=load.date + timedelta(days=2), created_by=admin_user,
+                                ordered_at=timezone.now())
+    first = stop(later, make_client(seller_user, "Bor", 0.01), (paket, 1))
+    LoadItem.objects.filter(pk=first.pk).update(position=1)
+    a = stop(load, make_client(seller_user, "Anvar", 0.02), (paket, 5))
+    LoadItem.objects.filter(pk=a.pk).update(route_group=1)
+    assert later in detail(client, admin_user, load).context["move_targets"]
+    move(client, admin_user, load, [a], target=str(later.pk))
+    a.refresh_from_db()
+    assert (a.load, a.position, a.route_group) == (later, 2, None)
+
+
+def test_a_client_already_in_the_target_stays(client, admin_user, seller_user, load, paket):
+    anvar = make_client(seller_user, "Anvar", 0.01)
+    later = Load.objects.create(date=load.date + timedelta(days=1), created_by=admin_user)
+    stop(later, anvar, (paket, 1))
+    a = stop(load, anvar, (paket, 5))
+    b = stop(load, make_client(seller_user, "Botir", 0.02), (paket, 3))
+    move(client, admin_user, load, [a, b], target=str(later.pk))
+    assert list(load.items.all()) == [a]
+    assert later.items.filter(client__name="Botir").exists()
+
+
+def test_a_sold_or_others_client_does_not_move(client, seller_user, other_seller, load, paket):
+    mine = stop(load, make_client(seller_user, "Mine", 0.01), (paket, 1))
+    theirs = stop(load, make_client(other_seller, "Theirs", 0.02), (paket, 1))
+    page = detail(client, seller_user, load).content.decode()
+    assert f'name="move" value="{mine.pk}"' in page and f'name="move" value="{theirs.pk}"' not in page
+    move(client, seller_user, load, [mine, theirs], target="new",
+         sana=(load.date + timedelta(days=1)).isoformat())
+    assert load.items.count() == 2 and Load.objects.count() == 1
+
+
+def test_moving_needs_a_tick_and_a_good_date(client, admin_user, seller_user, load, paket):
+    a = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 1))
+    move(client, admin_user, load, [], target="new", sana="2026-11-10")
+    move(client, admin_user, load, [a], target="new", sana="3026-01-01")
+    move(client, admin_user, load, [a], target=str(load.pk))
+    move(client, admin_user, load, [a], target="nonsense")
+    assert Load.objects.count() == 1 and list(load.items.all()) == [a]

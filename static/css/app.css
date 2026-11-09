@@ -6704,6 +6704,7 @@ input.is-bad:focus, .new-row:has(select.is-bad) .combobox-input:focus {
 }
 .stop.is-confirmed { background: var(--surface-2); }
 .stop-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.stop-head .stop-who { flex: 1 1 auto; }
 .stop-who { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .stop-who .cell-sub { overflow-wrap: anywhere; }
 .stop-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -6727,6 +6728,22 @@ tr:has(.line-drop input:checked) td:not(.row-actions) { text-decoration: line-th
 }
 .line-add:hover { background: var(--accent-soft); border-color: var(--accent); }
 .line-add svg { width: 14px; height: 14px; }
+/* «Boshqa kunga»: tick clients, choose a load, O'tkazish. */
+.move-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 12px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2);
+}
+.move-bar-label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; }
+.move-bar-label svg { width: 16px; height: 16px; color: var(--text-muted); }
+.move-bar select { width: auto; max-width: 280px; height: 32px; padding: 4px 8px; }
+.move-bar input[type=date] { width: auto; height: 32px; padding: 4px 8px; }
+.move-bar [hidden] { display: none; }
+.move-bar-hint { font-size: 13px; }
+.stop-head { position: relative; }
+.stop-pick { display: inline-grid; place-items: center; width: 22px; height: 22px; margin-top: 1px; cursor: pointer; }
+.stop-pick input { width: 16px; height: 16px; margin: 0; cursor: pointer; accent-color: var(--accent); }
+.stop.is-picked { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 .stop-collect { margin: 10px 0 0; font-size: 13px; color: var(--text-muted); }
 .new-rows-title { margin: 18px 0 0; font-size: 14px; }
 .new-stop select.new-stop-purpose { flex: 0 0 auto; width: auto; max-width: 200px; height: 40px; }

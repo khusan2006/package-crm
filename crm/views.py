@@ -10681,6 +10681,72 @@ def load_list(request):
     })
 
 
+def _move_load_items(request, load, items):
+    """«Boshqa kunga»: the ticked stops leave this load for another — a new load on
+    the chosen day (tomorrow by default), or one already planned. For the unexpected
+    day: the truck broke down, the client wasn't there. Each stop goes with its
+    products, prices and any kg; it joins the end of a saved order there and loses
+    its truck choice here. A client already in the target load stays put."""
+    picked = set(request.POST.getlist("move"))
+    chosen = [i for i in items if str(i.pk) in picked]
+    if not chosen:
+        messages.error(request, "Avval o'tkaziladigan mijozlarni belgilang.")
+        return redirect(_load_url(load))
+    locked = [i.client.name for i in chosen if not i.editable]
+    if locked:
+        messages.error(request, "O'tkazib bo'lmaydi (sotuvga aylangan yoki boshqa sotuvchiniki): "
+                                + ", ".join(locked))
+        return redirect(_load_url(load))
+
+    raw_target = request.POST.get("target", "")
+    target = None
+    if raw_target == "new":
+        day = _parse_date(request.POST.get("sana"))
+        if not day or not LOAD_FIRST_DAY <= day <= LOAD_LAST_DAY:
+            messages.error(request, "O'tkazish uchun to'g'ri sana tanlang.")
+            return redirect(_load_url(load))
+    elif _DIGITS.fullmatch(raw_target):
+        target = Load.objects.filter(pk=int(raw_target)).exclude(pk=load.pk).first()
+        if target is None:
+            messages.error(request, "Bunday yuk topilmadi — sahifa yangilandi.")
+            return redirect(_load_url(load))
+    else:
+        messages.error(request, "Qaysi yukka o'tkazishni tanlang.")
+        return redirect(_load_url(load))
+
+    with transaction.atomic():
+        if target is None:
+            target = Load.objects.create(date=day, created_by=request.user, strategy=load.strategy,
+                                         note=f"Yuk #{load.pk} ({load.date:%d.%m.%Y}) dan o'tkazilgan")
+            AuditLog.record(request.user, AuditLog.Action.CREATE, "Yuk", target.pk,
+                            f"Yuk #{target.pk} ({target.date:%d.%m.%Y}) yaratildi — "
+                            f"Yuk #{load.pk} dan o'tkazish uchun")
+        there = set(target.items.values_list("client_id", flat=True))
+        staying = [i for i in chosen if i.client_id in there]
+        moving = [i for i in chosen if i.client_id not in there]
+        position = (target.items.aggregate(m=Max("position"))["m"] or 0) if target.ordered_at else None
+        for item in moving:
+            if position is not None:
+                position += 1
+            LoadItem.objects.filter(pk=item.pk, load=load, sale__isnull=True).update(
+                load=target, position=position, route_group=None)
+        if moving:
+            names = ", ".join(i.client.name for i in moving)
+            AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
+                            f"Yuk #{load.pk}: Yuk #{target.pk} ({target.date:%d.%m.%Y}) ga "
+                            f"o'tkazildi — {names}"[:255])
+            AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", target.pk,
+                            f"Yuk #{target.pk}: Yuk #{load.pk} ({load.date:%d.%m.%Y}) dan "
+                            f"o'tkazildi — {names}"[:255])
+    if moving:
+        messages.success(request, f"{len(moving)} ta mijoz Yuk #{target.pk} "
+                                  f"({target.date:%d.%m.%Y}) ga o'tkazildi.")
+    if staying:
+        messages.warning(request, "Yuk #{} da allaqachon bor, shu yerda qoldi: {}".format(
+            target.pk, ", ".join(i.client.name for i in staying)))
+    return redirect(_load_url(load))
+
+
 def load_create(request):
     """«Yangi yuk»: one click makes an empty load for the day on screen and opens it —
     there is nothing to ask first (a note can be added later with «Tahrirlash»)."""
@@ -11414,6 +11480,11 @@ def _render_load_detail(request, load, items, posted_new=None):
         "products": Product.objects.filter(is_active=True).order_by("name"),
         "purposes": LoadItem.Purpose.choices,
         "size_suggestions": SIZE_SUGGESTIONS,
+        # Where ticked stops can go: a new load (tomorrow by default) or one planned.
+        "movable": any(i.editable for i in items),
+        "move_day": load.date + timedelta(days=1),
+        "move_targets": Load.objects.filter(date__gte=min(load.date, timezone.localdate()))
+                        .exclude(pk=load.pk).annotate(n=Count("items")).order_by("date", "pk")[:30],
         "micron_suggestions": MICRON_SUGGESTIONS,
         "new_rows": new_rows,
         "failed": posted_new is not None,
@@ -11440,6 +11511,8 @@ def load_detail(request, pk):
             return _set_strategy(request, load)
         if action == "items":
             return _save_load_items(request, load, items)
+        if action == "move":
+            return _move_load_items(request, load, items)
         return _save_load_order(request, load, items)
 
     return _render_load_detail(request, load, items)

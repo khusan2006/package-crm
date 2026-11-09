@@ -8,6 +8,7 @@
 {% endcomment %}
 <section class="stop{% if item.sale %} is-confirmed{% endif %}" id="stop-{{ item.pk|unlocalize }}">
   <header class="stop-head">
+    {% if item.editable %}<label class="stop-pick" title="Boshqa kunga o'tkazish uchun belgilash"><input type="checkbox" name="move" value="{{ item.pk|unlocalize }}" form="load-move" data-move-pick aria-label="{{ item.client.name }} — boshqa kunga o'tkazish uchun belgilash"></label>{% endif %}
     <div class="stop-who">
       <strong>{{ item.client.name }}</strong>
       <span class="cell-sub">
