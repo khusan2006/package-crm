@@ -240,3 +240,35 @@ def test_a_new_client_gets_a_second_product_with_metr_and_mikron(login, admin_us
     item = load.items.get()
     assert sorted(item.lines.values_list("product__name", "size", "micron", "rolls")) == [
         ("Paket katta", "", "", 4), ("ОҚ плёнка", "1,5м", "05", 2)]
+
+
+def test_a_stop_moves_to_the_other_truck(login, admin_user, seller_user, live_server, db, paket):
+    from crm.models import Truck
+    w = Warehouse.load()
+    w.latitude, w.longitude = Decimal("41.3"), Decimal("69.24")
+    w.save()
+    Truck.objects.create(name="Isuzu", capacity_kg=5000)
+    Truck.objects.create(name="Labo", capacity_kg=5000)
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user, strategy="fast")
+    for name, dlng in (("G1", "-0.05"), ("G2", "-0.04"), ("S1", "0.04"), ("S2", "0.05")):
+        c = Client.objects.create(name=name, owner=seller_user, latitude=Decimal("41.3"),
+                                  longitude=Decimal("69.24") + Decimal(dlng))
+        stop(load, c, paket, kg=Decimal("100"))
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    page.click("[data-route-build]")
+    page.wait_for_selector("[data-route-stop]")
+    cards = page.locator("[data-route-truck]")
+    moved = cards.nth(0).locator("[data-route-stop]").nth(1)
+    name = moved.locator(".route-body strong").inner_text()
+    moved.locator("[data-move-truck]").click()
+    assert cards.nth(0).locator("[data-route-stop]").count() == 1
+    assert cards.nth(1).locator("[data-route-stop]").count() == 3
+    # The last stop of a truck can't leave it.
+    assert cards.nth(0).locator("[data-move-truck]").is_disabled()
+    assert not page.locator("[data-route-share]").first.is_visible()
+    page.locator('button[form="route-form"]').click()
+    page.wait_for_selector("text=Tartib saqlandi")
+    page.wait_for_selector("[data-route-stop]")
+    second = page.locator("[data-route-truck]").nth(1).locator(".route-body strong").all_inner_texts()
+    assert name in second and len(second) == 3

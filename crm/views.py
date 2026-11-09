@@ -11270,11 +11270,22 @@ def _save_load_order(request, load, items):
         # The page was drawn before a client was added or removed — don't save half.
         messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
         return redirect(_load_url(load))
-    load.items.update(position=None)
+    # With two trucks, each stop also says which one it rides with (⇄ moves it).
+    routes = request.POST.get("routes", "")
+    groups = request.POST.getlist("group")
+    split = None
+    if routes == "2" and groups:
+        if len(groups) != len(order) or any(g not in ("0", "1") for g in groups):
+            messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
+            return redirect(_load_url(load))
+        split = [int(g) for g in groups]
+    load.items.update(position=None, route_group=None)
     for n, pk in enumerate(order, start=1):
-        LoadItem.objects.filter(pk=pk).update(position=n)
+        LoadItem.objects.filter(pk=pk).update(position=n,
+                                              route_group=split[n - 1] if split else None)
     load.ordered_at = timezone.now()
-    load.save(update_fields=["ordered_at"])
+    load.split_routes = 2 if split else None
+    load.save(update_fields=["ordered_at", "split_routes"])
     AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                     f"Yuk #{load.pk} tartibi saqlandi — {len(order)} ta manzil")
     messages.success(request, "Tartib saqlandi.")
@@ -11284,9 +11295,10 @@ def _save_load_order(request, load, items):
 def _reset_load_order(request, load):
     """«Tavsiya etilgan tartib» on a saved order: forget it, back to the suggestion."""
     if load.ordered_at:
-        load.items.update(position=None)
+        load.items.update(position=None, route_group=None)
         load.ordered_at = None
-        load.save(update_fields=["ordered_at"])
+        load.split_routes = None
+        load.save(update_fields=["ordered_at", "split_routes"])
         AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                         f"Yuk #{load.pk} tartibi o'chirildi — tavsiya etilgan tartibga qaytdi")
         messages.success(request, "Tavsiya etilgan tartibga qaytildi. Ma'qul bo'lsa, saqlang.")
@@ -11310,7 +11322,9 @@ def _load_groups(load, items, depot, dist, weights):
     from past sales — `weights`), following the load's strategy: fill one truck
     first, or two in parallel to finish sooner. When a product has neither kg nor an
     estimate — or the trucks can't take the load — it is one route with no truck. A
-    saved order is kept inside each route; the split is always worked out afresh."""
+    saved order is kept inside each route. A split saved by hand (stops moved between
+    the trucks with ⇄) is kept while the system still sends that many trucks; a stop
+    added since rides where the system put it."""
     by_pk = {i.pk: i for i in items}
     stops = [routing.Stop(i.pk, *_point(i.client), weights[i.pk][0]) for i in items]
     groups, error = None, ""
@@ -11323,6 +11337,15 @@ def _load_groups(load, items, depot, dist, weights):
             error = str(err)
     if groups is None:
         groups = [(None, routing.order_stops(depot, stops, dist=dist)[0])]
+    if load.ordered_at and load.split_routes and len(groups) == load.split_routes:
+        auto = {st.key: n for n, (_, group) in enumerate(groups) for st in group}
+        hand = [[] for _ in groups]
+        for _, group in groups:
+            for st in group:
+                chosen = by_pk[st.key].route_group
+                hand[chosen if chosen is not None and chosen < len(hand) else auto[st.key]].append(st)
+        # A truck left with nobody goes nowhere.
+        groups = [(truck, group) for (truck, _), group in zip(groups, hand) if group]
     if load.ordered_at:
         # The saved order within each route; anyone without a place (added after
         # saving) keeps the suggested place after the saved ones.

@@ -2611,6 +2611,11 @@ class Load(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     # When the stop order was last saved; empty while the page only suggests one.
     ordered_at = models.DateTimeField("Tartib saqlangan", null=True, blank=True)
+    # How many trucks the route had when stops were moved between them by hand and
+    # saved. The hand split holds while the system still sends that many trucks;
+    # if it sends another number (other kg, other strategy) it decides afresh.
+    split_routes = models.PositiveSmallIntegerField("Qo'lda bo'lingan mashinalar", null=True,
+                                                    blank=True)
 
     class Meta:
         ordering = ["-date", "created_at"]
@@ -2644,6 +2649,9 @@ class LoadItem(models.Model):
         related_name="load_item", verbose_name="Sotuv",
     )
     position = models.PositiveIntegerField("Tartib", null=True, blank=True)
+    # Which of the load's trucks this stop rides with (0, 1), when the split was set
+    # by hand (⇄ on the route) and saved; empty means the system decides.
+    route_group = models.PositiveSmallIntegerField("Mashina", null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

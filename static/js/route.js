@@ -1,8 +1,9 @@
 /* Yetkazish: hand corrections to a load's route before it is saved.
  *
- * ↑ / ↓ move a stop. Each stop carries a hidden input with its load row, and the
- * form posts them in the order they stand, so "Saqlash" saves exactly what is on
- * screen. The map and the km are measured by the server once the order is saved.
+ * ↑ / ↓ move a stop; with two trucks, ⇄ moves it to the other one (to the end of
+ * its list). Each stop carries hidden inputs with its load row and its truck, and
+ * the form posts them in the order they stand, so "Saqlash" saves exactly what is
+ * on screen. A truck always keeps at least one stop. The map and the km are measured by the server once the order is saved.
  *
  * The route is fetched by «Marshrut tuzish» after the page loads, so this wires
  * itself up on `route:loaded` (fired with the inserted fragment), not on page load.
@@ -17,9 +18,26 @@
       // Nothing above the first stop or below the last: those buttons are off.
       li.querySelector('[data-move="up"]').disabled = i === 0;
       li.querySelector('[data-move="down"]').disabled = i === stops.length - 1;
+      var swap = li.querySelector('[data-move-truck]');
+      if (swap) { swap.disabled = stops.length < 2; }
     });
     var count = card.querySelector('[data-route-count]');
     if (count) { count.textContent = stops.length; }
+    // The truck's kg follows its stops, so a move that overloads it shows at once.
+    var load = card.querySelector('[data-route-load]');
+    if (load) {
+      var kg = 0;
+      stops.forEach(function (li) { kg += parseFloat(li.getAttribute('data-kg')) || 0; });
+      var capacity = parseFloat(load.getAttribute('data-capacity')) || 0;
+      load.querySelector('[data-route-kg]').textContent =
+        Math.round(kg).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0');
+      load.querySelector('[data-route-load-bar]').style.width =
+        (capacity ? Math.min(100, Math.round(kg / capacity * 100)) : 0) + '%';
+      var over = capacity > 0 && kg > capacity;
+      load.classList.toggle('is-over', over);
+      var note = card.querySelector('[data-route-over]');
+      if (note) { note.hidden = !over; }
+    }
   }
 
   function init(scope) {
@@ -38,6 +56,24 @@
       form.querySelectorAll('[data-route-share]').forEach(function (el) { el.hidden = true; });
       form.querySelectorAll('[data-route-share-stale]').forEach(function (el) { el.hidden = false; });
     }
+
+    // ⇄: the stop goes to the end of the other truck's list.
+    form.addEventListener('click', function (e) {
+      var swap = e.target.closest('[data-move-truck]');
+      if (!swap) { return; }
+      e.preventDefault();
+      var li = swap.closest('[data-route-stop]');
+      var cards = Array.prototype.slice.call(form.querySelectorAll('[data-route-truck]'));
+      var from = li.closest('[data-route-truck]');
+      var to = cards[(cards.indexOf(from) + 1) % cards.length];
+      if (to === from || from.querySelectorAll('[data-route-stop]').length < 2) { return; }
+      to.querySelector('.route-stops').insertBefore(li, to.querySelector('[data-route-end]'));
+      li.querySelector('[data-route-group]').value = cards.indexOf(to);
+      renumber(from);
+      renumber(to);
+      changed();
+      swap.focus();
+    });
 
     form.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-move]');

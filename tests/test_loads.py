@@ -722,3 +722,84 @@ def test_product_options_say_which_variants_they_come_in(client, admin_user, loa
     assert f'value="{oq.pk}" data-price="22000" data-size data-micron' in body
     assert f'value="{paket.pk}" data-price="15000">' in body
     assert 'id="load-sizes"' in body and '<option value="1,5м">' in body
+
+
+# --- moving a stop to the other truck by hand ---------------------------------------
+
+@pytest.fixture
+def two_trucks(load, seller_user, warehouse, paket):
+    """«Tezroq tugatish» with two trucks: the system sends the G's one way, the S's
+    the other."""
+    Truck.objects.create(name="A", capacity_kg=5000)
+    Truck.objects.create(name="B", capacity_kg=5000)
+    load.strategy = "fast"
+    load.save(update_fields=["strategy"])
+    return {name: stop(load, make_client(seller_user, name, dlng), (paket, 5, 100))
+            for name, dlng in (("G1", -0.05), ("G2", -0.04), ("S1", 0.04), ("S2", 0.05))}
+
+
+def by_truck(resp):
+    return [sorted(s["client"].name for s in r["stops"]) for r in resp.context["routes"]]
+
+
+def save_split(client, user, load, resp, move=()):
+    """Post the route as drawn, with the stops named in `move` sent to the other truck."""
+    stops, groups = [], []
+    for n, r in enumerate(resp.context["routes"]):
+        for s in r["stops"]:
+            stops.append(s["item"].pk)
+            groups.append(str(1 - n if s["client"].name in move else n))
+    client.force_login(user)
+    return client.post(f"/yetkazish/{load.pk}/", {"action": "save", "stop": stops,
+                                                  "group": groups, "routes": "2"})
+
+
+def test_a_stop_is_moved_to_the_other_truck_and_stays_there(client, admin_user, load, two_trucks):
+    first = route(client, admin_user, load)
+    assert sorted(by_truck(first)) == [["G1", "G2"], ["S1", "S2"]]
+    assert "data-move-truck" in first.content.decode()
+    save_split(client, admin_user, load, first, move=("G2",))
+    again = route(client, admin_user, load)
+    assert sorted(by_truck(again)) == [["G1"], ["G2", "S1", "S2"]]
+    # The same truck keeps its name: the one G1 was on.
+    trucks = {tuple(sorted(s["client"].name for s in r["stops"])): r["truck"].name
+              for r in again.context["routes"]}
+    assert trucks[("G1",)] == {tuple(sorted(s["client"].name for s in r["stops"])): r["truck"].name
+                               for r in first.context["routes"]}[("G1", "G2")]
+
+
+def test_going_back_to_the_suggestion_forgets_the_hand_split(client, admin_user, load, two_trucks):
+    save_split(client, admin_user, load, route(client, admin_user, load), move=("G2",))
+    client.post(f"/yetkazish/{load.pk}/", {"action": "reset"})
+    load.refresh_from_db()
+    assert load.split_routes is None
+    assert not load.items.filter(route_group__isnull=False).exists()
+    assert sorted(by_truck(route(client, admin_user, load))) == [["G1", "G2"], ["S1", "S2"]]
+
+
+def test_one_truck_again_drops_the_hand_split(client, admin_user, load, two_trucks):
+    save_split(client, admin_user, load, route(client, admin_user, load), move=("G2",))
+    client.post(f"/yetkazish/{load.pk}/", {"action": "strategy", "strategy": "fill"})
+    resp = route(client, admin_user, load)
+    assert len(by_truck(resp)) == 1 and "data-move-truck" not in resp.content.decode()
+
+
+def test_a_stop_added_after_the_split_goes_where_the_system_puts_it(client, admin_user, seller_user,
+                                                                    load, two_trucks, paket):
+    save_split(client, admin_user, load, route(client, admin_user, load), move=("G2",))
+    stop(load, make_client(seller_user, "G3", -0.045), (paket, 5, 100))
+    assert sorted(by_truck(route(client, admin_user, load))) == [["G1", "G3"], ["G2", "S1", "S2"]]
+
+
+def test_a_crafted_split_is_refused(client, admin_user, load, two_trucks):
+    resp = route(client, admin_user, load)
+    stops = [s["item"].pk for r in resp.context["routes"] for s in r["stops"]]
+    client.force_login(admin_user)
+    client.post(f"/yetkazish/{load.pk}/", {"action": "save", "stop": stops,
+                                           "group": ["0", "5", "1", "1"], "routes": "2"})
+    load.refresh_from_db()
+    assert load.ordered_at is None and load.split_routes is None
+
+
+def test_one_truck_has_no_swap_button(client, admin_user, load, three):
+    assert "data-move-truck" not in route(client, admin_user, load).content.decode()

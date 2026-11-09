@@ -59,7 +59,7 @@ belong to rather than as loose lines above it.{% endcomment %}
     <span class="route-summary-sub">{{ load.ordered_at|date:"d.m.Y H:i" }}</span>
     {% else %}
     <strong class="route-summary-value"><span class="badge badge-warning">Taklif</span></strong>
-    <span class="route-summary-sub">kerak bo'lsa ↑ ↓ bilan o'zgartirib, saqlang</span>
+    <span class="route-summary-sub">kerak bo'lsa ↑ ↓{% if routes|length > 1 %} va ⇄ (boshqa mashinaga){% endif %} bilan o'zgartirib, saqlang</span>
     {% endif %}
     <span class="route-summary-sub route-dirty" data-route-dirty hidden>O'zgartirildi — saqlang. Xarita va km saqlangach yangilanadi.</span>
   </div>
@@ -87,6 +87,7 @@ belong to rather than as loose lines above it.{% endcomment %}
 <form method="post" id="route-form" action="{% url 'load_detail' load.pk %}" data-route-form>
 {% csrf_token %}
 <input type="hidden" name="action" value="save">
+<input type="hidden" name="routes" value="{{ routes|length }}">
 <div class="route-grid">
   {% for r in routes %}
   <section class="card route-card" style="--route: var({{ r.color }});" data-route-truck>
@@ -95,17 +96,18 @@ belong to rather than as loose lines above it.{% endcomment %}
       <span class="muted"><span data-route-count>{{ r.stops|length }}</span> ta manzil · ≈ {{ r.km|floatformat:1 }} km</span>
     </div>
     {% if r.truck %}
-    <div class="route-load{% if r.over %} is-over{% endif %}" title="Yuk / sig'im">
-      <div class="route-load-bar"><span style="width: {{ r.load_pct }}%"></span></div>
-      <span>{% if estimated %}≈ {% endif %}{{ r.kg|floatformat:"0g" }} / {{ r.truck.capacity_kg|floatformat:"0g" }} kg</span>
+    <div class="route-load{% if r.over %} is-over{% endif %}" title="Yuk / sig'im" data-route-load data-capacity="{{ r.truck.capacity_kg|unlocalize }}">
+      <div class="route-load-bar"><span style="width: {{ r.load_pct }}%" data-route-load-bar></span></div>
+      <span>{% if estimated %}≈ {% endif %}<span data-route-kg>{{ r.kg|floatformat:"0g" }}</span> / {{ r.truck.capacity_kg|floatformat:"0g" }} kg</span>
     </div>
-    {% if r.over %}<p class="route-over-note">Mashina sig'imidan oshib ketdi.</p>{% endif %}
+    <p class="route-over-note" data-route-over{% if not r.over %} hidden{% endif %}>Mashina sig'imidan oshib ketdi.</p>
     {% endif %}
     <ol class="route-stops">
       <li class="route-stop route-stop--depot"><span class="route-n">O</span><span>{{ warehouse.name }} — jo'nash</span></li>
       {% for s in r.stops %}
-      <li class="route-stop" data-route-stop>
+      <li class="route-stop" data-route-stop data-kg="{{ s.kg|unlocalize }}">
         <input type="hidden" name="stop" value="{{ s.item.pk|unlocalize }}">
+        <input type="hidden" name="group" value="{{ forloop.parentloop.counter0 }}" data-route-group>
         <span class="route-n" data-route-n>{{ s.n }}</span>
         <span class="route-body">
           {% if s.item.mine %}<a href="{% url 'client_location' s.client.pk %}" data-modal><strong>{{ s.client.name }}</strong></a>{% else %}<strong>{{ s.client.name }}</strong>{% endif %}
@@ -115,6 +117,7 @@ belong to rather than as loose lines above it.{% endcomment %}
         <span class="route-side">
           <span class="route-kg">{% if s.item.delivers %}{{ s.rolls }} rulon<span class="cell-sub">{% if s.unknown %}kg noma'lum{% else %}{% if s.estimated %}≈ {% endif %}{{ s.kg|floatformat:"0g" }} kg{% endif %}</span>{% endif %}{% if s.item.collects %}<span class="cell-sub route-collect">pul olish</span>{% endif %}</span>
           <span class="route-moves">
+            {% if routes|length > 1 %}<button type="button" class="icon-action route-swap" data-move-truck title="Boshqa mashinaga o'tkazish" aria-label="{{ s.client.name }} — boshqa mashinaga"{% if r.stops|length < 2 %} disabled{% endif %}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>{% endif %}
             <button type="button" class="icon-action" data-move="up" title="Oldinroq" aria-label="{{ s.client.name }} — oldinroq"{% if forloop.first %} disabled{% endif %}>↑</button>
             <button type="button" class="icon-action" data-move="down" title="Keyinroq" aria-label="{{ s.client.name }} — keyinroq"{% if forloop.last %} disabled{% endif %}>↓</button>
           </span>
