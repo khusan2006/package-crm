@@ -232,14 +232,29 @@
   /* ---------- «Boshqa kunga» dialog ---------- */
   // It arrives in the page's modal, so it is wired by delegation: the button says
   // how many clients go and waits for one; touching the date picks «Boshqa sana».
+  // A client box is ticked when all its products are, half-ticked when some are; it
+  // is posted (name=move) only when ticked — the whole client goes.
   var syncMoveDialog = function (form) {
-    var n = form.querySelectorAll('input[name=move]:checked').length;
+    var whole = 0, part = 0;
+    form.querySelectorAll('[data-move-client]').forEach(function (row) {
+      var box = row.querySelector('[data-move-whole]');
+      var lines = row.querySelectorAll('[data-move-line]');
+      var on = row.querySelectorAll('[data-move-line]:checked').length;
+      if (lines.length) {
+        box.indeterminate = on > 0 && on < lines.length;
+        if (on === lines.length) { box.checked = true; } else if (on < lines.length) { box.checked = false; }
+      }
+      if (box.checked) { whole += 1; } else if (box.indeterminate) { part += 1; }
+    });
+    var n = whole + part;
     var submit = form.querySelector('[data-move-submit]');
     submit.disabled = n === 0;
-    submit.textContent = n ? n + ' ta mijozni o\'tkazish' : 'Mijozni belgilang';
+    submit.textContent = !n ? 'Mijozni belgilang'
+      : part ? n + ' ta mijozni o\'tkazish (' + part + ' tasi qisman)'
+      : n + ' ta mijozni o\'tkazish';
     var all = form.querySelector('[data-move-all]');
     if (all) {
-      all.textContent = n === form.querySelectorAll('input[name=move]').length
+      all.textContent = whole === form.querySelectorAll('[data-move-whole]').length
         ? 'Hammasini olib tashlash' : 'Hammasini belgilash';
     }
   };
@@ -248,6 +263,11 @@
     if (!form) { return; }
     if (e.target.matches('[data-move-other]')) {
       form.querySelector('[data-move-other-radio]').checked = true;
+    }
+    if (e.target.matches('[data-move-whole]')) {
+      // The client ticked or unticked: all its products follow.
+      e.target.closest('[data-move-client]').querySelectorAll('[data-move-line]')
+        .forEach(function (b) { b.checked = e.target.checked; });
     }
     syncMoveDialog(form);
   });
@@ -260,8 +280,9 @@
     var all = e.target.closest('[data-move-all]');
     if (!all) { return; }
     var form = all.closest('[data-move-dialog]');
-    var boxes = form.querySelectorAll('input[name=move]');
-    var every = Array.prototype.every.call(boxes, function (b) { return b.checked; });
+    var boxes = form.querySelectorAll('[data-move-whole], [data-move-line]');
+    var every = Array.prototype.every.call(form.querySelectorAll('[data-move-whole]'),
+      function (b) { return b.checked; });
     boxes.forEach(function (b) { b.checked = !every; });
     syncMoveDialog(form);
   });

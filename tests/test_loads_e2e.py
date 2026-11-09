@@ -301,3 +301,28 @@ def test_a_client_moves_to_tomorrow_from_its_own_icon(login, admin_user, seller_
     a.refresh_from_db()
     assert a.load != load and a.load.date == load.date + timedelta(days=1)
     assert list(load.items.values_list("client__name", flat=True)) == ["Botir"]
+
+
+def test_one_product_of_a_client_moves_to_tomorrow(login, admin_user, seller_user, live_server,
+                                                   db, paket):
+    film = Product.objects.create(name="Plyonka", sku="P2", cost_price=1, price=Decimal("26000"))
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    a = stop(load, Client.objects.create(name="Anvar", owner=seller_user), paket)
+    LoadLine.objects.create(item=a, product=film, rolls=2, price=film.price)
+    bag = a.lines.get(product=paket)
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    page.click(f'#stop-{a.pk} a[href*="boshqa-kunga"]')
+    dialog = page.locator("[data-move-dialog]")
+    dialog.wait_for()
+    whole = dialog.locator("[data-move-whole]")
+    assert whole.is_checked()
+    dialog.locator(f'[data-move-line][value="{bag.pk}"]').uncheck()   # the bags stay today
+    assert whole.evaluate("el => el.indeterminate && !el.checked")
+    submit = dialog.locator("[data-move-submit]")
+    assert submit.inner_text() == "1 ta mijozni o'tkazish (1 tasi qisman)"
+    submit.click()
+    page.wait_for_selector("text=1 tasi qisman")
+    assert list(a.lines.values_list("product__name", flat=True)) == ["Paket katta"]
+    moved = LoadLine.objects.get(product=film)
+    assert moved.item.load != load and moved.item.client == a.client

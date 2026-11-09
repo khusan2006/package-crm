@@ -6742,9 +6742,16 @@ tr:has(.line-drop input:checked) td:not(.row-actions) { text-decoration: line-th
   border: 1px solid var(--border); border-radius: var(--r-sm);
 }
 .move-who-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer; }
-.move-who-row + .move-who-row { border-top: 1px solid var(--border); }
+.move-who-client + .move-who-client { border-top: 1px solid var(--border); }
+.move-who-lines { display: flex; flex-direction: column; padding: 0 12px 8px 38px; margin-top: -4px; }
+.move-who-line {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px;
+  padding: 4px 0; font-size: 13px; cursor: pointer;
+}
+.move-who-line input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
+.move-who-line:has(input:checked) > span:first-of-type { font-weight: 600; }
 .move-who-row:hover { background: var(--surface-2); }
-.move-who-row:has(input:checked) { background: var(--accent-soft); }
+.move-who-client:has(input:checked) { background: var(--accent-soft); }
 .move-who-row input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); flex: none; }
 .move-who-name { display: flex; flex-direction: column; min-width: 0; }
 .move-who-name strong { overflow-wrap: anywhere; }

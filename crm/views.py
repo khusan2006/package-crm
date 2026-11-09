@@ -10697,9 +10697,11 @@ def load_move(request, pk):
     """«Boshqa kunga»: a dialog to move clients off this load, for the unexpected
     day (a truck broke down, a client wasn't there). Who — the clients this user may
     edit, the one it was opened from already ticked; where — a new load tomorrow, a
-    load already planned, or a new load on another date. Each client goes with its
-    products, prices and any kg; it joins the end of a saved order there and loses
-    its truck choice here. A client already in the target load stays put."""
+    load already planned, or a new load on another date. A client goes with its
+    products, prices and any kg — or only some of its products (the unticked ones
+    stay: the order is divided between the days). It joins the end of a saved order
+    there and loses its truck choice here. A client already in the target load gets
+    the products added to its stop there, unless that stop is already a sale."""
     load = get_object_or_404(Load, pk=pk)
     items = [i for i in _load_items(load, request.user) if i.editable]
     if not items:
@@ -10716,7 +10718,12 @@ def load_move(request, pk):
     for item in items:
         item.roll_sum = sum(l.rolls for l in item.line_list)
 
-    def again(error, picked, target, day):
+    def again(error, picked, target, day, lines=()):
+        # A ticked client has all its products ticked; otherwise the ones ticked.
+        for item in items:
+            item.picked = str(item.pk) in picked
+            for line in item.line_list:
+                line.picked = item.picked or str(line.pk) in lines
         context.update(error=error, picked=picked, target=target, other_day=day)
         template = "crm/_load_move_modal.html" if is_ajax(request) else "crm/load_move.html"
         return render(request, template, context, status=422 if error and is_ajax(request) else 200)
@@ -10729,25 +10736,43 @@ def load_move(request, pk):
                      str(planned.pk) if planned else "tomorrow", "")
 
     picked = set(request.POST.getlist("move"))
+    picked_lines = set(request.POST.getlist("line"))
     target_raw = request.POST.get("target", "")
     other_raw = request.POST.get("sana", "")
-    chosen = [i for i in items if str(i.pk) in picked]
-    if not chosen:
-        return again("Kimni o'tkazish kerak — kamida bitta mijozni belgilang.", picked, target_raw, other_raw)
+    # What goes: whole stops, and parts of stops (some of their products).
+    whole, parts = [], []
+    for item in items:
+        if str(item.pk) in picked:
+            whole.append(item)
+            continue
+        lines = [l for l in item.line_list if str(l.pk) in picked_lines]
+        if not lines:
+            continue
+        if len(lines) == len(item.line_list) and not item.collects:
+            whole.append(item)  # every product of a delivery: the stop itself goes
+        else:
+            parts.append((item, lines))
+
+    def refuse(error, target=target_raw):
+        return again(error, picked, target, other_raw, picked_lines)
+
+    if not whole and not parts:
+        return refuse("Nimani o'tkazish kerak — mijozni yoki uning mahsulotini belgilang.")
     target, day = None, None
     if target_raw == "tomorrow":
         day = tomorrow
     elif target_raw == "other":
         day = _parse_date(other_raw)
         if not day or not LOAD_FIRST_DAY <= day <= LOAD_LAST_DAY:
-            return again("Sanani tanlang.", picked, target_raw, other_raw)
+            return refuse("Sanani tanlang.")
     elif _DIGITS.fullmatch(target_raw):
         target = Load.objects.filter(pk=int(target_raw)).exclude(pk=load.pk).first()
         if target is None:
-            return again("Bu yuk endi yo'q — boshqasini tanlang.", picked, "tomorrow", other_raw)
+            return refuse("Bu yuk endi yo'q — boshqasini tanlang.", "tomorrow")
     else:
-        return again("Qayerga o'tkazishni tanlang.", picked, "tomorrow", other_raw)
+        return refuse("Qayerga o'tkazishni tanlang.", "tomorrow")
 
+    moved, staying = [], []
     with transaction.atomic():
         if target is None:
             target = Load.objects.create(date=day, created_by=request.user, strategy=load.strategy,
@@ -10755,30 +10780,68 @@ def load_move(request, pk):
             AuditLog.record(request.user, AuditLog.Action.CREATE, "Yuk", target.pk,
                             f"Yuk #{target.pk} ({target.date:%d.%m.%Y}) yaratildi — "
                             f"Yuk #{load.pk} dan o'tkazish uchun")
-        there = set(target.items.values_list("client_id", flat=True))
-        staying = [i for i in chosen if i.client_id in there]
-        moving = [i for i in chosen if i.client_id not in there]
-        position = (target.items.aggregate(m=Max("position"))["m"] or 0) if target.ordered_at else None
-        for item in moving:
-            if position is not None:
-                position += 1
-            LoadItem.objects.filter(pk=item.pk, load=load, sale__isnull=True).update(
-                load=target, position=position, route_group=None)
-        if moving:
-            names = ", ".join(i.client.name for i in moving)
+        there = {i.client_id: i for i in target.items.select_for_update()}
+        position = [(target.items.aggregate(m=Max("position"))["m"] or 0) if target.ordered_at else None]
+
+        def next_position():
+            if position[0] is None:
+                return None
+            position[0] += 1
+            return position[0]
+
+        for item, lines in [(i, list(i.line_list)) for i in whole] + parts:
+            is_whole = item in whole
+            existing = there.get(item.client_id)
+            if existing is not None and existing.sale_id:
+                staying.append(item.client.name)
+                continue
+            line_pks = [l.pk for l in lines]
+            if existing is not None:
+                # Already going that day: the products join its stop there.
+                LoadLine.objects.filter(pk__in=line_pks).update(item=existing)
+                carried = item.purpose if is_whole else LoadItem.Purpose.DELIVER
+                existing.purpose = _joined_purpose(existing.purpose, carried)
+                existing.save(update_fields=["purpose"])
+                if is_whole:
+                    item.delete()
+            elif is_whole:
+                LoadItem.objects.filter(pk=item.pk, load=load, sale__isnull=True).update(
+                    load=target, position=next_position(), route_group=None)
+            else:
+                there[item.client_id] = LoadItem.objects.create(
+                    load=target, client=item.client, purpose=LoadItem.Purpose.DELIVER,
+                    position=next_position())
+                LoadLine.objects.filter(pk__in=line_pks).update(item=there[item.client_id])
+            if not is_whole and len(lines) == len(item.line_list):
+                # «Yetkazish + pul olish» with every product gone: only the money is left.
+                item.purpose = LoadItem.Purpose.COLLECT
+                item.save(update_fields=["purpose"])
+            moved.append(item.client.name if is_whole else
+                         f"{item.client.name} ({', '.join(l.product.name for l in lines)})")
+        if moved:
             AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                             f"Yuk #{load.pk}: Yuk #{target.pk} ({target.date:%d.%m.%Y}) ga "
-                            f"o'tkazildi — {names}"[:255])
+                            f"o'tkazildi — {'; '.join(moved)}"[:255])
             AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", target.pk,
                             f"Yuk #{target.pk}: Yuk #{load.pk} ({load.date:%d.%m.%Y}) dan "
-                            f"o'tkazildi — {names}"[:255])
-    if moving:
-        messages.success(request, f"{len(moving)} ta mijoz Yuk #{target.pk} "
-                                  f"({target.date:%d.%m.%Y}) ga o'tkazildi.")
+                            f"o'tkazildi — {'; '.join(moved)}"[:255])
+    if moved:
+        split = len([1 for item, _ in parts if item.client.name not in staying])
+        messages.success(request, f"{len(moved)} ta mijoz Yuk #{target.pk} ({target.date:%d.%m.%Y}) "
+                                  f"ga o'tkazildi" + (f", {split} tasi qisman." if split else "."))
     if staying:
-        messages.warning(request, "Yuk #{} da allaqachon bor, shu yerda qoldi: {}".format(
-            target.pk, ", ".join(i.client.name for i in staying)))
+        messages.warning(request, f"Yuk #{target.pk} da bu mijoz sotuvga aylangan — shu yerda qoldi: "
+                                  + ", ".join(staying))
     return form_success(request, _load_url(load))
+
+
+def _joined_purpose(a, b):
+    """One stop doing what two did: it delivers if either did, collects if either did."""
+    delivers = any(p != LoadItem.Purpose.COLLECT for p in (a, b))
+    collects = any(p != LoadItem.Purpose.DELIVER for p in (a, b))
+    if delivers and collects:
+        return LoadItem.Purpose.BOTH
+    return LoadItem.Purpose.DELIVER if delivers else LoadItem.Purpose.COLLECT
 
 
 def load_create(request):

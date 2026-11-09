@@ -892,17 +892,6 @@ def test_clients_join_a_planned_load_at_the_end_of_its_order(client, admin_user,
     assert (a.load, a.position, a.route_group) == (later, 2, None)
 
 
-def test_a_client_already_in_the_target_stays(client, admin_user, seller_user, load, paket):
-    anvar = make_client(seller_user, "Anvar", 0.01)
-    later = Load.objects.create(date=load.date + timedelta(days=1), created_by=admin_user)
-    stop(later, anvar, (paket, 1))
-    a = stop(load, anvar, (paket, 5))
-    b = stop(load, make_client(seller_user, "Botir", 0.02), (paket, 3))
-    move(client, admin_user, load, [a, b], target=str(later.pk))
-    assert list(load.items.all()) == [a]
-    assert later.items.filter(client__name="Botir").exists()
-
-
 def test_a_sold_or_others_client_does_not_move(client, seller_user, other_seller, load, paket):
     mine = stop(load, make_client(seller_user, "Mine", 0.01), (paket, 1))
     theirs = stop(load, make_client(other_seller, "Theirs", 0.02), (paket, 1))
@@ -910,7 +899,7 @@ def test_a_sold_or_others_client_does_not_move(client, seller_user, other_seller
     dialog = client.get(f"/yetkazish/{load.pk}/boshqa-kunga/").content.decode()
     assert f'value="{mine.pk}"' in dialog and f'value="{theirs.pk}"' not in dialog
     resp = move(client, seller_user, load, [theirs], target="tomorrow")
-    assert resp.status_code == 200 and "kamida bitta" in resp.content.decode()
+    assert resp.status_code == 200 and "belgilang" in resp.content.decode()
     assert load.items.count() == 2 and Load.objects.count() == 1
 
 
@@ -940,3 +929,85 @@ def test_a_load_planned_for_tomorrow_is_the_default(client, admin_user, seller_u
     client.force_login(admin_user)
     body = client.get(f"/yetkazish/{load.pk}/boshqa-kunga/?mijoz={a.pk}").content.decode()
     assert f'value="{planned.pk}" checked' in body and 'value="tomorrow" checked' not in body
+
+
+# --- dividing a client's order between days ------------------------------------------
+
+def test_some_products_go_tomorrow_the_rest_stay(client, admin_user, seller_user, load, paket, plyonka):
+    a = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 5), (plyonka, 2))
+    film = a.lines.get(product=plyonka)
+    client.force_login(admin_user)
+    dialog = client.get(f"/yetkazish/{load.pk}/boshqa-kunga/?mijoz={a.pk}").content.decode()
+    assert f'name="line" value="{film.pk}" checked' in dialog  # ticked with its client
+    resp = client.post(f"/yetkazish/{load.pk}/boshqa-kunga/", {"line": [film.pk], "target": "tomorrow"})
+    assert resp.status_code == 302
+    new = Load.objects.exclude(pk=load.pk).get()
+    there = new.items.get()
+    assert (there.client, there.purpose) == (a.client, DELIVER)
+    assert list(there.lines.values_list("product__name", "rolls")) == [("Plyonka", 2)]
+    assert list(a.lines.values_list("product__name", flat=True)) == ["Paket"]
+    assert AuditLog.objects.filter(target_id=load.pk, summary__contains="Anvar (Plyonka)").exists()
+
+
+def test_products_join_the_clients_stop_already_there(client, admin_user, seller_user, load,
+                                                      paket, plyonka):
+    anvar = make_client(seller_user, "Anvar", 0.01)
+    later = Load.objects.create(date=load.date + timedelta(days=1), created_by=admin_user)
+    waiting = stop(later, anvar, purpose=COLLECT)
+    a = stop(load, anvar, (paket, 5), (plyonka, 2))
+    client.force_login(admin_user)
+    client.post(f"/yetkazish/{load.pk}/boshqa-kunga/",
+                {"line": [a.lines.get(product=paket).pk], "target": str(later.pk)})
+    waiting.refresh_from_db()
+    assert waiting.purpose == BOTH  # it collected; now it delivers too
+    assert list(waiting.lines.values_list("product__name", flat=True)) == ["Paket"]
+    assert list(a.lines.values_list("product__name", flat=True)) == ["Plyonka"]
+
+
+def test_a_whole_client_joins_its_stop_already_there(client, admin_user, seller_user, load, paket):
+    anvar = make_client(seller_user, "Anvar", 0.01)
+    later = Load.objects.create(date=load.date + timedelta(days=1), created_by=admin_user)
+    there = stop(later, anvar, (paket, 1))
+    a = stop(load, anvar, (paket, 5), purpose=BOTH)
+    move(client, admin_user, load, [a], target=str(later.pk))
+    assert not LoadItem.objects.filter(pk=a.pk).exists()
+    there.refresh_from_db()
+    assert there.purpose == BOTH and sorted(there.lines.values_list("rolls", flat=True)) == [1, 5]
+
+
+def test_moving_every_product_of_a_both_stop_leaves_the_money(client, admin_user, seller_user,
+                                                              load, paket, plyonka):
+    a = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 5), (plyonka, 2), purpose=BOTH)
+    client.force_login(admin_user)
+    client.post(f"/yetkazish/{load.pk}/boshqa-kunga/",
+                {"line": list(a.lines.values_list("pk", flat=True)), "target": "tomorrow"})
+    a.refresh_from_db()
+    assert a.load == load and a.purpose == COLLECT and not a.lines.exists()
+
+
+def test_every_product_ticked_moves_the_whole_delivery(client, admin_user, seller_user, load,
+                                                       paket, plyonka):
+    a = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 5), (plyonka, 2))
+    client.force_login(admin_user)
+    client.post(f"/yetkazish/{load.pk}/boshqa-kunga/",
+                {"line": list(a.lines.values_list("pk", flat=True)), "target": "tomorrow"})
+    a.refresh_from_db()
+    assert a.load != load and a.lines.count() == 2
+
+
+def test_a_sold_stop_there_takes_nothing(client, admin_user, seller_user, load, paket, weighed):
+    later = Load.objects.create(date=load.date + timedelta(days=1), created_by=admin_user)
+    save(client, admin_user, load, confirm=str(weighed.pk))  # Anvar becomes a sale here…
+    LoadItem.objects.filter(pk=weighed.pk).update(load=later)  # …and sits in tomorrow's load
+    again = stop(load, weighed.client, (paket, 2))
+    move(client, admin_user, load, [again], target=str(later.pk))
+    assert again.load == load and LoadItem.objects.get(pk=again.pk).load == load
+
+
+def test_a_line_from_someone_elses_stop_is_ignored(client, seller_user, other_seller, load, paket, plyonka):
+    theirs = stop(load, make_client(other_seller, "Theirs", 0.02), (paket, 1), (plyonka, 1))
+    stop(load, make_client(seller_user, "Mine", 0.01), (paket, 1))
+    client.force_login(seller_user)
+    resp = client.post(f"/yetkazish/{load.pk}/boshqa-kunga/",
+                       {"line": [theirs.lines.first().pk], "target": "tomorrow"})
+    assert resp.status_code == 200 and theirs.lines.count() == 2 and Load.objects.count() == 1

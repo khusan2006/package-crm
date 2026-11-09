@@ -1,7 +1,7 @@
 {% load l10n %}
 {% comment %}
   «Boshqa kunga»: who (the clients this user may move, the one it was opened from
-  already ticked) and where (a new load tomorrow, a load already planned, or a new
+  already ticked — or only some of a client's products) and where (a new load tomorrow, a load already planned, or a new
   load on another date). The button counts who is going. load.js keeps the count
   and picks «Boshqa sana» when its date is touched.
 {% endcomment %}
@@ -18,11 +18,26 @@
     <legend><span class="move-step-n" aria-hidden="true">1</span>Kimlar?</legend>
     <div class="move-who">
       {% for item in items %}
-      <label class="move-who-row">
-        <input type="checkbox" name="move" value="{{ item.pk|unlocalize }}"{% if item.pk|stringformat:"d" in picked %} checked{% endif %}>
-        <span class="move-who-name"><strong>{{ item.client.name }}</strong>
-          <span class="cell-sub">{% if item.delivers %}{{ item.roll_sum }} rulon{% endif %}{% if item.delivers and item.collects %} · {% endif %}{% if item.collects %}pul olish{% endif %}</span></span>
-      </label>
+      <div class="move-who-client" data-move-client>
+        <label class="move-who-row">
+          <input type="checkbox" name="move" value="{{ item.pk|unlocalize }}"{% if item.picked %} checked{% endif %} data-move-whole>
+          <span class="move-who-name"><strong>{{ item.client.name }}</strong>
+            <span class="cell-sub">{% if item.delivers %}{{ item.roll_sum }} rulon{% endif %}{% if item.delivers and item.collects %} · {% endif %}{% if item.collects %}pul olish{% endif %}</span></span>
+        </label>
+        {% comment %}Two products or more: each can be ticked alone, dividing the order
+        between the days. Ticking the client ticks them all.{% endcomment %}
+        {% if item.line_list|length > 1 or item.collects and item.line_list %}
+        <div class="move-who-lines">
+          {% for line in item.line_list %}
+          <label class="move-who-line">
+            <input type="checkbox" name="line" value="{{ line.pk|unlocalize }}"{% if line.picked %} checked{% endif %} data-move-line>
+            <span>{{ line.product.name }}{% if line.variant_label %} · {{ line.variant_label }}{% endif %}</span>
+            <span class="cell-sub">{{ line.rolls }} rulon{% if line.kg is not None %} · {{ line.kg|floatformat:"-3g" }} kg{% endif %}</span>
+          </label>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
       {% endfor %}
     </div>
     {% if items|length > 1 %}<button type="button" class="move-all" data-move-all>Hammasini belgilash</button>{% endif %}
