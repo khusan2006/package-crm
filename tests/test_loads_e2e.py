@@ -264,8 +264,11 @@ def test_a_stop_moves_to_the_other_truck(login, admin_user, seller_user, live_se
     moved.locator("[data-move-truck]").click()
     assert cards.nth(0).locator("[data-route-stop]").count() == 1
     assert cards.nth(1).locator("[data-route-stop]").count() == 3
-    # The last stop of a truck can't leave it.
-    assert cards.nth(0).locator("[data-move-truck]").is_disabled()
+    # Even a truck's last stop can go: the truck is then shown as not going.
+    cards.nth(0).locator("[data-move-truck]").click()
+    assert cards.nth(0).locator("[data-route-empty]").is_visible()
+    cards.nth(1).locator("[data-route-stop]").last.locator("[data-move-truck]").click()
+    assert not cards.nth(0).locator("[data-route-empty]").is_visible()
     assert not page.locator("[data-route-share]").first.is_visible()
     page.locator('button[form="route-form"]').click()
     page.wait_for_selector("text=Tartib saqlandi")

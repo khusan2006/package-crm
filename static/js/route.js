@@ -3,7 +3,8 @@
  * ↑ / ↓ move a stop; with two trucks, ⇄ moves it to the other one (to the end of
  * its list). Each stop carries hidden inputs with its load row and its truck, and
  * the form posts them in the order they stand, so "Saqlash" saves exactly what is
- * on screen. A truck always keeps at least one stop. The map and the km are measured by the server once the order is saved.
+ * on screen. A truck may be emptied (everyone goes with the other driver): it then
+ * says so, and stays on the page so a stop can be moved back. The map and the km are measured by the server once the order is saved.
  *
  * The route is fetched by «Marshrut tuzish» after the page loads, so this wires
  * itself up on `route:loaded` (fired with the inserted fragment), not on page load.
@@ -18,9 +19,9 @@
       // Nothing above the first stop or below the last: those buttons are off.
       li.querySelector('[data-move="up"]').disabled = i === 0;
       li.querySelector('[data-move="down"]').disabled = i === stops.length - 1;
-      var swap = li.querySelector('[data-move-truck]');
-      if (swap) { swap.disabled = stops.length < 2; }
     });
+    var empty = card.querySelector('[data-route-empty]');
+    if (empty) { empty.hidden = stops.length > 0; }
     var count = card.querySelector('[data-route-count]');
     if (count) { count.textContent = stops.length; }
     // The truck's kg follows its stops, so a move that overloads it shows at once.
@@ -66,7 +67,7 @@
       var cards = Array.prototype.slice.call(form.querySelectorAll('[data-route-truck]'));
       var from = li.closest('[data-route-truck]');
       var to = cards[(cards.indexOf(from) + 1) % cards.length];
-      if (to === from || from.querySelectorAll('[data-route-stop]').length < 2) { return; }
+      if (to === from) { return; }
       to.querySelector('.route-stops').insertBefore(li, to.querySelector('[data-route-end]'));
       li.querySelector('[data-route-group]').value = cards.indexOf(to);
       renumber(from);

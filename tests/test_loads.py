@@ -803,3 +803,26 @@ def test_a_crafted_split_is_refused(client, admin_user, load, two_trucks):
 
 def test_one_truck_has_no_swap_button(client, admin_user, load, three):
     assert "data-move-truck" not in route(client, admin_user, load).content.decode()
+
+
+def test_both_clients_go_with_one_driver(client, admin_user, seller_user, load, warehouse, paket):
+    """Two clients, «Tezroq tugatish» puts one on each truck — and both can still be
+    sent with one driver. The empty truck stays on the page, so one can come back."""
+    Truck.objects.create(name="A", capacity_kg=5000)
+    Truck.objects.create(name="B", capacity_kg=5000)
+    load.strategy = "fast"
+    load.save(update_fields=["strategy"])
+    stop(load, make_client(seller_user, "West", -0.05), (paket, 2, 100))
+    stop(load, make_client(seller_user, "East", 0.05), (paket, 2, 100))
+    first = route(client, admin_user, load)
+    assert sorted(by_truck(first)) == [["East"], ["West"]]
+    save_split(client, admin_user, load, first, move=("East",))
+    resp = route(client, admin_user, load)
+    assert sorted(len(r["stops"]) for r in resp.context["routes"]) == [0, 2]
+    assert [len(r["stops"]) for r in resp.context["going"]] == [2]
+    body = resp.content.decode()
+    assert "bu mashina chiqmaydi" in body and body.count("data-route-share>") == 1
+    assert len(resp.context["map_data"]["routes"]) == 1
+    # …and back again.
+    save_split(client, admin_user, load, resp, move=("East",))
+    assert sorted(by_truck(route(client, admin_user, load))) == [["East"], ["West"]]

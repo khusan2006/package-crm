@@ -11344,8 +11344,9 @@ def _load_groups(load, items, depot, dist, weights):
             for st in group:
                 chosen = by_pk[st.key].route_group
                 hand[chosen if chosen is not None and chosen < len(hand) else auto[st.key]].append(st)
-        # A truck left with nobody goes nowhere.
-        groups = [(truck, group) for (truck, _), group in zip(groups, hand) if group]
+        # A truck may be left with nobody (both clients sent with one driver): it
+        # stays on the page as empty — it doesn't go — so a stop can be moved back.
+        groups = [(truck, group) for (truck, _), group in zip(groups, hand)]
     if load.ordered_at:
         # The saved order within each route; anyone without a place (added after
         # saving) keeps the suggested place after the saved ones.
@@ -11508,7 +11509,7 @@ def load_route(request, pk):
                 "load_pct": min(100, round(measured.kg / capacity * 100)) if capacity else None,
                 "over": bool(capacity) and measured.kg > capacity,
                 "color": ROUTE_COLORS[n % len(ROUTE_COLORS)],
-                "path": road.path([depot] + points + [depot]) if by_road else None,
+                "path": road.path([depot] + points + [depot]) if by_road and points else None,
                 "share": {"text": text, "title": title, "google_links": google,
                           "yandex_link": yandex,
                           **route_share.share_urls(text, google[0] if google else yandex,
@@ -11523,7 +11524,7 @@ def load_route(request, pk):
             "routes": [{"color": r["color"], "path": r["path"], "stops": [
                 {"n": st["n"], "name": st["client"].name,
                  "lat": _point(st["client"])[0], "lng": _point(st["client"])[1]}
-                for st in r["stops"]]} for r in routes],
+                for st in r["stops"]]} for r in routes if r["stops"]],
         }
 
     return render(request, "crm/_load_route.html", {
@@ -11531,6 +11532,7 @@ def load_route(request, pk):
         "warehouse": warehouse,
         "missing": missing,
         "routes": routes,
+        "going": [r for r in routes if r["stops"]],
         "km": sum(r["km"] for r in routes),
         "by_road": by_road,
         "road_note": road_note,

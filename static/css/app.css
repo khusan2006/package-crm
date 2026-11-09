@@ -5280,6 +5280,9 @@ a.cell-loc--map:hover { color: var(--accent); }
 }
 .route-stop:first-child { border-top: 0; }
 .route-stop--depot { color: var(--text-muted); font-size: 13px; align-items: center; }
+/* A truck everyone was moved off: it stays, empty, so a stop can come back. */
+.route-empty { color: var(--text-muted); font-size: 13px; font-style: italic; }
+.route-empty[hidden] { display: none; }
 .route-n {
   flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%;
   display: grid; place-items: center; font-size: 12px; font-weight: 600;
