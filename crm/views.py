@@ -11545,6 +11545,20 @@ def _mark_mine(client, mine):
     return client
 
 
+def _roll_breakdown(lines):
+    """Rulon per product and variant across the load — what the warehouse has to
+    load onto the truck: [{"rolls": 2, "product": "Oq", "variant": "2м · 1"}, ...],
+    largest first. Lines of the same product, metr and mikron are added up."""
+    totals = {}
+    for line in lines:
+        key = (line.product.name, line.variant_label)
+        totals[key] = totals.get(key, 0) + line.rolls
+    rows = [{"rolls": rolls, "product": name, "variant": variant}
+            for (name, variant), rolls in totals.items()]
+    rows.sort(key=lambda r: (-r["rolls"], r["product"], r["variant"]))
+    return rows
+
+
 def _render_load_detail(request, load, items, posted_new=None):
     """The load's page. After a failed save, `items` carry what was typed and
     `posted_new` the new rows as posted, so nothing the person entered is lost."""
@@ -11571,6 +11585,7 @@ def _render_load_detail(request, load, items, posted_new=None):
         "kg_total": sum(kg_known, Decimal("0")),
         "unweighed": len(lines) - len(kg_known),
         "line_count": len(lines),
+        "roll_breakdown": _roll_breakdown(lines),
         "confirmed": sum(1 for i in items if i.sale_id),
         "missing": [_mark_mine(i.client, i.mine) for i in items if not i.client.has_location],
         "clients": [c for c in clients if c.pk not in in_load],

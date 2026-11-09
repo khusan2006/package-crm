@@ -724,6 +724,26 @@ def test_product_options_say_which_variants_they_come_in(client, admin_user, loa
     assert 'id="load-sizes"' in body and '<option value="1,5м">' in body
 
 
+def test_rulon_card_counts_each_product_and_variant(client, admin_user, seller_user, load,
+                                                    paket, oq):
+    a = stop(load, make_client(seller_user, "Anvar", 0.01), (oq, 2), (paket, 1))
+    a.lines.filter(product=oq).update(size="2м", micron="1")
+    b = stop(load, make_client(seller_user, "Bobur", 0.02), (oq, 3), (oq, 4))
+    first, second = b.lines.order_by("pk")
+    first.size, first.micron = "2м", "1"
+    first.save()
+    second.size, second.micron = "1,5м", "05"
+    second.save()
+    resp = detail(client, admin_user, load)
+    assert resp.context["roll_breakdown"] == [
+        {"rolls": 5, "product": "ОҚ", "variant": "2м · 1"},
+        {"rolls": 4, "product": "ОҚ", "variant": "1,5м · 05"},
+        {"rolls": 1, "product": paket.name, "variant": ""},
+    ]
+    body = resp.content.decode()
+    assert "<strong>5 ta</strong> ОҚ" in body and "· 2м · 1" in body
+
+
 # --- moving a stop to the other truck by hand ---------------------------------------
 
 @pytest.fixture

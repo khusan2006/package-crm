@@ -39,7 +39,15 @@
   <div class="kpi kpi--violet">
     <div class="kpi-head"><span class="kpi-label">Rulon</span></div>
     <div class="kpi-value">{{ roll_total }}<span class="unit">ta</span></div>
-    <div class="kpi-meta muted">{{ line_count }} ta mahsulot qatori</div>
+    {% if roll_breakdown %}
+    <ul class="kpi-breakdown">
+      {% for r in roll_breakdown %}
+      <li><strong>{{ r.rolls }} ta</strong> {{ r.product }}{% if r.variant %} <span class="muted">· {{ r.variant }}</span>{% endif %}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="kpi-meta muted">—</div>
+    {% endif %}
   </div>
   <div class="kpi kpi--gold">
     <div class="kpi-head"><span class="kpi-label">Og'irligi</span></div>

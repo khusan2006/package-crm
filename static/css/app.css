@@ -630,6 +630,23 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
   color: var(--text-muted);
 }
 
+/* Yuk sahifasi: Rulon kartasida mahsulot bo'yicha taqsimot */
+.kpi-breakdown {
+  position: relative;
+  list-style: none;
+  margin: 9px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.kpi-breakdown strong {
+  color: var(--kpi);
+  font-weight: 700;
+}
+
 /* Mini trend line under each KPI value (6-month sparkline, coloured per card) */
 .kpi-spark {
   position: relative;
