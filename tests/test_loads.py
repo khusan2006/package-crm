@@ -326,7 +326,6 @@ def test_confirming_a_stop_makes_the_sale(client, admin_user, seller_user, load,
     assert weighed.sale == sale
     assert (sale.date, sale.client, sale.sales_rep, sale.note) == (
         load.date, weighed.client, seller_user, f"Yuk #{load.pk}")
-    assert sale.entered_by == admin_user  # who pressed ✓, beside whose sale it is
     assert sale.debt_term_days == 7 and sale.debt_deadline == load.date + timedelta(days=7)
     lines = {i.product.name: i for i in sale.items.all()}
     assert (lines["Paket"].weight, lines["Paket"].rolls, lines["Paket"].price, lines["Paket"].cost_price) == (
@@ -342,6 +341,7 @@ def test_kg_typed_just_before_the_tick_counts(client, admin_user, seller_user, l
     line = item.lines.get()
     save(client, admin_user, load, **{f"kg_{line.pk}": "140", "confirm": str(item.pk)})
     assert SaleItem.objects.get().weight == Decimal("140")
+    assert Sale.objects.get().entered_by == admin_user  # who pressed ✓
 
 
 def test_a_stop_without_all_its_kg_is_not_confirmed(client, admin_user, seller_user, load, paket,

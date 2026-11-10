@@ -541,11 +541,10 @@ class Sale(models.Model):
         related_name="sales",
         verbose_name="Sotuvchi",
     )
-    # Who actually typed the sale in. `sales_rep` is always the mijoz's own seller (the
-    # till the sale belongs to), so when an admin or manager enters it for them this is
-    # the only place the record still says who did. Named apart from the `created_by`
-    # of Payment/Expense/Return, which there means whose till. Empty on sales made
-    # before it existed and on imported ones.
+    # Who actually typed the sale in — the seller themselves, or an admin/manager
+    # writing it in a seller's name. Empty on sales made before it existed and on
+    # imported ones. Named apart from the `created_by` of Payment/Expense/Return,
+    # which there means whose till.
     entered_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

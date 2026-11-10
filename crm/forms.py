@@ -163,10 +163,9 @@ def sellers_queryset(*keep):
 
 
 def _acting_seller_field(form, user, current=None, lock=False, name="seller", blank=None):
-    """Set up (or drop) the «Sotuvchi» picker an admin or manager uses on a form that
-    asks whose a record is — the chiqim's till, a new mijoz's owner. On the sale and
-    old-debt forms it only narrows the mijoz list (and names the owner of a mijoz
-    quick-added there): those always go to the mijoz's own seller.
+    """Set up (or drop) the «Sotuvchi» picker an admin or manager uses to act for a
+    seller — the sale, the old debt, the chiqim then land in that seller's name and
+    till exactly as if they had entered it themselves.
 
     Sellers never see it: whatever they write is theirs, so the field is removed.
     `data-seller-picker` lets the page narrow the mijoz list on the same form to the
@@ -202,21 +201,6 @@ def _client_seller_mismatch(client, seller):
         f"{client.owner} ni tanlang yoki mijozni avval mijozlar ro'yxatidagi "
         f"«O'tkazish» (⇄) tugmasi bilan o'tkazing."
     )
-
-
-def client_seller_problem(client):
-    """Why a sale for this mijoz cannot be written, or None. Every sale goes to the
-    seller the mijoz belongs to (`Client.owner`, set on the Mijozlar page) — whoever
-    enters it — so a mijoz owned by an admin/manager, or by a seller who has since
-    left, has no till for the sale to land in until they are moved to a seller."""
-    owner = client.owner
-    if owner.role != User.Role.SALES:
-        return (f"«{client.name}» sotuvchiga biriktirilmagan — sotuv kimning nomiga "
-                f"yozilishi noma'lum. Mijozni sotuvchiga o'tkazing.")
-    if not owner.is_active:
-        return (f"«{client.name}» ning sotuvchisi ({owner}) faol emas. Mijozni boshqa "
-                f"sotuvchiga o'tkazing.")
-    return None
 
 
 class LocationPickerWidget(forms.TextInput):
@@ -1822,9 +1806,8 @@ class SaleForm(forms.ModelForm):
             attrs={"min": "0", "inputmode": "numeric", "data-debt-days": ""}
         ),
     )
-    # Admins/managers only — see `_acting_seller_field`. Optional, and never decides
-    # the sale's seller: that is always the mijoz's own. Picking one only narrows the
-    # mijoz list (and owns a mijoz quick-added from this form).
+    # Admins/managers only — see `_acting_seller_field`. Optional: the sale goes to the
+    # mijoz's own seller either way; picking one first only narrows the mijoz list.
     seller = forms.ModelChoiceField(
         label="Sotuvchi", queryset=User.objects.none(), required=False
     )
@@ -1844,8 +1827,8 @@ class SaleForm(forms.ModelForm):
         if user is not None and not user.can_see_all_records:
             self.fields["client"].queryset = Client.objects.filter(owner=user)
         _searchable_select(self.fields["client"], "Mijozni qidiring yoki tanlang")
-        # A new sale goes to its mijoz's seller; an existing one stays with its seller,
-        # and its mijoz can only be swapped for another of theirs.
+        # A new sale goes to whichever seller is picked; an existing one stays with its
+        # seller, and its mijoz can only be swapped for another of theirs.
         _acting_seller_field(
             self, user,
             current=self.instance.sales_rep_id if self.instance.pk else None,
@@ -1856,8 +1839,7 @@ class SaleForm(forms.ModelForm):
                 "Sotuv shu sotuvchida qoladi. Boshqasiga o'tkazish — mijoz bilan "
                 "birga, mijozlar ro'yxatidagi «O'tkazish» (⇄) orqali."
                 if self.instance.pk
-                else "Faqat mijozlar ro'yxatini toraytiradi — sotuv baribir mijoz "
-                     "biriktirilgan sotuvchi nomiga yoziladi."
+                else "Sotuv shu sotuvchi nomiga yoziladi — mijozlar ham faqat uniki."
             )
         # Pre-fill the days input: on edit, show the receipt's agreed term; on create,
         # seed with the default so the preview shows a date up front. Deliberately the
@@ -1881,27 +1863,22 @@ class SaleForm(forms.ModelForm):
         self.instance.debt_term_days = days
         self.instance.recompute_debt_deadline(commit=False)
         cleaned["debt_deadline"] = self.instance.debt_deadline
-        client = cleaned.get("client")
-        if client is not None:
-            if self.instance.pk:
-                # An edit keeps the sale's seller; the mijoz may only be swapped for
-                # another of theirs (moving it is the transfer's job).
-                problem = _client_seller_mismatch(client, self.instance.sales_rep)
-            else:
-                problem = client_seller_problem(client) or _client_seller_mismatch(
-                    client, cleaned.get("seller"))
-            if problem:
-                self.add_error("client", problem)
+        mismatch = _client_seller_mismatch(cleaned.get("client"), self.acting_seller())
+        if mismatch:
+            self.add_error("client", mismatch)
         return cleaned
 
     def acting_seller(self):
-        """Whose name the sale is in: always the seller its mijoz belongs to, no matter
-        who enters it — an admin, a manager or the seller — so the sale joins that
-        client's debts in that seller's till. An edit keeps the sale's seller."""
+        """Whose name the sale is in. An admin/manager writes it for the mijoz's own
+        seller — the one picked, or else the one the mijoz belongs to — so the sale
+        joins that client's debts in that seller's till. On an edit it stays with the
+        sale's seller; a seller's own sale is theirs."""
+        if "seller" in self.fields:
+            client = self.cleaned_data.get("client")
+            return self.cleaned_data.get("seller") or (client.owner if client else None)
         if self.instance.pk:
             return self.instance.sales_rep
-        client = self.cleaned_data.get("client")
-        return client.owner if client else None
+        return self.user
 
 
 def weight_terms(text):

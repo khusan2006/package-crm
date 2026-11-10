@@ -30,6 +30,7 @@ from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.safestring import mark_safe
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -73,7 +74,6 @@ from .forms import (
     TruckForm,
     WarehouseForm,
     parse_return_rows,
-    client_seller_problem,
     sellers_queryset,
 )
 from .models import (
@@ -135,6 +135,8 @@ from .models import (
     till_cash_on,
     till_days,
 )
+from .context_processors import SESSION_KEY as ACTING_SELLER_KEY
+from .context_processors import current_acting_seller
 from .geo import LocationError, resolve_location
 from .utils import (
     UZ_MONTH_NAMES,
@@ -160,6 +162,36 @@ def _on_behalf(user, seller):
     if seller is None or seller.pk == user.pk:
         return ""
     return f" · sotuvchi: {seller}"
+
+
+def _acting_initial(request, field="seller"):
+    """Form initial that opens a new record in the name of the seller picked in the top
+    bar (see context_processors) — {} when none is, or for a seller themselves."""
+    seller = current_acting_seller(request)
+    return {field: seller.pk} if seller else {}
+
+
+@role_required(User.Role.ADMIN, User.Role.MANAGER)
+def acting_seller_set(request):
+    """The top bar's «Sotuvchi» switch: remember which seller an admin/manager is
+    working as, so each new sale, qarzdor, chiqim and mijoz opens in that seller's
+    name instead of asking every time. An empty pick clears it. Returns to the page
+    the switch was used on."""
+    if request.method == "POST":
+        pk = request.POST.get("seller", "")
+        seller = sellers_queryset().filter(pk=pk).first() if pk.isdigit() else None
+        if seller is not None:
+            request.session[ACTING_SELLER_KEY] = seller.pk
+            messages.success(request, f"Endi {seller} nomidan ishlayapsiz.")
+        else:
+            request.session.pop(ACTING_SELLER_KEY, None)
+            messages.success(request, "Sotuvchi tanlovi olib tashlandi.")
+    target = request.POST.get("next", "")
+    if not url_has_allowed_host_and_scheme(
+        target, allowed_hosts={request.get_host()}, require_https=request.is_secure()
+    ):
+        target = reverse("dashboard")
+    return redirect(target)
 
 
 def _advance_balance_map(client_pks, seller):
@@ -1225,7 +1257,10 @@ def client_export(request):
 
 
 def client_create(request):
-    form = ClientForm(request.POST or None, user=request.user)
+    form = ClientForm(
+        request.POST or None, user=request.user,
+        initial=_acting_initial(request, "owner"),
+    )
     if request.method == "POST":
         if form.is_valid():
             client = form.save(commit=False)
@@ -1775,7 +1810,7 @@ def _store_opening_debt(user, client, sale, new_total, on_date, term_days=None):
         days = DEFAULT_DEBT_DAYS if term_days is None else term_days
         sale = Sale.objects.create(
             client=client,
-            sales_rep=client.owner,
+            sales_rep=client.owner or user,
             entered_by=user,
             date=on_date,
             debt_deadline=on_date + timedelta(days=days),
@@ -2854,7 +2889,7 @@ def debtor_add(request):
         return _render_debtor_add(request, form, invalid=True)
     form = DebtorAddForm(
         clients=clients, user=request.user,
-        initial={"date": timezone.localdate()},
+        initial={"date": timezone.localdate(), **_acting_initial(request)},
     )
     return _render_debtor_add(request, form)
 
@@ -6337,7 +6372,7 @@ def expense_create(request):
     The Xodimlar page links in with ?employee=<pk>, which preselects the worker and
     the wage category so paying someone is one click from their row; it may add
     ?summa= to fill in what is still owed, for the common case of settling in full."""
-    initial = {}
+    initial = _acting_initial(request)
     employee_pk = request.GET.get("employee", "")
     if request.method == "GET" and employee_pk.isdigit():
         if Employee.objects.filter(pk=employee_pk, is_active=True).exists():
@@ -9790,12 +9825,14 @@ def _finish_new_sale(user, sale, seller, summary_extra=""):
 
 
 def sale_create(request):
-    form = SaleForm(request.POST or None, user=request.user)
+    form = SaleForm(
+        request.POST or None, user=request.user, initial=_acting_initial(request)
+    )
     formset = SaleItemFormSet(request.POST or None, instance=Sale(), prefix="items")
     if request.method == "POST":
         if form.is_valid() and formset.is_valid():
             sale = form.save(commit=False)
-            # Always the mijoz's own seller; who typed it in is kept beside it.
+            # The seller picked on the form when an admin/manager writes it for them.
             seller = form.acting_seller()
             sale.sales_rep = seller
             sale.entered_by = request.user
@@ -11283,13 +11320,11 @@ def _confirm_stop(request, load, item_pk):
         if unweighed:
             messages.error(request, f"“{name}”: avval kg kiriting — {', '.join(unweighed)}.")
             return redirect(_load_url(load))
-        # The sale goes to the mijoz's own seller, whoever presses ✓ — the same rule
-        # as the sale form.
-        problem = client_seller_problem(item.client)
-        if problem:
-            messages.error(request, problem)
-            return redirect(_load_url(load))
         seller = item.client.owner
+        if seller.role != User.Role.SALES:
+            messages.error(request, f"“{name}” sotuvchiga biriktirilmagan — sotuv kimning "
+                                    f"nomiga yozilishi noma'lum. Mijozni sotuvchiga o'tkazing.")
+            return redirect(_load_url(load))
         sale = Sale(date=load.date, client=item.client, sales_rep=seller,
                     entered_by=request.user,
                     debt_term_days=DEFAULT_DEBT_DAYS, note=f"Yuk #{load.pk}")

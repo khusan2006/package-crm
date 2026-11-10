@@ -16,6 +16,8 @@ urlpatterns = [
     path("users/<int:pk>/edit/", accounts_views.user_edit, name="user_edit"),
     # dashboard
     path("", crm_views.dashboard, name="dashboard"),
+    # top-bar «Sotuvchi» switch (admin/manager working as a seller)
+    path("sotuvchi-tanlash/", crm_views.acting_seller_set, name="acting_seller_set"),
     # clients
     path("clients/", crm_views.client_list, name="client_list"),
     path("clients/export/", crm_views.client_export, name="client_export"),
