@@ -1649,6 +1649,25 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
   color: var(--success);
 }
 
+/* Under Narx: what this mijoz paid for the product last time. Clickable once the box
+   holds something else, to put that price back. */
+.last-price-hint {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  text-align: right;
+}
+
+.last-price-hint[hidden] {
+  display: none;
+}
+
+.last-price-hint.is-other {
+  color: var(--text-muted);
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
 .item-add {
   margin-top: 8px;
 }
@@ -6681,6 +6700,21 @@ td:has(> input.pick-kg) { position: relative; }
   padding: 0 7px; line-height: 16px; border-radius: 999px; white-space: nowrap;
   background: var(--accent); color: #fff; font-size: 11px; font-weight: 600;
   pointer-events: none;
+}
+/* «oxirgi 17 500 · 07.11» under a new product row's Narx: what this client paid last
+   time. Hangs from the box's lower edge (load.js places it) into the 8px between the
+   rows, so nothing shifts. Muted once the box says something else — then a click
+   puts that price back. */
+[data-product-row] { position: relative; }
+.last-price-pill {
+  position: absolute; transform: translateX(-100%); z-index: 1;
+  padding: 0 6px; line-height: 14px; border-radius: 999px; white-space: nowrap;
+  background: var(--accent); color: #fff; font-size: 10.5px; font-weight: 600;
+  pointer-events: none;
+}
+.last-price-pill.is-other {
+  background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border-strong);
+  line-height: 12px; pointer-events: auto; cursor: pointer;
 }
 .items-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 12px; }
 .items-actions .route-dirty[hidden] { display: none; }

@@ -1161,3 +1161,40 @@ def test_the_load_page_has_the_start_box(client, admin_user, load, three):
     load.save()
     body = detail(client, admin_user, load).content.decode()
     assert "Yo'lda" in body and "Bekor qilish" in body
+
+
+# --- «Oxirgi narx» on the load page -------------------------------------------------
+
+def _sold(client_obj, seller, product, price, days_ago=1):
+    sale = Sale.objects.create(client=client_obj, sales_rep=seller,
+                               date=TODAY() - timedelta(days=days_ago),
+                               debt_deadline=TODAY() + timedelta(days=7))
+    SaleItem.objects.create(sale=sale, product=product, dimension="kg", weight=Decimal("10"),
+                            price=Decimal(price), cost_price=product.cost_price)
+    return sale
+
+
+def test_the_load_page_carries_each_clients_last_price(client, admin_user, seller_user, load, paket):
+    """A product picked for a client opens its Narx at what they paid last time
+    (load.js reads the map); the added rows under a saved stop know their client."""
+    buyer = make_client(seller_user, "Doimiy")
+    _sold(buyer, seller_user, paket, "16500", days_ago=5)
+    _sold(buyer, seller_user, paket, "17500", days_ago=2)
+    item = stop(load, buyer, (paket, 3))
+    resp = detail(client, admin_user, load)
+    assert resp.status_code == 200
+    prices = resp.context["client_last_price_json"]
+    assert prices[str(buyer.pk)][str(paket.pk)]["price"] == "17500"
+    html = resp.content.decode()
+    assert 'id="client-last-price-map"' in html
+    assert f'data-item="{item.pk}" data-client="{buyer.pk}"' in html
+
+
+def test_a_seller_reads_only_their_own_last_prices(client, seller_user, other_seller, load, paket):
+    mine = make_client(seller_user, "Meniki")
+    theirs = make_client(other_seller, "Boshqaniki")
+    _sold(mine, seller_user, paket, "17000")
+    _sold(theirs, other_seller, paket, "18000")
+    prices = detail(client, seller_user, load).context["client_last_price_json"]
+    assert str(mine.pk) in prices
+    assert str(theirs.pk) not in prices

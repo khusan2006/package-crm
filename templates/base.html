@@ -548,39 +548,143 @@
     });
   })();
 
-  // Sale form: auto-fill price & cost from the selected product (per unit)
+  // Sale form: auto-fill price & cost from the selected product (per unit).
+  //
+  // Narx opens at what THIS mijoz paid for the product last time — the seller used to
+  // look the old receipt up and type it back in. The table is client-last-price-map
+  // (views._client_last_price_map); a mijoz who never bought the product gets the
+  // catalogue price, as before. The figure also shows under the box («Oxirgi narx»).
+  // It is only a suggestion: the box stays editable, and a price typed by hand is
+  // never repainted when the mijoz changes — only one this script wrote (data-auto).
+  // Tannarx always comes from the catalogue.
   (function () {
-    function priceMap() {
-      var el = document.getElementById('product-price-map');
+    // Parsed once per element: the hint re-reads the map on every keystroke, and a
+    // modal opened again brings a fresh element (and so fresh data) with it.
+    function readJson(id) {
+      var el = document.getElementById(id);
       if (!el) { return {}; }
-      try { return JSON.parse(el.textContent); } catch (e) { return {}; }
+      if (!el._parsed) {
+        try { el._parsed = JSON.parse(el.textContent) || {}; } catch (e) { el._parsed = {}; }
+      }
+      return el._parsed;
     }
-    function fillRow(row) {
+    function num(v) {
+      var n = parseFloat(String(v == null ? '' : v).replace(/\s/g, '').replace(',', '.'));
+      return isFinite(n) ? n : NaN;
+    }
+    // "23000" → "23 000", "23.5" → "23,5" — how a price reads everywhere else.
+    function group(v) {
+      var parts = String(v).split('.');
+      return parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + (parts[1] ? ',' + parts[1] : '');
+    }
+    function factorOf(row) {
+      var dim = row.querySelector('[name$="-dimension"]');
+      return (dim && dim.value === 'g') ? 1000 : 1;
+    }
+    // Both maps are per kg; a line sold by the gram divides by 1000.
+    function conv(v, factor) {
+      return (Math.round((parseFloat(v) / factor) * 1000) / 1000).toString();
+    }
+    // Dispatch input so the money formatter re-groups the auto-filled figure and the
+    // line total re-reads it.
+    function setVal(el, v) {
+      if (!el) { return; }
+      el.value = v;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    function lastFor(row) {
+      var prod = row.querySelector('select[name$="-product"]');
+      var form = row.closest('form');
+      var client = form && form.querySelector('select[name="client"]');
+      if (!prod || !prod.value || !client || !client.value) { return null; }
+      var byProduct = readJson('client-last-price-map')[client.value];
+      return (byProduct && byProduct[prod.value]) || null;
+    }
+    function showHint(row) {
+      var hint = row.querySelector('[data-last-price-hint]');
+      if (!hint) { return; }
+      var last = lastFor(row);
+      if (!last) { hint.hidden = true; delete hint.dataset.value; return; }
+      var factor = factorOf(row);
+      var value = conv(last.price, factor);
+      var priceEl = row.querySelector('[name$="-price"]');
+      var other = !!priceEl && num(priceEl.value) !== parseFloat(value);
+      hint.textContent = 'Oxirgi narx: ' + group(value) + " so'm/" + (factor === 1000 ? 'g' : 'kg')
+        + ' · ' + last.date;
+      hint.dataset.value = value;
+      hint.classList.toggle('is-other', other);
+      hint.title = other
+        ? "Bosing — shu narx qo'yiladi"
+        : "Mijoz oxirgi marta shu narxda olgan — o'zgartirsa bo'ladi";
+      hint.hidden = false;
+    }
+    function fillRow(row, priceOnly) {
       if (!row) { return; }
       var prod = row.querySelector('select[name$="-product"]');
-      if (!prod || !prod.value) { return; }
-      var info = priceMap()[prod.value];
-      if (!info) { return; }
-      var dim = row.querySelector('[name$="-dimension"]');
-      var factor = (dim && dim.value === 'g') ? 1000 : 1;
-      var conv = function (v) { return (Math.round((parseFloat(v) / factor) * 1000) / 1000).toString(); };
+      if (!prod || !prod.value) { showHint(row); return; }
+      var info = readJson('product-price-map')[prod.value];
+      var last = lastFor(row);
+      var factor = factorOf(row);
       var priceEl = row.querySelector('[name$="-price"]');
-      var costEl = row.querySelector('[name$="-cost_price"]');
-      // Dispatch input so the money formatter re-groups the auto-filled figure.
-      var setVal = function (el, v) {
-        if (!el) { return; }
-        el.value = v;
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-      };
-      setVal(priceEl, conv(info.price));
-      setVal(costEl, conv(info.cost));
+      var price = last ? last.price : (info ? info.price : null);
+      if (priceEl && price != null) {
+        setVal(priceEl, conv(price, factor));
+        priceEl.dataset.auto = '1';
+      }
+      if (!priceOnly && info) {
+        setVal(row.querySelector('[name$="-cost_price"]'), conv(info.cost, factor));
+      }
+      showHint(row);
+    }
+    // Another mijoz picked: a price this script put in follows them; a typed one stays
+    // and only the hint under it changes.
+    function refreshForm(form) {
+      form.querySelectorAll('.item-row').forEach(function (row) {
+        var priceEl = row.querySelector('[name$="-price"]');
+        if (priceEl && (!priceEl.value.trim() || priceEl.dataset.auto === '1')) {
+          fillRow(row, true);
+        } else {
+          showHint(row);
+        }
+      });
     }
     document.addEventListener('change', function (e) {
+      if (!e.target.closest) { return; }
       var prod = e.target.closest('select[name$="-product"]');
       if (prod) { fillRow(prod.closest('.item-row')); return; }
       var dim = e.target.closest('select[name$="-dimension"]');
-      if (dim) { fillRow(dim.closest('.item-row')); }
+      if (dim) { fillRow(dim.closest('.item-row')); return; }
+      var client = e.target.closest('select[name="client"]');
+      var form = client && client.closest('form');
+      if (form && form.querySelector('.item-row')) { refreshForm(form); }
     });
+    document.addEventListener('input', function (e) {
+      var priceEl = e.target.closest && e.target.closest('.item-row [name$="-price"]');
+      if (!priceEl) { return; }
+      // Typed over: the box is the seller's from here on. Our own dispatched `input`
+      // is not trusted, so it does not disown the figure it just wrote.
+      if (e.isTrusted) { delete priceEl.dataset.auto; }
+      showHint(priceEl.closest('.item-row'));
+    });
+    // The hint, once the box holds another figure, puts the last price back.
+    document.addEventListener('click', function (e) {
+      var hint = e.target.closest && e.target.closest('[data-last-price-hint].is-other');
+      if (!hint || !hint.dataset.value) { return; }
+      e.preventDefault();
+      var row = hint.closest('.item-row');
+      var priceEl = row.querySelector('[name$="-price"]');
+      setVal(priceEl, hint.dataset.value);
+      priceEl.dataset.auto = '1';
+      showHint(row);
+    });
+    // A form opened for an edit, or sent back with an error, keeps its prices; only
+    // the hints are drawn.
+    function init(root) {
+      (root || document).querySelectorAll('.item-row').forEach(showHint);
+    }
+    if (document.readyState !== 'loading') { init(); }
+    else { document.addEventListener('DOMContentLoaded', function () { init(); }); }
+    document.addEventListener('modal:loaded', function (e) { init(e.detail || document); });
   })();
 
   // Sale form: when a client is picked, flag any advance (prepayment) they hold —

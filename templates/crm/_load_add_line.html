@@ -1,6 +1,7 @@
 {% load l10n %}
 {% comment %}One more product row: product, metr, mikron, rulon and price — the price
-fills in with the catalogue price when the product is picked, and can be changed.
+fills in with what this client paid last time (else the catalogue price) when the
+product is picked, and can be changed.
 `prefix` names its boxes: "addline_<stop>" under a saved stop, "newline_<key>" under
 a new client. As a <template> it is "__PREFIX__" and the script fills it in.{% endcomment %}
 <div class="new-row add-line" data-add-line-row data-product-row>

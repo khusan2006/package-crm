@@ -2,7 +2,8 @@
 {% comment %}One new stop in Yuk tarkibi: a client and the purpose on top, its products
 underneath — the first always there, more with «+ Mahsulot» (posted as
 newline_<key>_…, `key` tying them to this client). Each product has metr, mikron,
-rulon and a price that fills in with the catalogue price. No product for «Pul
+rulon and a price that fills in with what this client paid last time (else the
+catalogue price). No product for «Pul
 olish». `row` holds what was posted when a save failed, so the stop comes back
 exactly as it was left; a fresh row has key "__KEY__", which the script replaces.{% endcomment %}
 <div class="new-stop-block" data-new-row data-key="{{ row.key|default:'__KEY__' }}">
@@ -25,7 +26,7 @@ exactly as it was left; a fresh row has key "__KEY__", which the script replaces
       </select>
       {% include "crm/_load_variants.html" with prefix="new" %}
       <input type="text" name="new_rolls" inputmode="numeric" class="new-row-rolls{% if row.rolls_bad %} is-bad{% endif %}" placeholder="Rulon" aria-label="Rulon soni" value="{{ row.rolls|default:'' }}"{% if row.rolls_bad %} aria-invalid="true"{% endif %} autocomplete="off">
-      <input type="text" name="new_price" inputmode="decimal" class="new-row-price{% if row.price_bad %} is-bad{% endif %}" placeholder="Narx" data-money aria-label="Narx, so'm/kg (bo'sh qolsa — katalog narxi)" title="So'm/kg. Mahsulot tanlanganda katalog narxi qo'yiladi — o'zgartirsa bo'ladi." value="{{ row.price|default:'' }}"{% if row.price_bad %} aria-invalid="true"{% endif %} autocomplete="off">
+      <input type="text" name="new_price" inputmode="decimal" class="new-row-price{% if row.price_bad %} is-bad{% endif %}" placeholder="Narx" data-money aria-label="Narx, so'm/kg (bo'sh qolsa — katalog narxi)" title="So'm/kg. Mahsulot tanlanganda mijozning oxirgi narxi (bo'lmasa katalog narxi) qo'yiladi — o'zgartirsa bo'ladi." value="{{ row.price|default:'' }}"{% if row.price_bad %} aria-invalid="true"{% endif %} autocomplete="off">
       <span class="new-row-remove-gap" aria-hidden="true"></span>
     </div>
     {% for r in row.extra %}{% include "crm/_load_add_line.html" with prefix="newline_"|add:row.key row=r %}{% endfor %}

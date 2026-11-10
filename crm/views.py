@@ -9752,6 +9752,9 @@ def _render_sale_form(
         "formset": formset,
         "title": title,
         "products_json": _product_price_map(),
+        "client_last_price_json": _client_last_price_map(
+            request.user, exclude_sale=form.instance.pk
+        ),
         "client_advance_json": _client_advance_map(request.user),
         "zakaz_shortfall": zakaz_shortfall,
         "overpay": overpay,
@@ -9803,6 +9806,45 @@ def _product_price_map():
         str(p.pk): {"price": str(p.price), "cost": str(p.cost_price)}
         for p in Product.objects.filter(is_active=True)
     }
+
+
+def _client_last_price_map(user, exclude_sale=None):
+    """{client_pk: {product_pk: {"price": per-kg so'm, "date": "dd.mm.yyyy"}}} — what
+    each mijoz last paid for each mahsulot, so the sale form opens a line's Narx box
+    at that figure instead of the catalogue price, and shows it under the box.
+
+    The seller used to look last month's receipt up and type the figure back in; now
+    picking the product does it. It is only a starting point: the box stays editable,
+    and a figure typed there is never overwritten (base.html). A mijoz who has never
+    bought a product has no entry for it and gets the catalogue price, as before.
+
+    Latest wins, by sale date and then by entry order, so of two receipts on the same
+    day the one typed in second is "last time". Nothing is stored — the table is read
+    fresh at every render, so a price changed on one sale is what the next one opens
+    with. Per kg, like `_product_price_map`: a line sold by the gram is scaled up, and
+    the form scales it back to whichever unit the new line is in.
+
+    Scoped like the sales lists: a seller only sees prices from their own receipts.
+    On an edit the receipt being edited is left out — its own price is not "last time"."""
+    sales = Sale.objects.visible_to(user).real()
+    if exclude_sale is not None:
+        sales = sales.exclude(pk=exclude_sale)
+    rows = (
+        SaleItem.objects.filter(sale__in=sales)
+        .order_by("sale__date", "sale__created_at", "pk")
+        .values_list("sale__client_id", "product_id", "dimension", "price", "sale__date")
+    )
+    result = {}
+    # Oldest first, so a later sale of the same product simply writes over it.
+    for client_id, product_id, dimension, price, sold_on in rows:
+        if price is None or price <= 0:
+            continue
+        per_kg = price * 1000 if dimension == Sale.Dimension.G else price
+        result.setdefault(str(client_id), {})[str(product_id)] = {
+            "price": f"{per_kg.normalize():f}",
+            "date": sold_on.strftime("%d.%m.%Y"),
+        }
+    return result
 
 
 def _finish_new_sale(user, sale, seller, summary_extra=""):
@@ -11640,6 +11682,9 @@ def _render_load_detail(request, load, items, posted_new=None):
         "missing": [_mark_mine(i.client, i.mine) for i in items if not i.client.has_location],
         "clients": [c for c in clients if c.pk not in in_load],
         "products": Product.objects.filter(is_active=True).order_by("name"),
+        # A product picked for a client opens its Narx at what they paid last time
+        # (load.js), the same as on the sale form.
+        "client_last_price_json": _client_last_price_map(user),
         "purposes": LoadItem.Purpose.choices,
         "size_suggestions": SIZE_SUGGESTIONS,
         "movable": any(i.editable for i in items),
