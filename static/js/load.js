@@ -245,6 +245,7 @@
         return;
       }
       e.preventDefault();  // never a surprise submit
+      if (e.target.matches('input.pick-kg')) { settleKg(e.target); return; }
       if (e.target.matches('[data-new-row] [name=new_rolls]')) {
         var row = e.target.closest('[data-new-row]');
         var next = row.nextElementSibling;
@@ -252,7 +253,49 @@
       }
     });
 
+    // Kg works like a calculator: weighing roll by roll, they type "50+48,5+51"
+    // and the box shows the sum beside it; leaving the box (or Enter) puts the
+    // sum in. The server adds up a "+" too, so a save straight from the box is safe.
+    function kgSum(value) {
+      var raw = value.replace(/[\s\u00a0\u202f]/g, '').replace(/,/g, '.');
+      if (raw.indexOf('+') === -1) { return null; }
+      var parts = raw.split('+').filter(function (p) { return p !== ''; });
+      if (!parts.length) { return null; }
+      var grams = 0;
+      for (var i = 0; i < parts.length; i++) {
+        if (!/^[0-9]+(\.[0-9]{1,3})?$/.test(parts[i])) { return null; }
+        grams += Math.round(parseFloat(parts[i]) * 1000);
+      }
+      return String(grams / 1000);
+    }
+    function kgHint(input) {
+      var hint = input.parentNode.querySelector('.kg-sum');
+      var sum = kgSum(input.value);
+      if (sum === null) { if (hint) { hint.remove(); } return; }
+      if (!hint) {
+        hint = document.createElement('span');
+        hint.className = 'kg-sum';
+        hint.setAttribute('aria-live', 'polite');
+        input.after(hint);
+      }
+      hint.textContent = '= ' + sum.replace('.', ',') + ' kg';
+      // Under the box, right edges lined up, overlapping its border a little.
+      hint.style.top = (input.offsetTop + input.offsetHeight - 5) + 'px';
+      hint.style.left = (input.offsetLeft + input.offsetWidth - 6) + 'px';
+    }
+    function settleKg(input) {
+      var sum = kgSum(input.value);
+      if (sum === null) { return; }
+      input.value = sum;
+      kgHint(input);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    items.addEventListener('focusout', function (e) {
+      if (e.target.matches && e.target.matches('input.pick-kg')) { settleKg(e.target); }
+    });
+
     items.addEventListener('input', function (e) {
+      if (e.target.matches('input.pick-kg')) { kgHint(e.target); }
       // A price typed by hand stays: picking another product won't replace it.
       if (e.isTrusted && e.target.dataset) { delete e.target.dataset.auto; }
       // Typing a search into the picker isn't a change yet — choosing is.

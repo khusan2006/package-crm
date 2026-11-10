@@ -6672,6 +6672,16 @@ input.pick-rolls, input.pick-kg {
   background: var(--input); color: var(--text); font: inherit;
 }
 input.pick-kg { width: 110px; max-width: 110px; }
+/* «50+50+50» in the kg box: the sum hangs from the box's lower edge, inside the
+   row's own padding — absolute, so no column shifts, and nothing the scrolling
+   .table-wrap would clip. load.js sets top/left from the box. */
+td:has(> input.pick-kg) { position: relative; }
+.kg-sum {
+  position: absolute; transform: translateX(-100%); z-index: 1;
+  padding: 0 7px; line-height: 16px; border-radius: 999px; white-space: nowrap;
+  background: var(--accent); color: #fff; font-size: 11px; font-weight: 600;
+  pointer-events: none;
+}
 .items-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 12px; }
 .items-actions .route-dirty[hidden] { display: none; }
 /* Yuk tarkibi: new rows (a client and a rulon each) and the full-width «+». */

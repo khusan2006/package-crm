@@ -246,6 +246,25 @@ def test_a_lines_rulon_price_and_kg_are_edited_in_place(client, admin_user, sell
     assert (line.rolls, line.price, line.kg) == (6, Decimal("15500"), Decimal("120.5"))
 
 
+
+@pytest.mark.parametrize("typed, kg", [("50+50+50", "150"), ("48,5 + 51.25+", "99.75")])
+def test_kg_typed_as_a_sum_is_saved_as_the_sum(client, admin_user, seller_user, load, paket,
+                                               typed, kg):
+    item = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 5))
+    line = item.lines.get()
+    save(client, admin_user, load, **{f"kg_{line.pk}": typed})
+    line.refresh_from_db()
+    assert line.kg == Decimal(kg)
+
+
+@pytest.mark.parametrize("typed", ["+", "50+abc", "0+0", "50+1.2345", "50-10"])
+def test_a_broken_kg_sum_is_refused(client, admin_user, seller_user, load, paket, typed):
+    item = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 5))
+    line = item.lines.get()
+    resp = save(client, admin_user, load, **{f"kg_{line.pk}": typed})
+    line.refresh_from_db()
+    assert resp.status_code == 200 and line.kg is None
+
 def test_a_line_is_removed_but_a_delivery_keeps_at_least_one(client, admin_user, seller_user,
                                                             load, paket, plyonka):
     item = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 5), (plyonka, 2))

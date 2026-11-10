@@ -112,6 +112,27 @@ def test_type_kg_and_tick_turns_the_stop_into_a_sale(login, admin_user, seller_u
     assert page.locator(f'[name="kg_{line.pk}"]').count() == 0  # locked
 
 
+
+def test_kg_box_adds_up_like_a_calculator(login, admin_user, seller_user, live_server, db, paket):
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    item = stop(load, Client.objects.create(name="Anvar", owner=seller_user), paket, rolls=3)
+    line = item.lines.get()
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    box = page.locator(f'[name="kg_{line.pk}"]')
+    box.fill("50+48,5+51")
+    assert page.locator(f'#stop-{item.pk} .kg-sum').inner_text() == "= 149,5 kg"
+    box.press("Enter")
+    assert box.input_value() == "149.5"
+    assert page.locator(f'#stop-{item.pk} .kg-sum').count() == 0
+    box.fill("10+20")
+    box.press("Tab")  # leaving the box settles it too
+    assert box.input_value() == "30"
+    page.click("[data-load-items] .items-actions button[type=submit]")
+    page.wait_for_selector("text=Saqlandi")
+    line.refresh_from_db()
+    assert line.kg == Decimal("30")
+
 def test_a_product_is_added_to_a_stop(login, admin_user, seller_user, live_server, db, paket):
     Product.objects.create(name="Plyonka", sku="P2", cost_price=1, price=Decimal("26000"))
     load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)

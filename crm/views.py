@@ -10951,13 +10951,15 @@ def _whole_rolls(raw):
 def _kg_value(raw):
     """Kg typed into a box: None for an empty box, a Decimal above 0 with at most
     three decimals (comma or point) up to KG_MAX, or ValueError — "1e3", "0" and
-    "12.3456" included."""
+    "12.3456" included. The box is a calculator too: "50+48,5+51" is their sum
+    (weighed roll by roll); every part must be a number like the above."""
     raw = _squeeze(raw).replace(",", ".")
     if not raw:
         return None
-    if not _KG.fullmatch(raw):
+    parts = [p for p in raw.split("+") if p]
+    if not parts or not all(_KG.fullmatch(p) for p in parts):
         raise ValueError(raw)
-    kg = Decimal(raw)
+    kg = sum((Decimal(p) for p in parts), Decimal("0"))
     if not Decimal("0") < kg <= KG_MAX:
         raise ValueError(raw)
     return kg
