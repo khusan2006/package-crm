@@ -541,6 +541,19 @@ class Sale(models.Model):
         related_name="sales",
         verbose_name="Sotuvchi",
     )
+    # Who actually typed the sale in. `sales_rep` is always the mijoz's own seller (the
+    # till the sale belongs to), so when an admin or manager enters it for them this is
+    # the only place the record still says who did. Named apart from the `created_by`
+    # of Payment/Expense/Return, which there means whose till. Empty on sales made
+    # before it existed and on imported ones.
+    entered_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="entered_sales",
+        verbose_name="Kiritgan",
+    )
     # Every sale is a receivable with a deadline; "paid" is derived from payments.
     # The deadline is not a fixed date: it is the agreed term from the sale date until
     # the client repays something, and the day of that repayment from then on — see
@@ -2651,6 +2664,10 @@ class Load(models.Model):
     # if it sends another number (other kg, other strategy) it decides afresh.
     split_routes = models.PositiveSmallIntegerField("Qo'lda bo'lingan mashinalar", null=True,
                                                     blank=True)
+    # When the trucks left the warehouse — set with «Jo'natish», now by default or an
+    # earlier time when the button is pressed late. The route's arrival times count
+    # from it; until it is set they count from the moment the page is opened.
+    started_at = models.DateTimeField("Jo'nagan vaqti", null=True, blank=True)
 
     class Meta:
         ordering = ["-date", "created_at"]

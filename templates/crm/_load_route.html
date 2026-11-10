@@ -61,7 +61,16 @@ belong to rather than as loose lines above it.{% endcomment %}
     <strong class="route-summary-value"><span class="badge badge-warning">Taklif</span></strong>
     <span class="route-summary-sub">kerak bo'lsa ↑ ↓{% if routes|length > 1 %} va ⇄ (boshqa mashinaga){% endif %} bilan o'zgartirib, saqlang</span>
     {% endif %}
-    <span class="route-summary-sub route-dirty" data-route-dirty hidden>O'zgartirildi — saqlang. Xarita va km saqlangach yangilanadi.</span>
+    <span class="route-summary-sub route-dirty" data-route-dirty hidden>O'zgartirildi — saqlang. Xarita, km va vaqtlar saqlangach yangilanadi.</span>
+  </div>
+  <div class="route-summary-item">
+    <span class="route-summary-label">Yetib borish</span>
+    {% if load.started_at %}
+    <strong class="route-summary-value">{{ load.started_at|date:"H:i" }} da jo'nagan</strong>
+    {% else %}
+    <strong class="route-summary-value">Hozir jo'nasa</strong>
+    {% endif %}
+    <span class="route-summary-sub">Taxminiy vaqtlar: o'rtacha {{ eta_speed }} km/soat, har manzilda {{ eta_stop_minutes }} daqiqa. GPS ulanguncha shunday.</span>
   </div>
   <div class="route-summary-actions">
     {% comment %}Back to the system's order: a saved order is forgotten (route-reset);
@@ -116,6 +125,7 @@ belong to rather than as loose lines above it.{% endcomment %}
           {% for p in s.client.phones.all %}<span class="cell-sub"><a href="tel:{{ p.phone|cut:' ' }}">{{ p.phone }}</a>{% if p.label %} · {{ p.label }}{% endif %}</span>{% endfor %}
         </span>
         <span class="route-side">
+          {% if s.eta %}<span class="route-eta" data-route-eta title="Taxminiy yetib borish vaqti">≈ {{ s.eta|date:"H:i" }}</span>{% endif %}
           <span class="route-kg">{% if s.item.delivers %}{{ s.rolls }} rulon<span class="cell-sub">{% if s.unknown %}kg noma'lum{% else %}{% if s.estimated %}≈ {% endif %}{{ s.kg|floatformat:"0g" }} kg{% endif %}</span>{% endif %}{% if s.item.collects %}<span class="cell-sub route-collect">pul olish</span>{% endif %}</span>
           <span class="route-moves">
             {% if routes|length > 1 %}<button type="button" class="icon-action route-swap" data-move-truck title="Boshqa mashinaga o'tkazish" aria-label="{{ s.client.name }} — boshqa mashinaga"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>{% endif %}
@@ -126,7 +136,7 @@ belong to rather than as loose lines above it.{% endcomment %}
       </li>
       {% endfor %}
       <li class="route-stop route-empty" data-route-empty{% if r.stops %} hidden{% endif %}>Bo'sh — bu mashina chiqmaydi. Mijozni ⇄ bilan qaytarish mumkin.</li>
-      <li class="route-stop route-stop--depot" data-route-end><span class="route-n">O</span><span>{{ warehouse.name }} — qaytish</span></li>
+      <li class="route-stop route-stop--depot" data-route-end><span class="route-n">O</span><span>{{ warehouse.name }} — qaytish</span>{% if r.back %}<span class="route-eta route-eta--back" data-route-eta title="Taxminiy qaytish vaqti">≈ {{ r.back|date:"H:i" }}</span>{% endif %}</li>
     </ol>
 
     {% comment %}Haydovchiga: built from the order the server drew — hidden after a move

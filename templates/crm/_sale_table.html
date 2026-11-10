@@ -12,7 +12,7 @@
     <td><a href="{% url 'sale_detail' sale.pk %}">{{ sale.date|date:"d.m.Y" }}</a></td>
     <td class="sticky-col"><span class="cell-user">{% include "crm/_avatar.html" with name=sale.client.name %}<a href="{% url 'sale_detail' sale.pk %}">{{ sale.client.name }}</a></span></td>
     <td><a href="{% url 'sale_detail' sale.pk %}">{{ sale.item_summary }}</a></td>
-    <td>{{ sale.sales_rep }}</td>
+    <td>{{ sale.sales_rep }}{% if sale.entered_by_id and sale.entered_by_id != sale.sales_rep_id %}<span class="cell-sub">kiritgan: {{ sale.entered_by }}</span>{% endif %}</td>
     <td class="num">{{ sale.total|floatformat:"0g" }}</td>
     <td class="num">{{ sale.cost_total|floatformat:"0g" }}</td>
     <td class="num"><strong>{{ sale.profit_total|floatformat:"0g" }}</strong></td>

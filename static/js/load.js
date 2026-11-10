@@ -311,6 +311,24 @@
     refreshDirty();
   }
 
+  /* ---------- «Jo'natish» ---------- */
+  // The box shows the time the page was opened; pressed later, «Jo'natish» means
+  // now. So until someone changes it by hand, it is set to the current minute
+  // just before sending.
+  var start = document.querySelector('[data-load-start]');
+  if (start) {
+    var when = start.querySelector('[data-load-start-now]');
+    if (when) {
+      when.addEventListener('input', function () { delete when.dataset.loadStartNow; });
+      start.addEventListener('submit', function () {
+        if (!('loadStartNow' in when.dataset)) { return; }
+        var d = new Date();
+        d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+        when.value = d.toISOString().slice(0, 16);
+      });
+    }
+  }
+
   /* ---------- «Boshqa kunga» dialog ---------- */
   // It arrives in the page's modal, so it is wired by delegation: the button says
   // how many clients go and waits for one; touching the date picks «Boshqa sana».

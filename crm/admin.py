@@ -62,7 +62,7 @@ class SaleItemInline(admin.TabularInline):
 
 @admin.register(Sale)
 class SaleAdmin(admin.ModelAdmin):
-    list_display = ["date", "client", "debt_deadline", "sales_rep"]
+    list_display = ["date", "client", "debt_deadline", "sales_rep", "entered_by"]
     list_filter = ["sales_rep", "date"]
     date_hierarchy = "date"
     inlines = [SaleItemInline]

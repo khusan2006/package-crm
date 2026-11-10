@@ -393,3 +393,33 @@ def test_another_product_starts_as_a_copy_of_the_last(login, admin_user, seller_
     bobur = load.items.get(client__name="Bobur")
     assert sorted(bobur.lines.values_list("size", "micron", "rolls")) == [
         ("1,5м", "06", 3), ("1,5м", "08", 3)]
+
+
+def test_a_late_start_is_backdated_and_the_route_shows_arrival_times(login, admin_user,
+                                                                     live_server, load_of_three):
+    import os
+    from datetime import timedelta
+    load = load_of_three
+    page = login(admin_user)
+    page.set_viewport_size({"width": 1400, "height": 900})
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    when = timezone.localtime() - timedelta(minutes=45)
+    page.fill("[data-load-start] input[name=started_at]", when.strftime("%Y-%m-%dT%H:%M"))
+    shots = os.environ.get("SHOT_DIR")
+    if shots:
+        page.locator(".load-head").screenshot(path=f"{shots}/eta-1-start.png")
+    page.click("[data-load-start] button[type=submit]")
+    page.wait_for_selector("text=Yuk jo'natildi")
+    load.refresh_from_db()
+    assert timezone.localtime(load.started_at).strftime("%H:%M") == when.strftime("%H:%M")
+    page.wait_for_selector("[data-route-stop]")  # the route opens by itself
+    etas = page.locator("[data-route-stop] [data-route-eta]").all_inner_texts()
+    assert len(etas) == 3 and all(t.startswith("≈ ") for t in etas)
+    assert etas == sorted(etas)
+    if shots:
+        page.locator(".load-head").screenshot(path=f"{shots}/eta-2-started.png")
+        page.locator(".route-summary").screenshot(path=f"{shots}/eta-3-summary.png")
+        page.locator(".route-card").first.screenshot(path=f"{shots}/eta-4-stops.png")
+    # A move makes the times stale: they step aside until the order is saved.
+    page.locator("[data-route-stop] [data-move=down]").first.click()
+    assert page.locator("[data-route-stop] [data-route-eta]:visible").count() == 0

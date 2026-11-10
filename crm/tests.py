@@ -7864,60 +7864,91 @@ class WeightSumTests(BaseSetup):
         self.assertContains(response, 'value="3"')
 
 
-class ActingSellerSwitchTests(BaseSetup):
-    """The top-bar «Sotuvchi» switch: an admin picks a seller once and every new
-    record's form opens in that seller's name."""
+class SaleFollowsClientOwnerTests(BaseSetup):
+    """Every sale goes to the seller its mijoz belongs to, whoever enters it; the one
+    who typed it in is kept on the sale (`entered_by`) and in the audit log. The old
+    top-bar «Sotuvchi» switch is gone."""
 
-    def _switch(self, seller_pk, next_url="/sales/"):
-        return self.client.post(
-            reverse("acting_seller_set"), {"seller": seller_pk, "next": next_url}
-        )
+    def _sale(self, user, client, **header):
+        self.client.force_login(user)
+        data = sale_post(client.pk, [one_item(self.product, weight="5")], **header)
+        return self.client.post(reverse("sale_create"), data)
 
-    def test_the_pick_prefills_every_new_form(self):
+    def test_the_header_switch_is_gone(self):
         self.client.force_login(self.admin)
-        response = self._switch(self.sales2.pk)
-        self.assertRedirects(response, "/sales/", fetch_redirect_response=False)
-        sale = self.client.get(reverse("sale_create")).context["form"]
-        self.assertEqual(sale["seller"].value(), self.sales2.pk)
-        debtor = self.client.get(reverse("debtor_add")).context["form"]
-        self.assertEqual(debtor["seller"].value(), self.sales2.pk)
-        expense = self.client.get(reverse("expense_create")).context["form"]
-        self.assertEqual(expense["seller"].value(), self.sales2.pk)
-        client = self.client.get(reverse("client_create")).context["form"]
-        self.assertEqual(client["owner"].value(), self.sales2.pk)
-
-    def test_the_sale_then_goes_to_that_seller(self):
-        self.client.force_login(self.admin)
-        self._switch(self.sales2.pk)
-        form = self.client.get(reverse("sale_create")).context["form"]
-        data = sale_post(
-            self.client2.pk, [one_item(self.product)], seller=form["seller"].value()
-        )
-        self.client.post(reverse("sale_create"), data)
-        sale = Sale.objects.filter(client=self.client2).latest("pk")
-        self.assertEqual(sale.sales_rep, self.sales2)
-
-    def test_an_empty_pick_clears_it(self):
-        self.client.force_login(self.admin)
-        self._switch(self.sales2.pk)
-        self._switch("")
-        form = self.client.get(reverse("sale_create")).context["form"]
-        self.assertIsNone(form["seller"].value())
-
-    def test_a_seller_has_no_switch(self):
-        self.client.force_login(self.sales1)
-        self.assertEqual(self._switch(self.sales2.pk).status_code, 403)
         page = self.client.get(reverse("sale_list"))
         self.assertNotContains(page, 'id="acting-seller-select"')
-        self.client.force_login(self.admin)
-        self.assertContains(
-            self.client.get(reverse("sale_list")), 'id="acting-seller-select"'
-        )
+        self.assertNotContains(page, "sotuvchi-tanlash")
+        self.assertNotIn("acting_seller", self.client.session)
 
-    def test_only_a_local_address_is_followed_back(self):
+    def test_admin_manager_and_seller_all_write_to_the_owner(self):
+        for user in (self.admin, self.manager, self.sales2):
+            self._sale(user, self.client2)
+            sale = Sale.objects.filter(client=self.client2).latest("pk")
+            self.assertEqual(sale.sales_rep, self.sales2)
+            self.assertEqual(sale.entered_by, user)
+            log = AuditLog.objects.get(target_type="Sotuv", target_id=sale.pk)
+            self.assertEqual(log.user, user)
+
+    def test_the_form_pick_never_overrides_the_owner(self):
+        before = Sale.objects.count()
+        response = self._sale(self.admin, self.client2, seller=self.sales1.pk)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("client", response.context["form"].errors)
+        self.assertEqual(Sale.objects.count(), before)
+
+    def test_a_mijoz_owned_by_an_admin_is_refused(self):
+        orphan = Client.objects.create(name="Admin mijozi", owner=self.admin)
+        response = self._sale(self.admin, orphan)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("sotuvchiga biriktirilmagan",
+                      str(response.context["form"].errors["client"]))
+        self.assertFalse(Sale.objects.filter(client=orphan).exists())
+
+    def test_a_mijoz_of_a_departed_seller_is_refused(self):
+        gone = User.objects.create_user("t_gone", password="x", role=User.Role.SALES,
+                                        is_active=False)
+        client = Client.objects.create(name="Eski mijoz", owner=gone)
+        response = self._sale(self.admin, client)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("faol emas", str(response.context["form"].errors["client"]))
+        self.assertFalse(Sale.objects.filter(client=client).exists())
+
+    def test_the_creator_shows_on_detail_and_list(self):
+        self._sale(self.admin, self.client2)
+        sale = Sale.objects.filter(client=self.client2).latest("pk")
+        detail = self.client.get(reverse("sale_detail", args=[sale.pk]))
+        self.assertContains(detail, "Kiritgan")
+        self.assertContains(detail, str(self.admin))
+        listing = self.client.get(reverse("sale_list"))
+        self.assertContains(listing, f"kiritgan: {self.admin}")
+
+    def test_a_sellers_own_sale_lists_no_creator_note(self):
+        self._sale(self.sales2, self.client2)
+        self.assertNotContains(self.client.get(reverse("sale_list")), "kiritgan:")
+
+    def test_an_edit_keeps_the_creator(self):
+        self._sale(self.admin, self.client2)
+        sale = Sale.objects.filter(client=self.client2).latest("pk")
+        self.client.force_login(self.manager)
+        item = sale.items.get()
+        data = sale_post(self.client2.pk, [one_item(self.product, weight="6")],
+                         note="tahrir", debt_days="7")
+        data.update({"items-INITIAL_FORMS": "1", "items-0-id": item.pk})
+        response = self.client.post(reverse("sale_edit", args=[sale.pk]), data)
+        self.assertEqual(response.status_code, 302)
+        sale.refresh_from_db()
+        self.assertEqual((sale.note, sale.entered_by), ("tahrir", self.admin))
+
+    def test_an_opening_debt_records_who_added_it(self):
         self.client.force_login(self.admin)
-        response = self._switch(self.sales1.pk, next_url="https://evil.example/")
-        self.assertRedirects(response, reverse("dashboard"), fetch_redirect_response=False)
+        fresh = Client.objects.create(name="Yangi qarzdor", owner=self.sales1)
+        self.client.post(reverse("debtor_add"), {
+            "client": fresh.pk, "amount": "100000",
+            "date": timezone.localdate().isoformat(), "debt_days": "7",
+        })
+        sale = Sale.objects.get(client=fresh, is_opening=True)
+        self.assertEqual((sale.sales_rep, sale.entered_by), (self.sales1, self.admin))
 
 
 class MonthlyReportTests(BaseSetup):

@@ -2,7 +2,7 @@ import calendar
 import math
 import re
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from itertools import zip_longest
 from urllib.parse import quote, urlencode
@@ -30,7 +30,6 @@ from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
-from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.safestring import mark_safe
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -74,6 +73,7 @@ from .forms import (
     TruckForm,
     WarehouseForm,
     parse_return_rows,
+    client_seller_problem,
     sellers_queryset,
 )
 from .models import (
@@ -135,8 +135,6 @@ from .models import (
     till_cash_on,
     till_days,
 )
-from .context_processors import SESSION_KEY as ACTING_SELLER_KEY
-from .context_processors import current_acting_seller
 from .geo import LocationError, resolve_location
 from .utils import (
     UZ_MONTH_NAMES,
@@ -162,36 +160,6 @@ def _on_behalf(user, seller):
     if seller is None or seller.pk == user.pk:
         return ""
     return f" · sotuvchi: {seller}"
-
-
-def _acting_initial(request, field="seller"):
-    """Form initial that opens a new record in the name of the seller picked in the top
-    bar (see context_processors) — {} when none is, or for a seller themselves."""
-    seller = current_acting_seller(request)
-    return {field: seller.pk} if seller else {}
-
-
-@role_required(User.Role.ADMIN, User.Role.MANAGER)
-def acting_seller_set(request):
-    """The top bar's «Sotuvchi» switch: remember which seller an admin/manager is
-    working as, so each new sale, qarzdor, chiqim and mijoz opens in that seller's
-    name instead of asking every time. An empty pick clears it. Returns to the page
-    the switch was used on."""
-    if request.method == "POST":
-        pk = request.POST.get("seller", "")
-        seller = sellers_queryset().filter(pk=pk).first() if pk.isdigit() else None
-        if seller is not None:
-            request.session[ACTING_SELLER_KEY] = seller.pk
-            messages.success(request, f"Endi {seller} nomidan ishlayapsiz.")
-        else:
-            request.session.pop(ACTING_SELLER_KEY, None)
-            messages.success(request, "Sotuvchi tanlovi olib tashlandi.")
-    target = request.POST.get("next", "")
-    if not url_has_allowed_host_and_scheme(
-        target, allowed_hosts={request.get_host()}, require_https=request.is_secure()
-    ):
-        target = reverse("dashboard")
-    return redirect(target)
 
 
 def _advance_balance_map(client_pks, seller):
@@ -1257,10 +1225,7 @@ def client_export(request):
 
 
 def client_create(request):
-    form = ClientForm(
-        request.POST or None, user=request.user,
-        initial=_acting_initial(request, "owner"),
-    )
+    form = ClientForm(request.POST or None, user=request.user)
     if request.method == "POST":
         if form.is_valid():
             client = form.save(commit=False)
@@ -1810,7 +1775,8 @@ def _store_opening_debt(user, client, sale, new_total, on_date, term_days=None):
         days = DEFAULT_DEBT_DAYS if term_days is None else term_days
         sale = Sale.objects.create(
             client=client,
-            sales_rep=client.owner or user,
+            sales_rep=client.owner,
+            entered_by=user,
             date=on_date,
             debt_deadline=on_date + timedelta(days=days),
             # Left unset when nobody named a term, exactly as before: the balance then
@@ -2412,7 +2378,7 @@ def sale_list(request):
     base = (
         Sale.objects.visible_to(request.user)
         .real()  # opening-balance carry-overs live on the Qarzlar page, not here
-        .select_related("client", "sales_rep")
+        .select_related("client", "sales_rep", "entered_by")
         .prefetch_related("items__product")
         .with_balance()
     )
@@ -2888,7 +2854,7 @@ def debtor_add(request):
         return _render_debtor_add(request, form, invalid=True)
     form = DebtorAddForm(
         clients=clients, user=request.user,
-        initial={"date": timezone.localdate(), **_acting_initial(request)},
+        initial={"date": timezone.localdate()},
     )
     return _render_debtor_add(request, form)
 
@@ -6371,7 +6337,7 @@ def expense_create(request):
     The Xodimlar page links in with ?employee=<pk>, which preselects the worker and
     the wage category so paying someone is one click from their row; it may add
     ?summa= to fill in what is still owed, for the common case of settling in full."""
-    initial = _acting_initial(request)
+    initial = {}
     employee_pk = request.GET.get("employee", "")
     if request.method == "GET" and employee_pk.isdigit():
         if Employee.objects.filter(pk=employee_pk, is_active=True).exists():
@@ -9564,7 +9530,7 @@ def sale_export(request):
     base = (
         Sale.objects.visible_to(request.user)
         .real()  # matches the sales list — opening carry-overs are not sales
-        .select_related("client", "sales_rep")
+        .select_related("client", "sales_rep", "entered_by")
         .with_balance()
     )
     sales, _, _, _, _ = _filter_sales(request, base)
@@ -9572,7 +9538,7 @@ def sale_export(request):
 
     headers = [
         "Sana", "Mijoz", "Mahsulot", "Sotuvchi", "O'lchov", "Og'irligi",
-        "Narxi", "Umumiy narx", "Tannarx", "Foyda", "To'lov", "Qarz muddati",
+        "Narxi", "Umumiy narx", "Tannarx", "Foyda", "To'lov", "Qarz muddati", "Kiritgan",
     ]
     # One row per line item, so a multi-product receipt still exports cleanly.
     rows = []
@@ -9593,6 +9559,7 @@ def sale_export(request):
                 float(item.profit),
                 status,
                 deadline,
+                str(s.entered_by or ""),
             ])
     number_formats = {6: "0.000", 7: "#,##0.00", 8: "#,##0.00", 9: "#,##0.00", 10: "#,##0.00"}
     return _xlsx_response("sotuvlar.xlsx", "Sotuvlar", headers, rows, number_formats)
@@ -9601,7 +9568,7 @@ def sale_export(request):
 def sale_detail(request, pk):
     sale = get_object_or_404(
         Sale.objects.visible_to(request.user)
-        .select_related("client", "sales_rep")
+        .select_related("client", "sales_rep", "entered_by")
         .prefetch_related("items__product"),
         pk=pk,
     )
@@ -9823,16 +9790,15 @@ def _finish_new_sale(user, sale, seller, summary_extra=""):
 
 
 def sale_create(request):
-    form = SaleForm(
-        request.POST or None, user=request.user, initial=_acting_initial(request)
-    )
+    form = SaleForm(request.POST or None, user=request.user)
     formset = SaleItemFormSet(request.POST or None, instance=Sale(), prefix="items")
     if request.method == "POST":
         if form.is_valid() and formset.is_valid():
             sale = form.save(commit=False)
-            # The seller picked on the form when an admin/manager writes it for them.
+            # Always the mijoz's own seller; who typed it in is kept beside it.
             seller = form.acting_seller()
             sale.sales_rep = seller
+            sale.entered_by = request.user
             sale.save()
             formset.instance = sale
             formset.save()
@@ -11317,12 +11283,15 @@ def _confirm_stop(request, load, item_pk):
         if unweighed:
             messages.error(request, f"“{name}”: avval kg kiriting — {', '.join(unweighed)}.")
             return redirect(_load_url(load))
-        seller = item.client.owner
-        if seller.role != User.Role.SALES:
-            messages.error(request, f"“{name}” sotuvchiga biriktirilmagan — sotuv kimning "
-                                    f"nomiga yozilishi noma'lum. Mijozni sotuvchiga o'tkazing.")
+        # The sale goes to the mijoz's own seller, whoever presses ✓ — the same rule
+        # as the sale form.
+        problem = client_seller_problem(item.client)
+        if problem:
+            messages.error(request, problem)
             return redirect(_load_url(load))
+        seller = item.client.owner
         sale = Sale(date=load.date, client=item.client, sales_rep=seller,
+                    entered_by=request.user,
                     debt_term_days=DEFAULT_DEBT_DAYS, note=f"Yuk #{load.pk}")
         sale.recompute_debt_deadline(commit=False)
         sale.save()
@@ -11490,6 +11459,37 @@ def _set_strategy(request, load):
     return redirect(_load_url(load) + "?marshrut=1")
 
 
+def _set_start(request, load):
+    """«Jo'natish»: the trucks left at the time in the box — now unless changed,
+    since the button may be pressed late. The time can be corrected later, or the
+    start undone («Bekor qilish»)."""
+    if not _may_change_load(request.user, load):
+        raise PermissionDenied
+    if request.POST.get("clear"):
+        if load.started_at:
+            load.started_at = None
+            load.save(update_fields=["started_at"])
+            AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
+                            f"Yuk #{load.pk}: jo'natish bekor qilindi")
+        return redirect(_load_url(load))
+    raw = (request.POST.get("started_at") or "").strip()
+    try:
+        started = (timezone.make_aware(datetime.strptime(raw, "%Y-%m-%dT%H:%M")) if raw
+                   else timezone.now().replace(second=0, microsecond=0))
+    except ValueError:
+        messages.error(request, "Jo'nash vaqti noto'g'ri — sana va soatni tanlang.")
+        return redirect(_load_url(load))
+    if started > timezone.now() + timedelta(minutes=5):
+        messages.error(request, "Jo'nash vaqti kelajakda bo'lishi mumkin emas.")
+        return redirect(_load_url(load))
+    load.started_at = started
+    load.save(update_fields=["started_at"])
+    AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
+                    f"Yuk #{load.pk}: jo'nadi — {timezone.localtime(started):%d.%m.%Y %H:%M}")
+    messages.success(request, f"Yuk jo'natildi: {timezone.localtime(started):%H:%M}.")
+    return redirect(_load_url(load) + "?marshrut=1")
+
+
 def _load_groups(load, items, depot, dist, weights):
     """Split the load's stops into routes: [(truck or None, [Stop, …])] and an error.
 
@@ -11632,6 +11632,8 @@ def load_detail(request, pk):
             return _reset_load_order(request, load)
         if action == "strategy":
             return _set_strategy(request, load)
+        if action == "start":
+            return _set_start(request, load)
         if action == "items":
             return _save_load_items(request, load, items)
         return _save_load_order(request, load, items)
@@ -11668,6 +11670,10 @@ def load_route(request, pk):
         )
         by_pk = {i.pk: i for i in items}
         groups, error = _load_groups(load, items, depot, dist, weights)
+        # Arrival times (approximate until GPS): from when the trucks left, or —
+        # not gone yet — from now, as if they left this minute.
+        eta_from = load.started_at or timezone.now()
+        detour = 1.0 if by_road else routing.ETA_DETOUR
         for n, (truck, group) in enumerate(groups):
             measured = routing.build_route(truck, group, depot, dist=dist)
             stops = []
@@ -11681,6 +11687,9 @@ def load_route(request, pk):
                     "amount": _amount(item, debts.get(item.client_id)),
                 })
             points = [_point(st["client"]) for st in stops]
+            arrivals, back = routing.arrival_times(depot, points, eta_from, dist, detour)
+            for st, at in zip(stops, arrivals):
+                st["eta"] = at
             google = route_share.google_route_links(depot, points)
             yandex = route_share.yandex_route_link(depot, points)
             title = f"Yuk #{load.pk} — {load.date:%d.%m.%Y}" + (f" — {truck.name}" if truck else "")
@@ -11700,6 +11709,7 @@ def load_route(request, pk):
             capacity = truck.capacity_kg if truck else None
             routes.append({
                 "truck": truck, "stops": stops, "km": measured.km, "kg": measured.kg,
+                "back": back if stops else None,
                 "load_pct": min(100, round(measured.kg / capacity * 100)) if capacity else None,
                 "over": bool(capacity) and measured.kg > capacity,
                 "color": ROUTE_COLORS[n % len(ROUTE_COLORS)],
@@ -11735,5 +11745,7 @@ def load_route(request, pk):
         "estimated": estimated,
         "unknown": unknown,
         "strategies": Load.Strategy.choices,
+        "eta_stop_minutes": routing.ETA_STOP_MINUTES,
+        "eta_speed": routing.ETA_SPEED_KMH,
         "unweighed": sum(1 for i in items if i.delivers for l in i.line_list if l.kg is None),
     })

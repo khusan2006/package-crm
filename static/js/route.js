@@ -56,6 +56,8 @@
       // after a move they're out of date until saved, so they step aside.
       form.querySelectorAll('[data-route-share]').forEach(function (el) { el.hidden = true; });
       form.querySelectorAll('[data-route-share-stale]').forEach(function (el) { el.hidden = false; });
+      // Arrival times belong to the old order too.
+      form.querySelectorAll('[data-route-eta]').forEach(function (el) { el.hidden = true; });
     }
 
     // ⇄: the stop goes to the end of the other truck's list.

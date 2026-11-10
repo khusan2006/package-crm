@@ -19,6 +19,28 @@
     </span>
     {% if load.note %}<span class="load-head-note">{{ load.note }}</span>{% endif %}
   </div>
+  {% comment %}«Jo'natish»: when the trucks left. Now by default — the box follows the
+  clock until it is touched — or an earlier time when the button is pressed late.
+  The route's arrival times count from it.{% endcomment %}
+  {% if may_change_load and items %}
+  <form method="post" class="load-start{% if load.started_at %} is-started{% endif %}" data-load-start>
+    {% csrf_token %}
+    <input type="hidden" name="action" value="start">
+    {% if load.started_at %}<span class="badge badge-paid">Yo'lda</span>{% endif %}
+    <label class="load-start-label" for="load-started-at">{% if load.started_at %}Jo'nagan{% else %}Jo'nash vaqti{% endif %}</label>
+    <input type="datetime-local" id="load-started-at" name="started_at" class="load-start-input"
+           value="{% if load.started_at %}{{ load.started_at|date:'Y-m-d\TH:i' }}{% else %}{% now 'Y-m-d\TH:i' %}{% endif %}"
+           max="{% now 'Y-m-d' %}T23:59"{% if not load.started_at %} data-load-start-now{% endif %} required>
+    {% if load.started_at %}
+    <button type="submit" class="btn btn-sm btn-ghost">Vaqtni saqlash</button>
+    <button type="submit" class="btn btn-sm btn-ghost" name="clear" value="1" formnovalidate>Bekor qilish</button>
+    {% else %}
+    <button type="submit" class="btn btn-sm">Jo'natish</button>
+    {% endif %}
+  </form>
+  {% elif load.started_at %}
+  <span class="load-start is-started"><span class="badge badge-paid">Yo'lda</span> Jo'nagan {{ load.started_at|date:"d.m H:i" }}</span>
+  {% endif %}
   {% if may_change_load or movable %}
   <span class="ra-slots">
     {% if movable %}<a class="icon-action" href="{% url 'load_move' load.pk %}" data-modal title="Mijozlarni boshqa kunga o'tkazish" aria-label="Mijozlarni boshqa kunga o'tkazish">{% include "crm/_ico_move_day.html" %}</a>{% endif %}

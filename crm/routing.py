@@ -23,6 +23,7 @@ parameter, so road distances (OSRM) can replace it later without changing the re
 
 import math
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
 from itertools import combinations
 
@@ -336,3 +337,27 @@ def plan_routes(depot, stops, trucks, return_to_depot=True, dist=distance_km, pr
         return Plan(routes=[build_route(t, g, depot, return_to_depot, dist)
                             for t, g in zip(pair, groups)])
     raise SplitImpossible()
+
+
+#: Arrival times are estimates until the trucks report GPS: an average city speed
+#: (40 km/h with the traffic lights — the client's own figure), a fixed time at
+#: every stop (unloading, taking the money), and — when distances are straight
+#: lines, not roads — a detour factor, as streets are longer than the crow flies.
+ETA_SPEED_KMH = 40
+ETA_STOP_MINUTES = 15
+ETA_DETOUR = 1.3
+
+
+def arrival_times(depot, points, start, dist=distance_km, detour=1.0):
+    """When a truck that leaves `depot` at `start` reaches each of `points`, visited
+    in order, and when it is back at the depot: ([datetime, …], datetime)."""
+    def drive(a, b):
+        return timedelta(hours=dist(a, b) * detour / ETA_SPEED_KMH)
+
+    times, at, here = [], start, depot
+    for point in points:
+        at += drive(here, point)
+        times.append(at)
+        at += timedelta(minutes=ETA_STOP_MINUTES)
+        here = point
+    return times, at + drive(here, depot)

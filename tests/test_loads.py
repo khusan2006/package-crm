@@ -326,6 +326,7 @@ def test_confirming_a_stop_makes_the_sale(client, admin_user, seller_user, load,
     assert weighed.sale == sale
     assert (sale.date, sale.client, sale.sales_rep, sale.note) == (
         load.date, weighed.client, seller_user, f"Yuk #{load.pk}")
+    assert sale.entered_by == admin_user  # who pressed ✓, beside whose sale it is
     assert sale.debt_term_days == 7 and sale.debt_deadline == load.date + timedelta(days=7)
     lines = {i.product.name: i for i in sale.items.all()}
     assert (lines["Paket"].weight, lines["Paket"].rolls, lines["Paket"].price, lines["Paket"].cost_price) == (
@@ -1061,3 +1062,102 @@ def test_a_line_from_someone_elses_stop_is_ignored(client, seller_user, other_se
     resp = client.post(f"/yetkazish/{load.pk}/boshqa-kunga/",
                        {"line": [theirs.lines.first().pk], "target": "tomorrow"})
     assert resp.status_code == 200 and theirs.lines.count() == 2 and Load.objects.count() == 1
+
+
+# --- «Jo'natish» and arrival times ---------------------------------------------------
+
+def test_arrival_times_add_driving_and_a_stop_at_each_client():
+    from datetime import datetime
+    from crm import routing
+    start = datetime(2026, 11, 10, 9, 0)
+    legs = {((0, 0), (0, 1)): 20, ((0, 1), (0, 2)): 40, ((0, 2), (0, 0)): 60,
+            ((0, 1), (0, 0)): 20}
+
+    def dist(a, b):
+        return legs[(a, b)]
+
+    times, back = routing.arrival_times((0, 0), [(0, 1), (0, 2)], start, dist)
+    # 20 km at 40 km/h = 30 min; 15 min there; 40 km = 60 min; 15 min; 60 km = 90 min.
+    assert [t.strftime("%H:%M") for t in times] == ["09:30", "10:45"]
+    assert back.strftime("%H:%M") == "12:30"
+    times, _ = routing.arrival_times((0, 0), [(0, 1)], start, dist, detour=2)
+    assert times[0].strftime("%H:%M") == "10:00"
+
+
+def start(client, user, load, **data):
+    client.force_login(user)
+    return client.post(f"/yetkazish/{load.pk}/", {"action": "start", **data})
+
+
+def test_starting_a_load_records_the_time_typed(client, admin_user, load, three):
+    when = timezone.localtime() - timedelta(minutes=40)
+    resp = start(client, admin_user, load, started_at=when.strftime("%Y-%m-%dT%H:%M"))
+    assert resp.url == f"/yetkazish/{load.pk}/?marshrut=1"
+    load.refresh_from_db()
+    assert load.started_at == when.replace(second=0, microsecond=0)
+    assert AuditLog.objects.filter(target_type="Yuk", target_id=load.pk,
+                                   summary__contains="jo'nadi").exists()
+
+
+def test_starting_without_a_time_means_now(client, admin_user, load, three):
+    start(client, admin_user, load, started_at="")
+    load.refresh_from_db()
+    assert abs(load.started_at - timezone.now()) < timedelta(minutes=1)
+
+
+@pytest.mark.parametrize("raw", ["kecha", "2026-13-40T25:00"])
+def test_a_bad_start_time_is_refused(client, admin_user, load, three, raw):
+    start(client, admin_user, load, started_at=raw)
+    load.refresh_from_db()
+    assert load.started_at is None
+
+
+def test_a_start_in_the_future_is_refused(client, admin_user, load, three):
+    later = timezone.localtime() + timedelta(hours=2)
+    start(client, admin_user, load, started_at=later.strftime("%Y-%m-%dT%H:%M"))
+    load.refresh_from_db()
+    assert load.started_at is None
+
+
+def test_a_start_can_be_undone(client, admin_user, load, three):
+    start(client, admin_user, load, started_at="")
+    start(client, admin_user, load, clear="1")
+    load.refresh_from_db()
+    assert load.started_at is None
+
+
+def test_only_who_may_change_the_load_starts_it(client, other_seller, load, three):
+    assert start(client, other_seller, load, started_at="").status_code == 403
+    load.refresh_from_db()
+    assert load.started_at is None
+
+
+def test_the_route_shows_arrival_times_from_the_start(client, admin_user, load, three):
+    load.started_at = timezone.make_aware(
+        timezone.datetime.combine(TODAY(), timezone.datetime.min.time())) + timedelta(hours=9)
+    load.save()
+    resp = route(client, admin_user, load)
+    r = resp.context["routes"][0]
+    etas = [s["eta"] for s in r["stops"]]
+    assert load.started_at < etas[0] < etas[1] < etas[2] < r["back"]
+    # Each stop is at least the 15 minutes at the one before it later.
+    assert etas[1] - etas[0] >= timedelta(minutes=15)
+    body = resp.content.decode()
+    assert "09:00 da jo'nagan" in body
+    assert f"≈ {timezone.localtime(etas[0]):%H:%M}" in body
+
+
+def test_before_the_start_times_count_from_now(client, admin_user, load, three):
+    resp = route(client, admin_user, load)
+    first = resp.context["routes"][0]["stops"][0]["eta"]
+    assert timezone.now() < first < timezone.now() + timedelta(hours=1)
+    assert "Hozir jo'nasa" in resp.content.decode()
+
+
+def test_the_load_page_has_the_start_box(client, admin_user, load, three):
+    body = detail(client, admin_user, load).content.decode()
+    assert 'name="started_at"' in body and "Jo'natish" in body
+    load.started_at = timezone.now()
+    load.save()
+    body = detail(client, admin_user, load).content.decode()
+    assert "Yo'lda" in body and "Bekor qilish" in body
