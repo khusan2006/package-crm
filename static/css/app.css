@@ -1591,9 +1591,23 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  /* `form.stacked label` gives every label a 6px bottom margin; on a grid cell that
+     lifted Narxi's box 6px above Tannarx's. The grid's own gap spaces the rows. */
+  margin: 0;
   font-size: 10.5px;
   color: var(--text-muted);
   font-weight: 600;
+}
+
+/* Og'irligi and Tannarx are a <div class="if"> with a <label> inside (they hold a
+   button too), so `form.stacked label` made their caption 13px — bigger and lower
+   than Narxi / Birlik beside them. Same caption as the rest of the line. */
+.item-fields .if > label {
+  display: block;
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+  color: inherit;
 }
 
 .item-fields .if input,
@@ -1649,13 +1663,25 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
   color: var(--success);
 }
 
-/* Under Narx: what this mijoz paid for the product last time. Clickable once the box
-   holds something else, to put that price back. */
+/* Under Narx and Tannarx, the whole width of the line, in a frame: what this mijoz paid
+   for the product last time — one line, so it never pushes Tannarx out of line with
+   Narx. Clickable once the box holds something else, to put that price back. */
+.item-subfields > .last-price-hint {
+  grid-column: 1 / -1;
+}
+
 .last-price-hint {
-  font-size: 12px;
-  font-weight: 600;
+  padding: 6px 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
   color: var(--accent);
-  text-align: right;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .last-price-hint[hidden] {
@@ -1663,9 +1689,10 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
 }
 
 .last-price-hint.is-other {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
   color: var(--text-muted);
   cursor: pointer;
-  text-decoration: underline dotted;
 }
 
 .item-add {

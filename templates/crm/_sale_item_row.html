@@ -17,9 +17,7 @@
       </div>
       <label class="if if-dim">Birlik{{ f.dimension }}</label>
       <label class="if if-rolls">Rulon soni{{ f.rolls }}{{ f.rolls.errors }}</label>
-      {% comment %}Mijoz bu mahsulotni oldin olgan bo'lsa, Narx o'sha oxirgi narx bilan
-      ochiladi va ostida «Oxirgi narx: …» chiqadi — o'zgartirsa bo'ladi (base.html).{% endcomment %}
-      <label class="if if-price">Narxi{{ f.price }}<span class="last-price-hint" data-last-price-hint hidden></span>{{ f.price.errors }}</label>
+      <label class="if if-price">Narxi{{ f.price }}{{ f.price.errors }}</label>
       <div class="if if-cost">
         <label for="{{ f.cost_price.id_for_label }}">Tannarx</label>
         <span class="field-line">{{ f.cost_price }}<button type="button" class="icon-action danger item-remove" title="Qatorni o'chirish">
@@ -27,6 +25,11 @@
         </button></span>
         {{ f.cost_price.errors }}
       </div>
+      {% comment %}Mijoz bu mahsulotni oldin olgan bo'lsa, Narx o'sha oxirgi narx bilan
+      ochiladi va shu yerda, butun qator bo'ylab ramkada «Oxirgi narx: …» chiqadi —
+      o'zgartirsa bo'ladi (base.html). Narx/Tannarx qatoridan tashqarida, shuning uchun
+      ikkalasi bir tekisda qoladi.{% endcomment %}
+      <div class="last-price-hint" data-last-price-hint hidden></div>
     </div>
   </div>
   <div class="item-total muted" data-line-total hidden></div>
