@@ -10900,15 +10900,46 @@ def _joined_purpose(a, b):
 
 
 def load_create(request):
-    """«Yangi yuk»: one click makes an empty load for the day on screen and opens it —
-    there is nothing to ask first (a note can be added later with «Tahrirlash»)."""
-    if request.method != "POST":
-        return redirect(reverse("load_list"))
-    day = _load_day(request.POST.get("sana"))
-    load = Load.objects.create(date=day, created_by=request.user)
+    """«Yangi yuk»: the load's page for the day on screen, with nothing saved yet.
+
+    The load is written on the first «Saqlash» that brings at least one client — not
+    on the click. One click used to make an empty load straight away, so opening the
+    page and leaving again left an empty load behind, and the day's list (and the
+    audit log) filled up with loads nobody made. A note can be added after saving,
+    with «Tahrirlash». A POST without the Yuk tarkibi (an old page's one-click button)
+    only opens the draft."""
+    if request.method == "POST" and request.POST.get("action") == "items":
+        load = Load(date=_load_day(request.POST.get("sana")), created_by=request.user)
+        return _create_load_from_items(request, load)
+    day = _load_day(request.POST.get("sana") if request.method == "POST" else request.GET.get("sana"))
+    if request.method == "POST":
+        return redirect(f"{reverse('load_create')}?sana={day.isoformat()}")
+    return _render_load_detail(request, Load(date=day, created_by=request.user), [])
+
+
+def _create_load_from_items(request, load):
+    """The draft's «Saqlash»: the new stops are read exactly as on a saved load, and
+    only when they are right — and there is at least one — is the load made, with
+    them, in one transaction. Anything wrong (or nothing entered) brings the draft
+    back as it was left, and no load exists."""
+    if len(request.POST.getlist("new_client")) > LOAD_MAX_ITEMS:
+        messages.error(request, f"Bir yo'la ko'pi bilan {LOAD_MAX_ITEMS} ta yangi qator saqlanadi.")
+        return redirect(f"{reverse('load_create')}?sana={load.date.isoformat()}")
+    products = {p.pk: p for p in Product.objects.filter(is_active=True)}
+    plan, posted_new, problems = _read_load_items(request, load, [], products)
+    if problems:
+        messages.error(request, "Saqlanmadi — qizil kataklarni to'g'rilang: " + "; ".join(problems))
+        return _render_load_detail(request, load, [], posted_new=posted_new)
+    if not plan["new"]:
+        messages.info(request, "Yuk saqlanmadi — hali birorta mijoz qo'shilmagan.")
+        return redirect(f"{reverse('load_create')}?sana={load.date.isoformat()}")
+    with transaction.atomic():
+        load.save()
+        _write_load_plan(load, plan)
+    parts = _plan_summary(load, plan)
     AuditLog.record(request.user, AuditLog.Action.CREATE, "Yuk", load.pk,
-                    f"Yuk #{load.pk} ({load.date:%d.%m.%Y}) yaratildi")
-    messages.success(request, f"Yuk #{load.pk} yaratildi — endi mijozlarni qo'shing.")
+                    f"Yuk #{load.pk} ({load.date:%d.%m.%Y}) yaratildi: {', '.join(parts)}"[:255])
+    messages.success(request, f"Yuk #{load.pk} yaratildi.")
     return redirect(_load_url(load))
 
 
@@ -11671,6 +11702,9 @@ def _render_load_detail(request, load, items, posted_new=None):
         item.debt = debts.get(item.client_id) or Decimal("0")
     return render(request, "crm/load_detail.html", {
         "load": load,
+        # «Yangi yuk» before its first save: nothing in the database yet, so no
+        # edit/delete/move and the form posts to `load_create` (see there).
+        "is_draft": load.pk is None,
         "items": items,
         "may_change_load": _may_change_load(user, load),
         "roll_total": sum(l.rolls for l in lines),

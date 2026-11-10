@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% load crm_extras l10n %}
-{% block title %}Yuk #{{ load.pk }} · Paket CRM{% endblock %}
-{% block topbar_title %}Yuk #{{ load.pk }}{% endblock %}
+{% block title %}{% if is_draft %}Yangi yuk{% else %}Yuk #{{ load.pk }}{% endif %} · Paket CRM{% endblock %}
+{% block topbar_title %}{% if is_draft %}Yangi yuk{% else %}Yuk #{{ load.pk }}{% endif %}{% endblock %}
 {% block topbar_back %}<a href="{% url 'load_list' %}?sana={{ load.date|date:'Y-m-d' }}" class="icon-btn topbar-back" title="{{ load.date|date:'d.m.Y' }} yuklari" aria-label="Orqaga — {{ load.date|date:'d.m.Y' }} yuklari"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></a>{% endblock %}
 {% block content %}
 
@@ -41,7 +41,9 @@
   {% elif load.started_at %}
   <span class="load-start is-started"><span class="badge badge-paid">Yo'lda</span> Jo'nagan {{ load.started_at|date:"d.m H:i" }}</span>
   {% endif %}
-  {% if may_change_load or movable %}
+  {% if is_draft %}
+  <span class="badge badge-neutral" title="Birinchi «Saqlash»da yaratiladi">Saqlanmagan</span>
+  {% elif may_change_load or movable %}
   <span class="ra-slots">
     {% if movable %}<a class="icon-action" href="{% url 'load_move' load.pk %}" data-modal title="Mijozlarni boshqa kunga o'tkazish" aria-label="Mijozlarni boshqa kunga o'tkazish">{% include "crm/_ico_move_day.html" %}</a>{% endif %}
     {% if may_change_load %}
@@ -104,9 +106,12 @@
 
 <div class="card">
   <div class="card-head"><h2>Yuk tarkibi</h2></div>
-  <form method="post" action="{% url 'load_detail' load.pk %}" data-load-items{% if failed %} data-unsaved{% endif %}>
+  {% comment %}A draft («Yangi yuk», nothing saved yet) posts to load_create with its
+  day: the load is made on this first «Saqlash», only once a client is in it.{% endcomment %}
+  <form method="post" action="{% if is_draft %}{% url 'load_create' %}{% else %}{% url 'load_detail' load.pk %}{% endif %}" data-load-items{% if failed %} data-unsaved{% endif %}>
   {% csrf_token %}
   <input type="hidden" name="action" value="items">
+  {% if is_draft %}<input type="hidden" name="sana" value="{{ load.date|date:'Y-m-d' }}">{% endif %}
   {% comment %}The form's default button. Enter in a box presses the FIRST submit
   button of a form — without this, that would be the first stop's ✓, turning it into
   a sale if the page's script ever failed to load.{% endcomment %}
@@ -116,7 +121,7 @@
     {% for item in items %}{% include "crm/_load_stop.html" %}{% endfor %}
   </div>
   {% else %}
-  <p class="muted">Yuk hali bo'sh. Mijozni, maqsadni, mahsulot va rulon sonini kiriting — kg keyin, tortilgach.</p>
+  <p class="muted">Yuk hali bo'sh. Mijozni, maqsadni, mahsulot va rulon sonini kiriting — kg keyin, tortilgach.{% if is_draft %} Yuk «Saqlash» bosilganda yaratiladi — hech narsa kiritmasdan chiqib ketsangiz, yuk qolmaydi.{% endif %}</p>
   {% endif %}
 
   {% comment %}New stops: a client, a purpose, and its products («+ Mahsulot» under

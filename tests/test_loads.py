@@ -122,11 +122,59 @@ def test_every_role_reaches_yetkazish(client, admin_user, manager, seller_user, 
         assert 'href="/yetkazish/"' in get(client, user, "/").content.decode()
 
 
-def test_a_seller_creates_a_load(client, seller_user):
+def test_a_seller_creates_a_load(client, seller_user, paket):
+    """«Yangi yuk» opens a draft; the load is made on its first «Saqlash», with the
+    client in it."""
+    c = make_client(seller_user, "Anvar", 0.01)
     client.force_login(seller_user)
-    resp = client.post("/yetkazish/yangi/", {"sana": TODAY().isoformat()})
+    resp = client.post("/yetkazish/yangi/", {
+        "action": "items", "sana": TODAY().isoformat(), "new_key": ["1"],
+        "new_client": [c.pk], "new_purpose": [DELIVER], "new_product": [paket.pk],
+        "new_rolls": ["4"], "new_price": [""], "new_size": [""], "new_micron": [""]})
     load = Load.objects.get()
     assert resp.url == f"/yetkazish/{load.pk}/" and load.created_by == seller_user
+    assert load.date == TODAY()
+    line = load.items.get().lines.get()
+    assert (line.product, line.rolls, line.price) == (paket, 4, Decimal("15000"))
+    log = AuditLog.objects.get(target_type="Yuk", action=AuditLog.Action.CREATE)
+    assert f"Yuk #{load.pk}" in log.summary and "Anvar" in log.summary
+
+
+def test_opening_a_new_load_and_leaving_leaves_no_load(client, seller_user):
+    """The bug this replaces: one click used to save an empty load straight away."""
+    resp = get(client, seller_user, f"/yetkazish/yangi/?sana={TODAY().isoformat()}")
+    assert resp.status_code == 200 and resp.context["is_draft"]
+    body = resp.content.decode()
+    assert "Yangi yuk" in body and 'action="/yetkazish/yangi/"' in body
+    assert Load.objects.count() == 0 and not AuditLog.objects.filter(target_type="Yuk").exists()
+
+
+def test_an_old_one_click_post_only_opens_the_draft(client, seller_user):
+    client.force_login(seller_user)
+    resp = client.post("/yetkazish/yangi/", {"sana": TODAY().isoformat()})
+    assert resp.status_code == 302 and resp.url.startswith("/yetkazish/yangi/")
+    assert Load.objects.count() == 0
+
+
+def test_saving_an_empty_draft_makes_no_load(client, seller_user):
+    client.force_login(seller_user)
+    resp = client.post("/yetkazish/yangi/", {
+        "action": "items", "sana": TODAY().isoformat(), "new_key": ["1"], "new_client": [""],
+        "new_purpose": [DELIVER], "new_product": [""], "new_rolls": [""], "new_price": [""],
+        "new_size": [""], "new_micron": [""]})
+    assert resp.status_code == 302 and Load.objects.count() == 0
+
+
+def test_a_wrong_draft_comes_back_and_makes_no_load(client, seller_user, paket):
+    c = make_client(seller_user, "Anvar", 0.01)
+    client.force_login(seller_user)
+    resp = client.post("/yetkazish/yangi/", {
+        "action": "items", "sana": TODAY().isoformat(), "new_key": ["1"],
+        "new_client": [c.pk], "new_purpose": [DELIVER], "new_product": [paket.pk],
+        "new_rolls": ["abc"], "new_price": [""], "new_size": [""], "new_micron": [""]})
+    assert resp.status_code == 200 and resp.context["is_draft"]
+    assert resp.context["new_rows"][0]["rolls"] == "abc"
+    assert Load.objects.count() == 0
 
 
 def test_trucks_and_warehouse_stay_admin_only(client, manager, seller_user):
