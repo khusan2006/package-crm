@@ -2414,6 +2414,7 @@ def sale_list(request):
         Sale.objects.visible_to(request.user)
         .real()  # opening-balance carry-overs live on the Qarzlar page, not here
         .select_related("client", "sales_rep", "entered_by", "load_item__load")
+        .prefetch_related("load_lines__item__load")
         .prefetch_related("items__product")
         .with_balance()
     )
@@ -9831,7 +9832,8 @@ def _copy_sale_lines(stop, sale):
     for line in sale.items.select_related("product"):
         kg = line.weight / 1000 if line.dimension == Sale.Dimension.G else line.weight
         LoadLine.objects.create(item=stop, product=line.product, rolls=line.rolls or 0,
-                                price=line.price, kg=kg, size=line.size, micron=line.micron)
+                                price=line.price, kg=kg, size=line.size, micron=line.micron,
+                                sale=sale)
 
 
 def _sale_changed_for_delivery(sale, user):
@@ -9840,6 +9842,15 @@ def _sale_changed_for_delivery(sale, user):
     with it to the new client's day; a planned one is let go (unlocked) instead."""
     stop = LoadItem.objects.filter(sale=sale).first()
     if stop is None:
+        # Sold product by product: a one-line sale keeps its one product in step.
+        lines = list(LoadLine.objects.filter(sale=sale))
+        items = list(sale.items.all())
+        if len(lines) == 1 and len(items) == 1:
+            line, it = lines[0], items[0]
+            line.product, line.price = it.product, it.price
+            line.kg = it.weight / 1000 if it.dimension == Sale.Dimension.G else it.weight
+            line.rolls = it.rolls or line.rolls
+            line.save(update_fields=["product", "price", "kg", "rolls"])
         return
     if stop.client_id == sale.client_id:
         _copy_sale_lines(stop, sale)
@@ -9908,7 +9919,7 @@ def sale_create(request):
             formset.instance = sale
             formset.save()
             applied = _finish_new_sale(request.user, sale, seller)
-            already = (LoadItem.objects.filter(load__date=sale.date, client=sale.client,
+            already = (LoadLine.objects.filter(item__load__date=sale.date, item__client=sale.client,
                                                sale__isnull=False)
                        .values_list("sale_id", flat=True).first())
             stop = _track_sale_delivery(sale, request.user)
@@ -10798,6 +10809,9 @@ def load_move(request, pk):
                "title": "Boshqa kunga o'tkazish"}
 
     for item in items:
+        # Products already sold stay where they are; only the rest can move.
+        item.has_sold = any(l.sale_id for l in item.line_list)
+        item.line_list = [l for l in item.line_list if not l.sale_id]
         item.roll_sum = sum(l.rolls for l in item.line_list)
 
     def again(error, picked, target, day, lines=()):
@@ -10825,12 +10839,17 @@ def load_move(request, pk):
     whole, parts = [], []
     for item in items:
         if str(item.pk) in picked:
-            whole.append(item)
+            if item.has_sold:
+                # Part of it is sold: the unsold products go, the stop stays.
+                if item.line_list:
+                    parts.append((item, list(item.line_list)))
+            else:
+                whole.append(item)
             continue
         lines = [l for l in item.line_list if str(l.pk) in picked_lines]
         if not lines:
             continue
-        if len(lines) == len(item.line_list) and not item.collects:
+        if len(lines) == len(item.line_list) and not item.collects and not item.has_sold:
             whole.append(item)  # every product of a delivery: the stop itself goes
         else:
             parts.append((item, lines))
@@ -10964,7 +10983,7 @@ def load_delete(request, pk):
     load = get_object_or_404(Load, pk=pk)
     if not _may_change_load(request.user, load):
         raise PermissionDenied
-    if load.items.filter(sale__isnull=False).exists():
+    if load.items.filter(Q(sale__isnull=False) | Q(lines__sale__isnull=False)).exists():
         messages.error(request, "Bu yukda sotuvga aylangan mijozlar bor — yukni o'chirib bo'lmaydi.")
         return form_reload(request, _load_url(load))
     if request.method == "POST":
@@ -11182,6 +11201,9 @@ def _read_load_items(request, load, items, products):
         delivers = raw_purpose != LoadItem.Purpose.COLLECT
         kept = 0
         for line in item.line_list:
+            if line.sale_id:
+                kept += 1  # sold on its own: locked, but still on the stop
+                continue
             line.rolls_input = request.POST.get(f"rolls_{line.pk}", line.rolls_input)
             line.price_input = request.POST.get(f"price_{line.pk}", line.price_input)
             line.kg_input = request.POST.get(f"kg_{line.pk}", line.kg_input)
@@ -11402,6 +11424,13 @@ def _save_load_items(request, load, items):
     confirm = request.POST.get("confirm", "")
     if _DIGITS.fullmatch(confirm):
         return _confirm_stop(request, load, int(confirm))
+    confirm_line = request.POST.get("confirm_line", "")
+    if _DIGITS.fullmatch(confirm_line):
+        line = LoadLine.objects.filter(pk=int(confirm_line), item__load__date=load.date).first()
+        if line is None:
+            messages.error(request, "Bu mahsulot topilmadi — sahifa yangilandi.")
+            return redirect(_day_url(load.date))
+        return _confirm_stop(request, load, line.item_id, line_pk=line.pk)
     # A step: a button (`quick`, "<stop>:<method>:<status>") or a row's dropdown, whose
     # pick the page puts in `quick_pick` before sending.
     quick = request.POST.get("quick", "") or request.POST.get("quick_pick", "")
@@ -11467,10 +11496,12 @@ def _quick_status(request, load, items, raw, saved):
     return redirect(_load_list_url(load.date) + f"#stop-{item.pk}")
 
 
-def _confirm_stop(request, load, item_pk):
-    """✓: turn a delivery stop into a real sale, exactly as the sale form would make
-    it (`_finish_new_sale`), and lock the stop. Every line needs its kg first. Run
-    under a row lock, so a double click or a second tab can't make two sales."""
+def _confirm_stop(request, load, item_pk, line_pk=None):
+    """✓: turn a delivery stop — or one product of it (`line_pk`) — into a real sale,
+    exactly as the sale form would make it (`_finish_new_sale`). The products sold are
+    locked; once none is left unsold the stop is too. The products going need their
+    kg first. Run under a row lock, so a double click or a second tab can't make two
+    sales."""
     with transaction.atomic():
         # Any client of the day — the day page holds every Yuk of that date.
         item = (LoadItem.objects.select_for_update().select_related("client", "client__owner", "load")
@@ -11484,9 +11515,11 @@ def _confirm_stop(request, load, item_pk):
             return redirect(_day_url(load.date))
         if not _may_edit_stop(request.user, item):
             raise PermissionDenied
-        lines = list(item.lines.select_related("product"))
+        all_lines = list(item.lines.select_for_update(of=("self",)).select_related("product"))
+        lines = [l for l in all_lines if not l.sale_id and (line_pk is None or l.pk == line_pk)]
         if not item.delivers or not lines:
-            messages.error(request, f"“{name}”: sotuv uchun mahsulot yo'q.")
+            messages.error(request, f"“{name}”: sotuv uchun mahsulot yo'q"
+                                    + (" (allaqachon sotilgan)." if all_lines else "."))
             return redirect(_day_url(load.date))
         unweighed = [l.product.name for l in lines if l.kg is None]
         if unweighed:
@@ -11509,10 +11542,15 @@ def _confirm_stop(request, load, item_pk):
                 rolls=line.rolls, price=line.price, cost_price=line.product.cost_price,
                 size=line.size, micron=line.micron,
             )
-        item.sale = sale
-        item.save(update_fields=["sale"])
+        LoadLine.objects.filter(pk__in=[l.pk for l in lines]).update(sale=sale)
+        left = [l for l in all_lines if not l.sale_id and l not in lines]
+        if not left:
+            # Nothing left unsold: the stop is sold (and locked) as a whole.
+            item.sale = sale
+            item.save(update_fields=["sale"])
         applied = _finish_new_sale(request.user, sale, seller, summary_extra=f" (Yuk #{load.pk})")
-    text = f"“{name}” sotuvga aylandi — {sale.total_price:,.0f} so'm."
+    what = name if line_pk is None or not left else f"{name}, {lines[0].product.name}"
+    text = f"“{what}” sotuvga aylandi — {sale.total_price:,.0f} so'm."
     if applied > 0:
         text += f" Avansdan {applied:,.0f} so'm yechildi."
     messages.success(request, text)
@@ -11521,7 +11559,7 @@ def _confirm_stop(request, load, item_pk):
 
 def load_item_delete(request, pk, item_pk):
     item = get_object_or_404(LoadItem.objects.select_related("client", "load"), pk=item_pk, load_id=pk)
-    if item.sale_id:
+    if item.sale_id or item.lines.filter(sale__isnull=False).exists():
         messages.error(request, f"“{item.client.name}” sotuvga aylangan — yukdan olib bo'lmaydi.")
         return form_reload(request, _load_url(item.load))
     if not _may_edit_stop(request.user, item):
@@ -11757,7 +11795,7 @@ def _day_stops(day, user):
 
 def _prep_items(stops, user):
     items = list(stops.select_related("load", "client", "client__owner", "sale")
-                 .prefetch_related("lines__product", "client__phones")
+                 .prefetch_related("lines__product", "lines__sale", "client__phones")
                  .order_by("load__created_at", "created_at"))
     for item in items:
         item.line_list = list(item.lines.all())
@@ -11774,6 +11812,7 @@ def _prep_items(stops, user):
             line.size_input = line.size
             line.micron_input = line.micron
             line.product_input = str(line.product_id)
+            line.sold = bool(line.sale_id)
             # The catalogue price, not one agreed by hand: picking another product
             # brings that product's price instead.
             line.price_is_catalogue = line.price == line.product.price
@@ -11840,8 +11879,10 @@ def _lanes(items, user):
         item.kg_text = _plain(item.kg).replace(".", ",") if item.kg else ""  # "52,5", not "52,500"
         item.unweighed = any(l.kg is None for l in lines)
         # Delivered (or picked up) but ✓ Sotuvga never pressed: money not booked.
+        item.sold_count = sum(1 for l in lines if l.sale_id)
+        item.unsold_count = len(lines) - item.sold_count
         item.unsold = (item.status == LoadItem.Status.DONE and item.delivers and bool(lines)
-                       and not item.sale_id)
+                       and item.sold_count < len(lines))
         if item.status == LoadItem.Status.ORDER:
             lanes["order"].append(item)
         elif not item.method:

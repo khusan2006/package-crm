@@ -7161,7 +7161,7 @@ select.lane-status.st-done { border-color: var(--success); color: var(--success)
 /* An added product line uses the table's columns, so it sits right under it. */
 .lane-editor .add-lines { margin-top: 0; }
 .lane-editor .add-line {
-  display: grid; grid-template-columns: minmax(0, 1fr) 110px 110px 100px 150px 52px;
+  display: grid; grid-template-columns: minmax(0, 1fr) 110px 110px 100px 150px 90px;
   align-items: center; gap: 0; padding: 8px 0; border: 1px solid var(--border); border-top: 0;
   background: var(--accent-soft);
 }
@@ -7207,3 +7207,14 @@ button.lane-open:hover { background: var(--surface-hover); color: var(--text); }
 .badge-st-cancel { background: var(--surface-2); color: var(--text-muted); text-decoration: line-through; }
 select.lane-status.st-cancel { border-color: var(--border); color: var(--text-muted); text-decoration: line-through; }
 .lane-row.st-cancel { opacity: 0.6; }
+
+/* ✓ for one product alone, beside its kg box. */
+.line-sell {
+  flex: 0 0 auto; width: 34px; height: 34px; padding: 0;
+  border: 1px solid var(--accent); border-radius: 8px; background: var(--surface);
+  color: var(--accent); font-weight: 800; cursor: pointer;
+}
+.line-sell:hover { background: var(--accent); color: #fff; }
+.lane-line-item .line-sold { flex: 0 0 auto; }
+.lane-editor .stop-lines tr.is-sold td { color: var(--text-muted); background: var(--surface-2); }
+.lane-editor .stop-lines col.c-drop { width: 90px; }

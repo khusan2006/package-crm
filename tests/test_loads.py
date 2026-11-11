@@ -1728,3 +1728,78 @@ def test_cancelled_stops_are_neither_carried_nor_routed(client, admin_user, sell
     day_page(client, admin_user)
     old.refresh_from_db()
     assert old.load.date == TODAY() - timedelta(days=1)
+
+
+# --- selling one product at a time --------------------------------------------------------
+
+@pytest.fixture
+def two_products(load, seller_user, paket, plyonka):
+    return stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 5, 120), (plyonka, 2, 30))
+
+
+def test_one_product_is_sold_alone_then_the_rest(client, admin_user, two_products, paket, plyonka):
+    item = two_products
+    bag, film = item.lines.get(product=paket), item.lines.get(product=plyonka)
+    resp = day_save(client, admin_user, confirm_line=str(bag.pk))
+    first = Sale.objects.get()
+    assert [i.product for i in first.items.all()] == [paket]
+    bag.refresh_from_db(), film.refresh_from_db(), item.refresh_from_db()
+    assert (bag.sale, film.sale, item.sale) == (first, None, None)
+    body = client.get(resp.url).content.decode()
+    assert f'name="kg_{film.pk}"' in body and f'name="kg_{bag.pk}"' not in body
+    assert "✓ Qolganini" in body
+    day_save(client, admin_user, confirm=str(item.pk))
+    second = Sale.objects.exclude(pk=first.pk).get()
+    item.refresh_from_db(), film.refresh_from_db()
+    assert [i.product for i in second.items.all()] == [plyonka]
+    assert item.sale == second and film.sale == second   # nothing left: the stop is sold
+
+
+def test_a_sold_product_is_locked(client, admin_user, two_products, paket):
+    bag = two_products.lines.get(product=paket)
+    day_save(client, admin_user, confirm_line=str(bag.pk))
+    day_save(client, admin_user, **{f"kg_{bag.pk}": "999", f"drop_{bag.pk}": "1"})
+    bag.refresh_from_db()
+    assert bag.kg == Decimal("120") and LoadLine.objects.filter(pk=bag.pk).exists()
+
+
+def test_selling_one_product_needs_only_its_kg(client, admin_user, seller_user, load, paket,
+                                               plyonka):
+    item = stop(load, make_client(seller_user, "Anvar"), (paket, 5, 120), (plyonka, 2))
+    day_save(client, admin_user, confirm_line=str(item.lines.get(product=paket).pk))
+    assert Sale.objects.count() == 1
+    resp = day_save(client, admin_user, confirm_line=str(item.lines.get(product=plyonka).pk))
+    assert Sale.objects.count() == 1 and "kgsiz" in resp.url
+
+
+def test_a_partly_sold_client_moves_only_its_unsold_products(client, admin_user, two_products,
+                                                             paket, plyonka):
+    item = two_products
+    day_save(client, admin_user, confirm_line=str(item.lines.get(product=paket).pk))
+    client.post(f"/yetkazish/{item.load_id}/boshqa-kunga/", {"move": [item.pk], "target": "tomorrow"})
+    item.refresh_from_db()
+    assert list(item.lines.values_list("product__name", flat=True)) == ["Paket"]
+    moved = LoadLine.objects.get(product=plyonka)
+    assert moved.item != item and moved.item.load.date == TODAY() + timedelta(days=1)
+
+
+def test_a_partly_sold_client_cannot_be_removed(client, admin_user, two_products, paket):
+    item = two_products
+    day_save(client, admin_user, confirm_line=str(item.lines.get(product=paket).pk))
+    client.post(f"/yetkazish/{item.load_id}/mijoz/{item.pk}/delete/")
+    assert LoadItem.objects.filter(pk=item.pk).exists()
+
+
+def test_deleting_a_products_sale_frees_it(client, admin_user, two_products, paket):
+    bag = two_products.lines.get(product=paket)
+    day_save(client, admin_user, confirm_line=str(bag.pk))
+    client.post(f"/sales/{Sale.objects.get().pk}/delete/")
+    bag.refresh_from_db()
+    assert bag.sale is None
+    assert f'name="kg_{bag.pk}"' in day_page(client, admin_user).content.decode()
+
+
+def test_sotuvlar_shows_the_delivery_of_a_product_sale(client, admin_user, two_products, paket):
+    day_save(client, admin_user, confirm_line=str(two_products.lines.get(product=paket).pk))
+    body = client.get(f"/sales/?dan={TODAY().isoformat()}&gacha={TODAY().isoformat()}").content.decode()
+    assert "Kutilmoqda" in body

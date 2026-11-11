@@ -50,8 +50,8 @@
     <colgroup><col><col class="c-variant"><col class="c-variant"><col class="c-rolls"><col class="c-price">{% if item.editable %}<col class="c-drop">{% endif %}</colgroup>
     <tr><th>Mahsulot</th><th>Metr</th><th>Mikron</th><th class="num">Rulon</th><th class="num">Narx, so'm/kg</th>{% if item.editable %}<th><span class="visually-hidden">Olib tashlash</span></th>{% endif %}</tr>
     {% for line in item.line_list %}
-    <tr{% if item.editable %} data-line-product="{{ line.product_id|unlocalize }}" data-product-row data-line="{{ line.pk|unlocalize }}"{% endif %}>
-      {% if item.editable %}
+    <tr{% if item.editable and not line.sold %} data-line-product="{{ line.product_id|unlocalize }}" data-product-row data-line="{{ line.pk|unlocalize }}"{% elif line.sold %} class="is-sold"{% endif %}>
+      {% if item.editable and not line.sold %}
       {% comment %}The product can be swapped here; metr/mikron grey out when the new one
       doesn't come in them, and a catalogue price follows the new product.{% endcomment %}
       <td class="line-product"><select name="product_{{ line.pk|unlocalize }}" data-combobox data-placeholder="Mahsulot" aria-label="{{ item.client.name }} — mahsulot"{% if line.product_bad %} class="is-bad" aria-invalid="true"{% endif %}>
@@ -75,8 +75,9 @@
       <td>{{ line.product.name }}</td>
       <td>{{ line.size|default:"—" }}</td>
       <td>{{ line.micron|default:"—" }}</td>
-      <td class="num">{{ line.rolls }}</td>
+      <td class="num">{{ line.rolls|default:"—" }}</td>
       <td class="num">{{ line.price|floatformat:"0g" }}</td>
+      {% if item.editable %}<td class="row-actions">{% if line.sold %}<span class="badge badge-paid" title="Shu mahsulot sotilgan — o'zgartirib bo'lmaydi">✓ #{{ line.sale_id|unlocalize }}</span>{% endif %}</td>{% endif %}
       {% endif %}
     </tr>
     {% endfor %}

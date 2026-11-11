@@ -583,6 +583,16 @@ class Sale(models.Model):
         verbose_name_plural = "Sotuvlar"
 
     @property
+    def delivery_stop(self):
+        """The Yetkazish stop this sale belongs to: the one it sold whole, or the one
+        whose products it sold one by one. None for a sale with no delivery."""
+        stop = getattr(self, "load_item", None)
+        if stop is not None:
+            return stop
+        line = next(iter(self.load_lines.all()), None)
+        return line.item if line else None
+
+    @property
     def total_price(self):
         return sum((item.total_price for item in self.items.all()), Decimal("0"))
 
@@ -2799,6 +2809,11 @@ class LoadLine(models.Model):
     kg = models.DecimalField("Og'irligi (kg)", max_digits=12, decimal_places=3,
                              null=True, blank=True,
                              help_text="Tortilgandan keyin kiritiladi")
+    # The sale this product went into — set by ✓ on the product alone, or by ✓ on the
+    # whole client. A sold product is locked; deleting the sale frees it again. Once
+    # every product of a stop is sold the stop itself is (`LoadItem.sale`).
+    sale = models.ForeignKey("Sale", on_delete=models.SET_NULL, null=True, blank=True,
+                             related_name="load_lines", verbose_name="Sotuv")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

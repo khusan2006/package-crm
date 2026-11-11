@@ -24,7 +24,7 @@
         <span class="badge badge-paid">To'langan</span>
       {% endif %}
     </td>
-    <td>{% if sale.load_item %}<a class="badge badge-st-{{ sale.load_item.status }}" href="{% url 'load_list' %}?sana={{ sale.load_item.load.date|date:'Y-m-d' }}" title="{{ sale.load_item.get_method_display|default:'Usul tanlanmagan' }}">{{ sale.load_item.status_label }}</a>{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td>{% with stop=sale.delivery_stop %}{% if stop %}<a class="badge badge-st-{{ stop.status }}" href="{% url 'load_list' %}?sana={{ stop.load.date|date:'Y-m-d' }}" title="{{ stop.get_method_display|default:'Usul tanlanmagan' }}">{{ stop.status_label }}</a>{% else %}<span class="muted">—</span>{% endif %}{% endwith %}</td>
     <td>
       <div class="row-actions">
         <a class="icon-action" href="{% url 'sale_print' sale.pk %}" target="_blank" rel="noopener" title="Yuk xati (chop etish)">
