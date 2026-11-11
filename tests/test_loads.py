@@ -2005,3 +2005,34 @@ def test_lane_numbers_follow_the_days_saved_order(client, admin_user, seller_use
     client.force_login(admin_user)
     client.post(f"/yetkazish/{load.pk}/", {"action": "save", "stop": [b.pk, a.pk]})
     assert lane(day_page(client, admin_user), "truck") == ["B", "A"]
+
+
+# --- audit 2: smaller fixes -----------------------------------------------------------------
+
+def test_a_refused_save_stays_on_its_tab(client, admin_user, seller_user, load, paket):
+    item = stop(load, make_client(seller_user, "Anvar"), (paket, 1))
+    line = item.lines.get()
+    resp = day_save(client, admin_user, tur="truck", **{f"kg_{line.pk}": "abc"})
+    assert resp.status_code == 200 and resp.context["tab"] == "truck"
+    assert 'name="tur" value="truck"' in resp.content.decode()
+
+
+def test_a_refused_product_tick_marks_only_its_box(client, admin_user, seller_user, load, paket,
+                                                   plyonka):
+    item = stop(load, make_client(seller_user, "Anvar"), (paket, 1), (plyonka, 1))
+    bag, film = item.lines.get(product=paket), item.lines.get(product=plyonka)
+    resp = day_save(client, admin_user, confirm_line=str(bag.pk))
+    assert f"&kgline={bag.pk}" in resp.url
+    body = client.get(resp.url).content.decode()
+    assert body.count('class="pick-kg is-bad"') == 1
+    assert f'class="pick-kg is-bad" name="kg_{bag.pk}"' in body
+
+
+def test_nothing_in_the_warehouse_nothing_to_sell(client, admin_user, seller_user, load, paket):
+    item = stop(load, make_client(seller_user, "Anvar"), (paket, 1, 50))
+    item.status = "order"
+    item.save()
+    body = day_page(client, admin_user).content.decode()
+    assert f'name="confirm" value="{item.pk}"' not in body
+    day_save(client, admin_user, confirm=str(item.pk))
+    assert not Sale.objects.exists()

@@ -361,7 +361,9 @@
         note(stop, 'Saqlanmoqda…');
         // getAttribute: the form's hidden «action» field shadows form.action.
         saving = fetch(items.getAttribute('action'), {
-          method: 'POST', body: data, credentials: 'same-origin',
+          // keepalive: a ✓ pressed right after typing kg elsewhere leaves the page —
+          // this save still arrives.
+          method: 'POST', body: data, credentials: 'same-origin', keepalive: true,
           headers: { 'X-Requested-With': 'XMLHttpRequest' }
         }).then(function (r) {
           return r.json().catch(function () { return { ok: false, problems: ['Saqlanmadi — sahifani yangilang.'], bad: [] }; });
@@ -422,7 +424,10 @@
           if (!keep) { el.disabled = true; el.dataset.scopedOff = '1'; }
         });
       };
-      window.addEventListener('pageshow', function () {
+      window.addEventListener('pageshow', function (e) {
+        // Back to a page from the browser's memory: its boxes may hold what was already
+        // sent (an added product) — show it fresh instead, so nothing goes twice.
+        if (e.persisted) { window.location.reload(); return; }
         items.querySelectorAll('[data-scoped-off]').forEach(function (el) {
           el.disabled = false; delete el.dataset.scopedOff;
         });
@@ -480,9 +485,20 @@
       });
       // A product added to a saved client goes in once the cursor leaves its line with
       // a product and rulon in it — so metr, mikron and price can all be typed first.
+      // Only a line someone typed or clicked in: a «+ Mahsulot» copy left as it was
+      // (a stray click) does not save itself as a duplicate.
+      // "Worked on" = a box in it actually changed by hand, or a click in it (picking a
+      // product). Esc, Tab or arrows alone don't count.
+      ['input', 'pointerdown'].forEach(function (type) {
+        items.addEventListener(type, function (e) {
+          if (type === 'input' && !e.isTrusted) { return; }
+          var row = e.target.closest && e.target.closest('.stops [data-add-line-row]');
+          if (row) { row.dataset.touched = '1'; }
+        });
+      });
       items.addEventListener('focusout', function (e) {
         var added = e.target.closest && e.target.closest('.stops [data-add-line-row]');
-        if (!added) { return; }
+        if (!added || !('touched' in added.dataset)) { return; }
         setTimeout(function () {
           if (!added.isConnected || added.contains(document.activeElement)) { return; }
           if (added.querySelector('.combobox-pop:not([hidden])')) { return; }

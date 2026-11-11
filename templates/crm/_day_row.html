@@ -25,10 +25,10 @@
       <div class="lane-line-item" data-line="{{ line.pk|unlocalize }}">
         <span class="lane-line-name"><span data-line-name>{{ line.product.name }}{% if line.variant_label %} · {{ line.variant_label }}{% endif %}</span>{% if line.rolls %}<span class="lane-line-rolls">{{ line.rolls }} rulon</span>{% endif %}</span>
         {% if item.editable and not line.sold %}
-        <span class="kg-group{% if line.kg_bad or item.kg_missing and line.kg is None %} is-bad{% endif %}">
-          <span class="kg-cell"><input type="text" inputmode="decimal" class="pick-kg{% if line.kg_bad or item.kg_missing and line.kg is None %} is-bad{% endif %}" name="kg_{{ line.pk|unlocalize }}" value="{{ line.kg_input }}" placeholder="—" title="Tortilgach kiriting: 50+48,5 kabi qo'shib yozsa ham bo'ladi" aria-label="{{ item.client.name }}, {{ line.product.name }} — kg (tortilgach)"{% if line.kg_bad or item.kg_missing and line.kg is None %} aria-invalid="true"{% endif %} autocomplete="off"></span>
+        <span class="kg-group{% if line.kg_bad or line.kg_missing %} is-bad{% endif %}">
+          <span class="kg-cell"><input type="text" inputmode="decimal" class="pick-kg{% if line.kg_bad or line.kg_missing %} is-bad{% endif %}" name="kg_{{ line.pk|unlocalize }}" value="{{ line.kg_input }}" placeholder="—" title="Tortilgach kiriting: 50+48,5 kabi qo'shib yozsa ham bo'ladi" aria-label="{{ item.client.name }}, {{ line.product.name }} — kg (tortilgach)"{% if line.kg_bad or line.kg_missing %} aria-invalid="true"{% endif %} autocomplete="off"></span>
           <span class="kg-unit" aria-hidden="true">kg</span>
-          {% if item.delivers and item.unsold_count > 1 %}<button type="submit" name="confirm_line" value="{{ line.pk|unlocalize }}" class="line-sell" title="Faqat shu mahsulotni sotuvga aylantirish" aria-label="{{ item.client.name }}, {{ line.product.name }} — faqat shuni sotuvga">✓</button>{% endif %}
+          {% if item.delivers and item.unsold_count > 1 and item.status != "order" %}<button type="submit" name="confirm_line" value="{{ line.pk|unlocalize }}" class="line-sell" title="Faqat shu mahsulotni sotuvga aylantirish" aria-label="{{ item.client.name }}, {{ line.product.name }} — faqat shuni sotuvga">✓</button>{% endif %}
         </span>
         {% else %}
         {% if line.sold %}
@@ -64,6 +64,7 @@
     <div class="lane-sale">
       {% if item.sale %}{% if item.mine %}<a class="sold-chip" href="{% url 'sale_detail' item.sale.pk %}" title="Hammasi sotildi — Sotuv #{{ item.sale.pk|unlocalize }}ni ochish" aria-label="{{ item.client.name }} — sotildi, Sotuv #{{ item.sale.pk|unlocalize }}">{% else %}<span class="sold-chip" title="Hammasi sotildi">{% endif %}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>Sotildi{% if item.mine %}</a>{% else %}</span>{% endif %}
       {% elif item.sold_count and not item.unsold_count %}<span class="sold-chip" title="Hamma mahsulotlari sotilgan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>Sotildi</span>
+      {% elif item.status == "order" %}<span class="muted lane-wait" title="Mahsulot omborga kelgach sotuvga aylantiriladi">Omborda yo'q</span>
       {% elif item.editable and item.delivers and item.unsold_count %}<button type="submit" name="confirm" value="{{ pk }}" class="btn btn-sm stop-confirm" title="{% if item.sold_count %}Qolgan mahsulotlarni{% else %}Hammasini{% endif %} sotuvga aylantirish (ularning kg'i kiritilgan bo'lishi kerak)" aria-label="{{ item.client.name }} — {% if item.sold_count %}qolganini {% endif %}sotuvga aylantirish">✓ {% if item.sold_count %}Qolganini{% else %}Sotuvga{% endif %}</button>
       {% if item.sold_count %}<button type="submit" name="ertaga" value="{{ pk }}" formaction="{% url 'load_move' item.load_id %}" class="line-tomorrow" title="Sotilmagan mahsulotlarni ertangi kunga o'tkazish — sotilgani bugun qoladi" aria-label="{{ item.client.name }} — qolganini ertaga o'tkazish">Qolganini ertaga →</button>{% endif %}
       {% endif %}

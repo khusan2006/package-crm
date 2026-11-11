@@ -11518,7 +11518,7 @@ def _day_tabs(params):
     return tab, status
 
 
-def _day_url(request, day, opened=None, kg_missing=False):
+def _day_url(request, day, opened=None, kg_missing=False, line=None):
     """The day page — on the tab it was sent from — optionally with one client's row
     open (and scrolled to), and its empty kg boxes marked when ✓ was refused for them."""
     url = _load_list_url(day)
@@ -11526,7 +11526,10 @@ def _day_url(request, day, opened=None, kg_missing=False):
     url += (f"&tur={tab}" if tab else "") + (f"&holat={status}" if status else "")
     if not opened:
         return url
-    return url + (f"&kgsiz={opened}" if kg_missing else f"&ochiq={opened}") + f"#stop-{opened}"
+    url += f"&kgsiz={opened}" if kg_missing else f"&ochiq={opened}"
+    if kg_missing and line:
+        url += f"&kgline={line}"  # ✓ on one product: only its box is marked
+    return url + f"#stop-{opened}"
 
 
 def _quick_status(request, load, items, raw, saved):
@@ -11576,6 +11579,10 @@ def _confirm_stop(request, load, item_pk, line_pk=None):
             return redirect(_day_url(request, load.date))
         if not _may_edit_stop(request.user, item):
             raise PermissionDenied
+        if item.status == LoadItem.Status.ORDER:
+            messages.error(request, f"“{name}”: mahsulot omborda yo'q — avval «Omborga keldi» "
+                                    f"qiling, keyin sotuvga.")
+            return redirect(_day_url(request, load.date, item.pk))
         all_lines = list(item.lines.select_for_update(of=("self",)).select_related("product"))
         lines = [l for l in all_lines if not l.sale_id and (line_pk is None or l.pk == line_pk)]
         if not item.delivers or not lines:
@@ -11585,7 +11592,7 @@ def _confirm_stop(request, load, item_pk, line_pk=None):
         unweighed = [l.product.name for l in lines if l.kg is None]
         if unweighed:
             messages.error(request, f"“{name}”: avval kg kiriting — {', '.join(unweighed)}.")
-            return redirect(_day_url(request, load.date, item.pk, kg_missing=True))
+            return redirect(_day_url(request, load.date, item.pk, kg_missing=True, line=line_pk))
         seller = item.client.owner
         if seller.role != User.Role.SALES:
             messages.error(request, f"“{name}” sotuvchiga biriktirilmagan — sotuv kimning "
@@ -12074,7 +12081,7 @@ def _render_day(request, day, items=None, posted_new=None):
     truck = lanes["truck"]  # the whole truck lane: route, kg and Jo'natish go by it
     # Tabs: counts over the whole day, then only the open tab's lane (or, on
     # «Hammasi», only the clients in the picked status).
-    tab, status = _day_tabs(request.GET)
+    tab, status = _day_tabs(request.POST if request.method == "POST" else request.GET)
     counts = {"": len(items), "undecided": len(lanes["undecided"]), "truck": len(truck),
               "order": len(lanes["order"]),
               "pickup": sum(1 for i in lanes["other"] if i.method == LoadItem.Method.PICKUP),
@@ -12098,8 +12105,11 @@ def _render_day(request, day, items=None, posted_new=None):
     # Which stop to open: the one just changed (?ochiq=), or any a failed save marked.
     opened = request.POST.get("ochiq") or request.GET.get("ochiq", "")
     kg_missing = request.GET.get("kgsiz", "")
+    kg_line = request.GET.get("kgline", "")
     for item in items:
         item.kg_missing = str(item.pk) == kg_missing
+        for line in item.line_list:
+            line.kg_missing = item.kg_missing and line.kg is None and kg_line in ("", str(line.pk))
         item.open = (str(item.pk) in (opened, kg_missing) or posted_new is not None and (
             getattr(item, "purpose_bad", False)
             or any(getattr(l, f"{f}_bad", False) for l in item.line_list

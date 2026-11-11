@@ -550,3 +550,17 @@ def test_the_add_modal_opens_into_the_client_box(login, admin_user, seller_user,
     page.keyboard.press("Enter")                       # takes Botir — doesn't close the modal
     assert page.locator("#add-client").evaluate("el => el.open")
     assert page.locator("[data-new-row] select[name=new_client]").first.input_value() != ""
+
+
+def test_a_stray_product_copy_does_not_save_itself(login, admin_user, seller_user, live_server,
+                                                  db, paket):
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    a = stop(load, Client.objects.create(name="Anvar", owner=seller_user), paket, rolls=3)
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    open_row(page, a)
+    page.click(f'[data-add-line="{a.pk}"]')            # a copy of the last product appears
+    page.keyboard.press("Escape")
+    page.mouse.click(5, 300)                           # …and is left as it was
+    page.wait_for_timeout(600)
+    assert a.lines.count() == 1
