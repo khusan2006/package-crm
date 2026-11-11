@@ -10714,10 +10714,21 @@ def _may_change_load(user, load):
     return user.can_see_all_records or load.created_by_id == user.pk
 
 
+#: The board's «Usul tanlanmagan» chip: stops nobody has said how they leave.
+BOARD_NO_METHOD = "usulsiz"
+
+
 def load_list(request):
-    """Yetkazish: the day's loads, each with its clients, rolls and known kg."""
+    """Yetkazish: the day's stops across all its loads, grouped by Yuk — each with
+    how it leaves (Qanday) and where it stands (Holati), set right in the row.
+    Chips filter by status (with counts), the search box by client; a load's header
+    carries its totals and how many of its stops are delivered."""
     day = _load_day(request.GET.get("sana"))
-    loads = (
+    q = (request.GET.get("q") or "").strip()[:100]
+    holat = request.GET.get("holat", "")
+    if holat not in LoadItem.Status.values and holat != BOARD_NO_METHOD:
+        holat = ""
+    loads = list(
         Load.objects.filter(date=day).select_related("created_by")
         .annotate(
             client_count=Count("items", distinct=True),
@@ -10725,16 +10736,49 @@ def load_list(request):
             kg_total=Sum("items__lines__kg"),
             unweighed=Count("items__lines", filter=Q(items__lines__kg__isnull=True)),
             confirmed=Count("items", filter=Q(items__sale__isnull=False), distinct=True),
+            delivered=Count("items", filter=Q(items__status=LoadItem.Status.DONE), distinct=True),
         )
         .order_by("created_at")
     )
+    stops = LoadItem.objects.filter(load__date=day)
+    if q:
+        stops = _client_search(stops, q, base="client")
+    counts = dict(stops.values("status").annotate(n=Count("pk")).values_list("status", "n"))
+    no_method = stops.filter(method="").count()
+    if holat == BOARD_NO_METHOD:
+        stops = stops.filter(method="")
+    elif holat:
+        stops = stops.filter(status=holat)
+    by_load = {}
+    for item in _board_items(stops, request.user):
+        by_load.setdefault(item.load_id, []).append(item)
+    for load in loads:
+        load.board = by_load.get(load.pk, [])
+        load.may_delete = not load.confirmed and _may_change_load(request.user, load)
+        load.done_pct = round(load.delivered * 100 / load.client_count) if load.client_count else 0
+    filtering = bool(q or holat)
+
+    def chip(value, label, count, alert=False):
+        url = f"?sana={day.isoformat()}" + (f"&holat={value}" if value else "") + \
+              (f"&q={quote(q)}" if q else "")
+        return {"label": label, "count": count, "url": url, "active": holat == value,
+                "alert": alert}
+
+    chips = [chip("", "Hammasi", sum(counts.values()))]
+    chips += [chip(value, label, counts.get(value, 0)) for value, label in LoadItem.Status.choices]
+    if no_method:
+        chips.append(chip(BOARD_NO_METHOD, "Usul tanlanmagan", no_method, alert=True))
     return render(request, "crm/load_list.html", {
         "day": day,
         "prev_day": (day - timedelta(days=1)).isoformat(),
         "next_day": (day + timedelta(days=1)).isoformat(),
         "is_today": day == timezone.localdate(),
-        "loads": loads,
-        "board": _board_items(day, request.user),
+        "loads": [l for l in loads if l.board or not filtering],
+        "has_loads": bool(loads),
+        "filtering": filtering,
+        "q": q,
+        "holat": holat,
+        "chips": chips,
         "methods": LoadItem.Method.choices,
         "statuses": LoadItem.Status.choices,
     })
@@ -10747,32 +10791,42 @@ def _may_set_status(user, item):
     return user.can_see_all_records or item.client.owner_id == user.pk
 
 
-def _board_items(day, user):
-    """Every stop of the day, across its loads, for the status board: the client,
-    which Yuk, rulon and kg, the sale once ✓, and the method/status."""
+def _board_items(stops, user):
+    """The board's rows: each stop with its products in a line, rulon, kg, the sum
+    of what is weighed (or the sale's total once ✓), and whether this user may move
+    it."""
     items = list(
-        LoadItem.objects.filter(load__date=day)
-        .select_related("load", "client", "client__owner", "sale")
-        .prefetch_related("lines")
+        stops.select_related("load", "client", "client__owner", "sale")
+        .prefetch_related("lines__product", "sale__items")
         .order_by("load__created_at", "load_id", "position", "created_at")
     )
     for item in items:
         lines = list(item.lines.all())
+        names = [l.product.name for l in lines]
+        item.products = (names[0] + (f" +{len(names) - 1}" if len(names) > 1 else "")) if names else ""
         item.rolls = sum(l.rolls for l in lines)
         item.kg = sum((l.kg for l in lines if l.kg is not None), Decimal("0"))
         item.unweighed = any(l.kg is None for l in lines)
+        item.amount = (item.sale.total_price if item.sale
+                       else sum((l.kg * l.price for l in lines if l.kg is not None), Decimal("0")))
         item.may_set = _may_set_status(user, item)
         item.mine = user.can_see_all_records or item.client.owner_id == user.pk
     return items
 
 
 def load_board_save(request):
-    """«Saqlash» on the day board: each stop's method and status as picked. Only
-    stops the user may move are read; a stop not on the page (added since) is left
-    alone. Nothing is saved if a value is not one of the choices."""
+    """A row's Qanday/Holati changed on the board (the select posts itself). Only
+    stops the user may move are read; nothing is saved if a value is not one of the
+    choices. Back to the board as it was — same day, chip and search, at that row."""
     if request.method != "POST":
         return redirect(reverse("load_list"))
     day = _load_day(request.POST.get("sana"))
+    back = _load_list_url(day)
+    holat, q = request.POST.get("holat", ""), (request.POST.get("q") or "").strip()[:100]
+    if holat in LoadItem.Status.values or holat == BOARD_NO_METHOD:
+        back += f"&holat={holat}"
+    if q:
+        back += f"&q={quote(q)}"
     pks = [int(raw) for raw in request.POST.getlist("stop") if _DIGITS.fullmatch(raw)]
     items = (LoadItem.objects.filter(pk__in=pks, load__date=day)
              .select_related("client", "load"))
@@ -10784,10 +10838,10 @@ def load_board_save(request):
         status = request.POST.get(f"status_{item.pk}", item.status)
         if method not in LoadItem.Method.values and method != "":
             messages.error(request, f"{item.client.name} — qanday yetkazilishi noto'g'ri.")
-            return redirect(_load_list_url(day))
+            return redirect(back)
         if status not in LoadItem.Status.values:
             messages.error(request, f"{item.client.name} — holati noto'g'ri.")
-            return redirect(_load_list_url(day))
+            return redirect(back)
         if (method, status) != (item.method, item.status):
             changes.append((item, method, status))
     with transaction.atomic():
@@ -10797,11 +10851,15 @@ def load_board_save(request):
             AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", item.load_id,
                             f"Yuk #{item.load_id}, {item.client.name}: "
                             f"{item.get_method_display() or 'usul tanlanmagan'} — {item.status_label}"[:255])
-    if changes:
+    if len(changes) == 1:
+        item = changes[0][0]
+        messages.success(request, f"{item.client.name}: {item.get_method_display() or 'usul tanlanmagan'}"
+                                  f" — {item.status_label}.")
+    elif changes:
         messages.success(request, f"Saqlandi — {len(changes)} ta mijoz.")
-    else:
-        messages.info(request, "O'zgarish yo'q.")
-    return redirect(_load_list_url(day))
+    if len(pks) == 1:
+        back += f"#row-{pks[0]}"
+    return redirect(back)
 
 
 UZ_WEEKDAYS = ["Dushanba", "Seshanba", "Chorshanba", "Payshanba", "Juma", "Shanba", "Yakshanba"]

@@ -204,7 +204,7 @@ def test_a_manager_is_told_an_admin_sets_the_warehouse(client, line):
 def test_the_load_list_says_whether_the_order_is_saved(client, admin_user, load):
     client.force_login(admin_user)
     body = client.get("/yetkazish/").content.decode()
-    assert "saqlanmagan" in body and "Taklif" not in body
+    assert "Tartib saqlangan" not in body and "Taklif" not in body
     load.ordered_at = timezone.now() - timedelta(minutes=1)
     load.save()
-    assert "Saqlangan" in client.get("/yetkazish/").content.decode()
+    assert "Tartib saqlangan" in client.get("/yetkazish/").content.decode()

@@ -2045,17 +2045,107 @@ tbody tr:hover td.sticky-col {
 .badge-st-sent { background: var(--violet-soft); color: var(--violet); }
 .badge-st-done { background: var(--success-soft); color: var(--success); }
 
-/* Yetkazish day board: every stop of the day with how it goes and where it stands. */
-.board { margin-top: 20px; }
-.board-head {
+/* Yetkazish day board — the stops of the day grouped by Yuk, like the logistics
+   CRM's load list: status chips with counts on top, a tinted header per Yuk with
+   its delivered/total bar, and each row's left edge in its status colour. */
+.board-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 14px;
+}
+.board-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  transition: background 0.12s, border-color 0.12s;
+}
+.board-chip:hover { background: var(--surface-hover); }
+.board-chip.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.board-chip.is-active .seg-count { background: rgba(255, 255, 255, 0.25); color: #fff; }
+.board-chip.is-alert { border-color: var(--danger); color: var(--danger); }
+.board-chip.is-alert.is-active { background: var(--danger); color: #fff; }
+
+.board-table td { vertical-align: middle; }
+.board-group td {
+  background: var(--surface-2);
+  box-shadow: inset 3px 0 0 var(--accent);
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+.board-group-in {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
+  flex-wrap: wrap;
+  gap: 10px 14px;
 }
-.board-title { font-size: 15px; margin: 0; }
-.board-table select { min-width: 150px; }
+.board-group-name { font-weight: 700; font-size: 14.5px; }
+.board-group-note { font-weight: 600; }
+.board-pill {
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.board-progress {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 130px;
+  height: 22px;
+  border-radius: var(--r-pill);
+  background: var(--accent-soft);
+  overflow: hidden;
+}
+.board-progress-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--success-soft);
+}
+.board-progress-txt { position: relative; font-size: 12.5px; font-weight: 700; }
+.board-group-kg { font-size: 13px; color: var(--text-muted); }
+.board-group-end {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.board-row td:first-child { box-shadow: inset 3px 0 0 var(--border); }
+.board-row.st-order td:first-child { box-shadow: inset 3px 0 0 var(--warning); }
+.board-row.st-loading td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+.board-row.st-sent td:first-child { box-shadow: inset 3px 0 0 var(--violet); }
+.board-row.st-done td:first-child { box-shadow: inset 3px 0 0 var(--success); }
+.board-row:target td,
+.board-row:target td.sticky-col { background: var(--accent-soft); }
+
+.board-select {
+  min-width: 165px;
+  padding: 7px 10px;
+  border-radius: var(--r-pill);
+  font-weight: 600;
+}
+.board-select.is-empty { border-color: var(--danger); color: var(--danger); }
+.board-status { min-width: 200px; }
+.board-status.st-order { border-color: var(--warning); color: var(--warning); }
+.board-status.st-loading { border-color: var(--accent); color: var(--accent); }
+.board-status.st-sent { border-color: var(--violet); color: var(--violet); }
+.board-status.st-done { border-color: var(--success); color: var(--success); background: var(--success-soft); }
 
 /* Signed money — income green, outflow red, sale (receivable) blue */
 .amt-in {

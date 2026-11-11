@@ -1230,9 +1230,53 @@ def test_the_board_shows_every_stop_of_the_day_across_loads(client, admin_user, 
     stop(Load.objects.create(date=TODAY() + timedelta(days=1)), make_client(seller_user, "Ertaga"),
          (paket, 1))
     resp = board(client, admin_user)
-    assert [i.client.name for i in resp.context["board"]] == ["Anvar", "Bobur"]
+    assert [[i.client.name for i in l.board] for l in resp.context["loads"]] == [["Anvar"], ["Bobur"]]
     body = resp.content.decode()
     assert f'href="/yetkazish/{other.pk}/"' in body and "tortilmagan" in body
+
+
+def rows(resp):
+    return [i.client.name for l in resp.context["loads"] for i in l.board]
+
+
+def test_status_chips_count_and_filter(client, admin_user, seller_user, load, paket):
+    a = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    b = stop(load, make_client(seller_user, "Bobur"), (paket, 3))
+    stop(load, make_client(seller_user, "Vali"), (paket, 3))
+    set_status(client, admin_user, (a, PICKUP, "done"), (b, "", "new"))
+    resp = board(client, admin_user)
+    chips = {c["label"]: c["count"] for c in resp.context["chips"]}
+    assert (chips["Hammasi"], chips["Kutilmoqda"], chips["Yetkazildi"], chips["Usul tanlanmagan"]) == (
+        3, 2, 1, 1)
+    day = TODAY().isoformat()
+    assert rows(client.get(f"/yetkazish/?sana={day}&holat=done")) == ["Anvar"]
+    assert rows(client.get(f"/yetkazish/?sana={day}&holat=usulsiz")) == ["Bobur"]
+    assert rows(client.get(f"/yetkazish/?sana={day}&holat=bogus")) == ["Anvar", "Bobur", "Vali"]
+
+
+def test_the_search_finds_a_client_by_name_or_phone(client, admin_user, seller_user, load, paket):
+    anvar = make_client(seller_user, "Anvar")
+    anvar.phone = "+998 90 123 45 67"
+    anvar.save()
+    stop(load, anvar, (paket, 3))
+    stop(load, make_client(seller_user, "Bobur"), (paket, 3))
+    client.force_login(admin_user)
+    day = TODAY().isoformat()
+    assert rows(client.get(f"/yetkazish/?sana={day}&q=bob")) == ["Bobur"]
+    assert rows(client.get(f"/yetkazish/?sana={day}&q=901234567")) == ["Anvar"]
+    assert "topilmadi" in client.get(f"/yetkazish/?sana={day}&q=yoq").content.decode()
+
+
+def test_a_row_change_comes_back_to_the_same_view_at_that_row(client, admin_user, seller_user,
+                                                             load, paket):
+    a = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    client.force_login(admin_user)
+    resp = client.post("/yetkazish/holat/", {"sana": TODAY().isoformat(), "stop": a.pk,
+                                             "status_" + str(a.pk): "loading",
+                                             "holat": "new", "q": "anv"})
+    assert resp.url == f"/yetkazish/?sana={TODAY().isoformat()}&holat=new&q=anv#row-{a.pk}"
+    a.refresh_from_db()
+    assert (a.method, a.status) == (TRUCK, "loading")  # method not posted: unchanged
 
 
 def test_new_stops_go_by_truck_and_wait(load, seller_user, paket):
