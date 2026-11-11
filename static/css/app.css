@@ -7130,6 +7130,7 @@ input.pick-variant { width: 84px; max-width: 84px; height: 32px; padding: 5px 8p
 .add-day { display: inline-flex; align-items: center; gap: 10px; margin: 0 0 10px; }
 .add-day-label { font-size: 13px; font-weight: 600; color: var(--text-muted); }
 .add-day input[type=date] { height: 36px; }
+.add-day-hint { font-size: 12.5px; }
 /* «Oxirgi narx» under a product row on the day page — the same blue line as on the
    sale form; inside a saved line's price cell it is a compact one. */
 .new-row.has-last-price { flex-wrap: wrap; }

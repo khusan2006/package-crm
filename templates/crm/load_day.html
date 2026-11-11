@@ -122,11 +122,13 @@ stand. Counts are for the whole day («Buyurtmalar» with the later days).{% end
         <button type="button" class="modal-x" data-add-cancel aria-label="Yopish">&times;</button>
       </div>
       <div class="add-dialog-body">
-        {% comment %}Which day the order is for — this one unless changed; a later day's
-        shows here under «Buyurtmalar» all the same.{% endcomment %}
+        {% comment %}Which day the order goes — on today's page tomorrow (orders are
+        written the day before), else this day; a later day's shows here under
+        «Buyurtmalar» all the same.{% endcomment %}
         <label class="add-day">
           <span class="add-day-label">Qaysi kunga</span>
-          <input type="date" name="new_sana" value="{{ new_day }}" data-default="{{ day|date:'Y-m-d' }}" min="2000-01-01" max="2099-12-31" aria-label="Qaysi kunga">
+          <input type="date" name="new_sana" value="{{ new_day }}" data-default="{{ add_day }}" min="2000-01-01" max="2099-12-31" aria-label="Qaysi kunga">
+          {% if is_today %}<span class="muted add-day-hint">yetkaziladigan kun — sukut bo'yicha ertaga</span>{% endif %}
         </label>
         <p class="muted lane-add-hint">Mijoz, maqsad, qanday ketishi, mahsulot va rulon — kg keyin, tortilgach.</p>
         <div class="new-rows" data-new-rows>

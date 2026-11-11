@@ -12380,6 +12380,7 @@ def _render_day(request, day, items=None, posted_new=None, ahead=None):
     shown = sum(len(rows) for rows in lanes.values()) + len(shown_ahead)
     # The day's progress leaves the cancelled out: they are not to be finished.
     active = [i for i in items if i.status != LoadItem.Status.CANCEL]
+    add_day = (day + timedelta(days=1) if day == timezone.localdate() else day).isoformat()
     done = sum(1 for i in active if i.status == LoadItem.Status.DONE)
     # Which stop to open: the one just changed (?ochiq=), or any a failed save marked.
     opened = request.POST.get("ochiq") or request.GET.get("ochiq", "")
@@ -12441,8 +12442,11 @@ def _render_day(request, day, items=None, posted_new=None, ahead=None):
         "size_suggestions": SIZE_SUGGESTIONS,
         "micron_suggestions": MICRON_SUGGESTIONS,
         "new_rows": new_rows,
-        # «Mijoz qo'shish» adds to this day unless another is picked there.
-        "new_day": (request.POST.get("new_sana") if posted_new is not None else "") or day.isoformat(),
+        # «Mijoz qo'shish»: orders are written the day before they go, so on today's
+        # page it adds to tomorrow (the delivery day); on another day's page, to that
+        # day. Either can be changed there.
+        "new_day": (request.POST.get("new_sana") if posted_new is not None else "") or add_day,
+        "add_day": add_day,
         "failed": posted_new is not None,
         "adding": posted_new is not None and any(r.get("client") for r in posted_new),
         "auto_route": bool(load) and bool(truck) and posted_new is None

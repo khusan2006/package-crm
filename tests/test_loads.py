@@ -2421,31 +2421,61 @@ def test_a_carried_client_still_shows_on_its_own_day(client, admin_user, seller_
     assert day_page(client, admin_user).context["moved_on"] == []
 
 
-def test_old_stops_take_the_sale_typed_for_them(seller_user, paket, plyonka):
-    """Migration 0066: a stop and the sale typed for it in Sotuvlar the same day,
-    from before sales went onto the board, are joined — a past one is delivered."""
+def test_old_stops_go_to_their_sales_day(seller_user, paket, plyonka):
+    """Migration 0066: before this release a Yuk had the day its orders were WRITTEN,
+    and the goods went — and were sold — the next day. Each old stop goes where its
+    sale is: a ✓-ed one to its sale's date; one sold in Sotuvlar that day or up to 2
+    days later takes that sale (its lines what was sold) and moves to its date. Both
+    are delivered and show where they came from; one with no sale stays cancelled."""
     from importlib import import_module
 
     from django.apps import apps
     migration = import_module("crm.migrations.0066_link_old_stops_to_their_sales")
-    day = TODAY() - timedelta(days=1)
-    load = Load.objects.create(date=day)
-    anvar, bobur = make_client(seller_user, "Anvar"), make_client(seller_user, "Bobur")
-    planned = stop(load, anvar, (paket, 1))
-    LoadItem.objects.filter(pk=planned.pk).update(status="cancel")  # as 0062 left it
-    alone = stop(load, bobur, (paket, 1))
-    LoadItem.objects.filter(pk=alone.pk).update(status="cancel")
-    sale = Sale.objects.create(client=anvar, sales_rep=seller_user, date=day)
-    SaleItem.objects.create(sale=sale, product=plyonka, dimension="kg", weight=Decimal("240.9"),
-                            rolls=5, price=Decimal("21000"), cost_price=plyonka.cost_price)
-    other_day = Sale.objects.create(client=bobur, sales_rep=seller_user, date=TODAY())
-    migration.link_stops_to_their_sales(apps, None)
-    planned.refresh_from_db(), alone.refresh_from_db()
-    assert (planned.sale, planned.status) == (sale, "done")
-    line = planned.lines.get()
-    assert (line.product, line.kg, line.rolls, line.sale) == (plyonka, Decimal("240.9"), 5, sale)
-    assert (alone.sale, alone.status) == (None, "cancel")  # its sale is another day's
-    assert other_day.delivery_stop is None
+    written, went = TODAY() - timedelta(days=2), TODAY() - timedelta(days=1)
+    load = Load.objects.create(date=written)
+    anvar, bobur, olim, salox = (make_client(seller_user, n) for n in ("Anvar", "Bobur", "Olim", "Salox"))
+
+    def sold(client_obj, day, product, kg, rolls):
+        sale = Sale.objects.create(client=client_obj, sales_rep=seller_user, date=day)
+        SaleItem.objects.create(sale=sale, product=product, dimension="kg", weight=Decimal(kg),
+                                rolls=rolls, price=Decimal("21000"), cost_price=product.cost_price)
+        return sale
+
+    next_day = stop(load, anvar, (paket, 1))                    # sold in Sotuvlar the next day
+    sale_a = sold(anvar, went, plyonka, "240.9", 5)
+    ticked = stop(load, bobur, (paket, 2, 80))                  # ✓-ed the next day
+    sale_b = sold(bobur, went, paket, "80", 2)
+    LoadItem.objects.filter(pk=ticked.pk).update(sale=sale_b, status="done")
+    ticked.lines.update(sale=sale_b)
+    same_day = stop(load, olim, (paket, 1))                     # sold the same day
+    sale_o = sold(olim, written, paket, "40", 1)
+    nothing = stop(load, salox, (paket, 1))                     # never sold
+    later = sold(salox, written + timedelta(days=4), paket, "30", 1)  # too late to be its sale
+    for s in (next_day, same_day, nothing):
+        LoadItem.objects.filter(pk=s.pk).update(status="cancel")  # as 0062 leaves them
+    migration.put_stops_on_their_sales_day(apps, None)
+    for s in (next_day, ticked, same_day, nothing):
+        s.refresh_from_db()
+    assert (next_day.sale, next_day.load.date, next_day.carried_from, next_day.status) == (
+        sale_a, went, written, "done")
+    line = next_day.lines.get()
+    assert (line.product, line.kg, line.rolls, line.sale) == (plyonka, Decimal("240.9"), 5, sale_a)
+    assert (ticked.load.date, ticked.carried_from, ticked.status) == (went, written, "done")
+    assert next_day.load == ticked.load  # the day's one Yuk takes both
+    assert (same_day.sale, same_day.load, same_day.status) == (sale_o, load, "done")
+    assert (nothing.sale, nothing.load, nothing.status) == (None, load, "cancel")
+    assert later.delivery_stop is None
+
+
+def test_adding_on_todays_page_goes_to_tomorrow(client, admin_user, load):
+    """Orders are written the day before they go: on today's page «Mijoz qo'shish»
+    opens at tomorrow; on another day's page, at that day."""
+    tomorrow = (TODAY() + timedelta(days=1)).isoformat()
+    resp = day_page(client, admin_user)
+    assert resp.context["new_day"] == tomorrow
+    assert f'name="new_sana" value="{tomorrow}" data-default="{tomorrow}"' in resp.content.decode()
+    later = TODAY() + timedelta(days=3)
+    assert day_page(client, admin_user, later).context["new_day"] == later.isoformat()
 
 
 def test_older_sales_are_put_on_the_board_by_command(seller_user, paket):
