@@ -122,11 +122,59 @@ def test_every_role_reaches_yetkazish(client, admin_user, manager, seller_user, 
         assert 'href="/yetkazish/"' in get(client, user, "/").content.decode()
 
 
-def test_a_seller_creates_a_load(client, seller_user):
+def test_a_seller_creates_a_load(client, seller_user, paket):
+    """«Yangi yuk» opens a draft; the load is made on its first «Saqlash», with the
+    client in it."""
+    c = make_client(seller_user, "Anvar", 0.01)
+    client.force_login(seller_user)
+    resp = client.post("/yetkazish/yangi/", {
+        "action": "items", "sana": TODAY().isoformat(), "new_key": ["1"],
+        "new_client": [c.pk], "new_purpose": [DELIVER], "new_product": [paket.pk],
+        "new_rolls": ["4"], "new_price": [""], "new_size": [""], "new_micron": [""]})
+    load = Load.objects.get()
+    assert resp.url == f"/yetkazish/?sana={TODAY().isoformat()}" and load.created_by == seller_user
+    assert load.date == TODAY()
+    line = load.items.get().lines.get()
+    assert (line.product, line.rolls, line.price) == (paket, 4, Decimal("15000"))
+    log = AuditLog.objects.get(target_type="Yuk", action=AuditLog.Action.CREATE)
+    assert f"Yuk #{load.pk}" in log.summary and "Anvar" in log.summary
+
+
+def test_opening_a_new_load_and_leaving_leaves_no_load(client, seller_user):
+    """The bug this replaces: one click used to save an empty load straight away.
+    «Yangi yuk» is now the day's page, which writes nothing until a client is added."""
+    resp = get(client, seller_user, f"/yetkazish/yangi/?sana={TODAY().isoformat()}")
+    assert resp.status_code == 302 and resp.url == f"/yetkazish/?sana={TODAY().isoformat()}"
+    assert client.get(resp.url).status_code == 200
+    assert Load.objects.count() == 0 and not AuditLog.objects.filter(target_type="Yuk").exists()
+
+
+def test_an_old_one_click_post_only_opens_the_draft(client, seller_user):
     client.force_login(seller_user)
     resp = client.post("/yetkazish/yangi/", {"sana": TODAY().isoformat()})
-    load = Load.objects.get()
-    assert resp.url == f"/yetkazish/{load.pk}/" and load.created_by == seller_user
+    assert resp.status_code == 302 and resp.url.startswith("/yetkazish/?sana=")
+    assert Load.objects.count() == 0
+
+
+def test_saving_an_empty_draft_makes_no_load(client, seller_user):
+    client.force_login(seller_user)
+    resp = client.post("/yetkazish/yangi/", {
+        "action": "items", "sana": TODAY().isoformat(), "new_key": ["1"], "new_client": [""],
+        "new_purpose": [DELIVER], "new_product": [""], "new_rolls": [""], "new_price": [""],
+        "new_size": [""], "new_micron": [""]})
+    assert resp.status_code == 302 and Load.objects.count() == 0
+
+
+def test_a_wrong_draft_comes_back_and_makes_no_load(client, seller_user, paket):
+    c = make_client(seller_user, "Anvar", 0.01)
+    client.force_login(seller_user)
+    resp = client.post("/yetkazish/yangi/", {
+        "action": "items", "sana": TODAY().isoformat(), "new_key": ["1"],
+        "new_client": [c.pk], "new_purpose": [DELIVER], "new_product": [paket.pk],
+        "new_rolls": ["abc"], "new_price": [""], "new_size": [""], "new_micron": [""]})
+    assert resp.status_code == 200 and resp.context["adding"]   # the form comes back open
+    assert resp.context["new_rows"][0]["rolls"] == "abc"
+    assert Load.objects.count() == 0
 
 
 def test_trucks_and_warehouse_stay_admin_only(client, manager, seller_user):
@@ -2036,3 +2084,39 @@ def test_nothing_in_the_warehouse_nothing_to_sell(client, admin_user, seller_use
     assert f'name="confirm" value="{item.pk}"' not in body
     day_save(client, admin_user, confirm=str(item.pk))
     assert not Sale.objects.exists()
+
+# --- «Oxirgi narx» on the load page -------------------------------------------------
+
+def _sold(client_obj, seller, product, price, days_ago=1):
+    sale = Sale.objects.create(client=client_obj, sales_rep=seller,
+                               date=TODAY() - timedelta(days=days_ago),
+                               debt_deadline=TODAY() + timedelta(days=7))
+    SaleItem.objects.create(sale=sale, product=product, dimension="kg", weight=Decimal("10"),
+                            price=Decimal(price), cost_price=product.cost_price)
+    return sale
+
+
+def test_the_load_page_carries_each_clients_last_price(client, admin_user, seller_user, load, paket):
+    """A product picked for a client opens its Narx at what they paid last time
+    (load.js reads the map); the added rows under a saved stop know their client."""
+    buyer = make_client(seller_user, "Doimiy")
+    _sold(buyer, seller_user, paket, "16500", days_ago=5)
+    _sold(buyer, seller_user, paket, "17500", days_ago=2)
+    item = stop(load, buyer, (paket, 3))
+    resp = detail(client, admin_user, load)
+    assert resp.status_code == 200
+    prices = resp.context["client_last_price_json"]
+    assert prices[str(buyer.pk)][str(paket.pk)]["price"] == "17500"
+    html = resp.content.decode()
+    assert 'id="client-last-price-map"' in html
+    assert f'data-item="{item.pk}" data-client="{buyer.pk}"' in html
+
+
+def test_a_seller_reads_only_their_own_last_prices(client, seller_user, other_seller, load, paket):
+    mine = make_client(seller_user, "Meniki")
+    theirs = make_client(other_seller, "Boshqaniki")
+    _sold(mine, seller_user, paket, "17000")
+    _sold(theirs, other_seller, paket, "18000")
+    prices = detail(client, seller_user, load).context["client_last_price_json"]
+    assert str(mine.pk) in prices
+    assert str(theirs.pk) not in prices

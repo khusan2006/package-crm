@@ -79,6 +79,90 @@
       });
     };
 
+    /* «Oxirgi narx»: a product picked for a client opens its Narx at what that
+     * client paid for it last time (client-last-price-map, per kg — see
+     * views._client_last_price_map), else at the catalogue price. It shows as a small
+     * pill under the box; once the box holds another figure the pill is muted and a
+     * click on it puts that price back. A price typed by hand is never replaced. */
+    var lastPrices = (function () {
+      var el = document.getElementById('client-last-price-map');
+      try { return (el && JSON.parse(el.textContent)) || {}; } catch (err) { return {}; }
+    })();
+    var productOf = function (row) {
+      return row.querySelector('select[data-combobox]:not([name=new_client])');
+    };
+    // A new client's rows read the client picked above them; rows added under a saved
+    // stop read the stop's own client.
+    var clientOf = function (row) {
+      var block = row.closest('[data-new-row]');
+      if (block) {
+        var picker = block.querySelector('select[name=new_client]');
+        return picker ? picker.value : '';
+      }
+      var holder = row.closest('[data-add-lines]');
+      return holder ? holder.getAttribute('data-client') || '' : '';
+    };
+    var lastPriceOf = function (row) {
+      var product = productOf(row);
+      var client = clientOf(row);
+      var byProduct = client && product && product.value ? lastPrices[client] : null;
+      return (byProduct && byProduct[product.value]) || null;
+    };
+    var asNumber = function (text) {
+      return parseFloat(String(text || '').replace(/\s/g, '').replace(',', '.'));
+    };
+    // "17500" → "17 500", "17500.5" → "17 500,5".
+    var grouped = function (text) {
+      var parts = String(text).split('.');
+      return parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + (parts[1] ? ',' + parts[1] : '');
+    };
+    // Hangs from the box's lower edge, right edges lined up — like the kg sum.
+    var placePill = function (pill, box) {
+      pill.style.top = (box.offsetTop + box.offsetHeight - 6) + 'px';
+      pill.style.left = (box.offsetLeft + box.offsetWidth - 4) + 'px';
+    };
+    var showLastPrice = function (row) {
+      var box = row.querySelector('input.new-row-price');
+      if (!box) { return; }
+      var pill = row.querySelector('.last-price-pill');
+      var last = lastPriceOf(row);
+      if (!last) { if (pill) { pill.remove(); } return; }
+      if (!pill) {
+        pill = document.createElement('span');
+        pill.className = 'last-price-pill';
+        pill.setAttribute('aria-live', 'polite');
+        box.after(pill);
+      }
+      var other = asNumber(box.value) !== parseFloat(last.price);
+      pill.textContent = 'oxirgi ' + grouped(last.price) + ' · ' + last.date.slice(0, 5);
+      pill.title = (other ? "Bosing — shu narx qo'yiladi. " : '') +
+        'Mijoz oxirgi marta ' + last.date + ' da shu narxda olgan — o\'zgartirsa bo\'ladi.';
+      pill.classList.toggle('is-other', other);
+      pill.dataset.value = last.price;
+      placePill(pill, box);
+    };
+    var setPrice = function (box, value) {
+      box.value = value;
+      box.dataset.auto = '1';
+      box.dispatchEvent(new Event('input', { bubbles: true }));  // regroup "15 000"
+    };
+    // The row's price as the system would put it: this client's last, else catalogue.
+    // Only into an empty box or one the script filled — never over a typed figure.
+    var fillPrice = function (row) {
+      var box = row.querySelector('input.new-row-price');
+      var product = productOf(row);
+      if (box && product && product.value) {
+        var opt = product.options[product.selectedIndex];
+        var last = lastPriceOf(row);
+        var suggested = last ? last.price : (opt && opt.dataset.price);
+        if (suggested && (!box.value.trim() || box.dataset.auto)) { setPrice(box, suggested); }
+      }
+      showLastPrice(row);
+    };
+    var showAllLastPrices = function () {
+      items.querySelectorAll('[data-product-row]').forEach(showLastPrice);
+    };
+
     // The client's last product, to start the next one from: an added row with a
     // product picked, else the stop's last saved line (not one ticked to go).
     var lastLine = function (rows, saved) {
@@ -121,6 +205,7 @@
       holder.appendChild(row);
       if (window.enhanceComboboxes) { window.enhanceComboboxes(row); }
       syncVariants(row);
+      showLastPrice(row);
       var open = from && row.querySelector('[data-variant]:not([readonly])');
       if (open) { open.focus(); open.select(); } else if (from) { var r = row.querySelector('.new-row-rolls'); r.focus(); r.select(); } else { focusClient(row); }
       refreshDirty();
@@ -196,6 +281,7 @@
         row.querySelectorAll('[data-add-line-row]').forEach(function (r) { r.remove(); });
         row.querySelectorAll('select[data-combobox]').forEach(function (s) { s.value = ''; unmark(s); });
         row.querySelectorAll('input[type=text]').forEach(function (b) { b.value = ''; unmark(b); delete b.dataset.auto; });
+        row.querySelectorAll('.last-price-pill').forEach(function (p) { p.remove(); });
         syncVariants(row);
         focusClient(row);
       }
@@ -209,21 +295,20 @@
       if (t.matches('select[data-combobox]')) {
         unmark(t);
         var row = t.name === 'new_client' ? t.closest('[data-new-row]') : t.closest('[data-product-row]');
+        // Another client (or none): prices the script put in follow them, typed ones
+        // stay. A product cleared takes its pill with it.
+        if (row && t.name === 'new_client') { row.querySelectorAll('[data-product-row]').forEach(fillPrice); }
+        else if (row && !t.value) { showLastPrice(row); }
         if (t.value && row) {
           if (t.name === 'new_client') {
             var productBox = row.querySelector('select[name=new_product]');
             var box = productBox && productBox.closest('.combobox') ? productBox.closest('.combobox').querySelector('.combobox-input') : productBox;
             if (box) { box.focus(); }
           } else {
-            // A product: its catalogue price goes in the Narx box — unless a price was
-            // typed by hand, which is never overwritten.
-            var price = row.querySelector('input[data-money]');
-            var opt = t.options[t.selectedIndex];
-            if (price && opt && opt.dataset.price && (!price.value.trim() || price.dataset.auto)) {
-              price.value = opt.dataset.price;
-              price.dataset.auto = '1';
-              price.dispatchEvent(new Event('input', { bubbles: true }));  // regroup "15 000"
-            }
+            // A product: the client's last price for it (else the catalogue price)
+            // goes in the Narx box — unless a price was typed by hand, which is
+            // never overwritten.
+            fillPrice(row);
             syncVariants(row.parentNode);
             // On to metr when the product comes in it, else straight to rulon.
             var rolls = row.querySelector('input[type=text]:not(.combobox-input):not([data-money]):not([readonly])');
@@ -301,6 +386,8 @@
       if (e.target.matches('input.pick-kg')) { kgHint(e.target); }
       // A price typed by hand stays: picking another product won't replace it.
       if (e.isTrusted && e.target.dataset) { delete e.target.dataset.auto; }
+      // The pill under Narx turns muted (clickable) once the box says something else.
+      if (e.target.matches('input.new-row-price')) { showLastPrice(e.target.closest('[data-product-row]')); }
       // Typing a search into the picker isn't a change yet — choosing is.
       if (!e.target.closest('.combobox')) { unmark(e.target); }
       refreshDirty();
@@ -528,12 +615,33 @@
       row.querySelectorAll('[data-toggle-row]').forEach(function (b) { b.setAttribute('aria-expanded', String(open)); });
     });
 
+    // The muted pill puts the client's last price back into the box.
+    items.addEventListener('click', function (e) {
+      var pill = e.target.closest('.last-price-pill.is-other');
+      if (!pill || !pill.dataset.value) { return; }
+      var row = pill.closest('[data-product-row]');
+      var box = row.querySelector('input.new-row-price');
+      setPrice(box, pill.dataset.value);
+      unmark(box);
+      showLastPrice(row);
+      refreshDirty();
+      box.focus();
+    });
+    // The pills are placed from the boxes, which move when the rows re-wrap.
+    window.addEventListener('resize', function () {
+      items.querySelectorAll('.last-price-pill').forEach(function (pill) {
+        var box = pill.closest('[data-product-row]').querySelector('input.new-row-price');
+        if (box) { placePill(pill, box); }
+      });
+    });
     items.addEventListener('submit', function () { submitting = true; });
     window.addEventListener('pageshow', function () { submitting = false; });
     window.addEventListener('beforeunload', function (e) {
       if (!submitting && isDirty()) { e.preventDefault(); e.returnValue = ''; }
     });
     syncVariants(items);
+    // After a failed save the rows come back as typed: only the pills are drawn.
+    showAllLastPrices();
     refreshDirty();
   }
 

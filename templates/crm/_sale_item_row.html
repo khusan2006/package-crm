@@ -29,6 +29,11 @@
       <label class="if if-size">Metr{{ f.size }}{{ f.size.errors }}</label>
       <label class="if if-micron">Mikron{{ f.micron }}{{ f.micron.errors }}</label>
       {% endif %}
+      {% comment %}Mijoz bu mahsulotni oldin olgan bo'lsa, Narx o'sha oxirgi narx bilan
+      ochiladi va shu yerda, butun qator bo'ylab ramkada «Oxirgi narx: …» chiqadi —
+      o'zgartirsa bo'ladi (base.html). Narx/Tannarx qatoridan tashqarida, shuning uchun
+      ikkalasi bir tekisda qoladi.{% endcomment %}
+      <div class="last-price-hint" data-last-price-hint hidden></div>
     </div>
   </div>
   <div class="item-total muted" data-line-total hidden></div>

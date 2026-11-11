@@ -154,8 +154,12 @@ def test_out_of_range_days_fall_back_to_today(client, admin_user, sana):
 
 
 def test_a_load_is_never_created_on_an_out_of_range_day(client, admin_user):
+    owner = User.objects.create_user(username="qa_owner", password="x", role=User.Role.SALES)
+    c = Client.objects.create(name="Sana mijoz", owner=owner)
+    collect = LoadItem.Purpose.COLLECT
     client.force_login(admin_user)
-    client.post("/yetkazish/yangi/", {"sana": "9999-12-31"})
+    client.post("/yetkazish/yangi/", {"action": "items", "sana": "9999-12-31", "new_key": ["1"],
+                                      "new_client": [c.pk], "new_purpose": [collect]})
     assert Load.objects.get().date == TODAY()
 
 

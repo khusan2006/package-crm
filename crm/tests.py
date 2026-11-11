@@ -61,6 +61,7 @@ from .utils import UZ_MONTH_NAMES, uz_month
 from .views import (
     XLSX_CONTENT_TYPE,
     _apply_advance_to_open_sales,
+    _client_last_price_map,
     _kassa_net_profit,
     _kassa_summary,
     _per_employee_kassa,
@@ -5366,6 +5367,73 @@ class SaleFormRenderTests(BaseSetup):
         self.assertIn("data-line-total", body)
         self.assertIn("data-grand-total", body)
         self.assertIn("client-advance-map", body)
+
+
+class ClientLastPriceTests(BaseSetup):
+    """The sale form opens a line at what this mijoz last paid for the product, so
+    the seller confirms it (or types over it) instead of looking the old receipt up."""
+
+    def test_latest_sale_of_the_product_wins(self):
+        # setUp's own sale of this pair is dated today; these all come after it.
+        today = timezone.localdate()
+        make_sale(self.client1, self.sales1, self.product, price="25000",
+                  date=today + timedelta(days=2))
+        make_sale(self.client1, self.sales1, self.product, price="26500",
+                  date=today + timedelta(days=4))
+        # Entered later but dated earlier — the sale date decides, not entry order.
+        make_sale(self.client1, self.sales1, self.product, price="21000",
+                  date=today + timedelta(days=1))
+        row = _client_last_price_map(self.admin)[str(self.client1.pk)][str(self.product.pk)]
+        self.assertEqual(row["price"], "26500")
+        self.assertEqual(row["date"], (today + timedelta(days=4)).strftime("%d.%m.%Y"))
+
+    def test_same_day_the_one_entered_last_wins(self):
+        day = timezone.localdate() + timedelta(days=1)
+        make_sale(self.client1, self.sales1, self.product, price="25000", date=day)
+        make_sale(self.client1, self.sales1, self.product, price="25500", date=day)
+        prices = _client_last_price_map(self.admin)[str(self.client1.pk)]
+        self.assertEqual(prices[str(self.product.pk)]["price"], "25500")
+
+    def test_gram_price_is_carried_per_kg(self):
+        make_sale(self.client1, self.sales1, self.product, price="27.5", dimension="g",
+                  date=timezone.localdate() + timedelta(days=1))
+        prices = _client_last_price_map(self.admin)[str(self.client1.pk)]
+        self.assertEqual(prices[str(self.product.pk)]["price"], "27500")
+
+    def test_prices_are_per_client(self):
+        make_sale(self.client2, self.sales2, self.product, price="30000",
+                  date=timezone.localdate() + timedelta(days=1))
+        prices = _client_last_price_map(self.admin)
+        self.assertEqual(prices[str(self.client1.pk)][str(self.product.pk)]["price"], "24000")
+        self.assertEqual(prices[str(self.client2.pk)][str(self.product.pk)]["price"], "30000")
+
+    def test_a_seller_only_reads_their_own_receipts(self):
+        prices = _client_last_price_map(self.sales1)
+        self.assertIn(str(self.client1.pk), prices)
+        self.assertNotIn(str(self.client2.pk), prices)
+
+    def test_client_who_never_bought_has_no_entry(self):
+        fresh = Client.objects.create(name="Yangi mijoz", owner=self.sales1)
+        self.assertNotIn(str(fresh.pk), _client_last_price_map(self.admin))
+
+    def test_the_receipt_being_edited_is_not_last_time(self):
+        later = make_sale(self.client1, self.sales1, self.product, price="29000",
+                          date=timezone.localdate() + timedelta(days=1))
+        prices = _client_last_price_map(self.admin, exclude_sale=later.pk)
+        self.assertEqual(prices[str(self.client1.pk)][str(self.product.pk)]["price"], "24000")
+
+    def test_sale_form_carries_the_map_and_the_hint(self):
+        self.client.force_login(self.sales1)
+        body = self.client.get(reverse("sale_create")).content.decode()
+        self.assertIn('id="client-last-price-map"', body)
+        self.assertIn("data-last-price-hint", body)
+        self.assertIn('"price": "24000"', body)
+
+    def test_edit_form_leaves_its_own_receipt_out(self):
+        self.client.force_login(self.sales1)
+        response = self.client.get(reverse("sale_edit", args=[self.sale1.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["client_last_price_json"], {})
 
 
 class InnerPageBackTests(BaseSetup):

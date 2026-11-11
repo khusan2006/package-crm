@@ -9753,6 +9753,9 @@ def _render_sale_form(
         "formset": formset,
         "title": title,
         "products_json": _product_price_map(),
+        "client_last_price_json": _client_last_price_map(
+            request.user, exclude_sale=form.instance.pk
+        ),
         "client_advance_json": _client_advance_map(request.user),
         "zakaz_shortfall": zakaz_shortfall,
         "overpay": overpay,
@@ -9804,6 +9807,45 @@ def _product_price_map():
         str(p.pk): {"price": str(p.price), "cost": str(p.cost_price)}
         for p in Product.objects.filter(is_active=True)
     }
+
+
+def _client_last_price_map(user, exclude_sale=None):
+    """{client_pk: {product_pk: {"price": per-kg so'm, "date": "dd.mm.yyyy"}}} — what
+    each mijoz last paid for each mahsulot, so the sale form opens a line's Narx box
+    at that figure instead of the catalogue price, and shows it under the box.
+
+    The seller used to look last month's receipt up and type the figure back in; now
+    picking the product does it. It is only a starting point: the box stays editable,
+    and a figure typed there is never overwritten (base.html). A mijoz who has never
+    bought a product has no entry for it and gets the catalogue price, as before.
+
+    Latest wins, by sale date and then by entry order, so of two receipts on the same
+    day the one typed in second is "last time". Nothing is stored — the table is read
+    fresh at every render, so a price changed on one sale is what the next one opens
+    with. Per kg, like `_product_price_map`: a line sold by the gram is scaled up, and
+    the form scales it back to whichever unit the new line is in.
+
+    Scoped like the sales lists: a seller only sees prices from their own receipts.
+    On an edit the receipt being edited is left out — its own price is not "last time"."""
+    sales = Sale.objects.visible_to(user).real()
+    if exclude_sale is not None:
+        sales = sales.exclude(pk=exclude_sale)
+    rows = (
+        SaleItem.objects.filter(sale__in=sales)
+        .order_by("sale__date", "sale__created_at", "pk")
+        .values_list("sale__client_id", "product_id", "dimension", "price", "sale__date")
+    )
+    result = {}
+    # Oldest first, so a later sale of the same product simply writes over it.
+    for client_id, product_id, dimension, price, sold_on in rows:
+        if price is None or price <= 0:
+            continue
+        per_kg = price * 1000 if dimension == Sale.Dimension.G else price
+        result.setdefault(str(client_id), {})[str(product_id)] = {
+            "price": f"{per_kg.normalize():f}",
+            "date": sold_on.strftime("%d.%m.%Y"),
+        }
+    return result
 
 
 def _finish_new_sale(user, sale, seller, summary_extra=""):
@@ -10986,16 +11028,14 @@ def _joined_purpose(a, b):
 
 
 def load_create(request):
-    """«Yangi yuk»: one click makes an empty load for the day on screen and opens it —
-    there is nothing to ask first (a note can be added later with «Tahrirlash»)."""
-    if request.method != "POST":
-        return redirect(reverse("load_list"))
-    day = _load_day(request.POST.get("sana"))
-    load = Load.objects.create(date=day, created_by=request.user)
-    AuditLog.record(request.user, AuditLog.Action.CREATE, "Yuk", load.pk,
-                    f"Yuk #{load.pk} ({load.date:%d.%m.%Y}) yaratildi")
-    messages.success(request, f"Yuk #{load.pk} yaratildi — endi mijozlarni qo'shing.")
-    return redirect(_load_url(load))
+    """«Yangi yuk» (an old link or button): the day is the Yuk now, so this is the
+    day's page — clients are added there with «Mijoz qo'shish», and the day's Yuk is
+    made only when the first one is (nothing is written here, so leaving the page
+    leaves no empty Yuk behind)."""
+    if request.method == "POST" and request.POST.get("action") == "items":
+        return load_day_save(request)  # an old draft page's «Saqlash»
+    day = _load_day(request.POST.get("sana") if request.method == "POST" else request.GET.get("sana"))
+    return redirect(_load_list_url(day))
 
 
 def load_edit(request, pk):
@@ -12143,6 +12183,9 @@ def _render_day(request, day, items=None, posted_new=None):
         "missing": [_mark_mine(i.client, i.mine) for i in truck if not i.client.has_location],
         "clients": [c for c in clients if c.pk not in in_day],
         "products": Product.objects.filter(is_active=True).order_by("name"),
+        # A product picked for a client opens its Narx at what they paid last time
+        # (load.js), the same as on the sale form.
+        "client_last_price_json": _client_last_price_map(user),
         "purposes": LoadItem.Purpose.choices,
         "methods": LoadItem.Method.choices,
         "size_suggestions": SIZE_SUGGESTIONS,
@@ -12163,13 +12206,34 @@ def load_day_save(request):
     day = _load_day(request.POST.get("sana"))
     load = Load.objects.filter(date=day).order_by("created_at").first()
     if load is None:
-        if not any(request.POST.getlist("new_client")):
-            messages.info(request, "Mijoz tanlanmagan — hech narsa qo'shilmadi.")
-            return redirect(_day_url(request, day))
-        load = Load.objects.create(date=day, created_by=request.user)
-        AuditLog.record(request.user, AuditLog.Action.CREATE, "Yuk", load.pk,
-                        f"Yuk #{load.pk} ({load.date:%d.%m.%Y}) yaratildi")
+        return _first_clients_of_the_day(request, Load(date=day, created_by=request.user))
     return _save_load_items(request, load, _day_stops(day, request.user))
+
+
+def _first_clients_of_the_day(request, load):
+    """The first «Qo'shish» of a day with no Yuk yet: the new clients are checked first,
+    and only when they are right — and there is at least one — is the day's Yuk made,
+    with them, in one transaction. Anything wrong brings the form back as it was left,
+    and no empty Yuk is left behind."""
+    if len(request.POST.getlist("new_client")) > LOAD_MAX_ITEMS:
+        messages.error(request, f"Bir yo'la ko'pi bilan {LOAD_MAX_ITEMS} ta yangi qator saqlanadi.")
+        return redirect(_day_url(request, load.date))
+    products = {p.pk: p for p in Product.objects.filter(is_active=True)}
+    plan, posted_new, problems = _read_load_items(request, load, [], products)
+    if problems:
+        messages.error(request, "Qo'shilmadi — qizil kataklarni to'g'rilang: " + "; ".join(problems))
+        return _render_day(request, load.date, [], posted_new=posted_new)
+    if not plan["new"]:
+        messages.info(request, "Mijoz tanlanmagan — hech narsa qo'shilmadi.")
+        return redirect(_day_url(request, load.date))
+    with transaction.atomic():
+        load.save()
+        _write_load_plan(load, plan)
+    AuditLog.record(request.user, AuditLog.Action.CREATE, "Yuk", load.pk,
+                    f"Yuk #{load.pk} ({load.date:%d.%m.%Y}) yaratildi: "
+                    f"{', '.join(_plan_summary(load, plan))}"[:255])
+    messages.success(request, f"Qo'shildi: {', '.join(c.name for c, *_ in plan['new'])}.")
+    return redirect(_day_url(request, load.date))
 
 
 def load_detail(request, pk):

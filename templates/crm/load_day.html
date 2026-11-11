@@ -94,6 +94,9 @@ stand. Counts are for the whole day.{% endcomment %}
   </dialog>
   <template data-new-row-template>{% include "crm/_load_new_row.html" with row=None %}</template>
   <template data-add-line-template>{% include "crm/_load_add_line.html" with prefix="__PREFIX__" row=None %}</template>
+  {% comment %}Each client's last price per product (load.js): a product picked for a
+  client opens its Narx at what they paid last time.{% endcomment %}
+  {{ client_last_price_json|json_script:"client-last-price-map" }}
   <datalist id="load-sizes">{% for v in size_suggestions %}<option value="{{ v }}">{% endfor %}</datalist>
   <datalist id="load-microns">{% for v in micron_suggestions %}<option value="{{ v }}">{% endfor %}</datalist>
 
