@@ -7,26 +7,39 @@
   wrong box is marked `is-bad`.
 {% endcomment %}
 <section class="stop{% if item.sale %} is-confirmed{% endif %}">
-  <header class="stop-head">
-    <div class="stop-who">
-      <strong>{{ item.client.name }}</strong>
-      <span class="cell-sub">
-        {% if item.client.address %}{{ item.client.address }} · {% endif %}{{ item.client.owner }}
-        · {% if not item.client.has_location %}<span class="route-pending">joylashuv yo'q</span>{% elif item.mine %}<a href="{% url 'client_location' item.client.pk %}" data-modal>joylashuv</a>{% else %}joylashuv bor{% endif %}
-      </span>
-    </div>
-    <div class="stop-tools">
+  {% comment %}One bar on top: how it leaves and why the truck goes (labelled), the
+  sale once ✓, and on the right where it is, another day, remove.{% endcomment %}
+  <header class="stop-bar">
+    <div class="stop-bar-fields">
+      {% if item.may_set %}
+      <label class="stop-field">
+        <span class="stop-field-label">Qanday ketadi</span>
+        <select class="lane-status st-{% if item.method %}{{ item.status }}{% else %}none{% endif %}" data-quick="{{ item.pk|unlocalize }}" aria-label="{{ item.client.name }} — qanday ketadi">
+          {% if not item.method %}<option value="" selected disabled>Tanlang</option>{% endif %}
+          {% for value, label in methods %}<option value="{{ value }}:new"{% if item.method == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+      </label>
+      {% endif %}
+      <label class="stop-field">
+        <span class="stop-field-label">Maqsad</span>
+        {% if item.editable %}
+        <select name="purpose_{{ item.pk|unlocalize }}" class="stop-purpose{% if item.purpose_bad %} is-bad{% endif %}" aria-label="{{ item.client.name }} — maqsad"{% if item.purpose_bad %} aria-invalid="true"{% endif %}>
+          {% for value, label in purposes %}<option value="{{ value }}"{% if value == item.purpose_input %} selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+        {% else %}
+        <span class="stop-field-value">{{ item.get_purpose_display }}</span>
+        {% endif %}
+      </label>
       {% if item.sale %}
-      <span class="badge badge-neutral">{{ item.get_purpose_display }}</span>
       {% if item.mine %}<a class="badge badge-paid" href="{% url 'sale_detail' item.sale.pk %}" title="Sotuvni ochish">✓ Sotuv #{{ item.sale.pk|unlocalize }}</a>{% else %}<span class="badge badge-paid">✓ Sotuv #{{ item.sale.pk|unlocalize }}</span>{% endif %}
-      {% elif item.editable %}
-      <select name="purpose_{{ item.pk|unlocalize }}" class="stop-purpose{% if item.purpose_bad %} is-bad{% endif %}" aria-label="{{ item.client.name }} — maqsad"{% if item.purpose_bad %} aria-invalid="true"{% endif %}>
-        {% for value, label in purposes %}<option value="{{ value }}"{% if value == item.purpose_input %} selected{% endif %}>{{ label }}</option>{% endfor %}
-      </select>
-      <a class="icon-action" href="{% url 'load_move' item.load_id %}?mijoz={{ item.pk|unlocalize }}" data-modal title="Boshqa kunga o'tkazish" aria-label="{{ item.client.name }} — boshqa kunga o'tkazish">{% include "crm/_ico_move_day.html" %}</a>
-      <a class="icon-action danger" href="{% url 'load_item_delete' item.load_id item.pk %}" data-modal title="Yukdan olib tashlash" aria-label="{{ item.client.name }} — yukdan olib tashlash">{% include "crm/_ico_trash.html" %}</a>
-      {% else %}
-      <span class="badge badge-neutral">{{ item.get_purpose_display }}</span>
+      {% endif %}
+    </div>
+    <div class="stop-bar-actions">
+      {% if not item.client.has_location %}{% if item.mine %}<a class="btn btn-sm btn-ghost is-warn" href="{% url 'client_location' item.client.pk %}" data-modal>Joylashuv qo'shish</a>{% else %}<span class="route-pending">Joylashuv yo'q</span>{% endif %}
+      {% elif item.mine %}<a class="btn btn-sm btn-ghost" href="{% url 'client_location' item.client.pk %}" data-modal title="{{ item.client.address }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>Joylashuv</a>{% endif %}
+      {% if item.editable %}
+      <a class="btn btn-sm btn-ghost" href="{% url 'load_move' item.load_id %}?mijoz={{ item.pk|unlocalize }}" data-modal title="Boshqa kunga o'tkazish" aria-label="{{ item.client.name }} — boshqa kunga o'tkazish">{% include "crm/_ico_move_day.html" %}Boshqa kunga</a>
+      <a class="btn btn-sm btn-ghost is-danger" href="{% url 'load_item_delete' item.load_id item.pk %}" data-modal title="Yukdan olib tashlash" aria-label="{{ item.client.name }} — yukdan olib tashlash">{% include "crm/_ico_trash.html" %}O'chirish</a>
       {% endif %}
     </div>
   </header>
@@ -34,6 +47,7 @@
   {% if item.line_list or item.editable and item.delivers %}
   <div class="table-wrap">
   <table class="stop-lines">
+    <colgroup><col><col class="c-variant"><col class="c-variant"><col class="c-rolls"><col class="c-price">{% if item.editable %}<col class="c-drop">{% endif %}</colgroup>
     <tr><th>Mahsulot</th><th>Metr</th><th>Mikron</th><th class="num">Rulon</th><th class="num">Narx, so'm/kg</th>{% if item.editable %}<th><span class="visually-hidden">Olib tashlash</span></th>{% endif %}</tr>
     {% for line in item.line_list %}
     <tr{% if item.editable %} data-line-product="{{ line.product_id|unlocalize }}" data-product-row{% endif %}>

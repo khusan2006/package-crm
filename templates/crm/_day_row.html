@@ -47,15 +47,6 @@
   </summary>
   <div class="lane-editor">
     <p class="autosave-note" data-autosave-note role="status" aria-live="polite" hidden></p>
-    {% if item.may_set %}
-    <label class="lane-how">
-      <span class="lane-how-label">Qanday ketadi:</span>
-      <select class="lane-status" data-quick="{{ item.pk|unlocalize }}" aria-label="{{ item.client.name }} — qanday ketadi">
-        {% if not item.method %}<option value="" selected disabled>Tanlang</option>{% endif %}
-        {% for value, label in methods %}<option value="{{ value }}:new"{% if item.method == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
-      </select>
-    </label>
-    {% endif %}
     {% include "crm/_load_stop.html" %}
   </div>
 </details>

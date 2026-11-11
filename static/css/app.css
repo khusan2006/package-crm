@@ -7103,3 +7103,70 @@ select.lane-status.st-done { border-color: var(--success); color: var(--success)
 /* «Mijoz qo'shish» has no bar of its own: the round button opens it (an empty day
    shows it by itself); its title closes it again. */
 .lane-add:not([open]) { display: none; }
+
+/* ---------- The opened row: one bar, then a compact product table ---------- */
+.lane-editor .stop { padding-top: 14px; }
+.stop-bar {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 12px 20px; flex-wrap: wrap;
+  padding-bottom: 14px; border-bottom: 1px dashed var(--border);
+}
+.stop-bar-fields { display: flex; align-items: flex-end; gap: 12px 16px; flex-wrap: wrap; }
+.stop-field { display: flex; flex-direction: column; gap: 5px; }
+.stop-field-label {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted);
+}
+.stop-field select.lane-status { width: 210px; }
+.stop-field select.stop-purpose {
+  width: 210px; max-width: none; height: 34px; padding: 4px 30px 4px 12px;
+  border-radius: var(--r-pill); font-size: 13px; font-weight: 600;
+}
+.stop-field-value { height: 34px; display: inline-flex; align-items: center; font-weight: 600; }
+.stop-bar-fields .badge { align-self: center; margin-bottom: 6px; }
+.stop-bar-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.stop-bar-actions .btn { display: inline-flex; align-items: center; gap: 6px; }
+.stop-bar-actions .btn svg { width: 15px; height: 15px; }
+.stop-bar-actions .btn.is-danger { color: var(--danger); }
+.stop-bar-actions .btn.is-danger:hover { background: var(--danger-soft); }
+.stop-bar-actions .btn.is-warn { color: var(--warning); }
+
+.lane-editor .table-wrap { margin-top: 14px; border: 1px solid var(--border); border-radius: var(--r); }
+.lane-editor .stop-lines { width: 100%; margin: 0; table-layout: fixed; border-collapse: collapse; }
+.lane-editor .stop-lines col.c-variant { width: 110px; }
+.lane-editor .stop-lines col.c-rolls { width: 100px; }
+.lane-editor .stop-lines col.c-price { width: 150px; }
+.lane-editor .stop-lines col.c-drop { width: 52px; }
+.lane-editor .stop-lines th {
+  padding: 8px 10px; background: var(--surface-2); font-size: 11px; font-weight: 700;
+  letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); text-align: left;
+}
+.lane-editor .stop-lines th.num { text-align: right; }
+.lane-editor .stop-lines td { padding: 8px 10px; border-top: 1px solid var(--border); vertical-align: middle; }
+/* Every box in the row the same height and filling its column. */
+.lane-editor .stop-lines input[type=text],
+.lane-editor .stop-lines .combobox-input {
+  width: 100%; max-width: none; height: 36px; padding: 6px 10px; box-sizing: border-box;
+}
+.lane-editor .stop-lines td.num input { text-align: right; }
+.lane-editor .stop-lines input.pick-variant { text-align: center; }
+/* A product without metr / mikron: the box is visibly switched off, not just empty. */
+.lane-editor input.pick-variant.is-off,
+.lane-editor input.new-row-variant.is-off {
+  background: repeating-linear-gradient(135deg, var(--surface-2), var(--surface-2) 6px, transparent 6px, transparent 12px);
+  border-style: dashed; color: transparent; cursor: not-allowed;
+}
+.lane-editor input.pick-variant.is-off::placeholder,
+.lane-editor input.new-row-variant.is-off::placeholder { color: transparent; }
+.lane-editor .line-drop { width: 36px; height: 36px; }
+
+/* An added product line uses the table's columns, so it sits right under it. */
+.lane-editor .add-lines { margin-top: 0; }
+.lane-editor .add-line {
+  display: grid; grid-template-columns: minmax(0, 1fr) 110px 110px 100px 150px 52px;
+  align-items: center; gap: 0; padding: 8px 0; border: 1px solid var(--border); border-top: 0;
+  background: var(--accent-soft);
+}
+.lane-editor .add-line > * { margin: 0 10px; width: auto; max-width: none; height: 36px; box-sizing: border-box; }
+.lane-editor .add-line > .combobox, .lane-editor .add-line > select { margin-left: 10px; }
+.lane-editor .add-line .new-row-rolls, .lane-editor .add-line .new-row-price { text-align: right; flex-basis: auto; }
+.lane-editor .add-line .new-row-remove { justify-self: center; width: 36px; margin: 0; }
+.lane-editor .line-add { margin-top: 10px; }
