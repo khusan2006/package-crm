@@ -169,15 +169,19 @@ def test_a_seller_cannot_remove_or_confirm_another_sellers_stop(client, seller_u
     assert not Sale.objects.exists()
 
 
-def test_only_the_loads_creator_or_an_admin_changes_the_load(client, admin_user, seller_user,
-                                                            other_seller):
-    by_other = Load.objects.create(date=TODAY(), created_by=other_seller)
-    client.force_login(seller_user)
-    assert client.get(f"/yetkazish/{by_other.pk}/edit/").status_code == 403
-    assert client.post(f"/yetkazish/{by_other.pk}/delete/").status_code == 403
+def test_only_admins_and_managers_change_the_days_yuk(client, admin_user, manager, seller_user,
+                                                     other_seller, paket):
+    """The day's Yuk is made by whoever adds the first client and holds every seller's
+    clients — being its "creator" gives a seller no right over the others' clients."""
     own = Load.objects.create(date=TODAY(), created_by=seller_user)
-    assert client.post(f"/yetkazish/{own.pk}/delete/").status_code == 302
-    assert not Load.objects.filter(pk=own.pk).exists()
+    theirs = stop(own, make_client(other_seller, "Begona"), (paket, 1))
+    client.force_login(seller_user)
+    assert client.get(f"/yetkazish/{own.pk}/edit/").status_code == 403
+    assert client.post(f"/yetkazish/{own.pk}/delete/").status_code == 403
+    assert client.post(f"/yetkazish/{own.pk}/", {"action": "start"}).status_code == 403
+    assert LoadItem.objects.filter(pk=theirs.pk).exists()
+    client.force_login(manager)
+    assert client.get(f"/yetkazish/{own.pk}/edit/").status_code == 200
 
 
 # --- the day's loads ----------------------------------------------------------------
@@ -1949,3 +1953,55 @@ def test_a_sotuvlar_sale_skips_a_cancelled_stop(client, seller_user, load, paket
     sell(client, seller_user, anvar, paket)
     cancelled.refresh_from_db()
     assert cancelled.sale is None and Sale.objects.get().delivery_stop != cancelled
+
+
+# --- audit 2: what is done stays done -------------------------------------------------------
+
+def test_the_rest_goes_tomorrow_and_the_sold_part_stays_done(client, admin_user, two_products,
+                                                              paket, plyonka):
+    item = two_products
+    day_save(client, admin_user, confirm_line=str(item.lines.get(product=paket).pk))
+    client.force_login(admin_user)
+    client.post(f"/yetkazish/{item.load_id}/boshqa-kunga/", {"ertaga": item.pk})
+    item.refresh_from_db()
+    assert item.status == "done"
+    # Tomorrow, opening the page doesn't bring the finished part along.
+    from unittest import mock
+    with mock.patch("django.utils.timezone.localdate", return_value=TODAY() + timedelta(days=1)):
+        day_page(client, admin_user, TODAY() + timedelta(days=1))
+        day_page(client, admin_user, TODAY() + timedelta(days=1))
+    item.refresh_from_db()
+    assert item.load.date == TODAY()
+
+
+def test_a_split_keeps_how_the_rest_leaves(client, admin_user, two_products, paket, plyonka):
+    item = two_products
+    item.method = "pickup"
+    item.save()
+    day_save(client, admin_user, confirm_line=str(item.lines.get(product=paket).pk))
+    client.force_login(admin_user)
+    client.post(f"/yetkazish/{item.load_id}/boshqa-kunga/", {"ertaga": item.pk})
+    assert LoadLine.objects.get(product=plyonka).item.method == "pickup"
+
+
+def test_a_delivered_partly_sold_stop_does_not_send_the_truck_again(client, admin_user,
+                                                                    seller_user, paket, plyonka):
+    yesterday = Load.objects.create(date=TODAY() - timedelta(days=1))
+    item = stop(yesterday, make_client(seller_user, "Anvar"), (paket, 5, 120), (plyonka, 2, 30))
+    item.status = "done"
+    item.save()
+    item.lines.filter(product=paket).update(sale=Sale.objects.create(client=item.client,
+                                                                     sales_rep=seller_user))
+    body = day_page(client, admin_user).content.decode()
+    rest = LoadLine.objects.get(product=plyonka).item
+    assert rest.status == "done" and not rest.on_route and "Sotuv yozilmagan" in body
+
+
+def test_lane_numbers_follow_the_days_saved_order(client, admin_user, seller_user, load,
+                                                  warehouse, paket):
+    a = stop(load, make_client(seller_user, "A", 0.01), (paket, 1))
+    second = Load.objects.create(date=TODAY())
+    b = stop(second, make_client(seller_user, "B", 0.02), (paket, 1))
+    client.force_login(admin_user)
+    client.post(f"/yetkazish/{load.pk}/", {"action": "save", "stop": [b.pk, a.pk]})
+    assert lane(day_page(client, admin_user), "truck") == ["B", "A"]

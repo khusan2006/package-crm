@@ -10775,9 +10775,10 @@ def _may_edit_stop(user, item):
 
 
 def _may_change_load(user, load):
-    """The load itself (date, note, deleting it): admins/managers, or the seller who
-    created it."""
-    return user.can_see_all_records or load.created_by_id == user.pk
+    """The day's Yuk itself (its date, deleting it, «Jo'natish» for its trucks):
+    admins/managers only. The Yuk is made by whoever adds the day's first client and
+    holds every seller's clients, so its "creator" is no owner of it."""
+    return user.can_see_all_records
 
 
 def load_list(request):
@@ -10935,7 +10936,7 @@ def load_move(request, pk):
             else:
                 there[item.client_id] = LoadItem.objects.create(
                     load=target, client=item.client, purpose=LoadItem.Purpose.DELIVER,
-                    position=next_position())
+                    method=item.method, position=next_position())
                 LoadLine.objects.filter(pk__in=line_pks).update(item=there[item.client_id])
             if not is_whole and len(lines) == len(item.line_list) and not item.has_sold:
                 # «Yetkazish + pul olish» with every product gone: only the money is left.
@@ -10965,12 +10966,14 @@ def load_move(request, pk):
 
 
 def _close_if_all_sold(item):
-    """A stop whose every product is sold (the rest moved away) is sold as a whole:
-    locked, «Sotildi», like one sold in one go."""
+    """A stop whose every product is sold (the rest moved away) is sold as a whole and
+    finished: locked, «Sotildi», «Yetkazildi» — so it isn't carried to the next day as
+    well (its unsold products already went)."""
     sales = list(item.lines.values_list("sale_id", flat=True))
     if sales and all(sales) and not item.sale_id:
         item.sale_id = max(sales)
-        item.save(update_fields=["sale"])
+        item.status = LoadItem.Status.DONE
+        item.save(update_fields=["sale", "status"])
 
 
 def _joined_purpose(a, b):
@@ -11390,7 +11393,8 @@ def _write_load_plan(load, plan):
         line.save(update_fields=[*LINE_FIELDS, "product"])
     for item, *line in plan["add"]:
         _create_load_line(item, line)
-    position = (load.items.aggregate(m=Max("position"))["m"] or 0) if load.ordered_at else None
+    position = ((LoadItem.objects.filter(load__date=load.date).aggregate(m=Max("position"))["m"] or 0)
+                if load.ordered_at else None)
     for client, purpose, lines, method in plan["new"]:
         if position is not None:
             position += 1
@@ -11949,8 +11953,8 @@ def _lanes(items, user):
             lanes["truck"].append(item)
         else:
             lanes["other"].append(item)
-    lanes["truck"].sort(key=lambda i: (i.load.created_at, i.position is None, i.position or 0,
-                                       i.created_at))
+    # The saved route order is day-wide (every Yuk of the date), so is the numbering.
+    lanes["truck"].sort(key=lambda i: (i.position is None, i.position or 0, i.created_at))
     for n, item in enumerate(lanes["truck"], start=1):
         item.n = n
     return lanes
@@ -12004,8 +12008,9 @@ def _carry_over(today, user):
                             .order_by("created_at").first()
                             or Load.objects.create(date=today, created_by=user, note="Kechagidan")),
                         client=item.client, purpose=LoadItem.Purpose.DELIVER, method=item.method,
-                        status=item.status if item.status != LoadItem.Status.DONE else LoadItem.Status.NEW,
-                        carried_from=item.carried_from or item.load.date))
+                        # A delivered one stays delivered (and «Sotuv yozilmagan»): the
+                        # truck doesn't go again.
+                        status=item.status, carried_from=item.carried_from or item.load.date))
                     here.setdefault(item.client_id, mate)
                 LoadLine.objects.filter(pk__in=unsold).update(item=mate)
                 _close_if_all_sold(item)
