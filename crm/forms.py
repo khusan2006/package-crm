@@ -1935,12 +1935,18 @@ class SaleItemForm(forms.ModelForm):
     says which one it is. The columns stay on `SaleItem` because old receipts were
     written with them and their labels still show in the ombor report.
 
+    The one exception: editing a line that already carries one (a sale made by ✓ in
+    Yetkazish copies the stop's metr/mikron, and the stop then locks). Those two
+    boxes are shown on that line only, so a wrong value can be fixed or emptied —
+    otherwise it would be stuck on the receipt for good.
+
     Og'irlik may be typed roll by roll ("100+20+50"): the line keeps the total and
     the count of rolls; price and tannarx are one figure for all of them."""
 
     class Meta:
         model = SaleItem
-        fields = ["product", "dimension", "weight", "rolls", "price", "cost_price"]
+        fields = ["product", "dimension", "weight", "rolls", "price", "cost_price",
+                  "size", "micron"]
         field_classes = {"weight": WeightSumField}
         widgets = {
             # Text, not a number box: a browser's number input refuses the "+".
@@ -1960,6 +1966,11 @@ class SaleItemForm(forms.ModelForm):
         self.fields["cost_price"].widget.attrs["placeholder"] = "Bo'sh qolsa — mahsulot tannarxi"
         self.fields["rolls"].widget.attrs["placeholder"] = "Ixtiyoriy"
         _mark_money(self.fields["price"], self.fields["cost_price"])
+        # Metr / mikron only on a saved line that already has one (see the docstring).
+        # Dropped from the form otherwise, so a line without them is never touched.
+        self.shows_variants = bool(self.instance.pk and (self.instance.size or self.instance.micron))
+        if not self.shows_variants:
+            del self.fields["size"], self.fields["micron"]
         # The stored total, without the ".000" a 3-decimal column pads it with.
         weight = self.initial.get("weight")
         if isinstance(weight, Decimal):

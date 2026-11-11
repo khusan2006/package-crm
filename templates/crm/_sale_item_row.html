@@ -25,6 +25,10 @@
         </button></span>
         {{ f.cost_price.errors }}
       </div>
+      {% if f.shows_variants %}
+      <label class="if if-size">Metr{{ f.size }}{{ f.size.errors }}</label>
+      <label class="if if-micron">Mikron{{ f.micron }}{{ f.micron.errors }}</label>
+      {% endif %}
     </div>
   </div>
   <div class="item-total muted" data-line-total hidden></div>

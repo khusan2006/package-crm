@@ -1161,3 +1161,43 @@ def test_the_load_page_has_the_start_box(client, admin_user, load, three):
     load.save()
     body = detail(client, admin_user, load).content.decode()
     assert "Yo'lda" in body and "Bekor qilish" in body
+
+
+# --- metr / mikron carried onto the sale ---------------------------------------------
+
+def test_a_confirmed_stops_metr_and_mikron_can_be_cleared_on_the_sale(client, admin_user,
+                                                                      seller_user, load, paket):
+    """✓ copies the stop's metr/mikron to the sale and locks the stop, so the sale edit
+    form must offer them — or a wrong "Oq" typed there could never be removed."""
+    from crm.forms import SaleItemForm
+
+    paket.has_micron = True
+    paket.save()
+    item = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 5, 120))
+    item.lines.update(micron="Oq")
+    save(client, admin_user, load, confirm=str(item.pk))
+    line = SaleItem.objects.get()
+    assert line.micron == "Oq"
+
+    client.force_login(admin_user)
+    body = client.get(f"/sales/{line.sale_id}/edit/").content.decode()
+    assert 'name="items-0-micron"' in body and 'value="Oq"' in body
+
+    data = {"product": paket.pk, "dimension": "kg", "weight": "120", "rolls": "5",
+            "price": "15000", "cost_price": "10000", "size": "", "micron": ""}
+    form = SaleItemForm(data, instance=line)
+    assert form.is_valid(), form.errors
+    form.save()
+    line.refresh_from_db()
+    assert line.micron == ""
+
+
+def test_a_line_without_metr_or_mikron_does_not_offer_them(db, seller_user, paket):
+    from crm.forms import SaleItemForm
+
+    sale = Sale.objects.create(client=make_client(seller_user, "Bobur"), sales_rep=seller_user)
+    line = SaleItem.objects.create(sale=sale, product=paket, dimension="kg", weight=Decimal("10"),
+                                   price=Decimal("15000"), cost_price=Decimal("10000"))
+    form = SaleItemForm(instance=line)
+    assert "micron" not in form.fields and "size" not in form.fields
+    assert "micron" not in SaleItemForm().fields  # a new line never asks either

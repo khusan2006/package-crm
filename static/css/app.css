@@ -1586,6 +1586,9 @@ html[data-theme="dark"] #theme-toggle .ico-sun {
 .item-subfields > .if-price { grid-column: 1; }
 .item-subfields > .if-rolls { grid-column: 2; }
 .item-subfields > .if-cost { grid-column: 2 / -1; }
+/* Metr / mikron — only on an edited line that already carries them. */
+.item-subfields > .if-size { grid-column: 1; }
+.item-subfields > .if-micron { grid-column: 2; }
 
 .item-fields .if {
   display: flex;
