@@ -38,6 +38,7 @@
       {% if not item.client.has_location %}{% if item.mine %}<a class="btn btn-sm btn-ghost is-warn" href="{% url 'client_location' item.client.pk %}" data-modal>Joylashuv qo'shish</a>{% else %}<span class="route-pending">Joylashuv yo'q</span>{% endif %}
       {% elif item.mine %}<a class="btn btn-sm btn-ghost" href="{% url 'client_location' item.client.pk %}" data-modal title="{{ item.client.address }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>Joylashuv</a>{% endif %}
       {% if item.editable %}
+      {% if item.sold_count and item.unsold_count %}<button type="submit" name="ertaga" value="{{ item.pk|unlocalize }}" formaction="{% url 'load_move' item.load_id %}" class="btn btn-sm btn-ghost" title="Sotilmagan mahsulotlarni ertangi kunga — sotilgani bugun qoladi">Qolganini ertaga →</button>{% endif %}
       <a class="btn btn-sm btn-ghost" href="{% url 'load_move' item.load_id %}?mijoz={{ item.pk|unlocalize }}" data-modal title="Boshqa kunga o'tkazish" aria-label="{{ item.client.name }} — boshqa kunga o'tkazish">{% include "crm/_ico_move_day.html" %}Boshqa kunga</a>
       <a class="btn btn-sm btn-ghost is-danger" href="{% url 'load_item_delete' item.load_id item.pk %}" data-modal title="Yukdan olib tashlash" aria-label="{{ item.client.name }} — yukdan olib tashlash">{% include "crm/_ico_trash.html" %}O'chirish</a>
       {% endif %}

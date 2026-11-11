@@ -10834,6 +10834,9 @@ def load_move(request, pk):
     picked = set(request.POST.getlist("move"))
     picked_lines = set(request.POST.getlist("line"))
     target_raw = request.POST.get("target", "")
+    # «Qolganini ertaga» on the day page: this client's unsold products, to tomorrow.
+    if _DIGITS.fullmatch(request.POST.get("ertaga", "")):
+        picked, target_raw = {request.POST["ertaga"]}, "tomorrow"
     other_raw = request.POST.get("sana", "")
     # What goes: whole stops, and parts of stops (some of their products).
     whole, parts = [], []
@@ -10876,6 +10879,9 @@ def load_move(request, pk):
     moved, staying = [], []
     with transaction.atomic():
         if target is None:
+            # The day is the Yuk: a day that already has one is joined, not split.
+            target = Load.objects.filter(date=day).exclude(pk=load.pk).order_by("created_at").first()
+        if target is None:
             target = Load.objects.create(date=day, created_by=request.user, strategy=load.strategy,
                                          note=f"Yuk #{load.pk} ({load.date:%d.%m.%Y}) dan o'tkazilgan")
             AuditLog.record(request.user, AuditLog.Action.CREATE, "Yuk", target.pk,
@@ -10913,10 +10919,12 @@ def load_move(request, pk):
                     load=target, client=item.client, purpose=LoadItem.Purpose.DELIVER,
                     position=next_position())
                 LoadLine.objects.filter(pk__in=line_pks).update(item=there[item.client_id])
-            if not is_whole and len(lines) == len(item.line_list):
+            if not is_whole and len(lines) == len(item.line_list) and not item.has_sold:
                 # «Yetkazish + pul olish» with every product gone: only the money is left.
                 item.purpose = LoadItem.Purpose.COLLECT
                 item.save(update_fields=["purpose"])
+            if item.has_sold:
+                _close_if_all_sold(item)  # only the sold ones stayed: sold as a whole
             moved.append(item.client.name if is_whole else
                          f"{item.client.name} ({', '.join(l.product.name for l in lines)})")
         if moved:
@@ -10933,7 +10941,18 @@ def load_move(request, pk):
     if staying:
         messages.warning(request, f"Yuk #{target.pk} da bu mijoz sotuvga aylangan — shu yerda qoldi: "
                                   + ", ".join(staying))
+    if request.POST.get("ertaga"):
+        return redirect(_day_url(request, load.date) + f"#stop-{request.POST['ertaga']}")
     return form_success(request, _load_url(load))
+
+
+def _close_if_all_sold(item):
+    """A stop whose every product is sold (the rest moved away) is sold as a whole:
+    locked, «Sotildi», like one sold in one go."""
+    sales = list(item.lines.values_list("sale_id", flat=True))
+    if sales and all(sales) and not item.sale_id:
+        item.sale_id = max(sales)
+        item.save(update_fields=["sale"])
 
 
 def _joined_purpose(a, b):
@@ -11953,6 +11972,27 @@ def _carry_over(today, user):
         here = {i.client_id: i for i in load.items.all()}
         moved = []
         for item in old:
+            lines = list(item.lines.all())
+            if item.sale_id is None and any(l.sale_id for l in lines) \
+                    and not all(l.sale_id for l in lines):
+                # Partly sold: the sold products stay on their day with the stop (now
+                # sold as a whole); only the unsold ones come to today.
+                unsold = [l.pk for l in lines if not l.sale_id]
+                mate = here.get(item.client_id)
+                if mate is None or mate.sale_id:
+                    mate = (LoadItem.objects.create(
+                        load=load if mate is None else (
+                            Load.objects.filter(date=today).exclude(items__client=item.client)
+                            .order_by("created_at").first()
+                            or Load.objects.create(date=today, created_by=user, note="Kechagidan")),
+                        client=item.client, purpose=LoadItem.Purpose.DELIVER, method=item.method,
+                        status=item.status if item.status != LoadItem.Status.DONE else LoadItem.Status.NEW,
+                        carried_from=item.carried_from or item.load.date))
+                    here.setdefault(item.client_id, mate)
+                LoadLine.objects.filter(pk__in=unsold).update(item=mate)
+                _close_if_all_sold(item)
+                moved.append(item.client.name)
+                continue
             mate = here.get(item.client_id)
             if mate is not None and item.sale_id is None and mate.sale_id is None:
                 # One client, one row: the old products join today's, and so does the

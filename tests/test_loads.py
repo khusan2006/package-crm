@@ -1838,3 +1838,49 @@ def test_an_action_comes_back_to_its_tab(client, admin_user, seller_user, load, 
     assert resp.url == f"/yetkazish/?sana={TODAY().isoformat()}&tur=truck#stop-{a.pk}"
     resp = day_save(client, admin_user, holat="new", confirm=str(a.pk))
     assert "&holat=new" in resp.url and "kgsiz" in resp.url
+
+
+# --- partly sold: the rest goes to tomorrow ----------------------------------------------
+
+def test_the_rest_goes_to_tomorrow_in_one_click(client, admin_user, two_products, paket, plyonka):
+    item = two_products
+    day_save(client, admin_user, confirm_line=str(item.lines.get(product=paket).pk))
+    body = day_page(client, admin_user).content.decode()
+    assert f'name="ertaga" value="{item.pk}"' in body
+    tomorrow = Load.objects.create(date=TODAY() + timedelta(days=1))
+    client.force_login(admin_user)
+    resp = client.post(f"/yetkazish/{item.load_id}/boshqa-kunga/",
+                       {"ertaga": item.pk, "sana": TODAY().isoformat()})
+    assert resp.url.endswith(f"#stop-{item.pk}")
+    item.refresh_from_db()
+    assert list(item.lines.values_list("product__name", flat=True)) == ["Paket"]
+    assert item.sale is not None                           # only the sold one left: sold
+    moved = LoadLine.objects.get(product=plyonka).item
+    assert moved.load == tomorrow                          # joined tomorrow's Yuk, no new one
+    assert Load.objects.filter(date=tomorrow.date).count() == 1
+
+
+def test_moving_the_rest_keeps_a_money_and_goods_purpose(client, admin_user, two_products, paket):
+    item = two_products
+    item.purpose = BOTH
+    item.save()
+    day_save(client, admin_user, confirm_line=str(item.lines.get(product=paket).pk))
+    client.force_login(admin_user)
+    client.post(f"/yetkazish/{item.load_id}/boshqa-kunga/", {"ertaga": item.pk})
+    item.refresh_from_db()
+    assert item.purpose == BOTH
+
+
+def test_carry_over_leaves_sold_products_on_their_day(client, admin_user, seller_user, paket,
+                                                     plyonka):
+    yesterday = Load.objects.create(date=TODAY() - timedelta(days=1))
+    item = stop(yesterday, make_client(seller_user, "Anvar"), (paket, 5, 120), (plyonka, 2))
+    sale = Sale.objects.create(client=item.client, sales_rep=seller_user)
+    item.lines.filter(product=paket).update(sale=sale)
+    resp = day_page(client, admin_user)
+    item.refresh_from_db()
+    assert item.load == yesterday and item.sale == sale
+    assert list(item.lines.values_list("product__name", flat=True)) == ["Paket"]
+    today = LoadLine.objects.get(product=plyonka).item
+    assert today.load.date == TODAY() and today.carried_from == yesterday.date
+    assert lane(resp, "truck") == ["Anvar"]
