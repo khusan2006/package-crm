@@ -11669,7 +11669,13 @@ def _confirm_stop(request, load, item_pk, line_pk=None):
     exactly as the sale form would make it (`_finish_new_sale`). The products sold are
     locked; once none is left unsold the stop is too. The products going need their
     kg first. Run under a row lock, so a double click or a second tab can't make two
-    sales."""
+    sales.
+
+    The firm's rule: orders are written the day before; on the day they go the kg is
+    typed and ✓ makes it THAT day's sale. So ✓ is only for today's clients and the
+    sale is dated today — an earlier day's comes to today first (the bell's
+    «Bugunga»), a later day's is sold on its day."""
+    today = timezone.localdate()
     with transaction.atomic():
         # Any client of the day — the day page holds every Yuk of that date.
         item = (LoadItem.objects.select_for_update().select_related("client", "client__owner", "load")
@@ -11683,6 +11689,12 @@ def _confirm_stop(request, load, item_pk, line_pk=None):
             return redirect(_day_url(request, load.date))
         if not _may_edit_stop(request.user, item):
             raise PermissionDenied
+        if item.load.date != today:
+            messages.error(request, f"“{name}”: ✓ Sotuvga faqat bugungi ro'yxatda — sotuv ✓ "
+                                    f"bosilgan kunning sotuvi bo'ladi. "
+                                    + ("Avval «Bugunga» o'tkazing." if item.load.date < today
+                                       else f"{item.load.date:%d.%m} kuni sotiladi."))
+            return redirect(_day_url(request, load.date, item.pk))
         if item.status == LoadItem.Status.ORDER:
             messages.error(request, f"“{name}”: mahsulot omborda yo'q — kelgach holatini "
                                     f"«Rejada» / «Kutilmoqda» qiling, keyin sotuvga.")
@@ -11708,7 +11720,7 @@ def _confirm_stop(request, load, item_pk, line_pk=None):
                                     f"nomiga yozilishi noma'lum. Mijozni sotuvchiga o'tkazing.")
             return redirect(_day_url(request, load.date))
         load = item.load
-        sale = Sale(date=load.date, client=item.client, sales_rep=seller,
+        sale = Sale(date=today, client=item.client, sales_rep=seller,
                     entered_by=request.user,
                     debt_term_days=DEFAULT_DEBT_DAYS, note=f"Yuk #{load.pk}")
         sale.recompute_debt_deadline(commit=False)
@@ -12104,6 +12116,8 @@ def _decorate_stop(item, user):
     item.may_set = _may_set_status(user, item)
     item.n = None
     item.ahead = False
+    # ✓ Sotuvga is for today's clients only: the sale is the day it is pressed.
+    item.sells_today = item.load.date == timezone.localdate()
     steps = STOP_STEPS.get(item.method, [])
     at = [value for value, _ in steps].index(item.status) if item.status in dict(steps) else -1
     item.steps = [{"value": value, "label": label,
@@ -12410,6 +12424,7 @@ def _render_day(request, day, items=None, posted_new=None, ahead=None):
         "prev_day": (day - timedelta(days=1)).isoformat(),
         "next_day": (day + timedelta(days=1)).isoformat(),
         "is_today": day == timezone.localdate(),
+        "today": timezone.localdate(),
         "load": load,
         "items": items,
         "lanes": lanes,

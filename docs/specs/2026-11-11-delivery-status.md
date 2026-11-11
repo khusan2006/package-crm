@@ -48,3 +48,20 @@ follow. Replaced by one page per day:
 | Saving | No Saqlash. A box saves as it is left, in the background; adding or removing a product reloads with the row open; new clients go in with «Qo'shish». |
 | Unfinished clients | Opening today brings every client not finished on the last 14 days, marked «Kechagidan» / «08.11 dan». A client already on today takes the old products. ✓ on such a client dates the sale today. Migration closes the stops of days already gone, so nothing old floods in. |
 | Dropped | The status board's chips and search (the lanes replace them). |
+
+## Revised again the same evening: the day is the DELIVERY day
+
+The firm's rule, strict: **orders are written the day before** (product and rulon
+only); **on the day they go** the goods are loaded, the kg typed, and **✓ makes it
+that day's sale.** The old data showed it: each Yuk carried the day its orders were
+written, and the sales are dated the next day.
+
+| Question | Answer |
+|---|---|
+| Which day a client is on | The day it goes. «Mijoz qo'shish» has «Qaysi kunga»: on today's page it opens at tomorrow; on another day's page, that day. |
+| ✓ Sotuvga | Only on today's list; the sale is dated today. An earlier day's client comes to today first, a later day's is sold on its day. |
+| Lanes | «Buyurtmalar» (no method yet, or waiting for stock — and under it the later days' orders, a heading per day), «O'zi olib ketadi» (pickup and Yandex together), «Mashinada», «Bekor qilindi» (out of the truck's kg, rulon and numbering). |
+| An order its day passed without | Not moved by itself any more. A bell with a count beside the date on today's page; its window asks per order: Bugunga / another day / Yetkazilgan / Bekor qilindi (not for one already sold). Delivered but not sold still comes to today by itself («Sotuv yozilmagan»). A sale typed today for that client brings it over too. |
+| A day's record | Clients that went on to a later day stay listed at the foot of their first day («Keyingi kunga o'tganlar»). |
+| Sotuvlar | Every sale typed there, any date (not opening balances), lands on its day's board. `track_sales_delivery --dan` puts the sales typed before this release there; it is not run by the deploy. |
+| Old data (0066) | A ✓-ed stop moves to its sale's date; one never ✓-ed takes the client's sale typed that day or up to 2 days later and moves to its date; one with no sale stays «Bekor qilindi» (0062). |

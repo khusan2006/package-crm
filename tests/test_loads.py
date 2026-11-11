@@ -1582,10 +1582,44 @@ def test_a_cancelled_order_stays_on_its_day(client, admin_user, seller_user, pak
                                    summary__contains="bekor qilindi").exists()
 
 
+def sold_on_its_day(item, seller):
+    """The stop as ✓ left it on its own (earlier) day. ✓ itself is for today's
+    clients only, so an earlier day's sold stop is set up directly."""
+    sale = Sale.objects.create(client=item.client, sales_rep=seller, date=item.load.date,
+                               debt_deadline=item.load.date + timedelta(days=7))
+    for line in item.lines.all():
+        SaleItem.objects.create(sale=sale, product=line.product, dimension="kg", weight=line.kg,
+                                rolls=line.rolls, price=line.price, cost_price=line.product.cost_price)
+    item.lines.update(sale=sale)
+    LoadItem.objects.filter(pk=item.pk).update(sale=sale)
+    return sale
+
+
+def test_tick_sells_today_and_only_todays_clients(client, admin_user, seller_user, load, paket):
+    """The firm's rule: written the day before, weighed and ✓-ed on the day it goes —
+    ✓ makes THAT day's sale. So ✓ is only on today's list; an earlier day's client
+    comes over first («Bugunga»), a later day's is sold on its day."""
+    past = stop(Load.objects.create(date=TODAY() - timedelta(days=1)),
+                make_client(seller_user, "Kecha"), (paket, 2, 40))
+    ahead = stop(Load.objects.create(date=TODAY() + timedelta(days=1)),
+                 make_client(seller_user, "Ertaga"), (paket, 2, 40))
+    body = day_page(client, admin_user, past.load.date).content.decode()
+    assert f'name="confirm" value="{past.pk}"' not in body and "✓ bugungi ro'yxatda" in body
+    body = day_page(client, admin_user, ahead.load.date).content.decode()
+    assert f'name="confirm" value="{ahead.pk}"' not in body
+    resp = day_save(client, admin_user, day=past.load.date, confirm=str(past.pk))
+    day_save(client, admin_user, day=ahead.load.date, confirm=str(ahead.pk))
+    assert not Sale.objects.exists()
+    assert any("Bugunga" in str(m) for m in resp.wsgi_request._messages)
+    decide(client, admin_user, past, "bugun")
+    day_save(client, admin_user, confirm=str(past.pk))
+    assert Sale.objects.get().date == TODAY()
+
+
 def test_a_sold_order_is_not_cancelled_from_the_question(client, admin_user, seller_user, paket):
     yesterday = Load.objects.create(date=TODAY() - timedelta(days=1), created_by=admin_user)
     item = stop(yesterday, make_client(seller_user, "Anvar"), (paket, 3, 50))
-    save(client, admin_user, yesterday, confirm=str(item.pk))
+    sold_on_its_day(item, seller_user)
     body = day_page(client, admin_user).content.decode()
     assert f"/yetkazish/qaror/{item.pk}/" in body and 'value="bekor"' not in body
     decide(client, admin_user, item, "bekor")
@@ -2113,7 +2147,7 @@ def test_a_carried_sold_stop_stays_sold_when_its_sale_is_edited(client, admin_us
     sale in Sotuvlar updates the stop — it doesn't open it to be sold a second time."""
     yesterday = Load.objects.create(date=TODAY() - timedelta(days=1), created_by=admin_user)
     item = stop(yesterday, make_client(seller_user, "Anvar"), (paket, 3, 50))
-    save(client, admin_user, yesterday, confirm=str(item.pk))
+    sold_on_its_day(item, seller_user)
     sale = Sale.objects.get()
     decide(client, admin_user, item, "bugun")
     item.refresh_from_db()
@@ -2408,7 +2442,7 @@ def test_a_carried_client_still_shows_on_its_own_day(client, admin_user, seller_
     still lists it — with where it is now — as its sale in Sotuvlar is yesterday's."""
     yesterday = Load.objects.create(date=TODAY() - timedelta(days=1), created_by=admin_user)
     item = stop(yesterday, make_client(seller_user, "Anvar"), (paket, 3, 50))
-    save(client, admin_user, yesterday, confirm=str(item.pk))
+    sold_on_its_day(item, seller_user)
     decide(client, admin_user, item, "bugun")  # today's page: «Bugunga»
     item.refresh_from_db()
     assert item.load.date == TODAY()
