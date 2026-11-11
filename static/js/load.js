@@ -388,6 +388,14 @@
       };
       items.addEventListener('change', function (e) {
         var t = e.target;
+        // A row's dropdown (how it leaves / where it stands): sent at once, the
+        // way a button would be — anything typed goes with it.
+        if (t.matches('select[data-quick]') && t.value) {
+          items.querySelector('[name=quick_pick]').value = t.getAttribute('data-quick') + ':' + t.value;
+          submitting = true;
+          if (items.requestSubmit) { items.requestSubmit(); } else { items.submit(); }
+          return;
+        }
         if (!t.name || !t.closest('.stops')) { return; }
         var stop = stopOf(t);
         if (savedBox.test(t.name)) { save(stop); return; }

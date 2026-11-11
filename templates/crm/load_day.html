@@ -43,6 +43,7 @@
   <input type="hidden" name="action" value="items">
   <input type="hidden" name="sana" value="{{ day|date:'Y-m-d' }}">
   <input type="hidden" name="ochiq" value="">
+  <input type="hidden" name="quick_pick" value="">
   {% comment %}The form's default button. Enter in a box presses the FIRST submit
   button of a form — without this, that would be a row's step or ✓.{% endcomment %}
   <button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true">Qo'shish</button>
@@ -56,6 +57,7 @@
     <div class="lane-add-actions">
       <button type="button" class="new-row-add" data-new-row-add><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yana mijoz</button>
       <span class="route-dirty" data-items-dirty{% if not failed %} hidden{% endif %}>Hali qo'shilmadi</span>
+      <button type="button" class="btn btn-ghost" data-add-cancel>Bekor qilish</button>
       <button type="submit" name="add" value="1" class="btn">Qo'shish</button>
     </div>
   </details>
@@ -65,7 +67,7 @@
   <datalist id="load-microns">{% for v in micron_suggestions %}<option value="{{ v }}">{% endfor %}</datalist>
 
   {% if not items %}
-  <div class="card"><p class="muted">{{ day|date:"d.m.Y" }} uchun hali mijoz yo'q — yuqorida qo'shing.</p></div>
+  <div class="card"><p class="muted">{{ day|date:"d.m.Y" }} uchun hali mijoz yo'q — «Mijoz qo'shish» tugmasi bilan qo'shing.</p></div>
   {% endif %}
 
   <div class="stops">
@@ -170,6 +172,15 @@
 {% endif %}
 
 <script>
+  // «Bekor qilish»: nothing typed there is kept, and the form closes.
+  document.addEventListener('click', function (e) {
+    var cancel = e.target.closest && e.target.closest('[data-add-cancel]');
+    if (!cancel) { return; }
+    var add = document.getElementById('add-client');
+    // Each row's × empties it (the last one stays, empty); run them all.
+    add.querySelectorAll('[data-new-row-remove]').forEach(function (b) { b.click(); });
+    add.open = false;
+  });
   // «Mijoz qo'shish» (the button below): open the add section and go to its client box.
   document.addEventListener('click', function (e) {
     var link = e.target.closest && e.target.closest('[data-open-add]');

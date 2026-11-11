@@ -12,38 +12,49 @@
       <strong>{{ item.client.name }}{% if item.carried_from %} <span class="badge badge-st-order lane-carried" title="{{ item.carried_from|date:'d.m.Y' }} kuni rejada edi">{{ item.carried_label }}</span>{% endif %}</strong>
       <span class="cell-sub">{{ item.client.owner }}{% if item.client.phone %} · {{ item.client.phone }}{% endif %}{% if item.purpose != "deliver" %} · {{ item.get_purpose_display }}{% endif %}</span>
     </span>
-    <span class="lane-what">{{ item.products|default:"—" }}{% if item.rolls %}<span class="cell-sub">{{ item.rolls }} rulon</span>{% endif %}</span>
-    <span class="lane-kg">{% if item.kg_text %}{{ item.kg_text }} kg{% else %}—{% endif %}{% if item.unweighed %}<span class="cell-sub route-pending">tortilmagan</span>{% endif %}</span>
+    {% comment %}Each product on its own line, with its kg box right here — weighing
+    is done from the list. A box saves as it is left (`data-autosave`).{% endcomment %}
+    <span class="lane-lines">
+      {% for line in item.line_list %}
+      <span class="lane-line-item">
+        <span class="lane-line-name">{{ line.product.name }}{% if line.variant_label %} · {{ line.variant_label }}{% endif %}{% if line.rolls %}<span class="cell-sub">{{ line.rolls }} rulon</span>{% endif %}</span>
+        {% if item.editable %}
+        <span class="kg-cell"><input type="text" inputmode="decimal" class="pick-kg{% if line.kg_bad %} is-bad{% endif %}" name="kg_{{ line.pk|unlocalize }}" value="{{ line.kg_input }}" placeholder="kg" title="Tortilgach kiriting: 50+48,5 kabi qo'shib yozsa ham bo'ladi" aria-label="{{ item.client.name }}, {{ line.product.name }} — kg (tortilgach)"{% if line.kg_bad %} aria-invalid="true"{% endif %} autocomplete="off"></span>
+        {% else %}
+        <span class="lane-kg-text">{% if line.kg is not None %}{{ line.kg|floatformat:"-3g" }} kg{% else %}<span class="muted">tortilmagan</span>{% endif %}</span>
+        {% endif %}
+      </span>
+      {% empty %}
+      <span class="muted">{% if item.collects %}Pul olish{% else %}—{% endif %}</span>
+      {% endfor %}
+    </span>
     <span class="lane-act">
       {% if not item.may_set %}
         <span class="badge badge-st-{{ item.status }}">{{ item.status_label }}</span>
-      {% elif lane == "undecided" %}
-        <button type="submit" name="quick" value="{{ item.pk|unlocalize }}:truck:new" class="lane-btn">Mashinada</button>
-        <button type="submit" name="quick" value="{{ item.pk|unlocalize }}:pickup:new" class="lane-btn">O'zi oladi</button>
-        <button type="submit" name="quick" value="{{ item.pk|unlocalize }}:yandex:new" class="lane-btn">Yandex</button>
-      {% elif lane == "order" %}
-        <button type="submit" name="quick" value="{{ item.pk|unlocalize }}:{{ item.method }}:new" class="lane-btn">Omborga keldi</button>
       {% else %}
-        <span class="steps" role="group" aria-label="{{ item.client.name }} — holati">
-          {% for step in item.steps %}<button type="submit" name="quick" value="{{ item.pk|unlocalize }}:{{ item.method }}:{{ step.value }}" class="step{% if step.state %} is-{{ step.state }}{% endif %}"{% if step.state == "now" %} aria-current="step"{% endif %}>{{ step.label }}</button>{% endfor %}
-        </span>
+        <select class="lane-status st-{% if item.method %}{{ item.status }}{% else %}none{% endif %}" data-quick="{{ item.pk|unlocalize }}" aria-label="{{ item.client.name }} — {% if item.method %}holati{% else %}qanday ketadi{% endif %}">
+          {% if not item.method %}<option value="" selected disabled>Qanday ketadi?</option>{% endif %}
+          {% for value, label in item.choices %}<option value="{{ value }}"{% if value == item.choice %} selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
       {% endif %}
     </span>
-    <span class="lane-sale">{% if item.sale %}{% if item.mine %}<a class="badge badge-paid" href="{% url 'sale_detail' item.sale.pk %}" title="Sotuvni ochish">✓ #{{ item.sale.pk|unlocalize }}</a>{% else %}<span class="badge badge-paid">✓ #{{ item.sale.pk|unlocalize }}</span>{% endif %}{% endif %}</span>
+    <span class="lane-sale">
+      {% if item.sale %}{% if item.mine %}<a class="badge badge-paid" href="{% url 'sale_detail' item.sale.pk %}" title="Sotuvni ochish">✓ #{{ item.sale.pk|unlocalize }}</a>{% else %}<span class="badge badge-paid">✓ #{{ item.sale.pk|unlocalize }}</span>{% endif %}
+      {% elif item.editable and item.delivers and item.line_list %}<button type="submit" name="confirm" value="{{ item.pk|unlocalize }}" class="btn btn-sm stop-confirm" title="Shu mijozni sotuvga aylantirish (hamma kg kiritilgan bo'lishi kerak)">✓ Sotuvga</button>
+      {% endif %}
+    </span>
     <span class="lane-open" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
   </summary>
   <div class="lane-editor">
     <p class="autosave-note" data-autosave-note role="status" aria-live="polite" hidden></p>
     {% if item.may_set %}
-    <div class="lane-how" role="group" aria-label="{{ item.client.name }} — qanday ketadi">
+    <label class="lane-how">
       <span class="lane-how-label">Qanday ketadi:</span>
-      {% for value, label in methods %}<button type="submit" name="quick" value="{{ item.pk|unlocalize }}:{{ value }}:new" class="lane-btn{% if item.method == value %} is-on{% endif %}"{% if item.method == value %} aria-pressed="true"{% endif %}>{{ label }}</button>{% endfor %}
-      {% if item.status == "order" %}
-      <button type="submit" name="quick" value="{{ item.pk|unlocalize }}:{{ item.method }}:new" class="lane-btn">Omborga keldi</button>
-      {% else %}
-      <button type="submit" name="quick" value="{{ item.pk|unlocalize }}:{{ item.method }}:order" class="lane-btn is-warn">Omborda yo'q — buyurtma</button>
-      {% endif %}
-    </div>
+      <select class="lane-status" data-quick="{{ item.pk|unlocalize }}" aria-label="{{ item.client.name }} — qanday ketadi">
+        {% if not item.method %}<option value="" selected disabled>Tanlang</option>{% endif %}
+        {% for value, label in methods %}<option value="{{ value }}:new"{% if item.method == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
     {% endif %}
     {% include "crm/_load_stop.html" %}
   </div>

@@ -11196,10 +11196,13 @@ def _read_load_items(request, load, items, products):
     in_load = {i.client_id for i in items}
     picked = set()
     posted_new = []
-    rows = _post_rows(request, "new_client", "new_purpose", "new_key",
+    rows = _post_rows(request, "new_client", "new_purpose", "new_key", "new_method",
                       *(f"new_{f}" for f in ROW_FIELDS))
-    for n, (raw_client, raw_purpose, raw_key, *first) in enumerate(rows, start=1):
+    for n, (raw_client, raw_purpose, raw_key, raw_method, *first) in enumerate(rows, start=1):
+        # How it leaves, picked as the client is added; our truck when not said.
+        method = raw_method if raw_method in LoadItem.Method.values else LoadItem.Method.TRUCK
         row = {"client": raw_client, "purpose": raw_purpose or LoadItem.Purpose.DELIVER,
+               "method": method,
                "key": raw_key if NEW_KEY.fullmatch(raw_key) else str(n), "client_bad": False}
         posted_new.append(row)
         # The first product sits on the row itself; «+ Mahsulot» adds more under it,
@@ -11252,7 +11255,7 @@ def _read_load_items(request, load, items, products):
         row["extra"] = [r for raw, r in zip(raws[1:], product_rows[1:]) if any(raw)]
         if client and not row["client_bad"] and len(problems) == before:
             picked.add(client.pk)
-            plan["new"].append((client, purpose, lines))
+            plan["new"].append((client, purpose, lines, method))
     if len(items) + len(plan["new"]) > LOAD_MAX_ITEMS:
         problems.append(f"bitta yukda ko'pi bilan {LOAD_MAX_ITEMS} ta mijoz bo'ladi — "
                         f"qolganini boshqa yukka qo'shing")
@@ -11278,10 +11281,11 @@ def _write_load_plan(load, plan):
     for item, *line in plan["add"]:
         _create_load_line(item, line)
     position = (load.items.aggregate(m=Max("position"))["m"] or 0) if load.ordered_at else None
-    for client, purpose, lines in plan["new"]:
+    for client, purpose, lines, method in plan["new"]:
         if position is not None:
             position += 1
-        item = LoadItem.objects.create(load=load, client=client, purpose=purpose, position=position)
+        item = LoadItem.objects.create(load=load, client=client, purpose=purpose, position=position,
+                                       method=method)
         for line in lines:
             _create_load_line(item, line)
 
@@ -11300,7 +11304,7 @@ def _plan_summary(load, plan):
     parts += [f"{i.client.name} + {p.name} {r} rulon" for i, p, r, *_ in plan["add"]]
     parts += [f"+ {c.name} (" + (", ".join(f"{p.name} {r} rulon" for p, r, *_ in lines)
                                  or "pul olish") + ")"
-              for c, _, lines in plan["new"]]
+              for c, _, lines, _ in plan["new"]]
     return parts
 
 
@@ -11347,7 +11351,9 @@ def _save_load_items(request, load, items):
     confirm = request.POST.get("confirm", "")
     if _DIGITS.fullmatch(confirm):
         return _confirm_stop(request, load, int(confirm))
-    quick = request.POST.get("quick", "")
+    # A step: a button (`quick`, "<stop>:<method>:<status>") or a row's dropdown, whose
+    # pick the page puts in `quick_pick` before sending.
+    quick = request.POST.get("quick", "") or request.POST.get("quick_pick", "")
     if quick:
         return _quick_status(request, load, items, quick, saved=bool(parts))
     if plan["new"]:
@@ -11763,6 +11769,14 @@ def _lanes(items, user):
                        "state": "done" if n < at or (n == at and value == "done")
                        else "now" if n == at else ""}
                       for n, (value, label) in enumerate(steps)]
+        # The row's status dropdown: "<method>:<status>" — its steps, and «omborda
+        # yo'q» to park it. Not decided yet: how it leaves, picked from the same box.
+        if item.method:
+            item.choices = [(f"{item.method}:{value}", label) for value, label in steps]
+            item.choices.append((f"{item.method}:order", "Omborda yo'q — buyurtma"))
+        else:
+            item.choices = [(f"{value}:new", label) for value, label in LoadItem.Method.choices]
+        item.choice = f"{item.method}:{item.status}" if item.method else ""
         lines = item.line_list
         names = [l.product.name for l in lines]
         item.products = (names[0] + (f" +{len(names) - 1}" if len(names) > 1 else "")) if names else ""

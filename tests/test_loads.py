@@ -1268,7 +1268,7 @@ def test_a_seller_moves_only_their_own_clients(client, seller_user, other_seller
     mine = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
     theirs = stop(load, make_client(other_seller, "Begona"), (paket, 3))
     body = day_page(client, seller_user).content.decode()
-    assert f'value="{mine.pk}:truck:loading"' in body and f'value="{theirs.pk}:' not in body
+    assert f'data-quick="{mine.pk}"' in body and f'data-quick="{theirs.pk}"' not in body
     assert day_save(client, seller_user, quick=f"{theirs.pk}:pickup:done").status_code == 403
     day_save(client, seller_user, quick=f"{mine.pk}:pickup:done")
     mine.refresh_from_db(), theirs.refresh_from_db()
@@ -1518,3 +1518,32 @@ def test_the_day_page_has_no_save_button_but_adds_clients(client, admin_user, se
     body = day_page(client, admin_user).content.decode()
     assert "data-autosave" in body and ">Saqlash<" not in body and "Qo&#x27;shish" not in body
     assert "Qo'shish</button>" in body
+
+
+def test_a_rows_dropdown_sets_its_status(client, admin_user, seller_user, load, paket):
+    item = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    body = day_page(client, admin_user).content.decode()
+    assert '<option value="truck:loading">Ortilmoqda</option>' in body
+    assert 'value="truck:order">Omborda yo' in body
+    day_save(client, admin_user, quick_pick=f"{item.pk}:truck:sent")
+    item.refresh_from_db()
+    assert item.status == "sent"
+
+
+def test_kg_and_the_sale_button_sit_on_the_row(client, admin_user, seller_user, load, paket):
+    item = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    line = item.lines.get()
+    body = day_page(client, admin_user).content.decode()
+    summary = body[body.index(f'id="stop-{item.pk}"'):body.index('class="lane-editor"')]
+    assert f'name="kg_{line.pk}"' in summary and f'name="confirm" value="{item.pk}"' in summary
+    assert body.count(f'name="kg_{line.pk}"') == 1
+
+
+def test_a_new_client_is_added_picked_up_or_by_yandex(client, admin_user, seller_user, load, paket):
+    a, b = make_client(seller_user, "Anvar"), make_client(seller_user, "Bobur")
+    day_save(client, admin_user, new_client=[a.pk, b.pk], new_purpose=[DELIVER, DELIVER],
+             new_key=["1", "2"], new_method=["pickup", "yandex"],
+             new_product=[paket.pk, paket.pk], new_rolls=["2", "3"])
+    assert dict(LoadItem.objects.values_list("client__name", "method")) == {
+        "Anvar": "pickup", "Bobur": "yandex"}
+    assert lane(day_page(client, admin_user), "other") == ["Anvar", "Bobur"]

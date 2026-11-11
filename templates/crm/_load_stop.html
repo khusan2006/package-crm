@@ -23,10 +23,6 @@
       <select name="purpose_{{ item.pk|unlocalize }}" class="stop-purpose{% if item.purpose_bad %} is-bad{% endif %}" aria-label="{{ item.client.name }} — maqsad"{% if item.purpose_bad %} aria-invalid="true"{% endif %}>
         {% for value, label in purposes %}<option value="{{ value }}"{% if value == item.purpose_input %} selected{% endif %}>{{ label }}</option>{% endfor %}
       </select>
-      {% if item.delivers and item.line_list %}
-      <button type="submit" name="confirm" value="{{ item.pk|unlocalize }}" class="btn btn-sm stop-confirm"
-              title="Saqlab, shu mijozni sotuvga aylantirish (hamma kg kiritilgan bo'lishi kerak)">✓ Sotuvga</button>
-      {% endif %}
       <a class="icon-action" href="{% url 'load_move' item.load_id %}?mijoz={{ item.pk|unlocalize }}" data-modal title="Boshqa kunga o'tkazish" aria-label="{{ item.client.name }} — boshqa kunga o'tkazish">{% include "crm/_ico_move_day.html" %}</a>
       <a class="icon-action danger" href="{% url 'load_item_delete' item.load_id item.pk %}" data-modal title="Yukdan olib tashlash" aria-label="{{ item.client.name }} — yukdan olib tashlash">{% include "crm/_ico_trash.html" %}</a>
       {% else %}
@@ -38,7 +34,7 @@
   {% if item.line_list or item.editable and item.delivers %}
   <div class="table-wrap">
   <table class="stop-lines">
-    <tr><th>Mahsulot</th><th>Metr</th><th>Mikron</th><th class="num">Rulon</th><th class="num">Narx, so'm/kg</th><th class="num">Og'irligi, kg</th>{% if item.editable %}<th><span class="visually-hidden">Olib tashlash</span></th>{% endif %}</tr>
+    <tr><th>Mahsulot</th><th>Metr</th><th>Mikron</th><th class="num">Rulon</th><th class="num">Narx, so'm/kg</th>{% if item.editable %}<th><span class="visually-hidden">Olib tashlash</span></th>{% endif %}</tr>
     {% for line in item.line_list %}
     <tr{% if item.editable %} data-line-product="{{ line.product_id|unlocalize }}" data-product-row{% endif %}>
       {% if item.editable %}
@@ -52,7 +48,6 @@
       <td><input type="text" class="pick-variant{% if line.micron_bad %} is-bad{% endif %}" data-variant="micron" name="micron_{{ line.pk|unlocalize }}" value="{{ line.micron_input }}" list="load-microns" placeholder="Mikron" aria-label="{{ item.client.name }}, {{ line.product.name }} — mikron"{% if line.micron_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
       <td class="num"><input type="text" inputmode="numeric" class="pick-rolls{% if line.rolls_bad %} is-bad{% endif %}" name="rolls_{{ line.pk|unlocalize }}" value="{{ line.rolls_input }}" aria-label="{{ item.client.name }}, {{ line.product.name }} — rulon"{% if line.rolls_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
       <td class="num"><input type="text" inputmode="decimal" class="pick-price{% if line.price_bad %} is-bad{% endif %}" name="price_{{ line.pk|unlocalize }}" value="{{ line.price_input }}" data-money{% if line.price_is_catalogue %} data-auto="1"{% endif %} aria-label="{{ item.client.name }}, {{ line.product.name }} — narx"{% if line.price_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
-      <td class="num"><input type="text" inputmode="decimal" class="pick-kg{% if line.kg_bad %} is-bad{% endif %}" name="kg_{{ line.pk|unlocalize }}" value="{{ line.kg_input }}" placeholder="—" title="Tortilgandan keyin kiriting" aria-label="{{ item.client.name }}, {{ line.product.name }} — kg (tortilgach)"{% if line.kg_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
       <td class="row-actions"><label class="line-drop" title="Bu mahsulotni olib tashlash"><input type="checkbox" name="drop_{{ line.pk|unlocalize }}" value="1"{% if line.dropped %} checked{% endif %}><span aria-hidden="true">×</span><span class="visually-hidden">{{ line.product.name }} — olib tashlash</span></label></td>
       {% else %}
       <td>{{ line.product.name }}</td>
@@ -60,7 +55,6 @@
       <td>{{ line.micron|default:"—" }}</td>
       <td class="num">{{ line.rolls }}</td>
       <td class="num">{{ line.price|floatformat:"0g" }}</td>
-      <td class="num">{% if line.kg is not None %}{{ line.kg|floatformat:"-3g" }}{% else %}<span class="muted">tortilmagan</span>{% endif %}</td>
       {% endif %}
     </tr>
     {% endfor %}

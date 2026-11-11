@@ -51,9 +51,11 @@ def open_row(page, item):
 
 
 def open_add(page):
+    """«Mijoz qo'shish» — the round button; there is no bar for it on the page."""
     add = page.locator("#add-client")
     if not add.evaluate("el => el.open"):
-        page.click("#add-client > summary")
+        page.click("[data-open-add]")
+        add.locator("[data-new-row]").first.wait_for()
 
 
 def pick(page, row, nth, text):
@@ -149,7 +151,6 @@ def test_kg_box_adds_up_like_a_calculator(login, admin_user, seller_user, live_s
     page.wait_for_selector(f"#stop-{item.pk} [data-autosave-note]:has-text('Saqlandi')")
     line.refresh_from_db()
     assert line.kg == Decimal("30")
-    assert page.locator(f"#stop-{item.pk} .lane-kg").inner_text().startswith("30 kg")
 
 def test_a_product_is_added_to_a_stop(login, admin_user, seller_user, live_server, db, paket):
     Product.objects.create(name="Plyonka", sku="P2", cost_price=1, price=Decimal("26000"))
@@ -439,3 +440,20 @@ def test_a_late_start_is_backdated_and_the_route_shows_arrival_times(login, admi
     # A move makes the times stale: they step aside until the order is saved.
     page.locator("[data-route-stop] [data-move=down]").first.click()
     assert page.locator("[data-route-stop] [data-route-eta]:visible").count() == 0
+
+
+def test_cancel_empties_and_closes_the_add_form(login, admin_user, seller_user, live_server, db,
+                                                paket):
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    stop(load, Client.objects.create(name="A", owner=seller_user), paket)
+    Client.objects.create(name="Botir", owner=seller_user)
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    assert not page.locator("#add-client").is_visible()   # no bar on the page
+    open_add(page)
+    pick(page, page.locator("[data-new-row]").first, 0, "Botir")
+    page.click("[data-add-cancel]")
+    assert not page.locator("#add-client").is_visible()
+    open_add(page)
+    assert page.locator("[data-new-row] select[name=new_client]").first.input_value() == ""
+    assert load.items.count() == 1
