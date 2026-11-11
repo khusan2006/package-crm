@@ -314,6 +314,7 @@
     if (items.hasAttribute('data-autosave')) {
       var saving = null, pending = [];
       var savedBox = /^(rolls|price|kg|size|micron|product|purpose)_\d+$/;
+      var dropBox = /^drop_\d+$/;
       var stopOf = function (el) { return el.closest('.lane-row') || el.closest('.stop'); };
       var note = function (stop, text, bad) {
         var n = stop && stop.querySelector('[data-autosave-note]');
@@ -335,7 +336,7 @@
       // A box differs from what the page was drawn (or last saved) with.
       var plainVal = function (v) { return (v || '').replace(/[\s\u00a0\u202f]/g, ''); };
       var changed = function (el) {
-        if (el.type === 'checkbox') { return el.checked; }
+        if (el.type === 'checkbox') { return el.checked && 'confirmed' in el.dataset; }
         if (el.tagName === 'SELECT') {
           return Array.prototype.some.call(el.options, function (o) { return o.selected !== o.defaultSelected; });
         }
@@ -352,7 +353,7 @@
         data.set('quick_pick', '');
         var sentBoxes = [];
         stop.querySelectorAll('[name]').forEach(function (el) {
-          if (!savedBox.test(el.name) || el.disabled || !changed(el)) { return; }
+          if (!(savedBox.test(el.name) || dropBox.test(el.name)) || el.disabled || !changed(el)) { return; }
           data.append(el.name, el.value);
           sentBoxes.push([el, el.value]);
         });
@@ -368,6 +369,19 @@
           items.querySelectorAll('.stops .is-bad').forEach(function (b) { b.classList.remove('is-bad'); b.removeAttribute('aria-invalid'); });
           if (res.ok) {
             settle(sentBoxes);
+            // The line above follows a product changed below.
+            sentBoxes.forEach(function (pair) {
+              if (!/^product_\d+$/.test(pair[0].name)) { return; }
+              var opt = pair[0].options[pair[0].selectedIndex];
+              var name = stop.querySelector('.lane-line-item[data-line="' + pair[0].name.slice(8) + '"] [data-line-name]');
+              if (name && opt) { name.textContent = opt.textContent; }
+            });
+            // A removed product leaves the page where it is — no reload, row stays open.
+            sentBoxes.forEach(function (pair) {
+              if (!dropBox.test(pair[0].name)) { return; }
+              var pk = pair[0].name.slice(5);
+              stop.querySelectorAll('[data-line="' + pk + '"]').forEach(function (el) { el.remove(); });
+            });
             note(stop, res.saved ? 'Saqlandi ✓' : '');
           } else {
             (res.bad || []).forEach(function (name) {
@@ -378,6 +392,10 @@
                 var shown = box.closest('.combobox') && box.closest('.combobox').querySelector('.combobox-input');
                 if (shown) { shown.classList.add('is-bad'); }
               }
+            });
+            // A refused removal: the product stays, its × unticked.
+            sentBoxes.forEach(function (pair) {
+              if (dropBox.test(pair[0].name)) { pair[0].checked = false; delete pair[0].dataset.confirmed; }
             });
             note(stop, 'Saqlanmadi: ' + (res.problems || []).join('; '), true);
           }
@@ -441,7 +459,24 @@
         if (!t.name || !t.closest('.stops')) { return; }
         var stop = stopOf(t);
         if (savedBox.test(t.name)) { save(stop); return; }
-        if (/^drop_\d+$/.test(t.name)) { reloadWith(stop); return; }
+        if (dropBox.test(t.name)) {
+          // Ask first; nothing is sent until «Ha».
+          var ask = t.closest('td').querySelector('[data-drop-ask]');
+          if (ask) { ask.hidden = !t.checked; }
+          if (!t.checked) { delete t.dataset.confirmed; }
+          return;
+        }
+      });
+      items.addEventListener('click', function (e) {
+        var yes = e.target.closest('[data-drop-yes]');
+        var no = e.target.closest('[data-drop-no]');
+        if (!yes && !no) { return; }
+        var cell = e.target.closest('td');
+        var box = cell.querySelector('input[type=checkbox]');
+        cell.querySelector('[data-drop-ask]').hidden = true;
+        if (no) { box.checked = false; delete box.dataset.confirmed; return; }
+        box.dataset.confirmed = '1';
+        save(stopOf(box));
       });
       // A product added to a saved client goes in once the cursor leaves its line with
       // a product and rulon in it — so metr, mikron and price can all be typed first.
@@ -457,6 +492,18 @@
         }, 150);
       });
     }
+
+    // «Open» on a client's line: its details show right under it.
+    items.addEventListener('click', function (e) {
+      var toggle = e.target.closest && e.target.closest('[data-toggle-row]');
+      if (!toggle) { return; }
+      var row = toggle.closest('.lane-row');
+      var editor = document.getElementById(toggle.getAttribute('aria-controls'));
+      var open = editor.hidden;
+      editor.hidden = !open;
+      row.classList.toggle('is-open', open);
+      row.querySelectorAll('[data-toggle-row]').forEach(function (b) { b.setAttribute('aria-expanded', String(open)); });
+    });
 
     items.addEventListener('submit', function () { submitting = true; });
     window.addEventListener('pageshow', function () { submitting = false; });

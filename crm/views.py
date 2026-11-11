@@ -11430,10 +11430,13 @@ def _bad_boxes(items):
     return bad
 
 
-def _day_url(day, opened=None):
-    """The day page, optionally with one client's row open (and scrolled to)."""
+def _day_url(day, opened=None, kg_missing=False):
+    """The day page, optionally with one client's row open (and scrolled to) — and
+    its empty kg boxes marked, when ✓ was refused for them."""
     url = _load_list_url(day)
-    return url + (f"&ochiq={opened}#stop-{opened}" if opened else "")
+    if not opened:
+        return url
+    return url + (f"&kgsiz={opened}" if kg_missing else f"&ochiq={opened}") + f"#stop-{opened}"
 
 
 def _quick_status(request, load, items, raw, saved):
@@ -11488,7 +11491,7 @@ def _confirm_stop(request, load, item_pk):
         unweighed = [l.product.name for l in lines if l.kg is None]
         if unweighed:
             messages.error(request, f"“{name}”: avval kg kiriting — {', '.join(unweighed)}.")
-            return redirect(_day_url(load.date))
+            return redirect(_day_url(load.date, item.pk, kg_missing=True))
         seller = item.client.owner
         if seller.role != User.Role.SALES:
             messages.error(request, f"“{name}” sotuvchiga biriktirilmagan — sotuv kimning "
@@ -11628,7 +11631,7 @@ def _save_load_order(request, load, items):
             messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
             return redirect(_load_url(load))
         split = [int(g) for g in groups]
-    load.items.update(position=None, route_group=None)
+    LoadItem.objects.filter(load__date=load.date).update(position=None, route_group=None)
     for n, pk in enumerate(order, start=1):
         LoadItem.objects.filter(pk=pk).update(position=n,
                                               route_group=split[n - 1] if split else None)
@@ -11644,7 +11647,7 @@ def _save_load_order(request, load, items):
 def _reset_load_order(request, load):
     """«Tavsiya etilgan tartib» on a saved order: forget it, back to the suggestion."""
     if load.ordered_at:
-        load.items.update(position=None, route_group=None)
+        LoadItem.objects.filter(load__date=load.date).update(position=None, route_group=None)
         load.ordered_at = None
         load.split_routes = None
         load.save(update_fields=["ordered_at", "split_routes"])
@@ -11670,7 +11673,7 @@ def _set_start(request, load):
     start undone («Bekor qilish»)."""
     if not _may_change_load(request.user, load):
         raise PermissionDenied
-    truck_stops = load.items.filter(method=LoadItem.Method.TRUCK)
+    truck_stops = LoadItem.objects.filter(load__date=load.date, method=LoadItem.Method.TRUCK)
     if request.POST.get("clear"):
         if load.started_at:
             load.started_at = None
@@ -11824,7 +11827,8 @@ def _lanes(items, user):
         # yo'q» to park it. Not decided yet: how it leaves, picked from the same box.
         if item.method:
             item.choices = [(f"{item.method}:{value}", label) for value, label in steps]
-            item.choices.append((f"{item.method}:order", "Omborda yo'q — buyurtma"))
+            item.choices.append((f"{item.method}:order", "Omborda yo'q"))
+            item.choices.append((f"{item.method}:cancel", "Bekor qilindi"))
         else:
             item.choices = [(f"{value}:new", label) for value, label in LoadItem.Method.choices]
         item.choice = f"{item.method}:{item.status}" if item.method else ""
@@ -11835,6 +11839,9 @@ def _lanes(items, user):
         item.kg = sum((l.kg for l in lines if l.kg is not None), Decimal("0"))
         item.kg_text = _plain(item.kg).replace(".", ",") if item.kg else ""  # "52,5", not "52,500"
         item.unweighed = any(l.kg is None for l in lines)
+        # Delivered (or picked up) but ✓ Sotuvga never pressed: money not booked.
+        item.unsold = (item.status == LoadItem.Status.DONE and item.delivers and bool(lines)
+                       and not item.sale_id)
         if item.status == LoadItem.Status.ORDER:
             lanes["order"].append(item)
         elif not item.method:
@@ -11862,9 +11869,19 @@ def _carry_over(today, user):
     on today's list takes the old stop's products, unless the old one was already
     sold — that one stays where it is."""
     with transaction.atomic():
-        old = list(LoadItem.objects.select_for_update()
+        # Not finished — or delivered but never sold (✓ forgotten): that one comes too,
+        # marked «Sotilmagan», or the money would never be booked. A Sotuvlar sale
+        # nobody said how it leaves stays put: it was handled outside the list.
+        # (An EXISTS, not a join: a join would need DISTINCT, which Postgres refuses
+        # together with FOR UPDATE.)
+        unsold = Q(status=LoadItem.Status.DONE, sale__isnull=True, has_lines=True,
+                   purpose__in=[LoadItem.Purpose.DELIVER, LoadItem.Purpose.BOTH])
+        old = list(LoadItem.objects.select_for_update(of=("self",))
+                   .annotate(has_lines=Exists(LoadLine.objects.filter(item=OuterRef("pk"))))
                    .filter(load__date__lt=today, load__date__gte=today - timedelta(days=CARRY_DAYS))
-                   .exclude(status=LoadItem.Status.DONE)
+                   .filter(~Q(status=LoadItem.Status.DONE) | unsold)
+                   .exclude(status=LoadItem.Status.CANCEL)
+                   .exclude(via_sotuvlar=True, method="")
                    .select_related("load", "client").order_by("load__date", "created_at"))
         if not old:
             return
@@ -11875,17 +11892,29 @@ def _carry_over(today, user):
         moved = []
         for item in old:
             mate = here.get(item.client_id)
-            if mate is not None:
-                if item.sale_id is None and mate.sale_id is None:
-                    item.lines.update(item=mate)
-                    item.delete()
-                    moved.append(item.client.name)
+            if mate is not None and item.sale_id is None and mate.sale_id is None:
+                # One client, one row: the old products join today's, and so does the
+                # reason to go — products and money to collect make «both».
+                item.lines.update(item=mate)
+                if item.collects != mate.collects or item.delivers != mate.delivers:
+                    mate.purpose = LoadItem.Purpose.BOTH
+                    mate.save(update_fields=["purpose"])
+                item.delete()
+                moved.append(item.client.name)
                 continue
+            target = load
+            if mate is not None:
+                # A sale on either side can't be merged: the old one gets its own row,
+                # in another of today's Yuk (the page shows them all as one day).
+                target = (Load.objects.filter(date=today).exclude(items__client=item.client)
+                          .order_by("created_at").first()
+                          or Load.objects.create(date=today, created_by=user, note="Kechagidan"))
             item.carried_from = item.carried_from or item.load.date
-            item.load = load
+            item.load = target
             item.position = item.route_group = None
             item.save(update_fields=["carried_from", "load", "position", "route_group"])
-            here[item.client_id] = item
+            if mate is None:
+                here[item.client_id] = item
             moved.append(item.client.name)
         if moved:
             AuditLog.record(user, AuditLog.Action.UPDATE, "Yuk", load.pk,
@@ -11920,12 +11949,16 @@ def _render_day(request, day, items=None, posted_new=None):
     truck = lanes["truck"]
     done = sum(1 for i in items if i.status == LoadItem.Status.DONE)
     # Which stop to open: the one just changed (?ochiq=), or any a failed save marked.
-    opened = request.GET.get("ochiq", "")
+    opened = request.POST.get("ochiq") or request.GET.get("ochiq", "")
+    kg_missing = request.GET.get("kgsiz", "")
     for item in items:
-        item.open = (str(item.pk) == opened or posted_new is not None and (
+        item.kg_missing = str(item.pk) == kg_missing
+        item.open = (str(item.pk) in (opened, kg_missing) or posted_new is not None and (
             getattr(item, "purpose_bad", False)
             or any(getattr(l, f"{f}_bad", False) for l in item.line_list
-                   for f in ("rolls", "price", "kg", "size", "micron"))))
+                   for f in ("rolls", "price", "kg", "size", "micron", "product"))
+            or any(r.get(f"{f}_bad") for r in getattr(item, "added_input", [])
+                   for f in ("product", "rolls", "price", "size", "micron"))))
     return render(request, "crm/load_day.html", {
         "day": day,
         "prev_day": (day - timedelta(days=1)).isoformat(),
@@ -11964,6 +11997,9 @@ def load_day_save(request):
     day = _load_day(request.POST.get("sana"))
     load = Load.objects.filter(date=day).order_by("created_at").first()
     if load is None:
+        if not any(request.POST.getlist("new_client")):
+            messages.info(request, "Mijoz tanlanmagan — hech narsa qo'shilmadi.")
+            return redirect(_day_url(day))
         load = Load.objects.create(date=day, created_by=request.user)
         AuditLog.record(request.user, AuditLog.Action.CREATE, "Yuk", load.pk,
                         f"Yuk #{load.pk} ({load.date:%d.%m.%Y}) yaratildi")
@@ -11986,7 +12022,7 @@ def load_detail(request, pk):
             return _set_start(request, load)
         if action == "items":
             return _save_load_items(request, load, _day_stops(load.date, request.user))
-        return _save_load_order(request, load, _load_items(load, request.user))
+        return _save_load_order(request, load, _day_stops(load.date, request.user))
 
     return _render_day(request, load.date)
 
@@ -11997,8 +12033,9 @@ def load_route(request, pk):
     crm/routing.py suggests, worked out afresh each time; trucks are chosen by
     `_load_groups`. Every stop needs a joylashuv first."""
     load = get_object_or_404(Load, pk=pk)
-    # Only the stops the truck goes to — not pickups, Yandex or buyurtma.
-    items = [i for i in _load_items(load, request.user) if i.on_route]
+    # Only the stops the truck still goes to — not pickups, Yandex, buyurtma or ones
+    # already delivered — across the whole day (a second Yuk of the date included).
+    items = [i for i in _day_stops(load.date, request.user) if i.on_route]
     warehouse = Warehouse.load()
     missing = [i.client for i in items if not i.client.has_location]
     routes, error, by_road, road_note = [], "", False, ""

@@ -2705,6 +2705,9 @@ class LoadItem(models.Model):
         LOADING = "loading", "Ortilmoqda"
         SENT = "sent", "Jo'natildi"
         DONE = "done", "Yetkazildi"
+        # Not going after all (the client cancelled, or an old plan closed when
+        # statuses came in). Never carried to the next day, never on the route.
+        CANCEL = "cancel", "Bekor qilindi"
 
     load = models.ForeignKey(Load, on_delete=models.CASCADE, related_name="items")
     client = models.ForeignKey(Client, on_delete=models.PROTECT, related_name="load_items",
@@ -2751,8 +2754,10 @@ class LoadItem(models.Model):
 
     @property
     def on_route(self):
-        """Whether the truck goes here: our own delivery, goods in hand."""
-        return self.method == self.Method.TRUCK and self.status != self.Status.ORDER
+        """Whether the truck still goes here: our own delivery, goods in hand, not yet
+        delivered."""
+        return (self.method == self.Method.TRUCK
+                and self.status not in (self.Status.ORDER, self.Status.DONE, self.Status.CANCEL))
 
     @property
     def status_label(self):

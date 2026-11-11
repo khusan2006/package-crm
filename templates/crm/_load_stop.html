@@ -50,7 +50,7 @@
     <colgroup><col><col class="c-variant"><col class="c-variant"><col class="c-rolls"><col class="c-price">{% if item.editable %}<col class="c-drop">{% endif %}</colgroup>
     <tr><th>Mahsulot</th><th>Metr</th><th>Mikron</th><th class="num">Rulon</th><th class="num">Narx, so'm/kg</th>{% if item.editable %}<th><span class="visually-hidden">Olib tashlash</span></th>{% endif %}</tr>
     {% for line in item.line_list %}
-    <tr{% if item.editable %} data-line-product="{{ line.product_id|unlocalize }}" data-product-row{% endif %}>
+    <tr{% if item.editable %} data-line-product="{{ line.product_id|unlocalize }}" data-product-row data-line="{{ line.pk|unlocalize }}"{% endif %}>
       {% if item.editable %}
       {% comment %}The product can be swapped here; metr/mikron grey out when the new one
       doesn't come in them, and a catalogue price follows the new product.{% endcomment %}
@@ -62,7 +62,15 @@
       <td><input type="text" class="pick-variant{% if line.micron_bad %} is-bad{% endif %}" data-variant="micron" name="micron_{{ line.pk|unlocalize }}" value="{{ line.micron_input }}" list="load-microns" placeholder="Mikron" aria-label="{{ item.client.name }}, {{ line.product.name }} — mikron"{% if line.micron_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
       <td class="num"><input type="text" inputmode="numeric" class="pick-rolls{% if line.rolls_bad %} is-bad{% endif %}" name="rolls_{{ line.pk|unlocalize }}" value="{{ line.rolls_input }}" aria-label="{{ item.client.name }}, {{ line.product.name }} — rulon"{% if line.rolls_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
       <td class="num"><input type="text" inputmode="decimal" class="pick-price{% if line.price_bad %} is-bad{% endif %}" name="price_{{ line.pk|unlocalize }}" value="{{ line.price_input }}" data-money{% if line.price_is_catalogue %} data-auto="1"{% endif %} aria-label="{{ item.client.name }}, {{ line.product.name }} — narx"{% if line.price_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
-      <td class="row-actions"><label class="line-drop" title="Bu mahsulotni olib tashlash"><input type="checkbox" name="drop_{{ line.pk|unlocalize }}" value="1"{% if line.dropped %} checked{% endif %}><span aria-hidden="true">×</span><span class="visually-hidden">{{ line.product.name }} — olib tashlash</span></label></td>
+      <td class="row-actions">
+        {% comment %}× asks first («Ha» removes the line in place, «Yo'q» undoes) — one stray
+        click must not lose a product.{% endcomment %}
+        <label class="line-drop" title="Bu mahsulotni olib tashlash"><input type="checkbox" name="drop_{{ line.pk|unlocalize }}" value="1"{% if line.dropped %} checked{% endif %}><span aria-hidden="true">×</span><span class="visually-hidden">{{ line.product.name }} — olib tashlash</span></label>
+        <span class="drop-ask" data-drop-ask hidden>O'chirilsinmi?
+          <button type="button" class="btn btn-sm btn-danger" data-drop-yes>Ha</button>
+          <button type="button" class="btn btn-sm btn-ghost" data-drop-no>Yo'q</button>
+        </span>
+      </td>
       {% else %}
       <td>{{ line.product.name }}</td>
       <td>{{ line.size|default:"—" }}</td>

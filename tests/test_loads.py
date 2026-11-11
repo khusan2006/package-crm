@@ -206,7 +206,8 @@ def test_the_day_page_shows_every_client_of_the_day_in_lanes(client, admin_user,
     item.save()
     finished = stop(Load.objects.create(date=TODAY() - timedelta(days=1)),
                     make_client(seller_user, "Kecha"), (paket, 1))
-    finished.status = "done"  # finished yesterday: stays there
+    finished.status = "done"  # delivered and sold yesterday: stays there
+    finished.sale = Sale.objects.create(client=finished.client, sales_rep=seller_user)
     finished.save()
     resp = day_page(client, admin_user)
     assert (lane(resp, "truck"), lane(resp, "other"), lane(resp, "undecided"), lane(resp, "order")) == (
@@ -1411,6 +1412,7 @@ def test_yesterdays_unfinished_clients_come_to_today(client, admin_user, seller_
     open_one = stop(yesterday, make_client(seller_user, "Anvar"), (paket, 3))
     done_one = stop(yesterday, make_client(seller_user, "Bobur"), (paket, 2))
     done_one.status = "done"
+    done_one.sale = Sale.objects.create(client=done_one.client, sales_rep=seller_user)
     done_one.save()
     resp = day_page(client, admin_user)
     open_one.refresh_from_db(), done_one.refresh_from_db()
@@ -1637,3 +1639,92 @@ def test_a_second_sale_the_same_day_is_warned_about(client, seller_user, paket):
     resp = sell(client, seller_user, anvar, paket)
     msgs = [str(m) for m in resp.wsgi_request._messages]
     assert any("yana bir sotuv bor" in m for m in msgs)
+
+
+
+def test_delivered_but_not_sold_comes_to_today_marked(client, admin_user, seller_user, paket):
+    yesterday = Load.objects.create(date=TODAY() - timedelta(days=1))
+    item = stop(yesterday, make_client(seller_user, "Anvar"), (paket, 3, 50))
+    item.method, item.status = "pickup", "done"
+    item.save()
+    body = day_page(client, admin_user).content.decode()
+    item.refresh_from_db()
+    assert item.load.date == TODAY() and "Sotilmagan" in body
+
+
+def test_a_sotuvlar_sale_nobody_routed_stays_on_its_day(client, admin_user, seller_user, paket):
+    yesterday = Load.objects.create(date=TODAY() - timedelta(days=1))
+    item = stop(yesterday, make_client(seller_user, "Anvar"), (paket, 3, 50))
+    item.method, item.via_sotuvlar = "", True
+    item.save()
+    day_page(client, admin_user)
+    item.refresh_from_db()
+    assert item.load == yesterday
+
+
+def test_merging_a_money_plan_into_a_delivery_makes_both(client, admin_user, seller_user, load,
+                                                         paket):
+    anvar = make_client(seller_user, "Anvar")
+    stop(Load.objects.create(date=TODAY() - timedelta(days=1)), anvar, purpose=COLLECT)
+    today = stop(load, anvar, (paket, 3))
+    day_page(client, admin_user)
+    today.refresh_from_db()
+    assert today.purpose == BOTH
+
+
+def test_a_sold_stop_from_yesterday_gets_its_own_row_beside_todays(client, admin_user, seller_user,
+                                                                   load, paket):
+    anvar = make_client(seller_user, "Anvar")
+    old = stop(Load.objects.create(date=TODAY() - timedelta(days=1)), anvar, (paket, 3, 40))
+    old.sale = Sale.objects.create(client=anvar, sales_rep=seller_user)
+    old.save()
+    stop(load, anvar, (paket, 2))
+    resp = day_page(client, admin_user)
+    old.refresh_from_db()
+    assert old.load.date == TODAY() and old.load != load
+    assert lane(resp, "truck") == ["Anvar", "Anvar"]
+
+
+def test_the_route_and_jonatish_cover_every_yuk_of_the_day(client, admin_user, seller_user, load,
+                                                           warehouse, paket):
+    a = stop(load, make_client(seller_user, "A", 0.01), (paket, 3))
+    second = Load.objects.create(date=TODAY())
+    b = stop(second, make_client(seller_user, "B", 0.02), (paket, 3))
+    assert sorted(names(route(client, admin_user, load))) == ["A", "B"]
+    start(client, admin_user, load)
+    b.refresh_from_db()
+    assert b.status == "sent"
+
+
+def test_delivered_stops_leave_the_route(client, admin_user, load, three):
+    a, b, c = three
+    set_status(client, admin_user, (a, TRUCK, "done"))
+    assert sorted(names(route(client, admin_user, load))) == ["B", "C"]
+
+
+def test_a_refused_tick_opens_the_client_and_marks_its_kg(client, admin_user, seller_user, load,
+                                                          paket):
+    item = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    resp = day_save(client, admin_user, confirm=str(item.pk))
+    assert resp.url == f"/yetkazish/?sana={TODAY().isoformat()}&kgsiz={item.pk}#stop-{item.pk}"
+    body = client.get(resp.url).content.decode()
+    assert 'class="pick-kg is-bad"' in body
+
+
+def test_an_empty_add_makes_no_yuk(client, admin_user):
+    resp = day_save(client, admin_user, day=TODAY() + timedelta(days=3), add="1")
+    assert resp.status_code == 302 and not Load.objects.exists()
+
+
+def test_cancelled_stops_are_neither_carried_nor_routed(client, admin_user, seller_user, load,
+                                                        three, paket):
+    a, b, c = three
+    set_status(client, admin_user, (a, TRUCK, "cancel"))
+    assert sorted(names(route(client, admin_user, load))) == ["B", "C"]
+    old = stop(Load.objects.create(date=TODAY() - timedelta(days=1)),
+               make_client(seller_user, "Eski"), (paket, 1))
+    old.status = "cancel"
+    old.save()
+    day_page(client, admin_user)
+    old.refresh_from_db()
+    assert old.load.date == TODAY() - timedelta(days=1)

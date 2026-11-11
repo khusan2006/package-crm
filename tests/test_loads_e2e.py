@@ -46,8 +46,8 @@ ADD = "[data-load-items] button[name=add]"
 
 def open_row(page, item):
     """Open a client's row on the day page: its products, kg and ✓ show."""
-    page.click(f"#stop-{item.pk} > summary .lane-who")
-    page.locator(f"#stop-{item.pk} .lane-editor").wait_for()
+    page.click(f"#stop-{item.pk} .lane-who")
+    page.locator(f"#ed-{item.pk}").wait_for()
 
 
 def open_add(page):
@@ -167,7 +167,7 @@ def test_a_product_is_added_to_a_stop(login, admin_user, seller_user, live_serve
     assert added.locator("input[name$=_price]").input_value().replace(" ", "").replace("\u00a0", "") == "26000"
     page.mouse.click(5, 300)                           # leaving the line: it goes in
     page.wait_for_selector("text=Saqlandi")
-    assert page.locator(f"#stop-{item.pk}").evaluate("el => el.open")  # the row stays open
+    assert page.locator(f"#ed-{item.pk}").is_visible()  # the row stays open
     assert sorted(item.lines.values_list("product__name", "rolls")) == [("Paket katta", 5), ("Plyonka", 3)]
 
 
@@ -476,7 +476,7 @@ def test_an_open_page_does_not_overwrite_another_clients_new_kg(login, admin_use
     assert a.lines.get().kg == Decimal("40") and b.lines.get().kg == Decimal("77")
     # A status change sends only its own client too.
     with page.expect_navigation():
-        page.locator(f"#stop-{a.pk} summary select[data-quick]").select_option("truck:loading")
+        page.locator(f"#stop-{a.pk} .lane-act select[data-quick]").select_option("truck:loading")
     a.refresh_from_db()
     assert a.status == "loading" and b.lines.get().kg == Decimal("77")
 
@@ -492,7 +492,28 @@ def test_a_half_typed_new_client_stays_out_of_a_status_change(login, admin_user,
     pick(page, page.locator("[data-new-row]").first, 0, "Botir")   # no product yet
     page.click("#add-client > summary")                            # closed, not cancelled
     with page.expect_navigation():
-        page.locator(f"#stop-{a.pk} summary select[data-quick]").select_option("truck:loading")
+        page.locator(f"#stop-{a.pk} .lane-act select[data-quick]").select_option("truck:loading")
     page.wait_for_selector(".toast-msg:has-text('Ortilmoqda')")
     a.refresh_from_db()
     assert a.status == "loading" and load.items.count() == 1
+
+
+def test_removing_a_product_asks_first_and_keeps_the_row_open(login, admin_user, seller_user,
+                                                              live_server, db, paket):
+    film = Product.objects.create(name="Plyonka", sku="P2", cost_price=1, price=Decimal("26000"))
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    a = stop(load, Client.objects.create(name="Anvar", owner=seller_user), paket)
+    line = LoadLine.objects.create(item=a, product=film, rolls=2, price=film.price)
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    open_row(page, a)
+    cell = page.locator(f'#ed-{a.pk} tr[data-line="{line.pk}"] td.row-actions')
+    cell.locator(".line-drop").click()
+    cell.locator("[data-drop-no]").click()             # changed their mind
+    assert a.lines.count() == 2
+    cell.locator(".line-drop").click()
+    cell.locator("[data-drop-yes]").click()
+    page.wait_for_selector(f'#ed-{a.pk} tr[data-line="{line.pk}"]', state="detached")
+    assert list(a.lines.values_list("product__name", flat=True)) == ["Paket katta"]
+    assert page.locator(f"#ed-{a.pk}").is_visible()   # no reload, the row is still open
+    assert page.locator(f'#stop-{a.pk} .lane-line-item[data-line="{line.pk}"]').count() == 0

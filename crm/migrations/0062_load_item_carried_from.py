@@ -7,11 +7,13 @@ from django.utils import timezone
 def past_stops_are_finished(apps, schema_editor):
     """From now on an unfinished stop moves to the next day by itself. Stops planned
     before that — on days already gone — were finished or dropped by hand back then,
-    so they are closed here; otherwise the first open of today would pull every old
-    plan into it."""
+    so they are closed here (as cancelled); otherwise the first open of today would
+    pull every old plan into it."""
     LoadItem = apps.get_model("crm", "LoadItem")
+    # «Bekor qilindi», not «Yetkazildi»: they were never confirmed as delivered, and a
+    # delivered-but-unsold stop is carried forward to be sold — these must not be.
     LoadItem.objects.filter(load__date__lt=timezone.localdate()).exclude(status="done") \
-        .update(status="done")
+        .update(status="cancel")
 
 
 class Migration(migrations.Migration):

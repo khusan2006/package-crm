@@ -6980,7 +6980,7 @@ input.pick-variant { width: 84px; max-width: 84px; height: 32px; padding: 5px 8p
 .lane-row.st-sent { box-shadow: inset 4px 0 0 var(--violet); }
 .lane-row.st-done { box-shadow: inset 4px 0 0 var(--success); }
 .lane-undecided .lane-row { box-shadow: inset 4px 0 0 var(--danger); }
-.lane-row:target, .lane-row[open] { border-color: var(--accent); }
+.lane-row:target { border-color: var(--accent); }
 
 .lane-line {
   display: grid;
@@ -7004,7 +7004,7 @@ input.pick-variant { width: 84px; max-width: 84px; height: 32px; padding: 5px 8p
 .lane-sale { text-align: right; }
 .lane-open { color: var(--text-muted); transition: transform 0.15s; }
 .lane-open svg { width: 18px; height: 18px; display: block; }
-.lane-row[open] .lane-open { transform: rotate(180deg); }
+
 
 .lane-btn {
   padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--r-pill);
@@ -7170,3 +7170,40 @@ select.lane-status.st-done { border-color: var(--success); color: var(--success)
 .lane-editor .add-line .new-row-rolls, .lane-editor .add-line .new-row-price { text-align: right; flex-basis: auto; }
 .lane-editor .add-line .new-row-remove { justify-self: center; width: 36px; margin: 0; }
 .lane-editor .line-add { margin-top: 10px; }
+
+/* ---------- The client line without <details> ---------- */
+.lane-row.is-open { border-color: var(--accent); }
+.lane-line { cursor: default; }
+.lane-row.no-n .lane-line { grid-template-columns: minmax(160px, 1.2fr) minmax(260px, 2fr) 210px 110px 34px; }
+.lane-who {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0;
+  padding: 4px 6px; margin: -4px -6px; border: 0; border-radius: 8px;
+  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.lane-who:hover { background: var(--surface-hover); }
+.lane-who:focus-visible, .lane-open:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
+button.lane-open {
+  display: grid; place-items: center; width: 32px; height: 32px; padding: 0;
+  border: 0; border-radius: 8px; background: none; color: var(--text-muted); cursor: pointer;
+}
+button.lane-open:hover { background: var(--surface-hover); color: var(--text); }
+.lane-row.is-open .lane-open svg { transform: rotate(180deg); }
+.lane-line-item[hidden], .lane-editor[hidden] { display: none; }
+
+/* × asks before a product goes. */
+.lane-editor .stop-lines td.row-actions { position: relative; }
+.drop-ask {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%); z-index: 3;
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+  padding: 4px 6px 4px 12px; border: 1px solid var(--danger); border-radius: var(--r-pill);
+  background: var(--surface); font-size: 12.5px; font-weight: 600; color: var(--danger);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+}
+.drop-ask[hidden] { display: none; }
+
+/* Room under the last card for the round «Mijoz qo'shish» button. */
+.lane-route { padding-bottom: 80px; }
+.day-form + .lane-route, .day-form:last-child { margin-bottom: 0; }
+.badge-st-cancel { background: var(--surface-2); color: var(--text-muted); text-decoration: line-through; }
+select.lane-status.st-cancel { border-color: var(--border); color: var(--text-muted); text-decoration: line-through; }
+.lane-row.st-cancel { opacity: 0.6; }

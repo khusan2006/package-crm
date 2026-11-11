@@ -1,52 +1,56 @@
 {% load l10n %}
 {% comment %}
-  One client on the day page. The line shows who, what, kg and what to do next —
-  the step buttons (or, while undecided, how it leaves). Opening the row shows its
-  products, kg and ✓ Sotuvga (`_load_stop.html`) right there. Every button sits in
-  the day form, so whatever was typed is saved together with it.
+  One client on the day page. The line shows who, each product with its kg box, the
+  status dropdown and ✓ Sotuvga; «open» (the name, or the arrow) shows the rest of
+  the client — how it leaves, why, its products' metr/mikron/rulon/price — right
+  under it. A plain line with a real button, not <details>: the boxes and buttons
+  on the line must not sit inside a clickable header. Every control is in the day
+  form; what each one sends is limited to this client (load.js).
 {% endcomment %}
-<details class="lane-row st-{{ item.status }}" id="stop-{{ item.pk|unlocalize }}"{% if item.open %} open{% endif %}>
-  <summary class="lane-line">
-    {% if item.n %}<span class="lane-n" title="Marshrutdagi tartibi">{{ item.n }}</span>{% else %}<span class="lane-n is-none" aria-hidden="true"></span>{% endif %}
-    <span class="lane-who">
-      <strong>{{ item.client.name }}{% if item.carried_from %} <span class="badge badge-st-order lane-carried" title="{{ item.carried_from|date:'d.m.Y' }} kuni rejada edi">{{ item.carried_label }}</span>{% endif %}</strong>
+{% with pk=item.pk|unlocalize %}
+<div class="lane-row st-{{ item.status }}{% if item.open %} is-open{% endif %}{% if not item.n %} no-n{% endif %}" id="stop-{{ pk }}">
+  <div class="lane-line">
+    {% if item.n %}<span class="lane-n" title="Marshrutdagi tartibi">{{ item.n }}</span>{% endif %}
+    <button type="button" class="lane-who" data-toggle-row aria-expanded="{% if item.open %}true{% else %}false{% endif %}" aria-controls="ed-{{ pk }}" title="Batafsil: mahsulotlar, metr/mikron, narx">
+      <strong>{{ item.client.name }}{% if item.carried_from %} <span class="badge badge-st-order lane-carried" title="{{ item.carried_from|date:'d.m.Y' }} kuni rejada edi">{{ item.carried_label }}</span>{% endif %}{% if item.unsold %} <span class="badge badge-cancelled lane-carried" title="Yetkazildi, lekin ✓ Sotuvga bosilmagan">Sotilmagan</span>{% endif %}</strong>
       <span class="cell-sub">{{ item.client.owner }}{% if item.client.phone %} · {{ item.client.phone }}{% endif %}{% if item.purpose != "deliver" %} · {{ item.get_purpose_display }}{% endif %}</span>
-    </span>
-    {% comment %}Each product on its own line, with its kg box right here — weighing
-    is done from the list. A box saves as it is left (`data-autosave`).{% endcomment %}
-    <span class="lane-lines">
+    </button>
+    {% comment %}Each product on its own line with its kg box — weighing is done from the
+    list. A box saves as it is left.{% endcomment %}
+    <div class="lane-lines">
       {% for line in item.line_list %}
-      <span class="lane-line-item">
-        <span class="lane-line-name">{{ line.product.name }}{% if line.variant_label %} · {{ line.variant_label }}{% endif %}{% if line.rolls %}<span class="cell-sub">{{ line.rolls }} rulon</span>{% endif %}</span>
+      <div class="lane-line-item" data-line="{{ line.pk|unlocalize }}">
+        <span class="lane-line-name"><span data-line-name>{{ line.product.name }}{% if line.variant_label %} · {{ line.variant_label }}{% endif %}</span>{% if line.rolls %}<span class="cell-sub">{{ line.rolls }} rulon</span>{% endif %}</span>
         {% if item.editable %}
-        <span class="kg-cell"><input type="text" inputmode="decimal" class="pick-kg{% if line.kg_bad %} is-bad{% endif %}" name="kg_{{ line.pk|unlocalize }}" value="{{ line.kg_input }}" placeholder="kg" title="Tortilgach kiriting: 50+48,5 kabi qo'shib yozsa ham bo'ladi" aria-label="{{ item.client.name }}, {{ line.product.name }} — kg (tortilgach)"{% if line.kg_bad %} aria-invalid="true"{% endif %} autocomplete="off"></span>
+        <span class="kg-cell"><input type="text" inputmode="decimal" class="pick-kg{% if line.kg_bad or item.kg_missing and line.kg is None %} is-bad{% endif %}" name="kg_{{ line.pk|unlocalize }}" value="{{ line.kg_input }}" placeholder="kg" title="Tortilgach kiriting: 50+48,5 kabi qo'shib yozsa ham bo'ladi" aria-label="{{ item.client.name }}, {{ line.product.name }} — kg (tortilgach)"{% if line.kg_bad or item.kg_missing and line.kg is None %} aria-invalid="true"{% endif %} autocomplete="off"></span>
         {% else %}
         <span class="lane-kg-text">{% if line.kg is not None %}{{ line.kg|floatformat:"-3g" }} kg{% else %}<span class="muted">tortilmagan</span>{% endif %}</span>
         {% endif %}
-      </span>
+      </div>
       {% empty %}
       <span class="muted">{% if item.collects %}Pul olish{% else %}—{% endif %}</span>
       {% endfor %}
-    </span>
-    <span class="lane-act">
+    </div>
+    <div class="lane-act">
       {% if not item.may_set %}
         <span class="badge badge-st-{{ item.status }}">{{ item.status_label }}</span>
       {% else %}
-        <select class="lane-status st-{% if item.method %}{{ item.status }}{% else %}none{% endif %}" data-quick="{{ item.pk|unlocalize }}" aria-label="{{ item.client.name }} — {% if item.method %}holati{% else %}qanday ketadi{% endif %}">
+        <select class="lane-status st-{% if item.method %}{{ item.status }}{% else %}none{% endif %}" data-quick="{{ pk }}" aria-label="{{ item.client.name }} — {% if item.method %}holati{% else %}qanday ketadi{% endif %}">
           {% if not item.method %}<option value="" selected disabled>Qanday ketadi?</option>{% endif %}
           {% for value, label in item.choices %}<option value="{{ value }}"{% if value == item.choice %} selected{% endif %}>{{ label }}</option>{% endfor %}
         </select>
       {% endif %}
-    </span>
-    <span class="lane-sale">
-      {% if item.sale %}{% if item.mine %}<a class="badge badge-paid" href="{% url 'sale_detail' item.sale.pk %}" title="Sotuvni ochish">✓ #{{ item.sale.pk|unlocalize }}</a>{% else %}<span class="badge badge-paid">✓ #{{ item.sale.pk|unlocalize }}</span>{% endif %}
-      {% elif item.editable and item.delivers and item.line_list %}<button type="submit" name="confirm" value="{{ item.pk|unlocalize }}" class="btn btn-sm stop-confirm" title="Shu mijozni sotuvga aylantirish (hamma kg kiritilgan bo'lishi kerak)">✓ Sotuvga</button>
+    </div>
+    <div class="lane-sale">
+      {% if item.sale %}{% if item.mine %}<a class="badge badge-paid" href="{% url 'sale_detail' item.sale.pk %}" title="Sotuvni ochish" aria-label="{{ item.client.name }} — Sotuv #{{ item.sale.pk|unlocalize }}">✓ #{{ item.sale.pk|unlocalize }}</a>{% else %}<span class="badge badge-paid">✓ #{{ item.sale.pk|unlocalize }}</span>{% endif %}
+      {% elif item.editable and item.delivers and item.line_list %}<button type="submit" name="confirm" value="{{ pk }}" class="btn btn-sm stop-confirm" title="Sotuvga aylantirish (hamma kg kiritilgan bo'lishi kerak)" aria-label="{{ item.client.name }} — sotuvga aylantirish">✓ Sotuvga</button>
       {% endif %}
-    </span>
-    <span class="lane-open" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
-  </summary>
-  <div class="lane-editor">
+    </div>
+    <button type="button" class="lane-open" data-toggle-row aria-expanded="{% if item.open %}true{% else %}false{% endif %}" aria-controls="ed-{{ pk }}" aria-label="{{ item.client.name }} — batafsil"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg></button>
+  </div>
+  <div class="lane-editor" id="ed-{{ pk }}"{% if not item.open %} hidden{% endif %}>
     <p class="autosave-note" data-autosave-note role="status" aria-live="polite" hidden></p>
     {% include "crm/_load_stop.html" %}
   </div>
-</details>
+</div>
+{% endwith %}
