@@ -93,6 +93,7 @@ def test_add_stops_by_keyboard_and_save(login, admin_user, seller_user, live_ser
         Client.objects.create(name=name, owner=seller_user, address="Chilonzor")
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    open_add(page)
 
     row = page.locator("[data-new-row]").first
     pick(page, row, 0, "Botir plast")          # client → focus moves to its product
@@ -226,6 +227,7 @@ def test_picking_a_product_fills_its_price_and_a_typed_price_stays(login, admin_
     Client.objects.create(name="Anvar", owner=seller_user)
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    open_add(page)
     row = page.locator("[data-new-row]").first
     price = row.locator("[name=new_price]")
     pick(page, row, 0, "Anvar")
@@ -251,6 +253,7 @@ def test_a_new_client_gets_a_second_product_with_metr_and_mikron(login, admin_us
     Client.objects.create(name="Anvar", owner=seller_user)
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    open_add(page)
     block = page.locator("[data-new-row]").first
     first = block.locator(".new-stop-first")
     pick(page, block, 0, "Anvar")
@@ -490,7 +493,7 @@ def test_a_half_typed_new_client_stays_out_of_a_status_change(login, admin_user,
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
     open_add(page)
     pick(page, page.locator("[data-new-row]").first, 0, "Botir")   # no product yet
-    page.click("#add-client > summary")                            # closed, not cancelled
+    page.keyboard.press("Escape")                                 # closed, not cancelled
     with page.expect_navigation():
         page.locator(f"#stop-{a.pk} .lane-act select[data-quick]").select_option("truck:loading")
     page.wait_for_selector(".toast-msg:has-text('Ortilmoqda')")

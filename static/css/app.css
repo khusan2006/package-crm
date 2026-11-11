@@ -7058,7 +7058,7 @@ input.pick-variant { width: 84px; max-width: 84px; height: 32px; padding: 5px 8p
 }
 .lane-carried { margin-left: 6px; font-size: 11px; vertical-align: 1px; }
 .lane-add-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
-.lane-add-actions [data-add-cancel] { margin-left: auto; }
+.lane-add-actions [data-add-cancel].btn { margin-left: auto; }
 .lane-add-actions .route-dirty[hidden] { display: none; }
 /* Floats in the editor's corner: showing it must never shift the buttons below —
    a ✓ pressed right after typing kg would otherwise move away from the click. */
@@ -7315,3 +7315,14 @@ select.lane-status.st-cancel { border-color: var(--border); color: var(--text-mu
 /* A mouse click on the name shows no ring — only keyboard focus does. */
 .lane-who:focus:not(:focus-visible), .lane-open:focus:not(:focus-visible) { outline: none; box-shadow: none; }
 .lane-who:hover { background: none; }
+
+/* «Mijoz qo'shish» modal: wide enough for a client row and its products. */
+.modal--wide { width: min(980px, calc(100vw - var(--sidebar-w) - 32px)); }
+@media (max-width: 560px) { .modal--wide { width: calc(100vw - 16px); } }
+.add-dialog-body { padding: 10px 22px 6px; }
+.modal--wide .lane-add-actions {
+  position: sticky; bottom: 0; margin: 0; padding: 14px 22px;
+  border-top: 1px solid var(--border); background: var(--surface);
+}
+.day-empty { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.day-empty p { margin: 0; }

@@ -64,19 +64,28 @@ stand. Counts are for the whole day.{% endcomment %}
   button of a form — without this, that would be a row's step or ✓.{% endcomment %}
   <button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true">Qo'shish</button>
 
-  <details class="lane-add" id="add-client"{% if adding or not items %} open{% endif %}>
-    <summary class="lane-add-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Mijoz qo'shish</summary>
-    <p class="muted lane-add-hint">Mijoz, maqsad, mahsulot va rulon — kg keyin, tortilgach.</p>
-    <div class="new-rows" data-new-rows>
-      {% for row in new_rows %}{% include "crm/_load_new_row.html" with row=row %}{% endfor %}
+  {% comment %}«Mijoz qo'shish» — a modal. It is a <dialog> inside the day form, so its
+  boxes still belong to the form (and to load.js); «Qo'shish» sends only them.{% endcomment %}
+  <dialog class="modal modal--wide" id="add-client" aria-labelledby="add-client-title"{% if adding %} data-open-now{% endif %}>
+    <div class="modal-body">
+      <div class="modal-head">
+        <h2 id="add-client-title">Mijoz qo'shish · {{ day|date:"d.m.Y" }}</h2>
+        <button type="button" class="modal-x" data-add-cancel aria-label="Yopish">&times;</button>
+      </div>
+      <div class="add-dialog-body">
+        <p class="muted lane-add-hint">Mijoz, maqsad, qanday ketishi, mahsulot va rulon — kg keyin, tortilgach.</p>
+        <div class="new-rows" data-new-rows>
+          {% for row in new_rows %}{% include "crm/_load_new_row.html" with row=row %}{% endfor %}
+        </div>
+        <button type="button" class="new-row-add" data-new-row-add><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yana mijoz</button>
+      </div>
+      <div class="lane-add-actions">
+        <span class="route-dirty" data-items-dirty{% if not failed %} hidden{% endif %}>Hali qo'shilmadi</span>
+        <button type="button" class="btn btn-ghost" data-add-cancel>Bekor qilish</button>
+        <button type="submit" name="add" value="1" class="btn">Qo'shish</button>
+      </div>
     </div>
-    <div class="lane-add-actions">
-      <button type="button" class="new-row-add" data-new-row-add><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yana mijoz</button>
-      <span class="route-dirty" data-items-dirty{% if not failed %} hidden{% endif %}>Hali qo'shilmadi</span>
-      <button type="button" class="btn btn-ghost" data-add-cancel>Bekor qilish</button>
-      <button type="submit" name="add" value="1" class="btn">Qo'shish</button>
-    </div>
-  </details>
+  </dialog>
   <template data-new-row-template>{% include "crm/_load_new_row.html" with row=None %}</template>
   <template data-add-line-template>{% include "crm/_load_add_line.html" with prefix="__PREFIX__" row=None %}</template>
   <datalist id="load-sizes">{% for v in size_suggestions %}<option value="{{ v }}">{% endfor %}</datalist>
@@ -86,7 +95,7 @@ stand. Counts are for the whole day.{% endcomment %}
   <div class="card"><p class="muted">Bu bo'limda mijoz yo'q.</p></div>
   {% endif %}
   {% if not items %}
-  <div class="card"><p class="muted">{{ day|date:"d.m.Y" }} uchun hali mijoz yo'q — «Mijoz qo'shish» tugmasi bilan qo'shing.</p></div>
+  <div class="card"><p class="muted">{{ day|date:"d.m.Y" }} uchun hali mijoz yo'q.</p></div>
   {% endif %}
 
   <div class="stops">
@@ -190,27 +199,29 @@ stand. Counts are for the whole day.{% endcomment %}
 {% endif %}
 
 <script>
-  // «Bekor qilish»: nothing typed there is kept, and the form closes.
-  document.addEventListener('click', function (e) {
-    var cancel = e.target.closest && e.target.closest('[data-add-cancel]');
-    if (!cancel) { return; }
-    var add = document.getElementById('add-client');
-    // Each row's × empties it (the last one stays, empty); run them all.
-    add.querySelectorAll('[data-new-row-remove]').forEach(function (b) { b.click(); });
-    add.open = false;
-  });
-  // «Mijoz qo'shish» (the button below): open the add section and go to its client box.
-  document.addEventListener('click', function (e) {
-    var link = e.target.closest && e.target.closest('[data-open-add]');
-    if (!link) { return; }
+  // «Mijoz qo'shish» is a modal. The round button (or the empty day's button) opens it
+  // and goes to its client box; «Bekor qilish» / × empty it and close it. Esc closes
+  // without emptying. After a refused add it comes back open, as it was left.
+  (function () {
     var add = document.getElementById('add-client');
     if (!add) { return; }
-    e.preventDefault();
-    add.open = true;
-    add.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    var box = add.querySelector('.combobox-input, select');
-    if (box) { setTimeout(function () { box.focus(); }, 250); }
-  });
+    var open = function () {
+      if (!add.open) { add.showModal(); }
+      var box = add.querySelector('.combobox-input, select');
+      if (box) { setTimeout(function () { box.focus(); }, 50); }
+    };
+    document.addEventListener('click', function (e) {
+      if (e.target.closest && e.target.closest('[data-open-add]')) { e.preventDefault(); open(); return; }
+      if (e.target.closest && e.target.closest('[data-add-cancel]')) {
+        // Each row's × empties it (the last one stays, empty); run them all.
+        add.querySelectorAll('[data-new-row-remove]').forEach(function (b) { b.click(); });
+        add.close();
+      }
+    });
+    // A click on the dark backdrop around the modal closes it too.
+    add.addEventListener('click', function (e) { if (e.target === add) { add.close(); } });
+    if (add.hasAttribute('data-open-now')) { open(); }
+  })();
 </script>
 <script src="{% static_v 'js/route.js' %}" defer></script>
 <script src="{% static_v 'js/load.js' %}" defer></script>
