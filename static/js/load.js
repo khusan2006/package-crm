@@ -312,7 +312,7 @@
        a product changes the rows themselves, so that posts the form normally, the
        row staying open. New clients go in with «Qo'shish». */
     if (items.hasAttribute('data-autosave')) {
-      var saving = null, again = null;
+      var saving = null, pending = [];
       var savedBox = /^(rolls|price|kg|size|micron|product|purpose)_\d+$/;
       var stopOf = function (el) { return el.closest('.lane-row') || el.closest('.stop'); };
       var note = function (stop, text, bad) {
@@ -322,31 +322,41 @@
         n.classList.toggle('is-bad', !!bad);
         n.hidden = !text;
       };
-      var settle = function (stop) {
-        // What is on screen is what is saved now: nothing here is "unsaved" any more.
-        stop.querySelectorAll('input[type=text]').forEach(function (b) { b.defaultValue = b.value; });
-        stop.querySelectorAll('select').forEach(function (s) {
-          Array.prototype.forEach.call(s.options, function (o) { o.defaultSelected = o.selected; });
+      // The boxes just sent now count as saved — with the value that was sent, so a
+      // box changed again while the save was on its way still counts as changed.
+      var settle = function (sentBoxes) {
+        sentBoxes.forEach(function (pair) {
+          var el = pair[0];
+          if (el.tagName === 'SELECT') {
+            Array.prototype.forEach.call(el.options, function (o) { o.defaultSelected = o.value === pair[1]; });
+          } else { el.defaultValue = pair[1]; }
         });
-        // The row's own line: its kg added up again.
-        var total = 0, missing = false;
-        stop.querySelectorAll('input.pick-kg').forEach(function (b) {
-          var v = parseFloat(b.value.replace(/[\s\u00a0\u202f]/g, '').replace(',', '.'));
-          if (isNaN(v)) { missing = true; } else { total += v; }
-        });
-        var kg = stop.querySelector('.lane-kg');
-        if (kg) {
-          kg.innerHTML = (total ? String(Math.round(total * 1000) / 1000).replace('.', ',') + ' kg' : '—')
-            + (missing ? '<span class="cell-sub route-pending">tortilmagan</span>' : '');
-        }
       };
+      // A box differs from what the page was drawn (or last saved) with.
+      var plainVal = function (v) { return (v || '').replace(/[\s\u00a0\u202f]/g, ''); };
+      var changed = function (el) {
+        if (el.type === 'checkbox') { return el.checked; }
+        if (el.tagName === 'SELECT') {
+          return Array.prototype.some.call(el.options, function (o) { return o.selected !== o.defaultSelected; });
+        }
+        return plainVal(el.value) !== plainVal(el.defaultValue);
+      };
+      var always = ['csrfmiddlewaretoken', 'action', 'sana', 'ochiq', 'quick_pick'];
+      // Only what this client changed goes — never other clients' boxes as the page
+      // last saw them, never the add form. The server keeps every box not sent.
       var save = function (stop) {
-        if (saving) { again = stop; return; }
-        var data = new FormData(items);
-        Array.from(data.keys()).forEach(function (k) {
-          if (/^(new_|newline_|addline_)/.test(k)) { data.delete(k); }
-        });
+        if (saving) { if (pending.indexOf(stop) === -1) { pending.push(stop); } return; }
+        var data = new FormData();
+        always.forEach(function (n) { var el = items.querySelector('[name="' + n + '"]'); if (el) { data.set(n, el.value); } });
         data.set('action', 'items');
+        data.set('quick_pick', '');
+        var sentBoxes = [];
+        stop.querySelectorAll('[name]').forEach(function (el) {
+          if (!savedBox.test(el.name) || el.disabled || !changed(el)) { return; }
+          data.append(el.name, el.value);
+          sentBoxes.push([el, el.value]);
+        });
+        if (!sentBoxes.length) { return; }
         note(stop, 'Saqlanmoqda…');
         // getAttribute: the form's hidden «action» field shadows form.action.
         saving = fetch(items.getAttribute('action'), {
@@ -357,7 +367,7 @@
         }).then(function (res) {
           items.querySelectorAll('.stops .is-bad').forEach(function (b) { b.classList.remove('is-bad'); b.removeAttribute('aria-invalid'); });
           if (res.ok) {
-            settle(stop);
+            settle(sentBoxes);
             note(stop, res.saved ? 'Saqlandi ✓' : '');
           } else {
             (res.bad || []).forEach(function (name) {
@@ -376,36 +386,75 @@
           note(stop, 'Saqlanmadi — internet? Qayta urinib ko\'ring.', true);
         }).then(function () {
           saving = null;
-          if (again) { var next = again; again = null; save(next); }
+          if (pending.length) { save(pending.shift()); }
         });
       };
-      var reloadWith = function (stop) {
-        var open = items.querySelector('[name=ochiq]');
+      // A full send (✓, a status, ×, an added product, «Qo'shish») takes only its own
+      // part of the page: that client's changed boxes, or the add form — the rest is
+      // switched off for the send (and back on if the page is shown again).
+      var scopeTo = function (scope, submitter) {
+        items.querySelectorAll('[name]').forEach(function (el) {
+          if (always.indexOf(el.name) !== -1 || el === submitter) { return; }
+          var keep = false;
+          if (scope && scope.contains(el)) {
+            keep = scope.id === 'add-client' || /^addline_/.test(el.name) || changed(el);
+          } else if (scope && scope.id === 'add-client' && /^addline_/.test(el.name)) {
+            keep = true;  // «Qo'shish» also puts in products added to saved clients
+          }
+          if (!keep) { el.disabled = true; el.dataset.scopedOff = '1'; }
+        });
+      };
+      window.addEventListener('pageshow', function () {
+        items.querySelectorAll('[data-scoped-off]').forEach(function (el) {
+          el.disabled = false; delete el.dataset.scopedOff;
+        });
+        var pick = items.querySelector('[name=quick_pick]');
+        if (pick) { pick.value = ''; }
+      });
+      items.addEventListener('submit', function (e) {
+        var by = e.submitter;
+        var scope = items.dataset.scope ? document.getElementById(items.dataset.scope) : null;
+        delete items.dataset.scope;
+        if (!scope && by && by.name === 'add') { scope = document.getElementById('add-client'); }
+        if (!scope && by) { scope = by.closest('.lane-row'); }
+        if (scope) { scopeTo(scope, by); }
+      });
+      var sendFor = function (stop, keepOpen) {
+        if (submitting) { return; }  // one send at a time — the page is already going
         var row = stop && stop.closest('.lane-row');
-        if (open && row) { open.value = row.id.replace('stop-', ''); }
+        var open = items.querySelector('[name=ochiq]');
+        if (open) { open.value = keepOpen && row ? row.id.replace('stop-', '') : ''; }
+        if (row) { items.dataset.scope = row.id; }
         submitting = true;
         if (items.requestSubmit) { items.requestSubmit(); } else { items.submit(); }
       };
+      var reloadWith = function (stop) { sendFor(stop, true); };
       items.addEventListener('change', function (e) {
         var t = e.target;
         // A row's dropdown (how it leaves / where it stands): sent at once, the
         // way a button would be — anything typed goes with it.
         if (t.matches('select[data-quick]') && t.value) {
           items.querySelector('[name=quick_pick]').value = t.getAttribute('data-quick') + ':' + t.value;
-          submitting = true;
-          if (items.requestSubmit) { items.requestSubmit(); } else { items.submit(); }
+          sendFor(document.getElementById('stop-' + t.getAttribute('data-quick')), t.closest('.lane-editor'));
           return;
         }
         if (!t.name || !t.closest('.stops')) { return; }
         var stop = stopOf(t);
         if (savedBox.test(t.name)) { save(stop); return; }
         if (/^drop_\d+$/.test(t.name)) { reloadWith(stop); return; }
-        // A product added to a client: once it has a product and rulon, it goes in.
-        var added = t.closest('[data-add-line-row]');
-        if (added && t.matches('.new-row-rolls') && t.value.trim()) {
+      });
+      // A product added to a saved client goes in once the cursor leaves its line with
+      // a product and rulon in it — so metr, mikron and price can all be typed first.
+      items.addEventListener('focusout', function (e) {
+        var added = e.target.closest && e.target.closest('.stops [data-add-line-row]');
+        if (!added) { return; }
+        setTimeout(function () {
+          if (!added.isConnected || added.contains(document.activeElement)) { return; }
+          if (added.querySelector('.combobox-pop:not([hidden])')) { return; }
           var product = added.querySelector('select[data-combobox]');
-          if (product && product.value) { reloadWith(stop); }
-        }
+          var rolls = added.querySelector('.new-row-rolls');
+          if (product && product.value && rolls && rolls.value.trim()) { reloadWith(added); }
+        }, 150);
       });
     }
 

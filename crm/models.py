@@ -2728,6 +2728,9 @@ class LoadItem(models.Model):
     # The day this stop was first planned for, when it wasn't finished then and was
     # carried to a later day («Kechagidan»). Empty for a stop still on its own day.
     carried_from = models.DateField("Qaysi kundan o'tgan", null=True, blank=True)
+    # Made for a sale typed in Sotuvlar (not planned here): deleting that sale takes
+    # this stop with it, as there was never anything to deliver without it.
+    via_sotuvlar = models.BooleanField("Sotuvlardan", default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

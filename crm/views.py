@@ -9824,6 +9824,33 @@ def _finish_new_sale(user, sale, seller, summary_extra=""):
     return applied
 
 
+def _copy_sale_lines(stop, sale):
+    """The stop's products become the sale's — what was actually sold. A sale line
+    without a rulon count keeps 0 (shown as no count), never a made-up one."""
+    stop.lines.all().delete()
+    for line in sale.items.select_related("product"):
+        kg = line.weight / 1000 if line.dimension == Sale.Dimension.G else line.weight
+        LoadLine.objects.create(item=stop, product=line.product, rolls=line.rolls or 0,
+                                price=line.price, kg=kg, size=line.size, micron=line.micron)
+
+
+def _sale_changed_for_delivery(sale, user):
+    """A sale edited in Sotuvlar: its Yetkazish stop follows. Same client — the stop
+    takes the sale's products again. Another client — a stop made for this sale goes
+    with it to the new client's day; a planned one is let go (unlocked) instead."""
+    stop = LoadItem.objects.filter(sale=sale).first()
+    if stop is None:
+        return
+    if stop.client_id == sale.client_id:
+        _copy_sale_lines(stop, sale)
+    elif stop.via_sotuvlar:
+        stop.delete()
+        _track_sale_delivery(sale, user)
+    else:
+        stop.sale = None
+        stop.save(update_fields=["sale"])
+
+
 @transaction.atomic
 def _track_sale_delivery(sale, user):
     """A sale typed in Sotuvlar for today (or later) goes onto that day's Yetkazish
@@ -9847,7 +9874,6 @@ def _track_sale_delivery(sale, user):
             .filter(load__date=sale.date, client=sale.client, sale__isnull=True)
             .order_by("load__created_at", "created_at").first())
     if stop is not None:
-        stop.lines.all().delete()
         stop.sale = sale
         if stop.purpose == LoadItem.Purpose.COLLECT:
             stop.purpose = LoadItem.Purpose.BOTH
@@ -9858,11 +9884,9 @@ def _track_sale_delivery(sale, user):
         if load is None:
             load = Load.objects.create(date=sale.date, created_by=user, note="Sotuvlardan")
         stop = LoadItem.objects.create(load=load, client=sale.client, sale=sale,
-                                       method="", purpose=LoadItem.Purpose.DELIVER)
-    for line in sale.items.select_related("product"):
-        kg = line.weight / 1000 if line.dimension == Sale.Dimension.G else line.weight
-        LoadLine.objects.create(item=stop, product=line.product, rolls=line.rolls or 0,
-                                price=line.price, kg=kg, size=line.size, micron=line.micron)
+                                       method="", purpose=LoadItem.Purpose.DELIVER,
+                                       via_sotuvlar=True)
+    _copy_sale_lines(stop, sale)
     AuditLog.record(user, AuditLog.Action.UPDATE, "Yuk", stop.load_id,
                     f"Yuk #{stop.load_id}: Sotuv #{sale.pk} ({sale.client.name}) qo'shildi"[:255])
     return stop
@@ -9884,8 +9908,14 @@ def sale_create(request):
             formset.instance = sale
             formset.save()
             applied = _finish_new_sale(request.user, sale, seller)
+            already = (LoadItem.objects.filter(load__date=sale.date, client=sale.client,
+                                               sale__isnull=False)
+                       .values_list("sale_id", flat=True).first())
             stop = _track_sale_delivery(sale, request.user)
             tracked = f" Yetkazishga qo'shildi (Yuk #{stop.load_id})." if stop else ""
+            if already:
+                messages.warning(request, f"Diqqat: bu mijozga shu kun yana bir sotuv bor "
+                                          f"(Sotuv #{already}) — ikki marta yozilmadimi?")
             if applied > 0:
                 messages.success(
                     request,
@@ -10082,6 +10112,7 @@ def sale_edit(request, pk):
 
     sale = form.save()
     formset.save()
+    _sale_changed_for_delivery(sale, request.user)
     _mark_fulfilment(sale, [], only_unset=True)
     if overpay > 0:
         _settle_overpay(sale, overpay, refunded, seller)
@@ -10461,6 +10492,9 @@ def sale_delete(request, pk):
         summary = f"Mijoz {sale.client.name} sotuvi — {sale.total_price:,.0f} so'm"
         sale_pk = sale.pk
         with transaction.atomic():
+            # A Yetkazish stop made just for this sale goes too; a planned one (or a ✓)
+            # is unlocked instead — its delivery may still be on.
+            LoadItem.objects.filter(sale=sale, via_sotuvlar=True).delete()
             sale.delete()  # items, payments and returns cascade with it
             # Freed or now-orphaned advance allocations settle back into balance.
             _reconcile_client_advance(client, seller)
@@ -11122,13 +11156,24 @@ def _read_load_items(request, load, items, products):
     def product_of(raw):
         return products.get(int(raw)) if _DIGITS.fullmatch(raw or "") else None
 
+    posted = set(request.POST.keys())
     for item in items:
         if not item.editable:
             continue
         name = item.client.name
+        # Only the clients the page sent anything for are read, and of those only the
+        # boxes it sent: a box not sent keeps what is saved. So a page opened a while
+        # ago can't put its old values over what someone else typed since, and one
+        # client's wrong box can't stop another client's save.
+        line_keys = {f"{f}_{line.pk}" for line in item.line_list
+                     for f in ("rolls", "price", "kg", "size", "micron", "product", "drop")}
+        sent = posted & line_keys
+        adding = any(k.startswith(f"addline_{item.pk}_") for k in posted)
         raw_purpose = request.POST.get(f"purpose_{item.pk}")
-        if raw_purpose is None:  # a stop added in another tab since this page was drawn
-            continue
+        if raw_purpose is None:
+            if not sent and not adding:
+                continue  # nothing sent for this client (or it was added since)
+            raw_purpose = item.purpose
         if raw_purpose not in LoadItem.Purpose.values:
             item.purpose_bad = True
             problems.append(f"{name} — maqsad")
@@ -11150,12 +11195,15 @@ def _read_load_items(request, load, items, products):
             kept += 1
             values = {}
             # The product may be changed too; its metr/mikron then follow the new one.
-            product = product_of(line.product_input)
+            product = product_of(line.product_input) if f"product_{line.pk}" in sent else line.product
             if product is None:
                 line.product_bad = True
                 problems.append(f"{name}, {line.product.name} — mahsulot tanlanmagan")
                 product = line.product
             for field, parse in (("rolls", _whole_rolls), ("price", _price_value), ("kg", _kg_value)):
+                if f"{field}_{line.pk}" not in sent:
+                    values[field] = getattr(line, field)  # not sent: stays as saved
+                    continue
                 try:
                     values[field] = parse(getattr(line, f"{field}_input"))
                     if field == "rolls" and values[field] is None:
@@ -11165,6 +11213,9 @@ def _read_load_items(request, load, items, products):
                     problems.append(f"{name}, {line.product.name} — {dict(rolls='rulon', price='narx', kg='kg')[field]}")
             for field, has_it, word in (("size", product.has_size, "metr"),
                                         ("micron", product.has_micron, "mikron")):
+                if f"{field}_{line.pk}" not in sent and product == line.product:
+                    values[field] = getattr(line, field)
+                    continue
                 try:
                     values[field] = _variant_value(getattr(line, f"{field}_input"), has_it,
                                                    metres=field == "size")

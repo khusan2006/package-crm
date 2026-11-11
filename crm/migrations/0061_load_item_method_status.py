@@ -4,10 +4,14 @@ from django.db import migrations, models
 
 
 def confirmed_were_delivered(apps, schema_editor):
-    """Before statuses, ✓ was the last step: a stop already turned into a sale was
-    delivered."""
+    """Before statuses, ✓ was the last step: a stop turned into a sale on a day already
+    gone was delivered. Today's and later ones may still be on their way — they keep
+    «Kutilmoqda»."""
+    from django.utils import timezone
+
     LoadItem = apps.get_model("crm", "LoadItem")
-    LoadItem.objects.filter(sale__isnull=False).update(status="done")
+    LoadItem.objects.filter(sale__isnull=False, load__date__lt=timezone.localdate()) \
+        .update(status="done")
 
 
 class Migration(migrations.Migration):

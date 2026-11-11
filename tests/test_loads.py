@@ -1547,3 +1547,93 @@ def test_a_new_client_is_added_picked_up_or_by_yandex(client, admin_user, seller
     assert dict(LoadItem.objects.values_list("client__name", "method")) == {
         "Anvar": "pickup", "Bobur": "yandex"}
     assert lane(day_page(client, admin_user), "other") == ["Anvar", "Bobur"]
+
+
+# --- data safety: only what was sent is saved ---------------------------------------------
+
+def test_an_old_page_cannot_put_its_values_over_newer_ones(client, admin_user, seller_user, load,
+                                                           paket):
+    a = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    b = stop(load, make_client(seller_user, "Bobur"), (paket, 3))
+    a_line, b_line = a.lines.get(), b.lines.get()
+    LoadLine.objects.filter(pk=b_line.pk).update(kg=Decimal("77"))  # typed elsewhere since
+    client.force_login(admin_user)
+    resp = client.post("/yetkazish/kun/", {"action": "items", "sana": TODAY().isoformat(),
+                                           f"kg_{a_line.pk}": "40"},
+                       HTTP_X_REQUESTED_WITH="XMLHttpRequest")
+    assert resp.json() == {"ok": True, "saved": True}
+    a_line.refresh_from_db(), b_line.refresh_from_db()
+    assert (a_line.kg, b_line.kg) == (Decimal("40"), Decimal("77"))
+
+
+def test_a_box_not_sent_keeps_its_value_even_within_the_client(client, admin_user, seller_user,
+                                                               load, paket):
+    a = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    line = a.lines.get()
+    LoadLine.objects.filter(pk=line.pk).update(price=Decimal("19000"))
+    client.force_login(admin_user)
+    client.post("/yetkazish/kun/", {"action": "items", "sana": TODAY().isoformat(),
+                                    f"kg_{line.pk}": "12"}, HTTP_X_REQUESTED_WITH="XMLHttpRequest")
+    line.refresh_from_db()
+    assert (line.kg, line.price, line.rolls) == (Decimal("12"), Decimal("19000"), 3)
+
+
+def test_one_clients_bad_data_does_not_block_another(client, admin_user, seller_user, load, paket):
+    a = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    b = stop(load, make_client(seller_user, "Bobur"), (paket, 3))
+    LoadLine.objects.filter(item=b).update(rolls=0)  # e.g. a sale with no rulon count
+    a_line = a.lines.get()
+    client.force_login(admin_user)
+    resp = client.post("/yetkazish/kun/", {"action": "items", "sana": TODAY().isoformat(),
+                                           f"kg_{a_line.pk}": "40"},
+                       HTTP_X_REQUESTED_WITH="XMLHttpRequest")
+    assert resp.status_code == 200
+    resp = client.post("/yetkazish/kun/", {"action": "items", "sana": TODAY().isoformat(),
+                                           "quick_pick": f"{a.pk}:truck:loading"})
+    a.refresh_from_db()
+    assert a.status == "loading"
+
+
+# --- Sotuvlar and Yetkazish stay in step -------------------------------------------------------
+
+def edit_sale(client, user, sale, **line):
+    from crm.tests import one_item, sale_post
+    item = sale.items.get()
+    row = {**one_item(item.product, weight=str(item.weight), price=str(int(item.price))),
+           "id": item.pk, **line}
+    data = sale_post(sale.client_id, [row], date=sale.date.isoformat())
+    data["items-INITIAL_FORMS"] = "1"
+    client.force_login(user)
+    return client.post(f"/sales/{sale.pk}/edit/", data)
+
+
+def test_editing_a_sale_updates_its_stop(client, seller_user, paket):
+    sell(client, seller_user, make_client(seller_user, "Anvar"), paket, weight="120")
+    sale = Sale.objects.get()
+    resp = edit_sale(client, seller_user, sale, weight="95")
+    assert resp.status_code in (200, 302)
+    assert sale.load_item.lines.get().kg == Decimal("95")
+
+
+def test_deleting_a_sotuvlar_sale_takes_its_stop(client, seller_user, admin_user, load, paket):
+    sell(client, seller_user, make_client(seller_user, "Anvar"), paket)
+    sale = Sale.objects.get()
+    assert sale.load_item.via_sotuvlar
+    client.force_login(admin_user)
+    client.post(f"/sales/{sale.pk}/delete/")
+    assert not LoadItem.objects.exists()
+
+
+def test_deleting_a_ticked_sale_unlocks_the_planned_stop(client, admin_user, load, weighed):
+    save(client, admin_user, load, confirm=str(weighed.pk))
+    client.post(f"/sales/{Sale.objects.get().pk}/delete/")
+    weighed.refresh_from_db()
+    assert weighed.sale is None and weighed.lines.count() == 2
+
+
+def test_a_second_sale_the_same_day_is_warned_about(client, seller_user, paket):
+    anvar = make_client(seller_user, "Anvar")
+    sell(client, seller_user, anvar, paket)
+    resp = sell(client, seller_user, anvar, paket)
+    msgs = [str(m) for m in resp.wsgi_request._messages]
+    assert any("yana bir sotuv bor" in m for m in msgs)

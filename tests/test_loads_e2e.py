@@ -165,7 +165,7 @@ def test_a_product_is_added_to_a_stop(login, admin_user, seller_user, live_serve
     added.locator("input[name$=_rolls]").type("3")
     # The Narx box filled itself with the catalogue price.
     assert added.locator("input[name$=_price]").input_value().replace(" ", "").replace("\u00a0", "") == "26000"
-    added.locator("input[name$=_rolls]").press("Tab")  # product and rulon in: it goes in
+    page.mouse.click(5, 300)                           # leaving the line: it goes in
     page.wait_for_selector("text=Saqlandi")
     assert page.locator(f"#stop-{item.pk}").evaluate("el => el.open")  # the row stays open
     assert sorted(item.lines.values_list("product__name", "rolls")) == [("Paket katta", 5), ("Plyonka", 3)]
@@ -388,6 +388,8 @@ def test_another_product_starts_as_a_copy_of_the_last(login, admin_user, seller_
     assert copy.locator("input[name$=_rolls]").input_value() == "2"
     size.fill("2м")
     copy.locator("input[name$=_micron]").fill("08")
+    page.mouse.click(5, 300)                           # leaving the line puts it in
+    page.wait_for_selector("text=Saqlandi")
 
     # A new client: «+ Mahsulot» copies the row above it.
     open_add(page)
@@ -457,3 +459,40 @@ def test_cancel_empties_and_closes_the_add_form(login, admin_user, seller_user, 
     open_add(page)
     assert page.locator("[data-new-row] select[name=new_client]").first.input_value() == ""
     assert load.items.count() == 1
+
+
+def test_an_open_page_does_not_overwrite_another_clients_new_kg(login, admin_user, seller_user,
+                                                                live_server, db, paket):
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    a = stop(load, Client.objects.create(name="Anvar", owner=seller_user), paket)
+    b = stop(load, Client.objects.create(name="Botir", owner=seller_user), paket)
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    b.lines.update(kg=Decimal("77"))              # weighed at the warehouse meanwhile
+    box = page.locator(f'[name="kg_{a.lines.get().pk}"]')
+    box.fill("40")
+    box.press("Tab")
+    page.wait_for_selector(f"#stop-{a.pk} [data-autosave-note]:has-text('Saqlandi')", state="attached")
+    assert a.lines.get().kg == Decimal("40") and b.lines.get().kg == Decimal("77")
+    # A status change sends only its own client too.
+    with page.expect_navigation():
+        page.locator(f"#stop-{a.pk} summary select[data-quick]").select_option("truck:loading")
+    a.refresh_from_db()
+    assert a.status == "loading" and b.lines.get().kg == Decimal("77")
+
+
+def test_a_half_typed_new_client_stays_out_of_a_status_change(login, admin_user, seller_user,
+                                                              live_server, db, paket):
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    a = stop(load, Client.objects.create(name="Anvar", owner=seller_user), paket)
+    Client.objects.create(name="Botir", owner=seller_user)
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    open_add(page)
+    pick(page, page.locator("[data-new-row]").first, 0, "Botir")   # no product yet
+    page.click("#add-client > summary")                            # closed, not cancelled
+    with page.expect_navigation():
+        page.locator(f"#stop-{a.pk} summary select[data-quick]").select_option("truck:loading")
+    page.wait_for_selector(".toast-msg:has-text('Ortilmoqda')")
+    a.refresh_from_db()
+    assert a.status == "loading" and load.items.count() == 1
