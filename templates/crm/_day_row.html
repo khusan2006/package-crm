@@ -31,10 +31,19 @@
           {% if item.delivers and item.unsold_count > 1 %}<button type="submit" name="confirm_line" value="{{ line.pk|unlocalize }}" class="line-sell" title="Faqat shu mahsulotni sotuvga aylantirish" aria-label="{{ item.client.name }}, {{ line.product.name }} — faqat shuni sotuvga">✓</button>{% endif %}
         </span>
         {% else %}
+        {% if line.sold %}
+        {% comment %}Sold: the kg box becomes a solid green «done» block in the same place —
+        the kg sold and the sale it went into (a link, for whoever may open it).{% endcomment %}
+        {% if item.mine %}<a class="kg-group is-sold" href="{% url 'sale_detail' line.sale_id %}" title="Sotildi — Sotuv #{{ line.sale_id|unlocalize }}ni ochish">{% else %}<span class="kg-group is-sold" title="Sotildi — Sotuv #{{ line.sale_id|unlocalize }}">{% endif %}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          <span class="kg-sold-kg">{% if line.kg_text %}{{ line.kg_text }} kg{% else %}sotildi{% endif %}</span>
+          <span class="kg-sold-no">#{{ line.sale_id|unlocalize }}</span>
+        {% if item.mine %}</a>{% else %}</span>{% endif %}
+        {% else %}
         <span class="kg-group is-text">
-          <span class="lane-kg-text">{% if line.kg is not None %}{{ line.kg|floatformat:"-3g" }} kg{% else %}<span class="muted">tortilmagan</span>{% endif %}</span>
-          {% if line.sold and not item.sale %}{% if item.mine %}<a class="badge badge-paid line-sold" href="{% url 'sale_detail' line.sale_id %}" title="Shu mahsulot sotilgan">✓ #{{ line.sale_id|unlocalize }}</a>{% else %}<span class="badge badge-paid line-sold">✓ #{{ line.sale_id|unlocalize }}</span>{% endif %}{% endif %}
+          <span class="lane-kg-text">{% if line.kg_text %}{{ line.kg_text }} kg{% else %}<span class="muted">tortilmagan</span>{% endif %}</span>
         </span>
+        {% endif %}
         {% endif %}
       </div>
       {% empty %}
@@ -52,7 +61,7 @@
       {% endif %}
     </div>
     <div class="lane-sale">
-      {% if item.sale %}{% if item.mine %}<a class="badge badge-paid" href="{% url 'sale_detail' item.sale.pk %}" title="Sotuvni ochish" aria-label="{{ item.client.name }} — Sotuv #{{ item.sale.pk|unlocalize }}">✓ #{{ item.sale.pk|unlocalize }}</a>{% else %}<span class="badge badge-paid">✓ #{{ item.sale.pk|unlocalize }}</span>{% endif %}
+      {% if item.sale %}{% if item.mine %}<a class="sold-chip" href="{% url 'sale_detail' item.sale.pk %}" title="Hammasi sotildi — Sotuv #{{ item.sale.pk|unlocalize }}ni ochish" aria-label="{{ item.client.name }} — sotildi, Sotuv #{{ item.sale.pk|unlocalize }}">{% else %}<span class="sold-chip" title="Hammasi sotildi">{% endif %}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>Sotildi{% if item.mine %}</a>{% else %}</span>{% endif %}
       {% elif item.editable and item.delivers and item.unsold_count %}<button type="submit" name="confirm" value="{{ pk }}" class="btn btn-sm stop-confirm" title="{% if item.sold_count %}Qolgan mahsulotlarni{% else %}Hammasini{% endif %} sotuvga aylantirish (ularning kg'i kiritilgan bo'lishi kerak)" aria-label="{{ item.client.name }} — {% if item.sold_count %}qolganini {% endif %}sotuvga aylantirish">✓ {% if item.sold_count %}Qolganini{% else %}Sotuvga{% endif %}</button>
       {% endif %}
     </div>

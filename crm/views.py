@@ -10780,7 +10780,7 @@ UZ_WEEKDAYS = ["Dushanba", "Seshanba", "Chorshanba", "Payshanba", "Juma", "Shanb
 def _day_label(day):
     """"Ertaga · Seshanba, 10.11" — how the move dialog names a day."""
     today = timezone.localdate()
-    near = {today: "Bugun", today + timedelta(days=1): "Ertaga",
+    near = {today - timedelta(days=1): "Kecha", today: "Bugun", today + timedelta(days=1): "Ertaga",
             today + timedelta(days=2): "Indinga"}.get(day)
     plain = f"{UZ_WEEKDAYS[day.weekday()]}, {day:%d.%m}"
     return f"{near} · {plain}" if near else f"{plain}.{day:%Y}"
@@ -11833,6 +11833,7 @@ def _prep_items(stops, user):
             line.micron_input = line.micron
             line.product_input = str(line.product_id)
             line.sold = bool(line.sale_id)
+            line.kg_text = _plain(line.kg).replace(".", ",") if line.kg is not None else ""  # "52,5"
             # The catalogue price, not one agreed by hand: picking another product
             # brings that product's price instead.
             line.price_is_catalogue = line.price == line.product.price
@@ -12050,6 +12051,9 @@ def _render_day(request, day, items=None, posted_new=None):
         "shown": shown,
         "show_route": bool(truck) and (tab in ("", "truck")) and not status,
         "day": day,
+        "day_label": _day_label(day),
+        # The arrows and «Bugun» keep the open tab.
+        "tab_qs": (f"&tur={tab}" if tab else "") + (f"&holat={status}" if status else ""),
         "prev_day": (day - timedelta(days=1)).isoformat(),
         "next_day": (day + timedelta(days=1)).isoformat(),
         "is_today": day == timezone.localdate(),
