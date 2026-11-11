@@ -1803,3 +1803,38 @@ def test_sotuvlar_shows_the_delivery_of_a_product_sale(client, admin_user, two_p
     day_save(client, admin_user, confirm_line=str(two_products.lines.get(product=paket).pk))
     body = client.get(f"/sales/?dan={TODAY().isoformat()}&gacha={TODAY().isoformat()}").content.decode()
     assert "Kutilmoqda" in body
+
+
+# --- tabs ----------------------------------------------------------------------------------
+
+def test_tabs_count_and_show_one_lane(client, admin_user, seller_user, load, paket):
+    truck = stop(load, make_client(seller_user, "Mashina"), (paket, 1))
+    pick = stop(load, make_client(seller_user, "Olib"), (paket, 1))
+    yan = stop(load, make_client(seller_user, "Yan"), (paket, 1))
+    set_status(client, admin_user, (pick, PICKUP, "new"), (yan, YANDEX, "sent"))
+    resp = day_page(client, admin_user)
+    assert {t["label"]: t["count"] for t in resp.context["tabs"]} == {
+        "Hammasi": 3, "Qanday ketishi noma'lum": 0, "O'zi olib ketadi": 1, "Yandex": 1,
+        "Mashinada": 1, "Buyurtma": 0}
+    day = TODAY().isoformat()
+    resp = client.get(f"/yetkazish/?sana={day}&tur=pickup")
+    assert (lane(resp, "other"), lane(resp, "truck"), resp.context["show_route"]) == (["Olib"], [], False)
+    resp = client.get(f"/yetkazish/?sana={day}&tur=truck")
+    assert lane(resp, "truck") == ["Mashina"] and resp.context["show_route"]
+
+
+def test_status_tabs_filter_hammasi(client, admin_user, seller_user, load, paket):
+    a = stop(load, make_client(seller_user, "Anvar"), (paket, 1))
+    stop(load, make_client(seller_user, "Bobur"), (paket, 1))
+    set_status(client, admin_user, (a, TRUCK, "loading"))
+    resp = client.get(f"/yetkazish/?sana={TODAY().isoformat()}&holat=loading")
+    assert lane(resp, "truck") == ["Anvar"]
+    assert {t["label"]: t["count"] for t in resp.context["status_tabs"]}["Kutilmoqda"] == 1
+
+
+def test_an_action_comes_back_to_its_tab(client, admin_user, seller_user, load, paket):
+    a = stop(load, make_client(seller_user, "Anvar"), (paket, 1))
+    resp = day_save(client, admin_user, tur="truck", quick_pick=f"{a.pk}:truck:loading")
+    assert resp.url == f"/yetkazish/?sana={TODAY().isoformat()}&tur=truck#stop-{a.pk}"
+    resp = day_save(client, admin_user, holat="new", confirm=str(a.pk))
+    assert "&holat=new" in resp.url and "kgsiz" in resp.url

@@ -7218,3 +7218,29 @@ select.lane-status.st-cancel { border-color: var(--border); color: var(--text-mu
 .lane-line-item .line-sold { flex: 0 0 auto; }
 .lane-editor .stop-lines tr.is-sold td { color: var(--text-muted); background: var(--surface-2); }
 .lane-editor .stop-lines col.c-drop { width: 90px; }
+
+/* ---------- Day page tabs ---------- */
+.day-tabs {
+  display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+.day-tab {
+  display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; margin-bottom: -1px;
+  border-bottom: 2px solid transparent; font-size: 14px; font-weight: 600; color: var(--text-muted);
+  white-space: nowrap;
+}
+.day-tab:hover { color: var(--text); }
+.day-tab.is-active { color: var(--accent); border-bottom-color: var(--accent); }
+.day-tab.is-active .seg-count { background: var(--accent); color: #fff; }
+.day-status-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 18px; }
+.day-status-tab {
+  display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px;
+  border: 1px solid var(--border); border-radius: var(--r-pill); background: var(--surface);
+  font-size: 13px; font-weight: 600; color: var(--text);
+}
+.day-status-tab:hover { background: var(--surface-hover); }
+.day-status-tab.is-active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.day-status-tab.is-active .seg-count { background: rgba(255, 255, 255, 0.25); color: #fff; }
+@media (max-width: 700px) {
+  .day-tabs { flex-wrap: nowrap; overflow-x: auto; }
+}

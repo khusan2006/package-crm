@@ -11429,7 +11429,7 @@ def _save_load_items(request, load, items):
         line = LoadLine.objects.filter(pk=int(confirm_line), item__load__date=load.date).first()
         if line is None:
             messages.error(request, "Bu mahsulot topilmadi — sahifa yangilandi.")
-            return redirect(_day_url(load.date))
+            return redirect(_day_url(request, load.date))
         return _confirm_stop(request, load, line.item_id, line_pk=line.pk)
     # A step: a button (`quick`, "<stop>:<method>:<status>") or a row's dropdown, whose
     # pick the page puts in `quick_pick` before sending.
@@ -11444,7 +11444,7 @@ def _save_load_items(request, load, items):
         messages.info(request, "O'zgarish yo'q.")
     # A product added or removed reloads the page: the row stays open.
     opened = request.POST.get("ochiq", "")
-    return redirect(_day_url(load.date, opened if _DIGITS.fullmatch(opened) else None))
+    return redirect(_day_url(request, load.date, opened if _DIGITS.fullmatch(opened) else None))
 
 
 def _bad_boxes(items):
@@ -11459,10 +11459,30 @@ def _bad_boxes(items):
     return bad
 
 
-def _day_url(day, opened=None, kg_missing=False):
-    """The day page, optionally with one client's row open (and scrolled to) — and
-    its empty kg boxes marked, when ✓ was refused for them."""
+#: The day page's tabs: how the clients leave (`tur`) — each one lane — and, under
+#: «Hammasi», where they stand (`holat`).
+DAY_TABS = [("", "Hammasi", None), ("undecided", "Qanday ketishi noma'lum", None),
+            ("pickup", "O'zi olib ketadi", None), ("yandex", "Yandex", None),
+            ("truck", "Mashinada", None), ("order", "Buyurtma", None)]
+DAY_STATUS_TABS = [("new", "Kutilmoqda"), ("loading", "Ortilmoqda"), ("sent", "Yo'lda"),
+                   ("done", "Yetkazildi"), ("cancel", "Bekor qilindi")]
+
+
+def _day_tabs(params):
+    """The tab and status picked (`tur`, `holat`), checked — unknown values mean none."""
+    tab = params.get("tur", "")
+    status = params.get("holat", "")
+    tab = tab if tab in {t for t, *_ in DAY_TABS} else ""
+    status = status if not tab and status in dict(DAY_STATUS_TABS) else ""
+    return tab, status
+
+
+def _day_url(request, day, opened=None, kg_missing=False):
+    """The day page — on the tab it was sent from — optionally with one client's row
+    open (and scrolled to), and its empty kg boxes marked when ✓ was refused for them."""
     url = _load_list_url(day)
+    tab, status = _day_tabs(request.POST or request.GET)
+    url += (f"&tur={tab}" if tab else "") + (f"&holat={status}" if status else "")
     if not opened:
         return url
     return url + (f"&kgsiz={opened}" if kg_missing else f"&ochiq={opened}") + f"#stop-{opened}"
@@ -11477,12 +11497,12 @@ def _quick_status(request, load, items, raw, saved):
     item = next((i for i in items if str(i.pk) == pk), None)
     if item is None:
         messages.error(request, "Bu mijoz kunda topilmadi — sahifa yangilandi.")
-        return redirect(_day_url(load.date))
+        return redirect(_day_url(request, load.date))
     if not _may_set_status(request.user, item):
         raise PermissionDenied
     if (method not in LoadItem.Method.values and method != "") or status not in LoadItem.Status.values:
         messages.error(request, f"{item.client.name} — holat noto'g'ri.")
-        return redirect(_day_url(load.date))
+        return redirect(_day_url(request, load.date))
     if (method, status) != (item.method, item.status):
         item.method, item.status = method, status
         item.save(update_fields=["method", "status"])
@@ -11493,7 +11513,7 @@ def _quick_status(request, load, items, raw, saved):
                          + (" Boshqa o'zgarishlar ham saqlandi." if saved else ""))
     elif saved:
         messages.success(request, "Saqlandi.")
-    return redirect(_load_list_url(load.date) + f"#stop-{item.pk}")
+    return redirect(_day_url(request, load.date) + f"#stop-{item.pk}")
 
 
 def _confirm_stop(request, load, item_pk, line_pk=None):
@@ -11508,11 +11528,11 @@ def _confirm_stop(request, load, item_pk, line_pk=None):
                 .filter(pk=item_pk, load__date=load.date).first())
         if item is None:
             messages.error(request, "Bu mijoz yukda topilmadi — sahifa yangilandi.")
-            return redirect(_day_url(load.date))
+            return redirect(_day_url(request, load.date))
         name = item.client.name
         if item.sale_id:
             messages.info(request, f"“{name}” allaqachon sotuvga aylangan.")
-            return redirect(_day_url(load.date))
+            return redirect(_day_url(request, load.date))
         if not _may_edit_stop(request.user, item):
             raise PermissionDenied
         all_lines = list(item.lines.select_for_update(of=("self",)).select_related("product"))
@@ -11520,16 +11540,16 @@ def _confirm_stop(request, load, item_pk, line_pk=None):
         if not item.delivers or not lines:
             messages.error(request, f"“{name}”: sotuv uchun mahsulot yo'q"
                                     + (" (allaqachon sotilgan)." if all_lines else "."))
-            return redirect(_day_url(load.date))
+            return redirect(_day_url(request, load.date))
         unweighed = [l.product.name for l in lines if l.kg is None]
         if unweighed:
             messages.error(request, f"“{name}”: avval kg kiriting — {', '.join(unweighed)}.")
-            return redirect(_day_url(load.date, item.pk, kg_missing=True))
+            return redirect(_day_url(request, load.date, item.pk, kg_missing=True))
         seller = item.client.owner
         if seller.role != User.Role.SALES:
             messages.error(request, f"“{name}” sotuvchiga biriktirilmagan — sotuv kimning "
                                     f"nomiga yozilishi noma'lum. Mijozni sotuvchiga o'tkazing.")
-            return redirect(_day_url(load.date))
+            return redirect(_day_url(request, load.date))
         load = item.load
         sale = Sale(date=load.date, client=item.client, sales_rep=seller,
                     entered_by=request.user,
@@ -11554,7 +11574,7 @@ def _confirm_stop(request, load, item_pk, line_pk=None):
     if applied > 0:
         text += f" Avansdan {applied:,.0f} so'm yechildi."
     messages.success(request, text)
-    return redirect(_day_url(load.date, item.pk))
+    return redirect(_day_url(request, load.date, item.pk))
 
 
 def load_item_delete(request, pk, item_pk):
@@ -11987,7 +12007,29 @@ def _render_day(request, day, items=None, posted_new=None):
     for item in items:
         item.debt = debts.get(item.client_id) or Decimal("0")
     lanes = _lanes(items, user)
-    truck = lanes["truck"]
+    truck = lanes["truck"]  # the whole truck lane: route, kg and Jo'natish go by it
+    # Tabs: counts over the whole day, then only the open tab's lane (or, on
+    # «Hammasi», only the clients in the picked status).
+    tab, status = _day_tabs(request.GET)
+    counts = {"": len(items), "undecided": len(lanes["undecided"]), "truck": len(truck),
+              "order": len(lanes["order"]),
+              "pickup": sum(1 for i in lanes["other"] if i.method == LoadItem.Method.PICKUP),
+              "yandex": sum(1 for i in lanes["other"] if i.method == LoadItem.Method.YANDEX)}
+    by_status = {value: sum(1 for i in items if i.status == value) for value, _ in DAY_STATUS_TABS}
+    base = f"{reverse('load_list')}?sana={day.isoformat()}"
+    tabs = [{"label": label, "count": counts[value], "active": value == tab,
+             "url": base + (f"&tur={value}" if value else "")} for value, label, _ in DAY_TABS]
+    status_tabs = [{"label": label, "count": by_status[value], "active": value == status,
+                    "url": base + (f"&holat={value}" if value != status else "")}
+                   for value, label in DAY_STATUS_TABS]
+    if tab in ("pickup", "yandex"):
+        lanes = {"undecided": [], "order": [], "truck": [],
+                 "other": [i for i in lanes["other"] if i.method == tab]}
+    elif tab:
+        lanes = {name: (rows if name == tab else []) for name, rows in lanes.items()}
+    elif status:
+        lanes = {name: [i for i in rows if i.status == status] for name, rows in lanes.items()}
+    shown = sum(len(rows) for rows in lanes.values())
     done = sum(1 for i in items if i.status == LoadItem.Status.DONE)
     # Which stop to open: the one just changed (?ochiq=), or any a failed save marked.
     opened = request.POST.get("ochiq") or request.GET.get("ochiq", "")
@@ -12001,6 +12043,12 @@ def _render_day(request, day, items=None, posted_new=None):
             or any(r.get(f"{f}_bad") for r in getattr(item, "added_input", [])
                    for f in ("product", "rolls", "price", "size", "micron"))))
     return render(request, "crm/load_day.html", {
+        "tabs": tabs,
+        "status_tabs": status_tabs,
+        "tab": tab,
+        "status": status,
+        "shown": shown,
+        "show_route": bool(truck) and (tab in ("", "truck")) and not status,
         "day": day,
         "prev_day": (day - timedelta(days=1)).isoformat(),
         "next_day": (day + timedelta(days=1)).isoformat(),
@@ -12040,7 +12088,7 @@ def load_day_save(request):
     if load is None:
         if not any(request.POST.getlist("new_client")):
             messages.info(request, "Mijoz tanlanmagan — hech narsa qo'shilmadi.")
-            return redirect(_day_url(day))
+            return redirect(_day_url(request, day))
         load = Load.objects.create(date=day, created_by=request.user)
         AuditLog.record(request.user, AuditLog.Action.CREATE, "Yuk", load.pk,
                         f"Yuk #{load.pk} ({load.date:%d.%m.%Y}) yaratildi")

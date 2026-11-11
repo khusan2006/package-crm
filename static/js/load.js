@@ -342,7 +342,7 @@
         }
         return plainVal(el.value) !== plainVal(el.defaultValue);
       };
-      var always = ['csrfmiddlewaretoken', 'action', 'sana', 'ochiq', 'quick_pick'];
+      var always = ['csrfmiddlewaretoken', 'action', 'sana', 'ochiq', 'quick_pick', 'tur', 'holat'];
       // Only what this client changed goes — never other clients' boxes as the page
       // last saw them, never the add form. The server keeps every box not sent.
       var save = function (stop) {

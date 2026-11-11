@@ -38,12 +38,28 @@
   </div>
 </div>
 
+{% if items %}
+{% comment %}Tabs: how the clients leave — each tab one lane; under «Hammasi», where they
+stand. Counts are for the whole day.{% endcomment %}
+<nav class="day-tabs" aria-label="Qanday ketadi">
+  {% for t in tabs %}<a class="day-tab{% if t.active %} is-active{% endif %}" href="{{ t.url }}"{% if t.active %} aria-current="page"{% endif %}>{{ t.label }}<span class="seg-count">{{ t.count }}</span></a>{% endfor %}
+</nav>
+{% if not tab %}
+<nav class="day-status-tabs" aria-label="Holati">
+  {% for t in status_tabs %}<a class="day-status-tab st-{{ forloop.counter }}{% if t.active %} is-active{% endif %}" href="{{ t.url }}"{% if t.active %} aria-current="true"{% endif %}>{{ t.label }}<span class="seg-count">{{ t.count }}</span></a>{% endfor %}
+</nav>
+{% endif %}
+{% endif %}
+
 <form method="post" action="{% url 'load_day_save' %}" class="day-form" data-load-items data-autosave{% if failed %} data-unsaved{% endif %}>
   {% csrf_token %}
   <input type="hidden" name="action" value="items">
   <input type="hidden" name="sana" value="{{ day|date:'Y-m-d' }}">
   <input type="hidden" name="ochiq" value="">
   <input type="hidden" name="quick_pick" value="">
+  {% comment %}The open tab, so every send comes back to it.{% endcomment %}
+  <input type="hidden" name="tur" value="{{ tab }}">
+  <input type="hidden" name="holat" value="{{ status }}">
   {% comment %}The form's default button. Enter in a box presses the FIRST submit
   button of a form — without this, that would be a row's step or ✓.{% endcomment %}
   <button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true">Qo'shish</button>
@@ -66,6 +82,9 @@
   <datalist id="load-sizes">{% for v in size_suggestions %}<option value="{{ v }}">{% endfor %}</datalist>
   <datalist id="load-microns">{% for v in micron_suggestions %}<option value="{{ v }}">{% endfor %}</datalist>
 
+  {% if items and not shown %}
+  <div class="card"><p class="muted">Bu bo'limda mijoz yo'q.</p></div>
+  {% endif %}
   {% if not items %}
   <div class="card"><p class="muted">{{ day|date:"d.m.Y" }} uchun hali mijoz yo'q — «Mijoz qo'shish» tugmasi bilan qo'shing.</p></div>
   {% endif %}
@@ -96,7 +115,7 @@
   <section class="lane lane-truck">
     <h2 class="lane-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>Mashinada yetkaziladi <span class="lane-count">{{ lanes.truck|length }}</span>
       <span class="lane-head-sub">{% if truck_kg %}{{ truck_kg|floatformat:"0g" }} kg{% endif %}{% if truck_unweighed %} · <span class="route-pending">{{ truck_unweighed }} tasi tortilmagan</span>{% endif %}{% if load.started_at %} · <span class="badge badge-st-sent">Yo'lda — jo'nagan {{ load.started_at|date:"H:i" }}</span>{% endif %}</span>
-      <a class="lane-head-link" href="#route">Marshrut va jo'natish</a>
+      {% if show_route %}<a class="lane-head-link" href="#route">Marshrut va jo'natish</a>{% endif %}
     </h2>
     {% if roll_breakdown %}
     <details class="lane-rolls">
@@ -119,7 +138,7 @@
 
 </form>
 
-{% if load and lanes.truck %}
+{% if load and show_route %}
 <section class="lane-route" id="route">
   {% if missing %}
   <div class="card">
