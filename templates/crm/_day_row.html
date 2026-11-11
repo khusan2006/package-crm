@@ -12,7 +12,7 @@
   <div class="lane-line">
     {% if item.n %}<span class="lane-n" title="Marshrutdagi tartibi">{{ item.n }}</span>{% endif %}
     <button type="button" class="lane-who" data-toggle-row aria-expanded="{% if item.open %}true{% else %}false{% endif %}" aria-controls="ed-{{ pk }}" title="Batafsil: mahsulotlar, metr/mikron, narx">
-      <strong>{{ item.client.name }}{% if item.carried_from %} <span class="badge badge-st-order lane-carried" title="{{ item.carried_from|date:'d.m.Y' }} kuni rejada edi">{{ item.carried_label }}</span>{% endif %}{% if item.unsold %} <span class="badge badge-cancelled lane-carried" title="Yetkazildi, lekin ✓ Sotuvga bosilmagan">Sotilmagan</span>{% endif %}</strong>
+      <strong>{{ item.client.name }}{% if item.carried_from %} <span class="badge badge-st-order lane-carried" title="{{ item.carried_from|date:'d.m.Y' }} kuni rejada edi">{{ item.carried_label }}</span>{% endif %}{% if item.unsold %} <span class="badge badge-cancelled lane-carried" title="Mahsulot ketdi, lekin sotuv yozilmagan: kg kiriting va ✓ Sotuvga bosing">Sotuv yozilmagan</span>{% endif %}</strong>
       <span class="cell-sub">{{ item.client.owner }}{% if item.client.phone %} · {{ item.client.phone }}{% endif %}{% if item.purpose != "deliver" %} · {{ item.get_purpose_display }}{% endif %}</span>
     </button>
     {% comment %}Each product on its own line with its kg box — weighing is done from the

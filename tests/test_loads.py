@@ -1649,7 +1649,7 @@ def test_delivered_but_not_sold_comes_to_today_marked(client, admin_user, seller
     item.save()
     body = day_page(client, admin_user).content.decode()
     item.refresh_from_db()
-    assert item.load.date == TODAY() and "Sotilmagan" in body
+    assert item.load.date == TODAY() and "Sotuv yozilmagan" in body
 
 
 def test_a_sotuvlar_sale_nobody_routed_stays_on_its_day(client, admin_user, seller_user, paket):

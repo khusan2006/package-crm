@@ -11931,7 +11931,7 @@ def _carry_over(today, user):
     sold — that one stays where it is."""
     with transaction.atomic():
         # Not finished — or delivered but never sold (✓ forgotten): that one comes too,
-        # marked «Sotilmagan», or the money would never be booked. A Sotuvlar sale
+        # marked «Sotuv yozilmagan», or the money would never be booked. A Sotuvlar sale
         # nobody said how it leaves stays put: it was handled outside the list.
         # (An EXISTS, not a join: a join would need DISTINCT, which Postgres refuses
         # together with FOR UPDATE.)
