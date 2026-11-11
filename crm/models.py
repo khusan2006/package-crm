@@ -2725,6 +2725,9 @@ class LoadItem(models.Model):
                               default=Method.TRUCK)
     status = models.CharField("Holati", max_length=8, choices=Status.choices,
                               default=Status.NEW)
+    # The day this stop was first planned for, when it wasn't finished then and was
+    # carried to a later day («Kechagidan»). Empty for a stop still on its own day.
+    carried_from = models.DateField("Qaysi kundan o'tgan", null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -2757,6 +2760,15 @@ class LoadItem(models.Model):
         if self.status == self.Status.SENT and self.method == self.Method.YANDEX:
             return "Yandexdan jo'natildi"
         return self.get_status_display()
+
+    @property
+    def carried_label(self):
+        """«Kechagidan» for a stop carried from yesterday, «08.11 dan» from earlier."""
+        if not self.carried_from:
+            return ""
+        if self.carried_from == self.load.date - timedelta(days=1):
+            return "Kechagidan"
+        return f"{self.carried_from:%d.%m} dan"
 
     def __str__(self):
         return f"{self.client} — {self.get_purpose_display()}"

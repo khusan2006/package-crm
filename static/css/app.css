@@ -7165,3 +7165,4 @@ input.pick-variant { width: 84px; max-width: 84px; height: 32px; padding: 5px 8p
   .lane-sale { grid-column: 3; grid-row: 1; }
   .lane-open { grid-column: 4; grid-row: 1; }
 }
+.lane-carried { margin-left: 6px; font-size: 11px; vertical-align: 1px; }

@@ -9,7 +9,7 @@
   <summary class="lane-line">
     {% if item.n %}<span class="lane-n" title="Marshrutdagi tartibi">{{ item.n }}</span>{% else %}<span class="lane-n is-none" aria-hidden="true"></span>{% endif %}
     <span class="lane-who">
-      <strong>{{ item.client.name }}</strong>
+      <strong>{{ item.client.name }}{% if item.carried_from %} <span class="badge badge-st-order lane-carried" title="{{ item.carried_from|date:'d.m.Y' }} kuni rejada edi">{{ item.carried_label }}</span>{% endif %}</strong>
       <span class="cell-sub">{{ item.client.owner }}{% if item.client.phone %} · {{ item.client.phone }}{% endif %}{% if item.purpose != "deliver" %} · {{ item.get_purpose_display }}{% endif %}</span>
     </span>
     <span class="lane-what">{{ item.products|default:"—" }}{% if item.rolls %}<span class="cell-sub">{{ item.rolls }} rulon</span>{% endif %}</span>

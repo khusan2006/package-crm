@@ -9840,6 +9840,9 @@ def _track_sale_delivery(sale, user):
     Not for backdated sales or opening balances. Returns the stop, or None."""
     if sale.is_opening or sale.date < timezone.localdate():
         return None
+    if sale.date == timezone.localdate():
+        # Yesterday's open stop for this client comes over first, so the sale lands on it.
+        _carry_over(sale.date, user)
     stop = (LoadItem.objects.select_for_update()
             .filter(load__date=sale.date, client=sale.client, sale__isnull=True)
             .order_by("load__created_at", "created_at").first())
@@ -11790,6 +11793,48 @@ def _lanes(items, user):
     return lanes
 
 
+#: How far back an unfinished stop is still carried to today. Older ones stay on
+#: their own day — a safety net, not a rule anyone should meet.
+CARRY_DAYS = 14
+
+
+def _carry_over(today, user):
+    """Bring the clients not finished on an earlier day to today («Kechagidan»): run
+    when today's page is opened, and does nothing once they are here. Each keeps its
+    status, sale and products; the route order is worked out again. A client already
+    on today's list takes the old stop's products, unless the old one was already
+    sold — that one stays where it is."""
+    with transaction.atomic():
+        old = list(LoadItem.objects.select_for_update()
+                   .filter(load__date__lt=today, load__date__gte=today - timedelta(days=CARRY_DAYS))
+                   .exclude(status=LoadItem.Status.DONE)
+                   .select_related("load", "client").order_by("load__date", "created_at"))
+        if not old:
+            return
+        load = Load.objects.filter(date=today).order_by("created_at").first()
+        if load is None:
+            load = Load.objects.create(date=today, created_by=user)
+        here = {i.client_id: i for i in load.items.all()}
+        moved = []
+        for item in old:
+            mate = here.get(item.client_id)
+            if mate is not None:
+                if item.sale_id is None and mate.sale_id is None:
+                    item.lines.update(item=mate)
+                    item.delete()
+                    moved.append(item.client.name)
+                continue
+            item.carried_from = item.carried_from or item.load.date
+            item.load = load
+            item.position = item.route_group = None
+            item.save(update_fields=["carried_from", "load", "position", "route_group"])
+            here[item.client_id] = item
+            moved.append(item.client.name)
+        if moved:
+            AuditLog.record(user, AuditLog.Action.UPDATE, "Yuk", load.pk,
+                            f"Yuk #{load.pk}: oldingi kunlardan o'tdi — {', '.join(moved)}"[:255])
+
+
 def _render_day(request, day, items=None, posted_new=None):
     """The Yetkazish page for one day: every client of the day in lanes — not
     decided, the truck (with its route), picked up / Yandex, waiting for stock.
@@ -11798,6 +11843,8 @@ def _render_day(request, day, items=None, posted_new=None):
     as posted, so nothing the person entered is lost."""
     user = request.user
     if items is None:
+        if day == timezone.localdate():
+            _carry_over(day, user)
         items = _day_stops(day, user)
     load = Load.objects.filter(date=day).order_by("created_at").first()
     in_day = {i.client_id for i in items}

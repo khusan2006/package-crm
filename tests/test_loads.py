@@ -204,8 +204,10 @@ def test_the_day_page_shows_every_client_of_the_day_in_lanes(client, admin_user,
     item = stop(a, make_client(seller_user, "Kutadi"), (paket, 1))
     item.status = "order"
     item.save()
-    stop(Load.objects.create(date=TODAY() - timedelta(days=1)), make_client(seller_user, "Kecha"),
-         (paket, 1))
+    finished = stop(Load.objects.create(date=TODAY() - timedelta(days=1)),
+                    make_client(seller_user, "Kecha"), (paket, 1))
+    finished.status = "done"  # finished yesterday: stays there
+    finished.save()
     resp = day_page(client, admin_user)
     assert (lane(resp, "truck"), lane(resp, "other"), lane(resp, "undecided"), lane(resp, "order")) == (
         ["Mashina"], ["Olib"], ["Yangi"], ["Kutadi"])
@@ -1426,3 +1428,68 @@ def test_a_backdated_sale_is_not_tracked(client, seller_user, paket):
     sell(client, seller_user, make_client(seller_user, "Anvar"), paket,
          day=TODAY() - timedelta(days=3))
     assert not LoadItem.objects.exists()
+
+
+# --- «Kechagidan»: unfinished clients come to today ------------------------------------
+
+def test_yesterdays_unfinished_clients_come_to_today(client, admin_user, seller_user, paket):
+    yesterday = Load.objects.create(date=TODAY() - timedelta(days=1))
+    open_one = stop(yesterday, make_client(seller_user, "Anvar"), (paket, 3))
+    done_one = stop(yesterday, make_client(seller_user, "Bobur"), (paket, 2))
+    done_one.status = "done"
+    done_one.save()
+    resp = day_page(client, admin_user)
+    open_one.refresh_from_db(), done_one.refresh_from_db()
+    assert open_one.load.date == TODAY() and open_one.carried_from == yesterday.date
+    assert done_one.load == yesterday
+    assert lane(resp, "truck") == ["Anvar"] and "Kechagidan" in resp.content.decode()
+    day_page(client, admin_user)  # opening again moves nothing more
+    assert LoadItem.objects.filter(load__date=TODAY()).count() == 1
+
+
+def test_older_days_say_which_day(client, admin_user, seller_user, paket):
+    old = Load.objects.create(date=TODAY() - timedelta(days=3))
+    item = stop(old, make_client(seller_user, "Anvar"), (paket, 3))
+    day_page(client, admin_user)
+    item.refresh_from_db()
+    assert item.carried_label == f"{old.date:%d.%m} dan"
+
+
+def test_only_todays_page_carries_and_only_recent_days(client, admin_user, seller_user, paket):
+    yesterday = stop(Load.objects.create(date=TODAY() - timedelta(days=1)),
+                     make_client(seller_user, "Anvar"), (paket, 3))
+    ancient = stop(Load.objects.create(date=TODAY() - timedelta(days=40)),
+                   make_client(seller_user, "Qadimiy"), (paket, 3))
+    day_page(client, admin_user, TODAY() + timedelta(days=1))
+    day_page(client, admin_user, TODAY() - timedelta(days=1))
+    yesterday.refresh_from_db()
+    assert yesterday.load.date == TODAY() - timedelta(days=1)
+    day_page(client, admin_user)
+    yesterday.refresh_from_db(), ancient.refresh_from_db()
+    assert yesterday.load.date == TODAY() and ancient.load.date == TODAY() - timedelta(days=40)
+
+
+def test_a_client_already_on_today_takes_the_old_products(client, admin_user, seller_user,
+                                                          load, paket, plyonka):
+    anvar = make_client(seller_user, "Anvar")
+    old = stop(Load.objects.create(date=TODAY() - timedelta(days=1)), anvar, (plyonka, 2))
+    today = stop(load, anvar, (paket, 3))
+    day_page(client, admin_user)
+    assert not LoadItem.objects.filter(pk=old.pk).exists()
+    assert sorted(l.product.name for l in today.lines.all()) == ["Paket", "Plyonka"]
+
+
+def test_a_carried_stop_is_sold_on_the_day_it_is_delivered(client, admin_user, seller_user, paket):
+    item = stop(Load.objects.create(date=TODAY() - timedelta(days=2)),
+                make_client(seller_user, "Anvar"), (paket, 3, 50))
+    day_page(client, admin_user)
+    day_save(client, admin_user, confirm=str(item.pk))
+    assert Sale.objects.get().date == TODAY()
+
+
+def test_a_sotuvlar_sale_lands_on_the_carried_stop(client, seller_user, paket):
+    anvar = make_client(seller_user, "Anvar")
+    old = stop(Load.objects.create(date=TODAY() - timedelta(days=1)), anvar, (paket, 3))
+    sell(client, seller_user, anvar, paket)
+    old.refresh_from_db()
+    assert old.sale == Sale.objects.get() and old.load.date == TODAY()
