@@ -54,6 +54,7 @@
       {% if not item.may_set %}
         <span class="badge badge-st-{{ item.status }}">{{ item.status_label }}</span>
       {% else %}
+        <span class="st-dot st-{% if item.method %}{{ item.status }}{% else %}none{% endif %}" aria-hidden="true"></span>
         <select class="lane-status st-{% if item.method %}{{ item.status }}{% else %}none{% endif %}" data-quick="{{ pk }}" aria-label="{{ item.client.name }} — {% if item.method %}holati{% else %}qanday ketadi{% endif %}">
           {% if not item.method %}<option value="" selected disabled>Qanday ketadi?</option>{% endif %}
           {% for value, label in item.choices %}<option value="{{ value }}"{% if value == item.choice %} selected{% endif %}>{{ label }}</option>{% endfor %}
