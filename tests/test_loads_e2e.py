@@ -535,3 +535,18 @@ def test_clicking_the_line_opens_the_client_but_not_its_boxes(login, admin_user,
     assert not editor.is_visible()
     page.click(f'#stop-{a.pk} [name="kg_{a.lines.get().pk}"]')   # a box: stays closed
     assert not editor.is_visible()
+
+
+def test_the_add_modal_opens_into_the_client_box(login, admin_user, seller_user, live_server, db,
+                                                 paket):
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    stop(load, Client.objects.create(name="A", owner=seller_user), paket)
+    Client.objects.create(name="Botir", owner=seller_user)
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    page.click("[data-open-add]")
+    page.wait_for_function("document.activeElement && document.activeElement.classList.contains('combobox-input')")
+    page.keyboard.type("Bot")
+    page.keyboard.press("Enter")                       # takes Botir — doesn't close the modal
+    assert page.locator("#add-client").evaluate("el => el.open")
+    assert page.locator("[data-new-row] select[name=new_client]").first.input_value() != ""

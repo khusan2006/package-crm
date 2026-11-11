@@ -213,8 +213,12 @@ stand. Counts are for the whole day.{% endcomment %}
     if (!add) { return; }
     var open = function () {
       if (!add.open) { add.showModal(); }
-      var box = add.querySelector('.combobox-input, select');
-      if (box) { setTimeout(function () { box.focus(); }, 50); }
+      // Straight into the client box — not the × the dialog would focus first (Enter
+      // there would close it). The picker's text box, not the hidden <select> behind it.
+      setTimeout(function () {
+        var box = add.querySelector('[data-new-row] .combobox-input') || add.querySelector('[data-new-row] select');
+        if (box) { box.focus(); }
+      }, 50);
     };
     document.addEventListener('click', function (e) {
       if (e.target.closest && e.target.closest('[data-open-add]')) { e.preventDefault(); open(); return; }
