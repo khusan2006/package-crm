@@ -517,3 +517,18 @@ def test_removing_a_product_asks_first_and_keeps_the_row_open(login, admin_user,
     assert list(a.lines.values_list("product__name", flat=True)) == ["Paket katta"]
     assert page.locator(f"#ed-{a.pk}").is_visible()   # no reload, the row is still open
     assert page.locator(f'#stop-{a.pk} .lane-line-item[data-line="{line.pk}"]').count() == 0
+
+
+def test_clicking_the_line_opens_the_client_but_not_its_boxes(login, admin_user, seller_user,
+                                                              live_server, db, paket):
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    a = stop(load, Client.objects.create(name="Anvar", owner=seller_user), paket)
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    editor = page.locator(f"#ed-{a.pk}")
+    page.click(f"#stop-{a.pk} .lane-line-name")          # the product name: opens
+    assert editor.is_visible()
+    page.click(f"#stop-{a.pk} .lane-line-name")          # and closes again
+    assert not editor.is_visible()
+    page.click(f'#stop-{a.pk} [name="kg_{a.lines.get().pk}"]')   # a box: stays closed
+    assert not editor.is_visible()

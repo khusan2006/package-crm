@@ -496,7 +496,14 @@
     // «Open» on a client's line: its details show right under it.
     items.addEventListener('click', function (e) {
       var toggle = e.target.closest && e.target.closest('[data-toggle-row]');
-      if (!toggle) { return; }
+      if (!toggle) {
+        // Anywhere else on a client's line (its empty space, the product names) opens
+        // it too — but not a click meant for a box, the dropdown, a button or a link.
+        var line = e.target.closest && e.target.closest('.lane-line');
+        if (!line || e.target.closest('input, select, textarea, button, a, label, .kg-group')) { return; }
+        toggle = line.querySelector('[data-toggle-row]');
+        if (!toggle) { return; }
+      }
       var row = toggle.closest('.lane-row');
       var editor = document.getElementById(toggle.getAttribute('aria-controls'));
       var open = editor.hidden;

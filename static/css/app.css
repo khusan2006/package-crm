@@ -7306,3 +7306,12 @@ select.lane-status.st-cancel { border-color: var(--border); color: var(--text-mu
   .lane-line-item { grid-template-columns: minmax(0, 1fr) 150px; }
 }
 .kg-group .kg-sum { z-index: 4; }
+
+/* The whole line opens the client (load.js); its own controls keep their clicks. */
+.lane-line { cursor: pointer; }
+.lane-line .kg-group, .lane-line select, .lane-line .lane-sale a, .lane-line .lane-sale button { cursor: auto; }
+.lane-line .lane-sale button, .lane-line .kg-group .line-sell { cursor: pointer; }
+.lane-row:not(.is-open) .lane-line:hover { background: var(--surface-hover); }
+/* A mouse click on the name shows no ring — only keyboard focus does. */
+.lane-who:focus:not(:focus-visible), .lane-open:focus:not(:focus-visible) { outline: none; box-shadow: none; }
+.lane-who:hover { background: none; }
