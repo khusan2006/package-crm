@@ -19,14 +19,22 @@
     list. A box saves as it is left.{% endcomment %}
     <div class="lane-lines">
       {% for line in item.line_list %}
+      {% comment %}Name and rulon on the left; on the right a fixed-width group — the kg box,
+      its unit and (with 2+ products) the ✓ for this product alone — so every kg box
+      sits in one column, in every row.{% endcomment %}
       <div class="lane-line-item" data-line="{{ line.pk|unlocalize }}">
-        <span class="lane-line-name"><span data-line-name>{{ line.product.name }}{% if line.variant_label %} · {{ line.variant_label }}{% endif %}</span>{% if line.rolls %}<span class="cell-sub">{{ line.rolls }} rulon</span>{% endif %}</span>
+        <span class="lane-line-name"><span data-line-name>{{ line.product.name }}{% if line.variant_label %} · {{ line.variant_label }}{% endif %}</span>{% if line.rolls %}<span class="lane-line-rolls">{{ line.rolls }} rulon</span>{% endif %}</span>
         {% if item.editable and not line.sold %}
-        <span class="kg-cell"><input type="text" inputmode="decimal" class="pick-kg{% if line.kg_bad or item.kg_missing and line.kg is None %} is-bad{% endif %}" name="kg_{{ line.pk|unlocalize }}" value="{{ line.kg_input }}" placeholder="kg" title="Tortilgach kiriting: 50+48,5 kabi qo'shib yozsa ham bo'ladi" aria-label="{{ item.client.name }}, {{ line.product.name }} — kg (tortilgach)"{% if line.kg_bad or item.kg_missing and line.kg is None %} aria-invalid="true"{% endif %} autocomplete="off"></span>
-        {% if item.delivers and item.unsold_count > 1 %}<button type="submit" name="confirm_line" value="{{ line.pk|unlocalize }}" class="line-sell" title="Faqat shu mahsulotni sotuvga aylantirish" aria-label="{{ item.client.name }}, {{ line.product.name }} — faqat shuni sotuvga">✓</button>{% endif %}
+        <span class="kg-group{% if line.kg_bad or item.kg_missing and line.kg is None %} is-bad{% endif %}">
+          <span class="kg-cell"><input type="text" inputmode="decimal" class="pick-kg{% if line.kg_bad or item.kg_missing and line.kg is None %} is-bad{% endif %}" name="kg_{{ line.pk|unlocalize }}" value="{{ line.kg_input }}" placeholder="—" title="Tortilgach kiriting: 50+48,5 kabi qo'shib yozsa ham bo'ladi" aria-label="{{ item.client.name }}, {{ line.product.name }} — kg (tortilgach)"{% if line.kg_bad or item.kg_missing and line.kg is None %} aria-invalid="true"{% endif %} autocomplete="off"></span>
+          <span class="kg-unit" aria-hidden="true">kg</span>
+          {% if item.delivers and item.unsold_count > 1 %}<button type="submit" name="confirm_line" value="{{ line.pk|unlocalize }}" class="line-sell" title="Faqat shu mahsulotni sotuvga aylantirish" aria-label="{{ item.client.name }}, {{ line.product.name }} — faqat shuni sotuvga">✓</button>{% endif %}
+        </span>
         {% else %}
-        <span class="lane-kg-text">{% if line.kg is not None %}{{ line.kg|floatformat:"-3g" }} kg{% else %}<span class="muted">tortilmagan</span>{% endif %}</span>
-        {% if line.sold and not item.sale %}{% if item.mine %}<a class="badge badge-paid line-sold" href="{% url 'sale_detail' line.sale_id %}" title="Shu mahsulot sotilgan">✓ #{{ line.sale_id|unlocalize }}</a>{% else %}<span class="badge badge-paid line-sold">✓ #{{ line.sale_id|unlocalize }}</span>{% endif %}{% endif %}
+        <span class="kg-group is-text">
+          <span class="lane-kg-text">{% if line.kg is not None %}{{ line.kg|floatformat:"-3g" }} kg{% else %}<span class="muted">tortilmagan</span>{% endif %}</span>
+          {% if line.sold and not item.sale %}{% if item.mine %}<a class="badge badge-paid line-sold" href="{% url 'sale_detail' line.sale_id %}" title="Shu mahsulot sotilgan">✓ #{{ line.sale_id|unlocalize }}</a>{% else %}<span class="badge badge-paid line-sold">✓ #{{ line.sale_id|unlocalize }}</span>{% endif %}{% endif %}
+        </span>
         {% endif %}
       </div>
       {% empty %}

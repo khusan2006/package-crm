@@ -115,7 +115,6 @@ stand. Counts are for the whole day.{% endcomment %}
   <section class="lane lane-truck">
     <h2 class="lane-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>Mashinada yetkaziladi <span class="lane-count">{{ lanes.truck|length }}</span>
       <span class="lane-head-sub">{% if truck_kg %}{{ truck_kg|floatformat:"0g" }} kg{% endif %}{% if truck_unweighed %} · <span class="route-pending">{{ truck_unweighed }} tasi tortilmagan</span>{% endif %}{% if load.started_at %} · <span class="badge badge-st-sent">Yo'lda — jo'nagan {{ load.started_at|date:"H:i" }}</span>{% endif %}</span>
-      {% if show_route %}<a class="lane-head-link" href="#route">Marshrut va jo'natish</a>{% endif %}
     </h2>
     {% if roll_breakdown %}
     <details class="lane-rolls">
