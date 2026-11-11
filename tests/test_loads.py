@@ -6,6 +6,7 @@ kg is entered once weighed and ✓ turns a stop into a real sale. Sellers see th
 load and change only their own clients' stops. The route maths is in
 test_routing.py, the road service in test_road.py."""
 
+import io
 import re
 from datetime import timedelta
 from decimal import Decimal
@@ -262,11 +263,12 @@ def test_the_day_page_shows_every_client_of_the_day_in_lanes(client, admin_user,
     finished.sale = Sale.objects.create(client=finished.client, sales_rep=seller_user)
     finished.save()
     resp = day_page(client, admin_user)
-    assert (lane(resp, "truck"), lane(resp, "other"), lane(resp, "undecided"), lane(resp, "order")) == (
-        ["Mashina"], ["Olib"], ["Yangi"], ["Kutadi"])
+    # «Buyurtmalar»: not decided how it leaves (first), then waiting for stock.
+    assert (lane(resp, "truck"), lane(resp, "pickup"), lane(resp, "order")) == (
+        ["Mashina"], ["Olib"], ["Yangi", "Kutadi"])
     assert resp.context["truck_kg"] == Decimal("100")
     # The Yuk's old address shows the same day.
-    assert lane(detail(client, admin_user, a), "other") == ["Olib"]
+    assert lane(detail(client, admin_user, a), "pickup") == ["Olib"]
 
 
 # --- stops and product lines --------------------------------------------------------
@@ -1423,7 +1425,7 @@ def test_a_sale_from_sotuvlar_lands_on_the_board_without_a_method(client, seller
     line = item.lines.get()
     assert (line.product, line.kg, line.price) == (paket, Decimal("120"), Decimal("15000"))
     assert not item.on_route
-    assert lane(day_page(client, seller_user), "undecided") == ["Anvar"]
+    assert lane(day_page(client, seller_user), "order") == ["Anvar"]
     assert "Kutilmoqda" in client.get("/sales/").content.decode()
 
 
@@ -1451,15 +1453,30 @@ def test_a_second_sale_the_same_day_gets_its_own_stop(client, seller_user, paket
     assert Load.objects.filter(date=TODAY()).count() == 2
 
 
-def test_a_backdated_sale_is_not_tracked(client, seller_user, paket):
-    sell(client, seller_user, make_client(seller_user, "Anvar"), paket,
-         day=TODAY() - timedelta(days=3))
-    assert not LoadItem.objects.exists()
+def test_a_backdated_sale_shows_on_its_own_day(client, admin_user, seller_user, paket):
+    """A sale typed in late for an earlier day is on that day's board too, as it is in
+    Sotuvlar — and stays there: not carried to today."""
+    day = TODAY() - timedelta(days=3)
+    sell(client, seller_user, make_client(seller_user, "Anvar"), paket, day=day)
+    item = LoadItem.objects.get()
+    assert (item.load.date, item.method, item.via_sotuvlar) == (day, "", True)
+    assert lane(day_page(client, admin_user, day), "order") == ["Anvar"]
+    day_page(client, admin_user)
+    item.refresh_from_db()
+    assert item.load.date == day
 
 
-# --- «Kechagidan»: unfinished clients come to today ------------------------------------
+# --- An order its day passed without: today's page asks what happened -------------------
 
-def test_yesterdays_unfinished_clients_come_to_today(client, admin_user, seller_user, paket):
+def decide(client, user, item, qaror, **extra):
+    """Answer «O'z kunida jo'natilmagan» for one order."""
+    client.force_login(user)
+    return client.post(f"/yetkazish/qaror/{item.pk}/", {"qaror": qaror, **extra})
+
+
+def test_yesterdays_unfinished_clients_wait_for_a_decision(client, admin_user, seller_user, paket):
+    """Not moved by themselves: they stay on their day and today's page asks; «Bugunga»
+    brings one over as «Kechagidan»."""
     yesterday = Load.objects.create(date=TODAY() - timedelta(days=1))
     open_one = stop(yesterday, make_client(seller_user, "Anvar"), (paket, 3))
     done_one = stop(yesterday, make_client(seller_user, "Bobur"), (paket, 2))
@@ -1467,34 +1484,43 @@ def test_yesterdays_unfinished_clients_come_to_today(client, admin_user, seller_
     done_one.sale = Sale.objects.create(client=done_one.client, sales_rep=seller_user)
     done_one.save()
     resp = day_page(client, admin_user)
+    open_one.refresh_from_db()
+    assert open_one.load == yesterday
+    assert [w.client.name for w in resp.context["waiting"]] == ["Anvar"]
+    body = resp.content.decode()
+    # A bell with the count beside the day; the list itself in its window.
+    assert 'class="day-bell-count">1<' in body and 'id="waiting-dialog"' in body
+    decide(client, admin_user, open_one, "bugun")
     open_one.refresh_from_db(), done_one.refresh_from_db()
     assert open_one.load.date == TODAY() and open_one.carried_from == yesterday.date
     assert done_one.load == yesterday
+    resp = day_page(client, admin_user)
     assert lane(resp, "truck") == ["Anvar"] and "Kechagidan" in resp.content.decode()
-    day_page(client, admin_user)  # opening again moves nothing more
+    assert resp.context["waiting"] == []
     assert LoadItem.objects.filter(load__date=TODAY()).count() == 1
 
 
 def test_older_days_say_which_day(client, admin_user, seller_user, paket):
     old = Load.objects.create(date=TODAY() - timedelta(days=3))
     item = stop(old, make_client(seller_user, "Anvar"), (paket, 3))
-    day_page(client, admin_user)
+    decide(client, admin_user, item, "bugun")
     item.refresh_from_db()
     assert item.carried_label == f"{old.date:%d.%m} dan"
 
 
-def test_only_todays_page_carries_and_only_recent_days(client, admin_user, seller_user, paket):
+def test_only_todays_page_asks_and_nothing_moves_by_itself(client, admin_user, seller_user,
+                                                           paket):
     yesterday = stop(Load.objects.create(date=TODAY() - timedelta(days=1)),
                      make_client(seller_user, "Anvar"), (paket, 3))
     ancient = stop(Load.objects.create(date=TODAY() - timedelta(days=40)),
                    make_client(seller_user, "Qadimiy"), (paket, 3))
-    day_page(client, admin_user, TODAY() + timedelta(days=1))
-    day_page(client, admin_user, TODAY() - timedelta(days=1))
-    yesterday.refresh_from_db()
-    assert yesterday.load.date == TODAY() - timedelta(days=1)
-    day_page(client, admin_user)
+    assert day_page(client, admin_user, TODAY() + timedelta(days=1)).context["waiting"] == []
+    assert day_page(client, admin_user, TODAY() - timedelta(days=1)).context["waiting"] == []
+    waiting = day_page(client, admin_user).context["waiting"]
+    assert [w.client.name for w in waiting] == ["Qadimiy", "Anvar"]
     yesterday.refresh_from_db(), ancient.refresh_from_db()
-    assert yesterday.load.date == TODAY() and ancient.load.date == TODAY() - timedelta(days=40)
+    assert yesterday.load.date == TODAY() - timedelta(days=1)
+    assert ancient.load.date == TODAY() - timedelta(days=40)
 
 
 def test_a_client_already_on_today_takes_the_old_products(client, admin_user, seller_user,
@@ -1502,7 +1528,7 @@ def test_a_client_already_on_today_takes_the_old_products(client, admin_user, se
     anvar = make_client(seller_user, "Anvar")
     old = stop(Load.objects.create(date=TODAY() - timedelta(days=1)), anvar, (plyonka, 2))
     today = stop(load, anvar, (paket, 3))
-    day_page(client, admin_user)
+    decide(client, admin_user, old, "bugun")
     assert not LoadItem.objects.filter(pk=old.pk).exists()
     assert sorted(l.product.name for l in today.lines.all()) == ["Paket", "Plyonka"]
 
@@ -1510,9 +1536,92 @@ def test_a_client_already_on_today_takes_the_old_products(client, admin_user, se
 def test_a_carried_stop_is_sold_on_the_day_it_is_delivered(client, admin_user, seller_user, paket):
     item = stop(Load.objects.create(date=TODAY() - timedelta(days=2)),
                 make_client(seller_user, "Anvar"), (paket, 3, 50))
-    day_page(client, admin_user)
+    decide(client, admin_user, item, "bugun")
     day_save(client, admin_user, confirm=str(item.pk))
     assert Sale.objects.get().date == TODAY()
+
+
+def test_an_order_is_moved_to_another_day_and_starts_over(client, admin_user, seller_user, paket):
+    item = stop(Load.objects.create(date=TODAY() - timedelta(days=1)),
+                make_client(seller_user, "Anvar"), (paket, 3))
+    LoadItem.objects.filter(pk=item.pk).update(status="sent")
+    later = TODAY() + timedelta(days=2)
+    resp = decide(client, admin_user, item, "kun", sana=later.isoformat())
+    assert resp.url == f"/yetkazish/?sana={TODAY().isoformat()}#kutilayotgan"
+    item.refresh_from_db()
+    assert (item.load.date, item.status) == (later, "new")  # on its way then: planned afresh
+    assert item.carried_from == TODAY() - timedelta(days=1)
+    # It now shows under today's «Buyurtmalar», for that day.
+    groups = day_page(client, admin_user).context["ahead_groups"]
+    assert [(g["day"], [i.pk for i in g["rows"]]) for g in groups] == [(later, [item.pk])]
+    # A past day is no answer.
+    other = stop(Load.objects.create(date=TODAY() - timedelta(days=1)),
+                 make_client(seller_user, "Bobur"), (paket, 1))
+    decide(client, admin_user, other, "kun", sana=(TODAY() - timedelta(days=1)).isoformat())
+    other.refresh_from_db()
+    assert other.load.date == TODAY() - timedelta(days=1)
+
+
+def test_an_order_waiting_for_stock_stays_one_when_moved(client, admin_user, seller_user, paket):
+    item = stop(Load.objects.create(date=TODAY() - timedelta(days=1)),
+                make_client(seller_user, "Anvar"), (paket, 3))
+    LoadItem.objects.filter(pk=item.pk).update(status="order")
+    decide(client, admin_user, item, "bugun")
+    item.refresh_from_db()
+    assert (item.load.date, item.status) == (TODAY(), "order")
+
+
+def test_a_cancelled_order_stays_on_its_day(client, admin_user, seller_user, paket):
+    yesterday = Load.objects.create(date=TODAY() - timedelta(days=1))
+    item = stop(yesterday, make_client(seller_user, "Anvar"), (paket, 3))
+    decide(client, admin_user, item, "bekor")
+    item.refresh_from_db()
+    assert (item.load, item.status) == (yesterday, "cancel")
+    assert day_page(client, admin_user).context["waiting"] == []
+    assert AuditLog.objects.filter(target_type="Yuk", target_id=yesterday.pk,
+                                   summary__contains="bekor qilindi").exists()
+
+
+def test_a_sold_order_is_not_cancelled_from_the_question(client, admin_user, seller_user, paket):
+    yesterday = Load.objects.create(date=TODAY() - timedelta(days=1), created_by=admin_user)
+    item = stop(yesterday, make_client(seller_user, "Anvar"), (paket, 3, 50))
+    save(client, admin_user, yesterday, confirm=str(item.pk))
+    body = day_page(client, admin_user).content.decode()
+    assert f"/yetkazish/qaror/{item.pk}/" in body and 'value="bekor"' not in body
+    decide(client, admin_user, item, "bekor")
+    item.refresh_from_db()
+    assert item.status == "new"
+    # «Yetkazilgan»: it went; sold already, so it is simply done.
+    decide(client, admin_user, item, "yetkazildi")
+    item.refresh_from_db()
+    assert (item.load, item.status) == (yesterday, "done")
+
+
+def test_delivered_but_not_sold_comes_to_today_to_be_sold(client, admin_user, seller_user, paket):
+    yesterday = Load.objects.create(date=TODAY() - timedelta(days=1))
+    item = stop(yesterday, make_client(seller_user, "Anvar"), (paket, 3, 50))
+    decide(client, admin_user, item, "yetkazildi")
+    item.refresh_from_db()
+    assert item.status == "done"
+    body = day_page(client, admin_user).content.decode()
+    item.refresh_from_db()
+    assert item.load.date == TODAY() and "Sotuv yozilmagan" in body
+
+
+def test_only_the_clients_seller_or_a_manager_decides(client, seller_user, other_seller, manager,
+                                                      paket):
+    item = stop(Load.objects.create(date=TODAY() - timedelta(days=1)),
+                make_client(seller_user, "Anvar"), (paket, 3))
+    assert day_page(client, other_seller).context["waiting"] == []
+    assert decide(client, other_seller, item, "bekor").status_code == 403
+    assert [w.pk for w in day_page(client, seller_user).context["waiting"]] == [item.pk]
+    decide(client, manager, item, "bugun")
+    item.refresh_from_db()
+    assert item.load.date == TODAY()
+    # Answered once: a second answer (another tab) changes nothing.
+    decide(client, seller_user, item, "bekor")
+    item.refresh_from_db()
+    assert item.status == "new"
 
 
 def test_a_sotuvlar_sale_lands_on_the_carried_stop(client, seller_user, paket):
@@ -1600,7 +1709,7 @@ def test_a_new_client_is_added_picked_up_or_by_yandex(client, admin_user, seller
              new_product=[paket.pk, paket.pk], new_rolls=["2", "3"])
     assert dict(LoadItem.objects.values_list("client__name", "method")) == {
         "Anvar": "pickup", "Bobur": "yandex"}
-    assert lane(day_page(client, admin_user), "other") == ["Anvar", "Bobur"]
+    assert lane(day_page(client, admin_user), "pickup") == ["Anvar", "Bobur"]
 
 
 # --- data safety: only what was sent is saved ---------------------------------------------
@@ -1717,9 +1826,9 @@ def test_a_sotuvlar_sale_nobody_routed_stays_on_its_day(client, admin_user, sell
 def test_merging_a_money_plan_into_a_delivery_makes_both(client, admin_user, seller_user, load,
                                                          paket):
     anvar = make_client(seller_user, "Anvar")
-    stop(Load.objects.create(date=TODAY() - timedelta(days=1)), anvar, purpose=COLLECT)
+    old = stop(Load.objects.create(date=TODAY() - timedelta(days=1)), anvar, purpose=COLLECT)
     today = stop(load, anvar, (paket, 3))
-    day_page(client, admin_user)
+    decide(client, admin_user, old, "bugun")
     today.refresh_from_db()
     assert today.purpose == BOTH
 
@@ -1731,6 +1840,7 @@ def test_a_sold_stop_from_yesterday_gets_its_own_row_beside_todays(client, admin
     old.sale = Sale.objects.create(client=anvar, sales_rep=seller_user)
     old.save()
     stop(load, anvar, (paket, 2))
+    decide(client, admin_user, old, "bugun")
     resp = day_page(client, admin_user)
     old.refresh_from_db()
     assert old.load.date == TODAY() and old.load != load
@@ -1865,12 +1975,15 @@ def test_tabs_count_and_show_one_lane(client, admin_user, seller_user, load, pak
     yan = stop(load, make_client(seller_user, "Yan"), (paket, 1))
     set_status(client, admin_user, (pick, PICKUP, "new"), (yan, YANDEX, "sent"))
     resp = day_page(client, admin_user)
+    # Pickup and Yandex are one tab, «O'zi olib ketadi».
     assert {t["label"]: t["count"] for t in resp.context["tabs"]} == {
-        "Hammasi": 3, "Qanday ketishi noma'lum": 0, "O'zi olib ketadi": 1, "Yandex": 1,
-        "Mashinada": 1, "Buyurtma": 0}
+        "Hammasi": 3, "Buyurtmalar": 0, "O'zi olib ketadi": 2, "Mashinada": 1}
     day = TODAY().isoformat()
     resp = client.get(f"/yetkazish/?sana={day}&tur=pickup")
-    assert (lane(resp, "other"), lane(resp, "truck"), resp.context["show_route"]) == (["Olib"], [], False)
+    assert (lane(resp, "pickup"), lane(resp, "truck"), resp.context["show_route"]) == (
+        ["Olib", "Yan"], [], False)
+    # An old «Yandex» link lands on the same tab.
+    assert lane(client.get(f"/yetkazish/?sana={day}&tur=yandex"), "pickup") == ["Olib", "Yan"]
     resp = client.get(f"/yetkazish/?sana={day}&tur=truck")
     assert lane(resp, "truck") == ["Mashina"] and resp.context["show_route"]
 
@@ -1929,6 +2042,7 @@ def test_carry_over_leaves_sold_products_on_their_day(client, admin_user, seller
     item = stop(yesterday, make_client(seller_user, "Anvar"), (paket, 5, 120), (plyonka, 2))
     sale = Sale.objects.create(client=item.client, sales_rep=seller_user)
     item.lines.filter(product=paket).update(sale=sale)
+    decide(client, admin_user, item, "bugun")
     resp = day_page(client, admin_user)
     item.refresh_from_db()
     assert item.load == yesterday and item.sale == sale
@@ -1991,6 +2105,53 @@ def test_moving_a_sale_to_another_client_frees_its_products(client, admin_user, 
     client.post(f"/sales/{sale.pk}/edit/", data)
     weighed.refresh_from_db()
     assert weighed.sale is None and not weighed.lines.filter(sale__isnull=False).exists()
+
+
+def test_a_carried_sold_stop_stays_sold_when_its_sale_is_edited(client, admin_user, seller_user,
+                                                                paket):
+    """✓ yesterday before the truck left, carried to today («Kechagidan»): editing the
+    sale in Sotuvlar updates the stop — it doesn't open it to be sold a second time."""
+    yesterday = Load.objects.create(date=TODAY() - timedelta(days=1), created_by=admin_user)
+    item = stop(yesterday, make_client(seller_user, "Anvar"), (paket, 3, 50))
+    save(client, admin_user, yesterday, confirm=str(item.pk))
+    sale = Sale.objects.get()
+    decide(client, admin_user, item, "bugun")
+    item.refresh_from_db()
+    assert item.load.date == TODAY() and item.sale == sale
+    edit_sale(client, admin_user, sale, weight="55")
+    item.refresh_from_db()
+    assert item.sale == sale and item.lines.get().sale == sale
+    assert item.lines.get().kg == Decimal("55")
+    save(client, admin_user, item.load, confirm=str(item.pk))
+    assert Sale.objects.count() == 1
+
+
+def test_putting_a_sales_date_right_keeps_its_stop_sold(client, admin_user, load, weighed):
+    save(client, admin_user, load, confirm=str(weighed.pk))
+    sale = Sale.objects.get()
+    from crm.tests import one_item, sale_post
+    rows = [{**one_item(i.product, weight=str(i.weight), price=str(int(i.price))), "id": i.pk}
+            for i in sale.items.all()]
+    data = sale_post(sale.client_id, rows, date=(TODAY() - timedelta(days=1)).isoformat())
+    data["items-INITIAL_FORMS"] = str(len(rows))
+    client.post(f"/sales/{sale.pk}/edit/", data)
+    sale.refresh_from_db()
+    weighed.refresh_from_db()
+    assert sale.date == TODAY() - timedelta(days=1)
+    assert weighed.sale == sale and not weighed.lines.filter(sale__isnull=True).exists()
+    save(client, admin_user, load, confirm=str(weighed.pk))
+    assert Sale.objects.count() == 1
+
+
+def test_a_cancelled_stop_is_not_sold(client, admin_user, load, weighed):
+    weighed.status = "cancel"
+    weighed.save()
+    body = day_page(client, admin_user).content.decode()
+    assert f'name="confirm" value="{weighed.pk}"' not in body
+    assert 'name="confirm_line"' not in body
+    resp = save(client, admin_user, load, confirm=str(weighed.pk))
+    assert not Sale.objects.exists()
+    assert any("bekor qilingan" in str(m) for m in resp.wsgi_request._messages)
 
 
 def test_a_sotuvlar_sale_skips_a_cancelled_stop(client, seller_user, load, paket):
@@ -2120,3 +2281,213 @@ def test_a_seller_reads_only_their_own_last_prices(client, seller_user, other_se
     prices = detail(client, seller_user, load).context["client_last_price_json"]
     assert str(mine.pk) in prices
     assert str(theirs.pk) not in prices
+
+
+# --- 11.11 tuzatishlari: bo'limlar, keyingi kunlar, Sotuvlar bilan bog'liqlik --------------
+
+def test_pickup_and_yandex_are_one_lane(client, admin_user, seller_user, load, paket):
+    pick = stop(load, make_client(seller_user, "Olib"), (paket, 1))
+    yan = stop(load, make_client(seller_user, "Yan"), (paket, 1))
+    set_status(client, admin_user, (pick, PICKUP, "done"), (yan, YANDEX, "sent"))
+    resp = day_page(client, admin_user)
+    assert lane(resp, "pickup") == ["Olib", "Yan"]
+    body = resp.content.decode()
+    assert "O'zi olib ketadi" in body and "O'zi olib ketadi va Yandex" not in body
+
+
+def test_later_days_orders_show_under_buyurtmalar(client, admin_user, seller_user, load, paket):
+    """An order taken for another day is seen on today's page, under its day."""
+    stop(load, make_client(seller_user, "Bugungi"), (paket, 1))
+    tomorrow = Load.objects.create(date=TODAY() + timedelta(days=1))
+    later = Load.objects.create(date=TODAY() + timedelta(days=5))
+    stop(tomorrow, make_client(seller_user, "Ertangi"), (paket, 2))
+    stop(later, make_client(seller_user, "Keyingi"), (paket, 3))
+    gone = stop(later, make_client(seller_user, "Bekor"), (paket, 1))
+    gone.status = "cancel"
+    gone.save()
+    resp = day_page(client, admin_user)
+    groups = [(g["day"], [i.client.name for i in g["rows"]]) for g in resp.context["ahead_groups"]]
+    assert groups == [(tomorrow.date, ["Ertangi"]), (later.date, ["Keyingi"])]
+    tabs = {t["label"]: t["count"] for t in resp.context["tabs"]}
+    assert tabs["Buyurtmalar"] == 2 and tabs["Hammasi"] == 3
+    # The day's own progress and route know nothing of them.
+    assert resp.context["total"] == 1 and lane(resp, "truck") == ["Bugungi"]
+    # The «Buyurtmalar» tab shows them too; «Mashinada» doesn't.
+    day = TODAY().isoformat()
+    assert len(client.get(f"/yetkazish/?sana={day}&tur=order").context["ahead_groups"]) == 2
+    assert client.get(f"/yetkazish/?sana={day}&tur=truck").context["ahead_groups"] == []
+    # A past day's page doesn't list what is coming.
+    assert day_page(client, admin_user, TODAY() - timedelta(days=1)).context["ahead_groups"] == []
+
+
+def test_a_later_days_order_is_edited_from_today(client, admin_user, seller_user, paket):
+    """Its boxes and its status save from today's page — even a day with no Yuk yet,
+    which is not made by it."""
+    tomorrow = Load.objects.create(date=TODAY() + timedelta(days=1))
+    item = stop(tomorrow, make_client(seller_user, "Ertangi"), (paket, 2))
+    line = item.lines.get()
+    body = day_page(client, admin_user).content.decode()
+    assert f'name="rolls_{line.pk}"' in body
+    assert f'name="confirm" value="{item.pk}"' not in body  # sold on its own day
+    resp = client.post("/yetkazish/kun/", {"action": "items", "sana": TODAY().isoformat(),
+                                           f"rolls_{line.pk}": "7"},
+                       HTTP_X_REQUESTED_WITH="XMLHttpRequest")
+    assert resp.json() == {"ok": True, "saved": True}
+    line.refresh_from_db()
+    assert line.rolls == 7
+    assert AuditLog.objects.filter(target_type="Yuk", target_id=tomorrow.pk).exists()
+    day_save(client, admin_user, quick_pick=f"{item.pk}:truck:order")
+    item.refresh_from_db()
+    assert item.status == "order"
+    assert not Load.objects.filter(date=TODAY()).exists()
+
+
+def test_a_client_is_added_to_another_day_from_this_one(client, admin_user, seller_user, load,
+                                                        paket):
+    anvar = make_client(seller_user, "Anvar")
+    stop(load, anvar, (paket, 1))  # on today already: another day is another order
+    later = TODAY() + timedelta(days=3)
+    new = {"add": "1", "new_sana": later.isoformat(), "new_key": ["1"], "new_client": [anvar.pk],
+           "new_purpose": [DELIVER], "new_method": ["truck"], "new_product": [paket.pk],
+           "new_rolls": ["4"], "new_price": [""], "new_size": [""], "new_micron": [""]}
+    resp = day_save(client, admin_user, **new)
+    assert resp.url.startswith(f"/yetkazish/?sana={TODAY().isoformat()}")
+    item = LoadItem.objects.get(load__date=later)
+    assert (item.client, item.lines.get().rolls) == (anvar, 4)
+    assert AuditLog.objects.filter(target_type="Yuk", target_id=item.load_id,
+                                   action=AuditLog.Action.CREATE).exists()
+    groups = day_page(client, admin_user).context["ahead_groups"]
+    assert [i.client.name for g in groups for i in g["rows"]] == ["Anvar"]
+    # Twice on that day: refused, nothing added.
+    day_save(client, admin_user, **new)
+    assert LoadItem.objects.filter(load__date=later).count() == 1
+
+
+def test_cancelled_and_delivered_stops_are_off_the_trucks_count(client, admin_user, seller_user,
+                                                               load, paket, plyonka):
+    stop(load, make_client(seller_user, "Boradi"), (paket, 2, 40))
+    done = stop(load, make_client(seller_user, "Yetkazildi"), (plyonka, 3, 60))
+    gone = stop(load, make_client(seller_user, "Bekor"), (plyonka, 5, 90))
+    LoadItem.objects.filter(pk=done.pk).update(status="done")
+    LoadItem.objects.filter(pk=gone.pk).update(status="cancel")
+    resp = day_page(client, admin_user)
+    assert lane(resp, "truck") == ["Boradi", "Yetkazildi"] and lane(resp, "cancel") == ["Bekor"]
+    numbers = {i.client.name: i.n for i in resp.context["lanes"]["truck"]}
+    assert numbers == {"Boradi": 1, "Yetkazildi": None}
+    assert resp.context["truck_kg"] == Decimal("40")
+    assert [r["product"] for r in resp.context["roll_breakdown"]] == ["Paket"]
+    assert (resp.context["total"], resp.context["done"]) == (2, 1)
+
+
+def test_buyurtmalar_adds_up_its_products(client, admin_user, seller_user, load, paket):
+    waits = stop(load, make_client(seller_user, "Kutadi"), (paket, 4))
+    LoadItem.objects.filter(pk=waits.pk).update(status="order")
+    stop(Load.objects.create(date=TODAY() + timedelta(days=2)), make_client(seller_user, "Keyin"),
+         (paket, 6))
+    rows = day_page(client, admin_user).context["order_breakdown"]
+    assert [(r["product"], r["rolls"]) for r in rows] == [("Paket", 10)]
+
+
+def test_a_saved_line_knows_its_client_for_the_last_price(client, admin_user, seller_user, load,
+                                                         paket):
+    item = stop(load, make_client(seller_user, "Doimiy"), (paket, 3))
+    body = day_page(client, admin_user).content.decode()
+    assert f'class="stop" data-client="{item.client_id}"' in body
+
+
+def test_moving_a_stop_on_its_way_starts_it_over(client, admin_user, seller_user, load, paket):
+    a = stop(load, make_client(seller_user, "Anvar"), (paket, 2))
+    LoadItem.objects.filter(pk=a.pk).update(status="sent")
+    move(client, admin_user, load, [a], target="tomorrow")
+    a.refresh_from_db()
+    assert a.load.date == TODAY() + timedelta(days=1) and a.status == "new"
+
+
+def test_a_carried_client_still_shows_on_its_own_day(client, admin_user, seller_user, paket):
+    """✓ yesterday, not delivered: the client goes on to today, and yesterday's page
+    still lists it — with where it is now — as its sale in Sotuvlar is yesterday's."""
+    yesterday = Load.objects.create(date=TODAY() - timedelta(days=1), created_by=admin_user)
+    item = stop(yesterday, make_client(seller_user, "Anvar"), (paket, 3, 50))
+    save(client, admin_user, yesterday, confirm=str(item.pk))
+    decide(client, admin_user, item, "bugun")  # today's page: «Bugunga»
+    item.refresh_from_db()
+    assert item.load.date == TODAY()
+    resp = day_page(client, admin_user, yesterday.date)
+    assert [m.client.name for m in resp.context["moved_on"]] == ["Anvar"]
+    body = resp.content.decode()
+    assert f"?sana={TODAY().isoformat()}&amp;ochiq={item.pk}#stop-{item.pk}" in body
+    assert "Sotildi" in body and "uchun hali mijoz yo'q" not in body
+    # Today's page doesn't list it twice.
+    assert day_page(client, admin_user).context["moved_on"] == []
+
+
+def test_old_stops_take_the_sale_typed_for_them(seller_user, paket, plyonka):
+    """Migration 0066: a stop and the sale typed for it in Sotuvlar the same day,
+    from before sales went onto the board, are joined — a past one is delivered."""
+    from importlib import import_module
+
+    from django.apps import apps
+    migration = import_module("crm.migrations.0066_link_old_stops_to_their_sales")
+    day = TODAY() - timedelta(days=1)
+    load = Load.objects.create(date=day)
+    anvar, bobur = make_client(seller_user, "Anvar"), make_client(seller_user, "Bobur")
+    planned = stop(load, anvar, (paket, 1))
+    LoadItem.objects.filter(pk=planned.pk).update(status="cancel")  # as 0062 left it
+    alone = stop(load, bobur, (paket, 1))
+    LoadItem.objects.filter(pk=alone.pk).update(status="cancel")
+    sale = Sale.objects.create(client=anvar, sales_rep=seller_user, date=day)
+    SaleItem.objects.create(sale=sale, product=plyonka, dimension="kg", weight=Decimal("240.9"),
+                            rolls=5, price=Decimal("21000"), cost_price=plyonka.cost_price)
+    other_day = Sale.objects.create(client=bobur, sales_rep=seller_user, date=TODAY())
+    migration.link_stops_to_their_sales(apps, None)
+    planned.refresh_from_db(), alone.refresh_from_db()
+    assert (planned.sale, planned.status) == (sale, "done")
+    line = planned.lines.get()
+    assert (line.product, line.kg, line.rolls, line.sale) == (plyonka, Decimal("240.9"), 5, sale)
+    assert (alone.sale, alone.status) == (None, "cancel")  # its sale is another day's
+    assert other_day.delivery_stop is None
+
+
+def test_older_sales_are_put_on_the_board_by_command(seller_user, paket):
+    """track_sales_delivery: the sales typed before the board tracked them get their
+    stop (today and later unless --dan says otherwise); opening balances and sales
+    already on the board are left alone, so it can run again."""
+    from django.core.management import call_command
+
+    def untracked(name, day, **extra):
+        sale = Sale.objects.create(client=make_client(seller_user, name), sales_rep=seller_user,
+                                   date=day, **extra)
+        SaleItem.objects.create(sale=sale, product=paket, dimension="kg", weight=Decimal("30"),
+                                price=Decimal("15000"), cost_price=paket.cost_price)
+        return sale
+
+    today_sale = untracked("Bugun", TODAY())
+    old_sale = untracked("Kecha", TODAY() - timedelta(days=1))
+    opening = untracked("Qoldiq", TODAY(), is_opening=True)
+    call_command("track_sales_delivery", stdout=io.StringIO())
+    assert today_sale.delivery_stop.load.date == TODAY()
+    assert Sale.objects.get(pk=old_sale.pk).delivery_stop is None
+    call_command("track_sales_delivery", dan=(TODAY() - timedelta(days=1)).isoformat(),
+                 stdout=io.StringIO())
+    stop_ = Sale.objects.get(pk=old_sale.pk).delivery_stop
+    assert (stop_.load.date, stop_.method, stop_.via_sotuvlar) == (old_sale.date, "", True)
+    assert Sale.objects.get(pk=opening.pk).delivery_stop is None
+    count = LoadItem.objects.count()
+    call_command("track_sales_delivery", dan=(TODAY() - timedelta(days=1)).isoformat(),
+                 stdout=io.StringIO())
+    assert LoadItem.objects.count() == count
+
+
+def test_moving_a_sotuvlar_sale_to_an_earlier_day_moves_its_stop(client, admin_user, seller_user,
+                                                                 paket):
+    sell(client, seller_user, make_client(seller_user, "Anvar"), paket)
+    sale = Sale.objects.get()
+    from crm.tests import one_item, sale_post
+    it = sale.items.get()
+    row = {**one_item(it.product, weight=str(it.weight), price=str(int(it.price))), "id": it.pk}
+    earlier = TODAY() - timedelta(days=2)
+    data = sale_post(sale.client_id, [row], date=earlier.isoformat())
+    data["items-INITIAL_FORMS"] = "1"
+    client.force_login(admin_user)
+    client.post(f"/sales/{sale.pk}/edit/", data)
+    assert Sale.objects.get().delivery_stop.load.date == earlier

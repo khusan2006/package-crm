@@ -81,9 +81,11 @@
 
     /* «Oxirgi narx»: a product picked for a client opens its Narx at what that
      * client paid for it last time (client-last-price-map, per kg — see
-     * views._client_last_price_map), else at the catalogue price. It shows as a small
-     * pill under the box; once the box holds another figure the pill is muted and a
-     * click on it puts that price back. A price typed by hand is never replaced. */
+     * views._client_last_price_map), else at the catalogue price — on a new client's
+     * rows, on rows added under a saved client, and on a saved product swapped for
+     * another. Under the row a blue line says «Oxirgi narx: 17 500 so'm/kg · date»,
+     * as on the sale form; once the box holds another figure it is muted and a click
+     * on it puts that price back. A price typed by hand is never replaced. */
     var lastPrices = (function () {
       var el = document.getElementById('client-last-price-map');
       try { return (el && JSON.parse(el.textContent)) || {}; } catch (err) { return {}; }
@@ -91,15 +93,19 @@
     var productOf = function (row) {
       return row.querySelector('select[data-combobox]:not([name=new_client])');
     };
+    // The row's Narx box: a new or added row's, or a saved line's.
+    var priceBoxOf = function (row) {
+      return row && row.querySelector('input.new-row-price, input.pick-price');
+    };
     // A new client's rows read the client picked above them; rows added under a saved
-    // stop read the stop's own client.
+    // stop, and its saved lines, read the stop's own client.
     var clientOf = function (row) {
       var block = row.closest('[data-new-row]');
       if (block) {
         var picker = block.querySelector('select[name=new_client]');
         return picker ? picker.value : '';
       }
-      var holder = row.closest('[data-add-lines]');
+      var holder = row.closest('[data-client]');
       return holder ? holder.getAttribute('data-client') || '' : '';
     };
     var lastPriceOf = function (row) {
@@ -116,30 +122,34 @@
       var parts = String(text).split('.');
       return parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + (parts[1] ? ',' + parts[1] : '');
     };
-    // Hangs from the box's lower edge, right edges lined up — like the kg sum.
-    var placePill = function (pill, box) {
-      pill.style.top = (box.offsetTop + box.offsetHeight - 6) + 'px';
-      pill.style.left = (box.offsetLeft + box.offsetWidth - 4) + 'px';
-    };
+    // A new or added row: a full-width line under it. A saved line (a table row): a
+    // compact one inside its price cell.
     var showLastPrice = function (row) {
-      var box = row.querySelector('input.new-row-price');
+      var box = priceBoxOf(row);
       if (!box) { return; }
-      var pill = row.querySelector('.last-price-pill');
+      var holder = box.matches('.pick-price') ? box.parentNode : row;
+      var hint = holder.querySelector(':scope > .last-price-hint');
       var last = lastPriceOf(row);
-      if (!last) { if (pill) { pill.remove(); } return; }
-      if (!pill) {
-        pill = document.createElement('span');
-        pill.className = 'last-price-pill';
-        pill.setAttribute('aria-live', 'polite');
-        box.after(pill);
+      if (!last) {
+        if (hint) { hint.remove(); }
+        row.classList.remove('has-last-price');
+        return;
+      }
+      if (!hint) {
+        hint = document.createElement('div');
+        hint.className = 'last-price-hint';
+        hint.setAttribute('aria-live', 'polite');
+        holder.appendChild(hint);
       }
       var other = asNumber(box.value) !== parseFloat(last.price);
-      pill.textContent = 'oxirgi ' + grouped(last.price) + ' · ' + last.date.slice(0, 5);
-      pill.title = (other ? "Bosing — shu narx qo'yiladi. " : '') +
+      hint.textContent = box.matches('.pick-price')
+        ? 'Oxirgi: ' + grouped(last.price) + ' · ' + last.date.slice(0, 5)
+        : 'Oxirgi narx: ' + grouped(last.price) + " so'm/kg · " + last.date;
+      hint.title = (other ? "Bosing — shu narx qo'yiladi. " : '') +
         'Mijoz oxirgi marta ' + last.date + ' da shu narxda olgan — o\'zgartirsa bo\'ladi.';
-      pill.classList.toggle('is-other', other);
-      pill.dataset.value = last.price;
-      placePill(pill, box);
+      hint.classList.toggle('is-other', other);
+      hint.dataset.value = last.price;
+      row.classList.add('has-last-price');
     };
     var setPrice = function (box, value) {
       box.value = value;
@@ -149,7 +159,7 @@
     // The row's price as the system would put it: this client's last, else catalogue.
     // Only into an empty box or one the script filled — never over a typed figure.
     var fillPrice = function (row) {
-      var box = row.querySelector('input.new-row-price');
+      var box = priceBoxOf(row);
       var product = productOf(row);
       if (box && product && product.value) {
         var opt = product.options[product.selectedIndex];
@@ -281,7 +291,8 @@
         row.querySelectorAll('[data-add-line-row]').forEach(function (r) { r.remove(); });
         row.querySelectorAll('select[data-combobox]').forEach(function (s) { s.value = ''; unmark(s); });
         row.querySelectorAll('input[type=text]').forEach(function (b) { b.value = ''; unmark(b); delete b.dataset.auto; });
-        row.querySelectorAll('.last-price-pill').forEach(function (p) { p.remove(); });
+        row.querySelectorAll('.last-price-hint').forEach(function (p) { p.remove(); });
+        row.classList.remove('has-last-price');
         syncVariants(row);
         focusClient(row);
       }
@@ -386,8 +397,8 @@
       if (e.target.matches('input.pick-kg')) { kgHint(e.target); }
       // A price typed by hand stays: picking another product won't replace it.
       if (e.isTrusted && e.target.dataset) { delete e.target.dataset.auto; }
-      // The pill under Narx turns muted (clickable) once the box says something else.
-      if (e.target.matches('input.new-row-price')) { showLastPrice(e.target.closest('[data-product-row]')); }
+      // «Oxirgi narx» under Narx turns muted (clickable) once the box says something else.
+      if (e.target.matches('input.new-row-price, input.pick-price')) { showLastPrice(e.target.closest('[data-product-row]')); }
       // Typing a search into the picker isn't a change yet — choosing is.
       if (!e.target.closest('.combobox')) { unmark(e.target); }
       refreshDirty();
@@ -615,24 +626,20 @@
       row.querySelectorAll('[data-toggle-row]').forEach(function (b) { b.setAttribute('aria-expanded', String(open)); });
     });
 
-    // The muted pill puts the client's last price back into the box.
+    // The muted «Oxirgi narx» puts the client's last price back into the box — on a
+    // saved line that is a change like any other, so it saves itself.
     items.addEventListener('click', function (e) {
-      var pill = e.target.closest('.last-price-pill.is-other');
-      if (!pill || !pill.dataset.value) { return; }
-      var row = pill.closest('[data-product-row]');
-      var box = row.querySelector('input.new-row-price');
-      setPrice(box, pill.dataset.value);
+      var hint = e.target.closest('.last-price-hint.is-other');
+      if (!hint || !hint.dataset.value) { return; }
+      var row = hint.closest('[data-product-row]');
+      var box = priceBoxOf(row);
+      if (!box) { return; }
+      setPrice(box, hint.dataset.value);
       unmark(box);
       showLastPrice(row);
       refreshDirty();
+      if (box.matches('.pick-price')) { box.dispatchEvent(new Event('change', { bubbles: true })); }
       box.focus();
-    });
-    // The pills are placed from the boxes, which move when the rows re-wrap.
-    window.addEventListener('resize', function () {
-      items.querySelectorAll('.last-price-pill').forEach(function (pill) {
-        var box = pill.closest('[data-product-row]').querySelector('input.new-row-price');
-        if (box) { placePill(pill, box); }
-      });
     });
     items.addEventListener('submit', function () { submitting = true; });
     window.addEventListener('pageshow', function () { submitting = false; });
@@ -640,7 +647,14 @@
       if (!submitting && isDirty()) { e.preventDefault(); e.returnValue = ''; }
     });
     syncVariants(items);
-    // After a failed save the rows come back as typed: only the pills are drawn.
+    // A saved line still at the client's last price was put there by the system: a
+    // product swapped on it brings the new product's price, like a catalogue one.
+    items.querySelectorAll('tr[data-product-row]').forEach(function (row) {
+      var box = priceBoxOf(row);
+      var last = lastPriceOf(row);
+      if (box && last && asNumber(box.value) === parseFloat(last.price)) { box.dataset.auto = '1'; }
+    });
+    // After a failed save the rows come back as typed: only the hints are drawn.
     showAllLastPrices();
     refreshDirty();
   }

@@ -1,0 +1,14 @@
+{% comment %}A lane's products added up — rulon by product and variant, largest first
+(`rows` from views._roll_breakdown), under a `title` that opens it.{% endcomment %}
+<details class="lane-rolls">
+  <summary>{{ title }}</summary>
+  <ul class="kpi-breakdown">
+    {% for r in rows %}
+    <li style="--share: {{ r.share }}%">
+      <span class="kb-count">{{ r.rolls }}<small>ta</small></span>
+      <span class="kb-name">{{ r.product }}</span>
+      {% if r.size or r.micron %}<span class="kb-tags">{% if r.size %}<span class="kb-tag" title="Metr">{{ r.size }}</span>{% endif %}{% if r.micron %}<span class="kb-tag" title="Mikron">{{ r.micron }}<small>mk</small></span>{% endif %}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</details>

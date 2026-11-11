@@ -32,11 +32,20 @@
       <noscript><button type="submit" class="btn btn-sm">Ko'rsat</button></noscript>
     </form>
     {% if not is_today %}<a class="btn btn-sm btn-ghost day-pick-today" href="{% url 'load_list' %}{% if tab_qs %}?{{ tab_qs|slice:'1:' }}{% endif %}">Bugunga qaytish</a>{% endif %}
+    {% comment %}A bell beside the day: how many orders an earlier day passed without —
+    a click opens them, each asking what happened.{% endcomment %}
+    {% if waiting %}
+    <button type="button" class="day-bell" data-open-waiting aria-haspopup="dialog" aria-controls="waiting-dialog" title="O'z kunida jo'natilmagan buyurtmalar: {{ waiting|length }}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      <span class="day-bell-count">{{ waiting|length }}</span>
+      <span class="visually-hidden">ta jo'natilmagan buyurtma — ochish</span>
+    </button>
+    {% endif %}
   </div>
   <div class="toolbar-right">
-    {% if items %}
-    <span class="day-progress" title="Yakunlangan: {{ done }} / {{ items|length }}">
-      <span class="day-progress-txt">{{ items|length }} mijoz · <strong>{{ done }}</strong> yakunlandi</span>
+    {% if total %}
+    <span class="day-progress" title="Yakunlangan: {{ done }} / {{ total }} (bekor qilinganlarsiz)">
+      <span class="day-progress-txt">{{ total }} mijoz · <strong>{{ done }}</strong> yakunlandi</span>
       <span class="day-progress-bar"><span style="width: {{ done_pct|unlocalize }}%"></span></span>
     </span>
     {% endif %}
@@ -44,9 +53,43 @@
   </div>
 </div>
 
-{% if items %}
+{% comment %}The bell's window: the orders an earlier day passed without — each asks
+what happened: today, another day, it did go, or the order was cancelled. Their own
+small forms, outside the day form.{% endcomment %}
+{% if waiting %}
+<dialog class="modal modal--wide" id="waiting-dialog" aria-labelledby="waiting-title">
+  <div class="modal-body">
+  <div class="modal-head">
+    <h2 id="waiting-title">O'z kunida jo'natilmagan buyurtmalar <span class="lane-count">{{ waiting|length }}</span></h2>
+    <button type="button" class="modal-x" data-waiting-close aria-label="Yopish">&times;</button>
+  </div>
+  <div class="add-dialog-body waiting-body">
+  <p class="muted waiting-ask">Kuni o'tib ketdi. Boshqa kunga ko'chirilsinmi yoki zakaz bekor qilindimi?</p>
+  {% for w in waiting %}
+  <form method="post" action="{% url 'load_item_decide' w.pk|unlocalize %}" class="waiting-row">
+    {% csrf_token %}
+    <span class="moved-who"><strong>{{ w.client.name }}</strong><span class="cell-sub">{{ w.day_label }} kuni edi · {{ w.client.owner }}{% if w.summary %} · {{ w.summary }}{% endif %}</span></span>
+    <span class="badge badge-st-{{ w.status }}">{{ w.status_label }}</span>
+    {% if w.sold %}<span class="sold-chip" title="Sotuv yozilgan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>Sotildi</span>{% endif %}
+    <span class="waiting-acts">
+      <button type="submit" name="qaror" value="bugun" class="btn btn-sm">Bugunga</button>
+      <span class="waiting-other">
+        <input type="date" name="sana" value="{{ tomorrow }}" min="{{ tomorrow }}" max="2099-12-31" aria-label="{{ w.client.name }} — qaysi kunga">
+        <button type="submit" name="qaror" value="kun" class="btn btn-sm btn-ghost">Shu kunga</button>
+      </span>
+      {% if w.method %}<button type="submit" name="qaror" value="yetkazildi" class="btn btn-sm btn-ghost" title="Jo'natilgan, faqat belgilanmay qolgan">Yetkazilgan</button>{% endif %}
+      {% if not w.sold %}<button type="submit" name="qaror" value="bekor" class="btn btn-sm btn-ghost is-danger">Bekor qilindi</button>{% endif %}
+    </span>
+  </form>
+  {% endfor %}
+  </div>
+  </div>
+</dialog>
+{% endif %}
+
+{% if items or ahead_groups or tab %}
 {% comment %}Tabs: how the clients leave — each tab one lane; under «Hammasi», where they
-stand. Counts are for the whole day.{% endcomment %}
+stand. Counts are for the whole day («Buyurtmalar» with the later days).{% endcomment %}
 <nav class="day-tabs" aria-label="Qanday ketadi">
   {% for t in tabs %}<a class="day-tab{% if t.active %} is-active{% endif %}" href="{{ t.url }}"{% if t.active %} aria-current="page"{% endif %}>{{ t.label }}<span class="seg-count">{{ t.count }}</span></a>{% endfor %}
 </nav>
@@ -75,10 +118,16 @@ stand. Counts are for the whole day.{% endcomment %}
   <dialog class="modal modal--wide" id="add-client" aria-labelledby="add-client-title"{% if adding %} data-open-now{% endif %}>
     <div class="modal-body">
       <div class="modal-head">
-        <h2 id="add-client-title">Mijoz qo'shish · {{ day|date:"d.m.Y" }}</h2>
+        <h2 id="add-client-title">Mijoz qo'shish</h2>
         <button type="button" class="modal-x" data-add-cancel aria-label="Yopish">&times;</button>
       </div>
       <div class="add-dialog-body">
+        {% comment %}Which day the order is for — this one unless changed; a later day's
+        shows here under «Buyurtmalar» all the same.{% endcomment %}
+        <label class="add-day">
+          <span class="add-day-label">Qaysi kunga</span>
+          <input type="date" name="new_sana" value="{{ new_day }}" data-default="{{ day|date:'Y-m-d' }}" min="2000-01-01" max="2099-12-31" aria-label="Qaysi kunga">
+        </label>
         <p class="muted lane-add-hint">Mijoz, maqsad, qanday ketishi, mahsulot va rulon — kg keyin, tortilgach.</p>
         <div class="new-rows" data-new-rows>
           {% for row in new_rows %}{% include "crm/_load_new_row.html" with row=row %}{% endfor %}
@@ -103,29 +152,37 @@ stand. Counts are for the whole day.{% endcomment %}
   {% if items and not shown %}
   <div class="card"><p class="muted">Bu bo'limda mijoz yo'q.</p></div>
   {% endif %}
-  {% if not items %}
+  {% if not items and not moved_on %}
   <div class="card"><p class="muted">{{ day|date:"d.m.Y" }} uchun hali mijoz yo'q.</p></div>
   {% endif %}
 
   <div class="stops">
-  {% if lanes.undecided %}
-  <section class="lane lane-undecided">
-    <h2 class="lane-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>Qanday ketishini tanlang <span class="lane-count">{{ lanes.undecided|length }}</span></h2>
-    {% for item in lanes.undecided %}{% include "crm/_day_row.html" with lane="undecided" %}{% endfor %}
-  </section>
-  {% endif %}
-
-  {% if lanes.other %}
-  <section class="lane">
-    <h2 class="lane-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 21v-6h6v6"/></svg>O'zi olib ketadi va Yandex <span class="lane-count">{{ lanes.other|length }}</span></h2>
-    {% for item in lanes.other %}{% include "crm/_day_row.html" with lane="other" %}{% endfor %}
-  </section>
-  {% endif %}
-
-  {% if lanes.order %}
-  <section class="lane lane-order">
-    <h2 class="lane-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><line x1="3" y1="3" x2="21" y2="21"/></svg>Buyurtma — omborda yo'q <span class="lane-count">{{ lanes.order|length }}</span></h2>
+  {% comment %}«Buyurtmalar»: this day's clients not decided how they leave or waiting
+  for stock, then the later days' orders, a heading per day — every order in one
+  place, without going to its date.{% endcomment %}
+  {% if lanes.order or ahead_groups %}
+  <section class="lane lane-order" id="buyurtmalar">
+    <h2 class="lane-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>Buyurtmalar <span class="lane-count">{{ order_count }}</span>
+      <span class="lane-head-sub">qanday ketishi tanlanmagan, omborda yo'q{% if ahead_groups %} va keyingi kunlar{% endif %}</span>
+    </h2>
+    {% if order_breakdown %}{% include "crm/_lane_rolls.html" with rows=order_breakdown title="Buyurtmalardagi mahsulotlar — rulonlar" %}{% endif %}
+    {% if lanes.order %}
+    {% if ahead_groups %}<h3 class="lane-subhead">{{ day_label }} <span class="lane-count">{{ lanes.order|length }}</span></h3>{% endif %}
     {% for item in lanes.order %}{% include "crm/_day_row.html" with lane="order" %}{% endfor %}
+    {% endif %}
+    {% for g in ahead_groups %}
+    <h3 class="lane-subhead"><a href="{% url 'load_list' %}?sana={{ g.day|date:'Y-m-d' }}" title="Shu kunni ochish">{{ g.label }}</a> <span class="lane-count">{{ g.rows|length }}</span></h3>
+    {% for item in g.rows %}{% include "crm/_day_row.html" with lane="ahead" %}{% endfor %}
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  {% if lanes.pickup %}
+  <section class="lane lane-pickup">
+    <h2 class="lane-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 21v-6h6v6"/></svg>O'zi olib ketadi <span class="lane-count">{{ lanes.pickup|length }}</span>
+      <span class="lane-head-sub">o'zi olib ketadi va Yandex</span>
+    </h2>
+    {% for item in lanes.pickup %}{% include "crm/_day_row.html" with lane="pickup" %}{% endfor %}
   </section>
   {% endif %}
 
@@ -134,21 +191,35 @@ stand. Counts are for the whole day.{% endcomment %}
     <h2 class="lane-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>Mashinada yetkaziladi <span class="lane-count">{{ lanes.truck|length }}</span>
       <span class="lane-head-sub">{% if truck_kg %}{{ truck_kg|floatformat:"0g" }} kg{% endif %}{% if truck_unweighed %} · <span class="route-pending">{{ truck_unweighed }} tasi tortilmagan</span>{% endif %}{% if load.started_at %} · <span class="badge badge-st-sent">Yo'lda — jo'nagan {{ load.started_at|date:"H:i" }}</span>{% endif %}</span>
     </h2>
-    {% if roll_breakdown %}
-    <details class="lane-rolls">
-      <summary>Mashinaga ortiladi — rulonlar</summary>
-      <ul class="kpi-breakdown">
-        {% for r in roll_breakdown %}
-        <li style="--share: {{ r.share }}%">
-          <span class="kb-count">{{ r.rolls }}<small>ta</small></span>
-          <span class="kb-name">{{ r.product }}</span>
-          {% if r.size or r.micron %}<span class="kb-tags">{% if r.size %}<span class="kb-tag" title="Metr">{{ r.size }}</span>{% endif %}{% if r.micron %}<span class="kb-tag" title="Mikron">{{ r.micron }}<small>mk</small></span>{% endif %}</span>{% endif %}
-        </li>
-        {% endfor %}
-      </ul>
-    </details>
-    {% endif %}
+    {% if roll_breakdown %}{% include "crm/_lane_rolls.html" with rows=roll_breakdown title="Mashinaga ortiladi — rulonlar" %}{% endif %}
     {% for item in lanes.truck %}{% include "crm/_day_row.html" with lane="truck" %}{% endfor %}
+  </section>
+  {% endif %}
+
+  {% comment %}Not going after all: kept apart, out of the truck's kg and rulon. The
+  status dropdown brings one back.{% endcomment %}
+  {% if lanes.cancel %}
+  <section class="lane lane-cancel">
+    <h2 class="lane-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>Bekor qilindi <span class="lane-count">{{ lanes.cancel|length }}</span></h2>
+    {% for item in lanes.cancel %}{% include "crm/_day_row.html" with lane="cancel" %}{% endfor %}
+  </section>
+  {% endif %}
+
+  {% comment %}This day's clients that weren't finished and went on to a later day
+  («Kechagidan»): still part of the day's record, with where they are now.{% endcomment %}
+  {% if moved_on %}
+  <section class="lane lane-moved">
+    <h2 class="lane-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>Keyingi kunga o'tganlar <span class="lane-count">{{ moved_on|length }}</span>
+      <span class="lane-head-sub">bu kuni tugamagan — davomi o'sha kunda</span>
+    </h2>
+    {% for m in moved_on %}
+    <div class="moved-row">
+      <span class="moved-who"><strong>{{ m.client.name }}</strong><span class="cell-sub">{{ m.client.owner }}{% if m.summary %} · {{ m.summary }}{% endif %}</span></span>
+      <span class="badge badge-st-{{ m.status }}">{{ m.status_label }}</span>
+      {% if m.sale_id %}<span class="sold-chip" title="Sotuv #{{ m.sale_id|unlocalize }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>Sotildi</span>{% endif %}
+      <a class="btn btn-sm btn-ghost moved-go" href="{% url 'load_list' %}?sana={{ m.load.date|date:'Y-m-d' }}&amp;ochiq={{ m.pk|unlocalize }}#stop-{{ m.pk|unlocalize }}">{{ m.load.date|date:"d.m" }} kuniga o'tgan →</a>
+    </div>
+    {% endfor %}
   </section>
   {% endif %}
   </div>
@@ -228,12 +299,27 @@ stand. Counts are for the whole day.{% endcomment %}
       if (e.target.closest && e.target.closest('[data-add-cancel]')) {
         // Each row's × empties it (the last one stays, empty); run them all.
         add.querySelectorAll('[data-new-row-remove]').forEach(function (b) { b.click(); });
+        var day = add.querySelector('[name=new_sana]');
+        if (day) { day.value = day.getAttribute('data-default'); }
         add.close();
       }
     });
     // A click on the dark backdrop around the modal closes it too.
     add.addEventListener('click', function (e) { if (e.target === add) { add.close(); } });
     if (add.hasAttribute('data-open-now')) { open(); }
+  })();
+  // The bell: its window opens on a click — and again after an answer, while some
+  // are still waiting (the answer comes back to #kutilayotgan).
+  (function () {
+    var box = document.getElementById('waiting-dialog');
+    if (!box) { return; }
+    var open = function () { if (!box.open) { box.showModal(); } };
+    document.addEventListener('click', function (e) {
+      if (e.target.closest && e.target.closest('[data-open-waiting]')) { open(); return; }
+      if (e.target.closest && e.target.closest('[data-waiting-close]')) { box.close(); }
+    });
+    box.addEventListener('click', function (e) { if (e.target === box) { box.close(); } });
+    if (window.location.hash === '#kutilayotgan') { open(); }
   })();
 </script>
 <script src="{% static_v 'js/route.js' %}" defer></script>

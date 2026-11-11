@@ -6744,16 +6744,6 @@ td:has(> input.pick-kg) { position: relative; }
    rows, so nothing shifts. Muted once the box says something else — then a click
    puts that price back. */
 [data-product-row] { position: relative; }
-.last-price-pill {
-  position: absolute; transform: translateX(-100%); z-index: 1;
-  padding: 0 6px; line-height: 14px; border-radius: 999px; white-space: nowrap;
-  background: var(--accent); color: #fff; font-size: 10.5px; font-weight: 600;
-  pointer-events: none;
-}
-.last-price-pill.is-other {
-  background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border-strong);
-  line-height: 12px; pointer-events: auto; cursor: pointer;
-}
 .items-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 12px; }
 .items-actions .route-dirty[hidden] { display: none; }
 /* Yuk tarkibi: new rows (a client and a rulon each) and the full-width «+». */
@@ -7096,6 +7086,57 @@ input.pick-variant { width: 84px; max-width: 84px; height: 32px; padding: 5px 8p
 .lane-rolls { border: 1px dashed var(--border); border-radius: var(--r); padding: 8px 12px; }
 .lane-rolls summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-muted); }
 .lane-rolls .kpi-breakdown { margin-top: 8px; }
+
+/* «Buyurtmalar»: a heading per day — this one, then the later days' orders. */
+.lane-subhead {
+  display: flex; align-items: center; gap: 8px;
+  margin: 6px 0 0; font-size: 13px; font-weight: 700; color: var(--text-muted);
+}
+.lane-subhead a { color: inherit; }
+.lane-subhead a:hover { color: var(--accent); }
+.lane-cancel .lane-head { color: var(--text-muted); }
+/* A past day's clients that went on to a later day: a plain line each, with a link. */
+.lane-moved .lane-head { color: var(--text-muted); }
+.moved-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px;
+  padding: 10px 14px; border: 1px dashed var(--border); border-radius: var(--r); background: var(--surface);
+}
+.moved-who { display: flex; flex-direction: column; min-width: 0; flex: 1 1 260px; }
+.moved-go { margin-left: auto; }
+/* Today's page: a bell beside the day — how many orders an earlier day passed without;
+   its window lists them, each asking what happened. */
+.day-bell {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; border: 1px solid var(--border); border-radius: 50%;
+  background: var(--surface); color: var(--warning); cursor: pointer;
+}
+.day-bell:hover { border-color: var(--warning); }
+.day-bell svg { width: 19px; height: 19px; }
+.day-bell-count {
+  position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: var(--r-pill); background: var(--danger); color: #fff;
+  font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+}
+#waiting-dialog .modal-head h2 { display: flex; align-items: center; gap: 8px; }
+.waiting-ask { margin: 0 0 4px; }
+.waiting-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px;
+  padding: 10px 0; border-top: 1px solid var(--border);
+}
+.waiting-acts { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.waiting-other { display: inline-flex; align-items: center; gap: 4px; }
+.waiting-other input[type=date] { height: 32px; }
+/* «Mijoz qo'shish»: which day the order is for. */
+.add-day { display: inline-flex; align-items: center; gap: 10px; margin: 0 0 10px; }
+.add-day-label { font-size: 13px; font-weight: 600; color: var(--text-muted); }
+.add-day input[type=date] { height: 36px; }
+/* «Oxirgi narx» under a product row on the day page — the same blue line as on the
+   sale form; inside a saved line's price cell it is a compact one. */
+.new-row.has-last-price { flex-wrap: wrap; }
+.new-row > .last-price-hint { flex: 0 0 100%; order: 99; }
+.stop-lines td .last-price-hint {
+  margin-top: 4px; padding: 2px 6px; font-size: 11.5px; white-space: normal; text-align: left;
+}
 
 .lane-add { margin-bottom: 22px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); padding: 0 16px; }
 .lane-add[open] { padding-bottom: 16px; }

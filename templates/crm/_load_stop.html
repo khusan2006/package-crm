@@ -6,7 +6,7 @@
   to the sale. Every value comes back as typed after a failed save (`*_input`), and a
   wrong box is marked `is-bad`.
 {% endcomment %}
-<section class="stop{% if item.sale %} is-confirmed{% endif %}">
+<section class="stop{% if item.sale %} is-confirmed{% endif %}" data-client="{{ item.client_id|unlocalize }}">
   {% comment %}One bar on top: how it leaves and why the truck goes (labelled), the
   sale once ✓, and on the right where it is, another day, remove.{% endcomment %}
   <header class="stop-bar">
