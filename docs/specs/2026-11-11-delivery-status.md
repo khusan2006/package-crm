@@ -33,3 +33,18 @@ Status: built 2026-11-11, not yet deployed. Builds on
 - Does Yandex need its cost recorded?
 - Deleting a sale that came from Sotuvlar leaves its stop on the board, unlocked
   (as with ✓ sales). Should it disappear instead?
+
+## Revised the same day: the day is the Yuk
+
+After trying the board, the client found Yuk + sale + status too many things to
+follow. Replaced by one page per day:
+
+| Question | Answer |
+|---|---|
+| Yuk | No «Yangi yuk». The day's Yuk is made when the first client is added; old `/yetkazish/<id>/` links show that day. |
+| Layout | Lanes by what happens next: «Qanday ketishini tanlang» (no method), «O'zi olib ketadi va Yandex», «Buyurtma — omborda yo'q», «Mashinada yetkaziladi» (route order, numbered, route and «Jo'natish» right under it). |
+| Steps | Buttons on the row: truck Rejada → Ortilmoqda → Yo'lda → Yetkazildi; Yandex Kutilmoqda → Jo'natildi → Yetkazildi; pickup Kutilmoqda → Olib ketdi. |
+| Editing a client | The row opens in place: products (product itself changeable), metr/mikron, rulon, price, kg, ✓ Sotuvga, other day, remove. |
+| Saving | No Saqlash. A box saves as it is left, in the background; adding or removing a product reloads with the row open; new clients go in with «Qo'shish». |
+| Unfinished clients | Opening today brings every client not finished on the last 14 days, marked «Kechagidan» / «08.11 dan». A client already on today takes the old products. ✓ on such a client dates the sale today. Migration closes the stops of days already gone, so nothing old floods in. |
+| Dropped | The status board's chips and search (the lanes replace them). |

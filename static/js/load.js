@@ -35,7 +35,10 @@
       // Boxes on saved stops: changed text, a ticked "remove", another purpose.
       // Compared without spaces: money boxes are regrouped ("15 000") as the page loads.
       var plain = function (v) { return v.replace(/\s/g, ''); };
-      if (some('.stops input[type=text]', function (b) { return plain(b.value) !== plain(b.defaultValue); })) { return true; }
+      if (some('.stops input[type=text]:not(.combobox-input)', function (b) { return plain(b.value) !== plain(b.defaultValue); })) { return true; }
+      if (some('.stops select[data-combobox]', function (s) {
+        return Array.prototype.some.call(s.options, function (o) { return o.selected !== o.defaultSelected; });
+      })) { return true; }
       if (some('.stops input[type=checkbox]', function (b) { return b.checked !== b.defaultChecked; })) { return true; }
       if (some('.stops select.stop-purpose', function (s) {
         return Array.prototype.some.call(s.options, function (o) { return o.selected !== o.defaultSelected; });
@@ -302,6 +305,102 @@
       if (!e.target.closest('.combobox')) { unmark(e.target); }
       refreshDirty();
     });
+    /* ---------- Saving by itself (the day page: data-autosave) ----------
+       A box of a client already on the list is saved as it is left: the whole form
+       is posted in the background without the new-client rows, the row says
+       «Saqlandi» (or what is wrong, in red) and nothing reloads. Adding or removing
+       a product changes the rows themselves, so that posts the form normally, the
+       row staying open. New clients go in with «Qo'shish». */
+    if (items.hasAttribute('data-autosave')) {
+      var saving = null, again = null;
+      var savedBox = /^(rolls|price|kg|size|micron|product|purpose)_\d+$/;
+      var stopOf = function (el) { return el.closest('.lane-row') || el.closest('.stop'); };
+      var note = function (stop, text, bad) {
+        var n = stop && stop.querySelector('[data-autosave-note]');
+        if (!n) { return; }
+        n.textContent = text;
+        n.classList.toggle('is-bad', !!bad);
+        n.hidden = !text;
+      };
+      var settle = function (stop) {
+        // What is on screen is what is saved now: nothing here is "unsaved" any more.
+        stop.querySelectorAll('input[type=text]').forEach(function (b) { b.defaultValue = b.value; });
+        stop.querySelectorAll('select').forEach(function (s) {
+          Array.prototype.forEach.call(s.options, function (o) { o.defaultSelected = o.selected; });
+        });
+        // The row's own line: its kg added up again.
+        var total = 0, missing = false;
+        stop.querySelectorAll('input.pick-kg').forEach(function (b) {
+          var v = parseFloat(b.value.replace(/[\s\u00a0\u202f]/g, '').replace(',', '.'));
+          if (isNaN(v)) { missing = true; } else { total += v; }
+        });
+        var kg = stop.querySelector('.lane-kg');
+        if (kg) {
+          kg.innerHTML = (total ? String(Math.round(total * 1000) / 1000).replace('.', ',') + ' kg' : '—')
+            + (missing ? '<span class="cell-sub route-pending">tortilmagan</span>' : '');
+        }
+      };
+      var save = function (stop) {
+        if (saving) { again = stop; return; }
+        var data = new FormData(items);
+        Array.from(data.keys()).forEach(function (k) {
+          if (/^(new_|newline_|addline_)/.test(k)) { data.delete(k); }
+        });
+        data.set('action', 'items');
+        note(stop, 'Saqlanmoqda…');
+        // getAttribute: the form's hidden «action» field shadows form.action.
+        saving = fetch(items.getAttribute('action'), {
+          method: 'POST', body: data, credentials: 'same-origin',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(function (r) {
+          return r.json().catch(function () { return { ok: false, problems: ['Saqlanmadi — sahifani yangilang.'], bad: [] }; });
+        }).then(function (res) {
+          items.querySelectorAll('.stops .is-bad').forEach(function (b) { b.classList.remove('is-bad'); b.removeAttribute('aria-invalid'); });
+          if (res.ok) {
+            settle(stop);
+            note(stop, res.saved ? 'Saqlandi ✓' : '');
+          } else {
+            (res.bad || []).forEach(function (name) {
+              var box = items.querySelector('[name="' + name + '"]');
+              if (box) {
+                box.classList.add('is-bad');
+                box.setAttribute('aria-invalid', 'true');
+                var shown = box.closest('.combobox') && box.closest('.combobox').querySelector('.combobox-input');
+                if (shown) { shown.classList.add('is-bad'); }
+              }
+            });
+            note(stop, 'Saqlanmadi: ' + (res.problems || []).join('; '), true);
+          }
+          refreshDirty();
+        }).catch(function () {
+          note(stop, 'Saqlanmadi — internet? Qayta urinib ko\'ring.', true);
+        }).then(function () {
+          saving = null;
+          if (again) { var next = again; again = null; save(next); }
+        });
+      };
+      var reloadWith = function (stop) {
+        var open = items.querySelector('[name=ochiq]');
+        var row = stop && stop.closest('.lane-row');
+        if (open && row) { open.value = row.id.replace('stop-', ''); }
+        submitting = true;
+        if (items.requestSubmit) { items.requestSubmit(); } else { items.submit(); }
+      };
+      items.addEventListener('change', function (e) {
+        var t = e.target;
+        if (!t.name || !t.closest('.stops')) { return; }
+        var stop = stopOf(t);
+        if (savedBox.test(t.name)) { save(stop); return; }
+        if (/^drop_\d+$/.test(t.name)) { reloadWith(stop); return; }
+        // A product added to a client: once it has a product and rulon, it goes in.
+        var added = t.closest('[data-add-line-row]');
+        if (added && t.matches('.new-row-rolls') && t.value.trim()) {
+          var product = added.querySelector('select[data-combobox]');
+          if (product && product.value) { reloadWith(stop); }
+        }
+      });
+    }
+
     items.addEventListener('submit', function () { submitting = true; });
     window.addEventListener('pageshow', function () { submitting = false; });
     window.addEventListener('beforeunload', function (e) {

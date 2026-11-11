@@ -130,7 +130,6 @@ urlpatterns = [
     # delivery: loads (yuk) and their route
     path("yetkazish/", crm_views.load_list, name="load_list"),
     path("yetkazish/yangi/", crm_views.load_create, name="load_create"),
-    path("yetkazish/holat/", crm_views.load_board_save, name="load_board_save"),
     path("yetkazish/kun/", crm_views.load_day_save, name="load_day_save"),
     path("yetkazish/<int:pk>/", crm_views.load_detail, name="load_detail"),
     path("yetkazish/<int:pk>/edit/", crm_views.load_edit, name="load_edit"),

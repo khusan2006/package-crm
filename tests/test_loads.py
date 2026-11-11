@@ -735,7 +735,9 @@ def test_metr_and_mikron_are_edited_on_a_saved_line(client, admin_user, seller_u
     item = stop(load, make_client(seller_user, "Anvar", 0.01), (oq, 5), (paket, 1))
     film, bag = item.lines.get(product=oq), item.lines.get(product=paket)
     body = detail(client, admin_user, load).content.decode()
-    assert f'name="size_{film.pk}"' in body and f'name="size_{bag.pk}"' not in body
+    # Both lines have the boxes (the product can be swapped); the bag's stays greyed
+    # out on the page and is ignored when saved.
+    assert f'name="size_{film.pk}"' in body and f'name="size_{bag.pk}"' in body
     save(client, admin_user, load, **{f"size_{film.pk}": "6", f"micron_{film.pk}": "015",
                                       f"size_{bag.pk}": "2м"})
     film.refresh_from_db(), bag.refresh_from_db()
@@ -1229,30 +1231,11 @@ def test_a_line_without_metr_or_mikron_does_not_offer_them(db, seller_user, pake
 TRUCK, PICKUP, YANDEX = "truck", "pickup", "yandex"
 
 
-def board(client, user, day=None):
-    return get(client, user, f"/yetkazish/?sana={(day or TODAY()).isoformat()}")
-
-
 def set_status(client, user, *changes, day=None):
-    """Post the board: each change is (item, method, status)."""
-    client.force_login(user)
-    data = {"sana": (day or TODAY()).isoformat(), "stop": [i.pk for i, *_ in changes]}
+    """Press a row's button on the day page for each change: (item, method, status)."""
     for item, method, status in changes:
-        data[f"method_{item.pk}"] = method
-        data[f"status_{item.pk}"] = status
-    return client.post("/yetkazish/holat/", data)
-
-
-def test_a_row_change_comes_back_to_the_same_view_at_that_row(client, admin_user, seller_user,
-                                                             load, paket):
-    a = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
-    client.force_login(admin_user)
-    resp = client.post("/yetkazish/holat/", {"sana": TODAY().isoformat(), "stop": a.pk,
-                                             "status_" + str(a.pk): "loading",
-                                             "holat": "new", "q": "anv"})
-    assert resp.url == f"/yetkazish/?sana={TODAY().isoformat()}&holat=new&q=anv#row-{a.pk}"
-    a.refresh_from_db()
-    assert (a.method, a.status) == (TRUCK, "loading")  # method not posted: unchanged
+        resp = day_save(client, user, day=day, quick=f"{item.pk}:{method}:{status}")
+    return resp
 
 
 def test_new_stops_go_by_truck_and_wait(load, seller_user, paket):
@@ -1260,23 +1243,14 @@ def test_new_stops_go_by_truck_and_wait(load, seller_user, paket):
     assert (item.method, item.status, item.on_route) == (TRUCK, "new", True)
 
 
-def test_saving_the_board_sets_method_and_status(client, admin_user, seller_user, load, paket):
+def test_the_buttons_set_how_it_leaves_and_its_status(client, admin_user, seller_user, load, paket):
     a = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
     b = stop(load, make_client(seller_user, "Bobur"), (paket, 3))
-    resp = set_status(client, admin_user, (a, PICKUP, "done"), (b, YANDEX, "sent"))
-    assert resp.url == f"/yetkazish/?sana={TODAY().isoformat()}"
+    set_status(client, admin_user, (a, PICKUP, "done"), (b, YANDEX, "sent"))
     a.refresh_from_db(), b.refresh_from_db()
     assert (a.method, a.status, a.status_label) == (PICKUP, "done", "Olib ketdi")
     assert (b.status_label, b.on_route) == ("Yandexdan jo'natildi", False)
     assert AuditLog.objects.filter(target_type="Yuk", summary__contains="Olib ketdi").exists()
-
-
-def test_a_wrong_value_saves_nothing(client, admin_user, seller_user, load, paket):
-    a = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
-    b = stop(load, make_client(seller_user, "Bobur"), (paket, 3))
-    set_status(client, admin_user, (a, PICKUP, "done"), (b, TRUCK, "flying"))
-    a.refresh_from_db()
-    assert (a.method, a.status) == (TRUCK, "new")
 
 
 def day_save(client, user, day=None, **extra):
@@ -1396,7 +1370,7 @@ def test_a_sale_from_sotuvlar_lands_on_the_board_without_a_method(client, seller
     line = item.lines.get()
     assert (line.product, line.kg, line.price) == (paket, Decimal("120"), Decimal("15000"))
     assert not item.on_route
-    assert "Anvar" in board(client, seller_user).content.decode()
+    assert lane(day_page(client, seller_user), "undecided") == ["Anvar"]
     assert "Kutilmoqda" in client.get("/sales/").content.decode()
 
 
@@ -1493,3 +1467,54 @@ def test_a_sotuvlar_sale_lands_on_the_carried_stop(client, seller_user, paket):
     sell(client, seller_user, anvar, paket)
     old.refresh_from_db()
     assert old.sale == Sale.objects.get() and old.load.date == TODAY()
+
+
+# --- saving by itself, and changing a line's product ------------------------------------
+
+def background_save(client, user, **extra):
+    client.force_login(user)
+    data = {"action": "items", "sana": TODAY().isoformat()}
+    for load in Load.objects.filter(date=TODAY()):
+        data.update({k: v for k, v in form_of(load).items() if k != "action"})
+    data.update(extra)
+    return client.post("/yetkazish/kun/", data, HTTP_X_REQUESTED_WITH="XMLHttpRequest")
+
+
+def test_a_box_saves_by_itself_without_a_page(client, admin_user, seller_user, load, paket):
+    item = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    line = item.lines.get()
+    resp = background_save(client, admin_user, **{f"kg_{line.pk}": "50+48,5"})
+    assert resp.status_code == 200 and resp.json() == {"ok": True, "saved": True}
+    line.refresh_from_db()
+    assert line.kg == Decimal("98.5")
+    assert background_save(client, admin_user).json() == {"ok": True, "saved": False}
+
+
+def test_a_wrong_box_says_which_without_saving(client, admin_user, seller_user, load, paket):
+    item = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    line = item.lines.get()
+    resp = background_save(client, admin_user, **{f"kg_{line.pk}": "abc", f"rolls_{line.pk}": "7"})
+    assert resp.status_code == 400
+    assert resp.json()["bad"] == [f"kg_{line.pk}"]
+    line.refresh_from_db()
+    assert line.rolls == 3
+
+
+def test_a_lines_product_can_be_changed(client, admin_user, seller_user, load, paket, plyonka):
+    item = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    line = item.lines.get()
+    plyonka.has_micron = True
+    plyonka.save()
+    background_save(client, admin_user, **{f"product_{line.pk}": str(plyonka.pk),
+                                           f"price_{line.pk}": "26000", f"micron_{line.pk}": "05"})
+    line.refresh_from_db()
+    assert (line.product, line.price, line.micron) == (plyonka, Decimal("26000"), "05")
+    assert AuditLog.objects.filter(summary__contains="Plyonka: 3 rulon").exists()
+
+
+def test_the_day_page_has_no_save_button_but_adds_clients(client, admin_user, seller_user, load,
+                                                         paket):
+    stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    body = day_page(client, admin_user).content.decode()
+    assert "data-autosave" in body and ">Saqlash<" not in body and "Qo&#x27;shish" not in body
+    assert "Qo'shish</button>" in body

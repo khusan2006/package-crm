@@ -40,6 +40,22 @@ def stop_names(page):
     return page.locator("[data-route-stop] .route-body strong").all_inner_texts()
 
 
+#: «Qo'shish» — puts the new clients in (everything else saves by itself).
+ADD = "[data-load-items] button[name=add]"
+
+
+def open_row(page, item):
+    """Open a client's row on the day page: its products, kg and ✓ show."""
+    page.click(f"#stop-{item.pk} > summary .lane-who")
+    page.locator(f"#stop-{item.pk} .lane-editor").wait_for()
+
+
+def open_add(page):
+    add = page.locator("#add-client")
+    if not add.evaluate("el => el.open"):
+        page.click("#add-client > summary")
+
+
 def pick(page, row, nth, text):
     """Type into the nth picker of a row and choose the matching option."""
     row.locator(".combobox-input").nth(nth).fill(text)
@@ -89,8 +105,8 @@ def test_add_stops_by_keyboard_and_save(login, admin_user, seller_user, live_ser
     second = page.locator("[data-new-row]").nth(1)
     pick(page, second, 0, "Anvar savdo")
     second.locator("select[name=new_purpose]").select_option("collect")
-    page.click("[data-load-items] .items-actions button[type=submit]")
-    page.wait_for_selector("text=Saqlandi")
+    page.click(ADD)
+    page.wait_for_selector("text=Qo'shildi")
     stops = {i.client.name: i for i in load.items.all()}
     assert stops["Botir plast"].lines.get().rolls == 12
     assert stops["Anvar savdo"].purpose == "collect" and not stops["Anvar savdo"].lines.exists()
@@ -103,6 +119,7 @@ def test_type_kg_and_tick_turns_the_stop_into_a_sale(login, admin_user, seller_u
     line = item.lines.get()
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    open_row(page, item)
     page.fill(f'[name="kg_{line.pk}"]', "123,5")
     page.click(f'button[name="confirm"][value="{item.pk}"]')
     page.wait_for_selector("text=sotuvga aylandi")
@@ -119,6 +136,7 @@ def test_kg_box_adds_up_like_a_calculator(login, admin_user, seller_user, live_s
     line = item.lines.get()
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    open_row(page, item)
     box = page.locator(f'[name="kg_{line.pk}"]')
     box.fill("50+48,5+51")
     assert page.locator(f'#stop-{item.pk} .kg-sum').inner_text() == "= 149,5 kg"
@@ -126,12 +144,12 @@ def test_kg_box_adds_up_like_a_calculator(login, admin_user, seller_user, live_s
     assert box.input_value() == "149.5"
     assert page.locator(f'#stop-{item.pk} .kg-sum').count() == 0
     box.fill("10+20")
-    box.press("Tab")  # leaving the box settles it too
+    box.press("Tab")  # leaving the box settles it — and saves it, no button
     assert box.input_value() == "30"
-    page.click("[data-load-items] .items-actions button[type=submit]")
-    page.wait_for_selector("text=Saqlandi")
+    page.wait_for_selector(f"#stop-{item.pk} [data-autosave-note]:has-text('Saqlandi')")
     line.refresh_from_db()
     assert line.kg == Decimal("30")
+    assert page.locator(f"#stop-{item.pk} .lane-kg").inner_text().startswith("30 kg")
 
 def test_a_product_is_added_to_a_stop(login, admin_user, seller_user, live_server, db, paket):
     Product.objects.create(name="Plyonka", sku="P2", cost_price=1, price=Decimal("26000"))
@@ -139,27 +157,26 @@ def test_a_product_is_added_to_a_stop(login, admin_user, seller_user, live_serve
     item = stop(load, Client.objects.create(name="Anvar", owner=seller_user), paket)
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    open_row(page, item)
     page.click(f'[data-add-line="{item.pk}"]')
     added = page.locator("[data-add-line-row]").first
     pick(page, added, 0, "Plyonka")
     added.locator("input[name$=_rolls]").type("3")
     # The Narx box filled itself with the catalogue price.
     assert added.locator("input[name$=_price]").input_value().replace(" ", "").replace("\u00a0", "") == "26000"
-    assert page.locator("[data-items-dirty]").is_visible()
-    page.click("[data-load-items] .items-actions button[type=submit]")
+    added.locator("input[name$=_rolls]").press("Tab")  # product and rulon in: it goes in
     page.wait_for_selector("text=Saqlandi")
+    assert page.locator(f"#stop-{item.pk}").evaluate("el => el.open")  # the row stays open
     assert sorted(item.lines.values_list("product__name", "rolls")) == [("Paket katta", 5), ("Plyonka", 3)]
 
 
 def test_enter_in_the_picker_never_submits(login, admin_user, seller_user, live_server, db, paket):
     load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
-    item = stop(load, Client.objects.create(name="Bektemir savdo", owner=seller_user), paket,
-                kg=Decimal("120"))
-    line = item.lines.get()
+    stop(load, Client.objects.create(name="Bektemir savdo", owner=seller_user), paket)
     Client.objects.create(name="Chilonzor plast", owner=seller_user)
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
-    page.fill(f'[name="kg_{line.pk}"]', "121")
+    open_add(page)
     picker = page.locator("[data-new-row] .combobox-input").first
     picker.fill("chilon")
     picker.press("Enter")                     # takes the match, moves on, no submit
@@ -168,23 +185,18 @@ def test_enter_in_the_picker_never_submits(login, admin_user, seller_user, live_
     picker.press("Escape")
     picker.press("Enter")
     page.wait_for_timeout(300)
-    line.refresh_from_db()
-    assert line.kg == Decimal("120")          # the 121 was never saved behind the user's back
+    assert load.items.count() == 1            # nobody was added behind the user's back
     assert page.url.endswith(f"/yetkazish/{load.pk}/")
 
 
-def test_undoing_a_change_clears_the_unsaved_note(login, admin_user, seller_user, live_server, db, paket):
+def test_a_client_not_yet_added_is_noted(login, admin_user, seller_user, live_server, db, paket):
     load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
-    item = stop(load, Client.objects.create(name="A", owner=seller_user), paket, rolls=3)
-    line = item.lines.get()
+    stop(load, Client.objects.create(name="A", owner=seller_user), paket, rolls=3)
     Client.objects.create(name="Botir", owner=seller_user)
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    open_add(page)
     note = page.locator("[data-items-dirty]")
-    assert not note.is_visible()
-    page.fill(f'[name="rolls_{line.pk}"]', "4")
-    assert note.is_visible()
-    page.fill(f'[name="rolls_{line.pk}"]', "3")
     assert not note.is_visible()
     pick(page, page.locator("[data-new-row]").first, 0, "Botir")
     assert note.is_visible()
@@ -224,8 +236,8 @@ def test_picking_a_product_fills_its_price_and_a_typed_price_stays(login, admin_
     pick(page, row, 1, "Paket katta")
     assert price.input_value().replace(" ", "").replace(" ", "") == "24500"
     row.locator("[name=new_rolls]").fill("3")
-    page.click("[data-load-items] .items-actions button[type=submit]")
-    page.wait_for_selector("text=Saqlandi")
+    page.click(ADD)
+    page.wait_for_selector("text=Qo'shildi")
     line = LoadLine.objects.get()
     assert (line.product.name, line.price) == ("Paket katta", Decimal("24500"))
 
@@ -256,8 +268,8 @@ def test_a_new_client_gets_a_second_product_with_metr_and_mikron(login, admin_us
     size.fill("1,5м")
     extra.locator("input[name$=_micron]").fill("05")
     extra.locator("input[name$=_rolls]").fill("2")
-    page.click("[data-load-items] .items-actions button[type=submit]")
-    page.wait_for_selector("text=Saqlandi")
+    page.click(ADD)
+    page.wait_for_selector("text=Qo'shildi")
     item = load.items.get()
     assert sorted(item.lines.values_list("product__name", "size", "micron", "rolls")) == [
         ("Paket katta", "", "", 4), ("ОҚ плёнка", "1,5м", "05", 2)]
@@ -306,6 +318,7 @@ def test_a_client_moves_to_tomorrow_from_its_own_icon(login, admin_user, seller_
     b = stop(load, Client.objects.create(name="Botir", owner=seller_user), paket)
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    open_row(page, a)
     page.click(f'#stop-{a.pk} a[href*="boshqa-kunga"]')
     dialog = page.locator("[data-move-dialog]")
     dialog.wait_for()
@@ -333,6 +346,7 @@ def test_one_product_of_a_client_moves_to_tomorrow(login, admin_user, seller_use
     bag = a.lines.get(product=paket)
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    open_row(page, a)
     page.click(f'#stop-{a.pk} a[href*="boshqa-kunga"]')
     dialog = page.locator("[data-move-dialog]")
     dialog.wait_for()
@@ -360,6 +374,7 @@ def test_another_product_starts_as_a_copy_of_the_last(login, admin_user, seller_
     Client.objects.create(name="Bobur", owner=seller_user)
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    open_row(page, saved)
 
     # A saved stop: the copy has the saved line's product, metr, mikron, rulon and price,
     # and the cursor waits in Metr.
@@ -374,6 +389,7 @@ def test_another_product_starts_as_a_copy_of_the_last(login, admin_user, seller_
     copy.locator("input[name$=_micron]").fill("08")
 
     # A new client: «+ Mahsulot» copies the row above it.
+    open_add(page)
     block = page.locator("[data-new-row]").first
     first = block.locator(".new-stop-first")
     pick(page, block, 0, "Bobur")
@@ -386,8 +402,8 @@ def test_another_product_starts_as_a_copy_of_the_last(login, admin_user, seller_
     assert extra.locator("input[name$=_size]").input_value() == "1,5м"
     extra.locator("input[name$=_micron]").fill("08")
 
-    page.click("[data-load-items] .items-actions button[type=submit]")
-    page.wait_for_selector("text=Saqlandi")
+    page.click(ADD)
+    page.wait_for_selector("text=Qo'shildi")
     assert sorted(saved.lines.values_list("size", "micron", "rolls", "price")) == [
         ("1,5м", "05", 2, Decimal("23000")), ("2м", "08", 2, Decimal("23000"))]
     bobur = load.items.get(client__name="Bobur")

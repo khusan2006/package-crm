@@ -10717,10 +10717,6 @@ def _may_change_load(user, load):
     return user.can_see_all_records or load.created_by_id == user.pk
 
 
-#: The board's «Usul tanlanmagan» chip: stops nobody has said how they leave.
-BOARD_NO_METHOD = "usulsiz"
-
-
 def load_list(request):
     """Yetkazish: the day's page (`_render_day`)."""
     return _render_day(request, _load_day(request.GET.get("sana")))
@@ -10731,54 +10727,6 @@ def _may_set_status(user, item):
     seller. Unlike the stop's contents, this stays open after ✓ — the sale is made
     before the goods have left."""
     return user.can_see_all_records or item.client.owner_id == user.pk
-
-
-def load_board_save(request):
-    """A row's Qanday/Holati changed on the board (the select posts itself). Only
-    stops the user may move are read; nothing is saved if a value is not one of the
-    choices. Back to the board as it was — same day, chip and search, at that row."""
-    if request.method != "POST":
-        return redirect(reverse("load_list"))
-    day = _load_day(request.POST.get("sana"))
-    back = _load_list_url(day)
-    holat, q = request.POST.get("holat", ""), (request.POST.get("q") or "").strip()[:100]
-    if holat in LoadItem.Status.values or holat == BOARD_NO_METHOD:
-        back += f"&holat={holat}"
-    if q:
-        back += f"&q={quote(q)}"
-    pks = [int(raw) for raw in request.POST.getlist("stop") if _DIGITS.fullmatch(raw)]
-    items = (LoadItem.objects.filter(pk__in=pks, load__date=day)
-             .select_related("client", "load"))
-    changes = []
-    for item in items:
-        if not _may_set_status(request.user, item):
-            continue
-        method = request.POST.get(f"method_{item.pk}", item.method)
-        status = request.POST.get(f"status_{item.pk}", item.status)
-        if method not in LoadItem.Method.values and method != "":
-            messages.error(request, f"{item.client.name} — qanday yetkazilishi noto'g'ri.")
-            return redirect(back)
-        if status not in LoadItem.Status.values:
-            messages.error(request, f"{item.client.name} — holati noto'g'ri.")
-            return redirect(back)
-        if (method, status) != (item.method, item.status):
-            changes.append((item, method, status))
-    with transaction.atomic():
-        for item, method, status in changes:
-            item.method, item.status = method, status
-            item.save(update_fields=["method", "status"])
-            AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", item.load_id,
-                            f"Yuk #{item.load_id}, {item.client.name}: "
-                            f"{item.get_method_display() or 'usul tanlanmagan'} — {item.status_label}"[:255])
-    if len(changes) == 1:
-        item = changes[0][0]
-        messages.success(request, f"{item.client.name}: {item.get_method_display() or 'usul tanlanmagan'}"
-                                  f" — {item.status_label}.")
-    elif changes:
-        messages.success(request, f"Saqlandi — {len(changes)} ta mijoz.")
-    if len(pks) == 1:
-        back += f"#row-{pks[0]}"
-    return redirect(back)
 
 
 UZ_WEEKDAYS = ["Dushanba", "Seshanba", "Chorshanba", "Payshanba", "Juma", "Shanba", "Yakshanba"]
@@ -11194,12 +11142,19 @@ def _read_load_items(request, load, items, products):
             line.kg_input = request.POST.get(f"kg_{line.pk}", line.kg_input)
             line.size_input = request.POST.get(f"size_{line.pk}", line.size_input)
             line.micron_input = request.POST.get(f"micron_{line.pk}", line.micron_input)
+            line.product_input = request.POST.get(f"product_{line.pk}", line.product_input)
             if request.POST.get(f"drop_{line.pk}"):
                 line.dropped = True
                 plan["drop"].append(line)
                 continue
             kept += 1
             values = {}
+            # The product may be changed too; its metr/mikron then follow the new one.
+            product = product_of(line.product_input)
+            if product is None:
+                line.product_bad = True
+                problems.append(f"{name}, {line.product.name} — mahsulot tanlanmagan")
+                product = line.product
             for field, parse in (("rolls", _whole_rolls), ("price", _price_value), ("kg", _kg_value)):
                 try:
                     values[field] = parse(getattr(line, f"{field}_input"))
@@ -11208,16 +11163,17 @@ def _read_load_items(request, load, items, products):
                 except (ValueError, ArithmeticError):
                     setattr(line, f"{field}_bad", True)
                     problems.append(f"{name}, {line.product.name} — {dict(rolls='rulon', price='narx', kg='kg')[field]}")
-            for field, has_it, word in (("size", line.product.has_size, "metr"),
-                                        ("micron", line.product.has_micron, "mikron")):
+            for field, has_it, word in (("size", product.has_size, "metr"),
+                                        ("micron", product.has_micron, "mikron")):
                 try:
                     values[field] = _variant_value(getattr(line, f"{field}_input"), has_it,
                                                    metres=field == "size")
                 except ValueError:
                     setattr(line, f"{field}_bad", True)
                     problems.append(f"{name}, {line.product.name} — {word} {VARIANT_MAX} belgidan uzun")
-            if len(values) == 5 and tuple(values[f] for f in LINE_FIELDS) != \
-                    tuple(getattr(line, f) for f in LINE_FIELDS):
+            if len(values) == 5 and (tuple(values[f] for f in LINE_FIELDS) != tuple(
+                    getattr(line, f) for f in LINE_FIELDS) or product != line.product):
+                values["product"] = product
                 plan["lines"].append((line, values))
         added = []
         for raw in _post_rows(request, *(f"addline_{item.pk}_{f}" for f in ROW_FIELDS)):
@@ -11317,7 +11273,8 @@ def _write_load_plan(load, plan):
     for line, values in plan["lines"]:
         for field in LINE_FIELDS:
             setattr(line, field, values[field])
-        line.save(update_fields=list(LINE_FIELDS))
+        line.product = values["product"]
+        line.save(update_fields=[*LINE_FIELDS, "product"])
     for item, *line in plan["add"]:
         _create_load_line(item, line)
     position = (load.items.aggregate(m=Max("position"))["m"] or 0) if load.ordered_at else None
@@ -11337,7 +11294,7 @@ def _create_load_line(item, line):
 
 def _plan_summary(load, plan):
     parts = [f"{i.client.name}: {i.get_purpose_display()}" for i, _ in plan["stops"]]
-    parts += [f"{l.item.client.name}, {l.product.name}: {v['rolls']} rulon"
+    parts += [f"{l.item.client.name}, {v['product'].name}: {v['rolls']} rulon"
               + (f" {v['kg']:f} kg" if v["kg"] is not None else "") for l, v in plan["lines"]]
     parts += [f"{l.item.client.name}, {l.product.name} olib tashlandi" for l in plan["drop"]]
     parts += [f"{i.client.name} + {p.name} {r} rulon" for i, p, r, *_ in plan["add"]]
@@ -11357,8 +11314,15 @@ def _save_load_items(request, load, items):
         messages.error(request, f"Bir yo'la ko'pi bilan {LOAD_MAX_ITEMS} ta yangi qator saqlanadi.")
         return redirect(_load_url(load))
     products = {p.pk: p for p in Product.objects.filter(is_active=True)}
+    # Kept products that were since switched off in the catalogue stay pickable on
+    # the lines that already have them.
+    products.update({l.product_id: l.product for i in items for l in i.line_list})
+    background = request.headers.get("x-requested-with") == "XMLHttpRequest"
     plan, posted_new, problems = _read_load_items(request, load, items, products)
     if problems:
+        if background:
+            return JsonResponse({"ok": False, "problems": problems, "bad": _bad_boxes(items)},
+                                status=400)
         messages.error(request, "Saqlanmadi — qizil kataklarni to'g'rilang: " + "; ".join(problems))
         return _render_day(request, load.date, items, posted_new=posted_new)
     try:
@@ -11366,6 +11330,10 @@ def _save_load_items(request, load, items):
             _write_load_plan(load, plan)
     except (IntegrityError, DatabaseError):
         # Someone else changed this load at the same moment. Nothing was kept.
+        if background:
+            return JsonResponse({"ok": False, "problems": ["Shu payt boshqa joyda o'zgardi — "
+                                                           "sahifani yangilang."], "bad": []},
+                                status=409)
         messages.error(request, "Yuk shu payt boshqa joyda o'zgardi — sahifa yangilandi, "
                                 "qaytadan kiriting.")
         return redirect(_load_url(load))
@@ -11373,17 +11341,36 @@ def _save_load_items(request, load, items):
     if parts:
         AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                         f"Yuk #{load.pk}: {', '.join(parts)}"[:255])
+    if background:
+        # A box saved by itself as it was left — no page, no message.
+        return JsonResponse({"ok": True, "saved": bool(parts)})
     confirm = request.POST.get("confirm", "")
     if _DIGITS.fullmatch(confirm):
         return _confirm_stop(request, load, int(confirm))
     quick = request.POST.get("quick", "")
     if quick:
         return _quick_status(request, load, items, quick, saved=bool(parts))
-    if parts:
+    if plan["new"]:
+        messages.success(request, f"Qo'shildi: {', '.join(c.name for c, *_ in plan['new'])}.")
+    elif parts:
         messages.success(request, "Saqlandi.")
     else:
         messages.info(request, "O'zgarish yo'q.")
-    return redirect(_day_url(load.date))
+    # A product added or removed reloads the page: the row stays open.
+    opened = request.POST.get("ochiq", "")
+    return redirect(_day_url(load.date, opened if _DIGITS.fullmatch(opened) else None))
+
+
+def _bad_boxes(items):
+    """The names of the boxes a refused save marked wrong, for the page to colour."""
+    bad = []
+    for item in items:
+        if getattr(item, "purpose_bad", False):
+            bad.append(f"purpose_{item.pk}")
+        for line in item.line_list:
+            bad += [f"{f}_{line.pk}" for f in ("product", "rolls", "price", "kg", "size", "micron")
+                    if getattr(line, f"{f}_bad", False)]
+    return bad
 
 
 def _day_url(day, opened=None):
@@ -11726,6 +11713,10 @@ def _prep_items(stops, user):
             line.kg_input = _plain(line.kg)
             line.size_input = line.size
             line.micron_input = line.micron
+            line.product_input = str(line.product_id)
+            # The catalogue price, not one agreed by hand: picking another product
+            # brings that product's price instead.
+            line.price_is_catalogue = line.price == line.product.price
     return items
 
 
@@ -11777,6 +11768,7 @@ def _lanes(items, user):
         item.products = (names[0] + (f" +{len(names) - 1}" if len(names) > 1 else "")) if names else ""
         item.rolls = sum(l.rolls for l in lines)
         item.kg = sum((l.kg for l in lines if l.kg is not None), Decimal("0"))
+        item.kg_text = _plain(item.kg).replace(".", ",") if item.kg else ""  # "52,5", not "52,500"
         item.unweighed = any(l.kg is None for l in lines)
         if item.status == LoadItem.Status.ORDER:
             lanes["order"].append(item)

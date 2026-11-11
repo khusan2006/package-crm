@@ -13,7 +13,7 @@
       <span class="cell-sub">{{ item.client.owner }}{% if item.client.phone %} · {{ item.client.phone }}{% endif %}{% if item.purpose != "deliver" %} · {{ item.get_purpose_display }}{% endif %}</span>
     </span>
     <span class="lane-what">{{ item.products|default:"—" }}{% if item.rolls %}<span class="cell-sub">{{ item.rolls }} rulon</span>{% endif %}</span>
-    <span class="lane-kg">{% if item.kg %}{{ item.kg|floatformat:"-3g" }} kg{% else %}—{% endif %}{% if item.unweighed %}<span class="cell-sub route-pending">tortilmagan</span>{% endif %}</span>
+    <span class="lane-kg">{% if item.kg_text %}{{ item.kg_text }} kg{% else %}—{% endif %}{% if item.unweighed %}<span class="cell-sub route-pending">tortilmagan</span>{% endif %}</span>
     <span class="lane-act">
       {% if not item.may_set %}
         <span class="badge badge-st-{{ item.status }}">{{ item.status_label }}</span>
@@ -33,6 +33,7 @@
     <span class="lane-open" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
   </summary>
   <div class="lane-editor">
+    <p class="autosave-note" data-autosave-note role="status" aria-live="polite" hidden></p>
     {% if item.may_set %}
     <div class="lane-how" role="group" aria-label="{{ item.client.name }} — qanday ketadi">
       <span class="lane-how-label">Qanday ketadi:</span>

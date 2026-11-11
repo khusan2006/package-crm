@@ -38,13 +38,14 @@
   </div>
 </div>
 
-<form method="post" action="{% url 'load_day_save' %}" class="day-form" data-load-items{% if failed %} data-unsaved{% endif %}>
+<form method="post" action="{% url 'load_day_save' %}" class="day-form" data-load-items data-autosave{% if failed %} data-unsaved{% endif %}>
   {% csrf_token %}
   <input type="hidden" name="action" value="items">
   <input type="hidden" name="sana" value="{{ day|date:'Y-m-d' }}">
+  <input type="hidden" name="ochiq" value="">
   {% comment %}The form's default button. Enter in a box presses the FIRST submit
   button of a form — without this, that would be a row's step or ✓.{% endcomment %}
-  <button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true">Saqlash</button>
+  <button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true">Qo'shish</button>
 
   <details class="lane-add" id="add-client"{% if adding or not items %} open{% endif %}>
     <summary class="lane-add-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Mijoz qo'shish</summary>
@@ -52,7 +53,11 @@
     <div class="new-rows" data-new-rows>
       {% for row in new_rows %}{% include "crm/_load_new_row.html" with row=row %}{% endfor %}
     </div>
-    <button type="button" class="new-row-add" data-new-row-add><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yana mijoz</button>
+    <div class="lane-add-actions">
+      <button type="button" class="new-row-add" data-new-row-add><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yana mijoz</button>
+      <span class="route-dirty" data-items-dirty{% if not failed %} hidden{% endif %}>Hali qo'shilmadi</span>
+      <button type="submit" name="add" value="1" class="btn">Qo'shish</button>
+    </div>
   </details>
   <template data-new-row-template>{% include "crm/_load_new_row.html" with row=None %}</template>
   <template data-add-line-template>{% include "crm/_load_add_line.html" with prefix="__PREFIX__" row=None %}</template>
@@ -110,10 +115,6 @@
   {% endif %}
   </div>
 
-  <div class="items-actions day-save">
-    <span class="route-dirty" data-items-dirty{% if not failed %} hidden{% endif %}>O'zgartirildi — saqlang.</span>
-    <button type="submit" class="btn">Saqlash</button>
-  </div>
 </form>
 
 {% if load and lanes.truck %}

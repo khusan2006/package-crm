@@ -6,7 +6,7 @@
   to the sale. Every value comes back as typed after a failed save (`*_input`), and a
   wrong box is marked `is-bad`.
 {% endcomment %}
-<section class="stop{% if item.sale %} is-confirmed{% endif %}" id="stop-{{ item.pk|unlocalize }}">
+<section class="stop{% if item.sale %} is-confirmed{% endif %}">
   <header class="stop-head">
     <div class="stop-who">
       <strong>{{ item.client.name }}</strong>
@@ -40,16 +40,22 @@
   <table class="stop-lines">
     <tr><th>Mahsulot</th><th>Metr</th><th>Mikron</th><th class="num">Rulon</th><th class="num">Narx, so'm/kg</th><th class="num">Og'irligi, kg</th>{% if item.editable %}<th><span class="visually-hidden">Olib tashlash</span></th>{% endif %}</tr>
     {% for line in item.line_list %}
-    <tr{% if item.editable %} data-line-product="{{ line.product_id|unlocalize }}"{% endif %}>
-      <td>{{ line.product.name }}</td>
+    <tr{% if item.editable %} data-line-product="{{ line.product_id|unlocalize }}" data-product-row{% endif %}>
       {% if item.editable %}
-      <td>{% if line.product.has_size %}<input type="text" class="pick-variant{% if line.size_bad %} is-bad{% endif %}" name="size_{{ line.pk|unlocalize }}" value="{{ line.size_input }}" list="load-sizes" placeholder="Metr" aria-label="{{ item.client.name }}, {{ line.product.name }} — metr"{% if line.size_bad %} aria-invalid="true"{% endif %} autocomplete="off">{% else %}<span class="muted">—</span>{% endif %}</td>
-      <td>{% if line.product.has_micron %}<input type="text" class="pick-variant{% if line.micron_bad %} is-bad{% endif %}" name="micron_{{ line.pk|unlocalize }}" value="{{ line.micron_input }}" list="load-microns" placeholder="Mikron" aria-label="{{ item.client.name }}, {{ line.product.name }} — mikron"{% if line.micron_bad %} aria-invalid="true"{% endif %} autocomplete="off">{% else %}<span class="muted">—</span>{% endif %}</td>
+      {% comment %}The product can be swapped here; metr/mikron grey out when the new one
+      doesn't come in them, and a catalogue price follows the new product.{% endcomment %}
+      <td class="line-product"><select name="product_{{ line.pk|unlocalize }}" data-combobox data-placeholder="Mahsulot" aria-label="{{ item.client.name }} — mahsulot"{% if line.product_bad %} class="is-bad" aria-invalid="true"{% endif %}>
+        {% if not line.product.is_active %}<option value="{{ line.product_id|unlocalize }}" data-price="{{ line.product.price|floatformat:"-2u" }}"{% if line.product.has_size %} data-size{% endif %}{% if line.product.has_micron %} data-micron{% endif %} selected>{{ line.product.name }}</option>{% endif %}
+        {% include "crm/_load_product_options.html" with selected=line.product_input %}
+      </select></td>
+      <td><input type="text" class="pick-variant{% if line.size_bad %} is-bad{% endif %}" data-variant="size" name="size_{{ line.pk|unlocalize }}" value="{{ line.size_input }}" list="load-sizes" placeholder="Metr" aria-label="{{ item.client.name }}, {{ line.product.name }} — metr"{% if line.size_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
+      <td><input type="text" class="pick-variant{% if line.micron_bad %} is-bad{% endif %}" data-variant="micron" name="micron_{{ line.pk|unlocalize }}" value="{{ line.micron_input }}" list="load-microns" placeholder="Mikron" aria-label="{{ item.client.name }}, {{ line.product.name }} — mikron"{% if line.micron_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
       <td class="num"><input type="text" inputmode="numeric" class="pick-rolls{% if line.rolls_bad %} is-bad{% endif %}" name="rolls_{{ line.pk|unlocalize }}" value="{{ line.rolls_input }}" aria-label="{{ item.client.name }}, {{ line.product.name }} — rulon"{% if line.rolls_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
-      <td class="num"><input type="text" inputmode="decimal" class="pick-price{% if line.price_bad %} is-bad{% endif %}" name="price_{{ line.pk|unlocalize }}" value="{{ line.price_input }}" data-money aria-label="{{ item.client.name }}, {{ line.product.name }} — narx"{% if line.price_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
+      <td class="num"><input type="text" inputmode="decimal" class="pick-price{% if line.price_bad %} is-bad{% endif %}" name="price_{{ line.pk|unlocalize }}" value="{{ line.price_input }}" data-money{% if line.price_is_catalogue %} data-auto="1"{% endif %} aria-label="{{ item.client.name }}, {{ line.product.name }} — narx"{% if line.price_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
       <td class="num"><input type="text" inputmode="decimal" class="pick-kg{% if line.kg_bad %} is-bad{% endif %}" name="kg_{{ line.pk|unlocalize }}" value="{{ line.kg_input }}" placeholder="—" title="Tortilgandan keyin kiriting" aria-label="{{ item.client.name }}, {{ line.product.name }} — kg (tortilgach)"{% if line.kg_bad %} aria-invalid="true"{% endif %} autocomplete="off"></td>
       <td class="row-actions"><label class="line-drop" title="Bu mahsulotni olib tashlash"><input type="checkbox" name="drop_{{ line.pk|unlocalize }}" value="1"{% if line.dropped %} checked{% endif %}><span aria-hidden="true">×</span><span class="visually-hidden">{{ line.product.name }} — olib tashlash</span></label></td>
       {% else %}
+      <td>{{ line.product.name }}</td>
       <td>{{ line.size|default:"—" }}</td>
       <td>{{ line.micron|default:"—" }}</td>
       <td class="num">{{ line.rolls }}</td>
