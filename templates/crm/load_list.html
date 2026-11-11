@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load l10n %}
 {% block title %}Yetkazish · Paket CRM{% endblock %}
 {% block topbar_title %}Yetkazish{% endblock %}
 {% block fab %}{% comment %}One click, no pop-up: the load is made for the day on screen and opened.{% endcomment %}<form method="post" action="{% url 'load_create' %}" class="fab-form">{% csrf_token %}<input type="hidden" name="sana" value="{{ day|date:'Y-m-d' }}"><button type="submit" class="fab"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yangi yuk</button></form>{% endblock %}
@@ -52,5 +53,49 @@
 </div>
 {% else %}
 <div class="card"><p class="muted">{{ day|date:"d.m.Y" }} kuni uchun yuk yo'q. «Yangi yuk» tugmasi bilan yarating.</p></div>
+{% endif %}
+
+{% if board %}
+{% comment %}
+  Kun bo'yicha holat: shu kunning hamma yuklaridagi har bir mijoz — qanday ketadi
+  (yetkazib beriladi / o'zi olib ketadi / Yandex) va qayerda turibdi. Marshrutga
+  faqat «Yetkazib beriladi» va buyurtma bo'lmaganlar tushadi. Holat ✓ dan keyin ham
+  o'zgaradi. O'z mijozi (yoki admin/menejer) bo'lmasa — faqat ko'rinadi.
+{% endcomment %}
+<form method="post" action="{% url 'load_board_save' %}" class="board">
+  {% csrf_token %}
+  <input type="hidden" name="sana" value="{{ day|date:'Y-m-d' }}">
+  <div class="board-head">
+    <h2 class="board-title">Kun bo'yicha holat <span class="muted">· {{ board|length }} ta mijoz</span></h2>
+    <button type="submit" class="btn btn-sm">Saqlash</button>
+  </div>
+  <div class="table-wrap">
+  <table class="board-table">
+    <tr><th class="sticky-col">Mijoz</th><th>Yuk</th><th class="num">Rulon</th><th class="num">Og'irligi</th><th>Sotuv</th><th>Qanday</th><th>Holati</th></tr>
+    {% for item in board %}
+    <tr>
+      <td class="sticky-col"><strong>{{ item.client.name }}</strong><span class="cell-sub">{{ item.client.owner }}</span></td>
+      <td><a href="{% url 'load_detail' item.load_id %}">Yuk #{{ item.load_id }}</a></td>
+      <td class="num">{% if item.rolls %}{{ item.rolls }}{% else %}—{% endif %}</td>
+      <td class="num">{% if item.kg %}{{ item.kg|floatformat:"-3g" }} kg{% else %}—{% endif %}{% if item.unweighed %}<span class="cell-sub route-pending">tortilmagan</span>{% endif %}</td>
+      <td>{% if item.sale %}{% if item.mine %}<a class="badge badge-paid" href="{% url 'sale_detail' item.sale.pk %}">✓ #{{ item.sale.pk|unlocalize }}</a>{% else %}<span class="badge badge-paid">✓ #{{ item.sale.pk|unlocalize }}</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
+      {% if item.may_set %}
+      <td><input type="hidden" name="stop" value="{{ item.pk|unlocalize }}">
+        <select name="method_{{ item.pk|unlocalize }}" aria-label="{{ item.client.name }} — qanday">
+          <option value=""{% if not item.method %} selected{% endif %}>— tanlanmagan</option>
+          {% for value, label in methods %}<option value="{{ value }}"{% if value == item.method %} selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select></td>
+      <td><select name="status_{{ item.pk|unlocalize }}" aria-label="{{ item.client.name }} — holati">
+          {% for value, label in statuses %}<option value="{{ value }}"{% if value == item.status %} selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select></td>
+      {% else %}
+      <td>{{ item.get_method_display|default:"—" }}</td>
+      <td><span class="badge badge-st-{{ item.status }}">{{ item.status_label }}</span></td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+</form>
 {% endif %}
 {% endblock %}

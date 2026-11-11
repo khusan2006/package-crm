@@ -2690,6 +2690,22 @@ class LoadItem(models.Model):
         COLLECT = "collect", "Pul olish"
         BOTH = "both", "Yetkazish + pul olish"
 
+    class Method(models.TextChoices):
+        """How the goods leave. Only TRUCK stops go on the route and count in the
+        trucks' kg; the others are tracked here for their status alone."""
+        TRUCK = "truck", "Yetkazib beriladi"
+        PICKUP = "pickup", "O'zi olib ketadi"
+        YANDEX = "yandex", "Yandex"
+
+    class Status(models.TextChoices):
+        """Where the stop stands. ORDER is a stop agreed with the client while the
+        goods aren't in the warehouse yet: it stays on the board but off the route."""
+        NEW = "new", "Kutilmoqda"
+        ORDER = "order", "Buyurtma (omborda yo'q)"
+        LOADING = "loading", "Ortilmoqda"
+        SENT = "sent", "Jo'natildi"
+        DONE = "done", "Yetkazildi"
+
     load = models.ForeignKey(Load, on_delete=models.CASCADE, related_name="items")
     client = models.ForeignKey(Client, on_delete=models.PROTECT, related_name="load_items",
                                verbose_name="Mijoz")
@@ -2703,6 +2719,12 @@ class LoadItem(models.Model):
     # Which of the load's trucks this stop rides with (0, 1), when the split was set
     # by hand (⇄ on the route) and saved; empty means the system decides.
     route_group = models.PositiveSmallIntegerField("Mashina", null=True, blank=True)
+    # Set on the Yetkazish day board. Empty method = not decided yet (a sale typed in
+    # Sotuvlar lands here without one); stops added on a Yuk page start as TRUCK.
+    method = models.CharField("Qanday", max_length=8, choices=Method.choices, blank=True,
+                              default=Method.TRUCK)
+    status = models.CharField("Holati", max_length=8, choices=Status.choices,
+                              default=Status.NEW)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -2720,6 +2742,21 @@ class LoadItem(models.Model):
     @property
     def collects(self):
         return self.purpose in (self.Purpose.COLLECT, self.Purpose.BOTH)
+
+    @property
+    def on_route(self):
+        """Whether the truck goes here: our own delivery, goods in hand."""
+        return self.method == self.Method.TRUCK and self.status != self.Status.ORDER
+
+    @property
+    def status_label(self):
+        """The status in the client's words: a pickup that is done reads «Olib ketdi»,
+        a Yandex one that has left reads «Yandexdan jo'natildi»."""
+        if self.status == self.Status.DONE and self.method == self.Method.PICKUP:
+            return "Olib ketdi"
+        if self.status == self.Status.SENT and self.method == self.Method.YANDEX:
+            return "Yandexdan jo'natildi"
+        return self.get_status_display()
 
     def __str__(self):
         return f"{self.client} — {self.get_purpose_display()}"

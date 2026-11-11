@@ -10691,7 +10691,74 @@ def load_list(request):
         "next_day": (day + timedelta(days=1)).isoformat(),
         "is_today": day == timezone.localdate(),
         "loads": loads,
+        "board": _board_items(day, request.user),
+        "methods": LoadItem.Method.choices,
+        "statuses": LoadItem.Status.choices,
     })
+
+
+def _may_set_status(user, item):
+    """Who moves a stop along (method, status): admins/managers, or the client's own
+    seller. Unlike the stop's contents, this stays open after ✓ — the sale is made
+    before the goods have left."""
+    return user.can_see_all_records or item.client.owner_id == user.pk
+
+
+def _board_items(day, user):
+    """Every stop of the day, across its loads, for the status board: the client,
+    which Yuk, rulon and kg, the sale once ✓, and the method/status."""
+    items = list(
+        LoadItem.objects.filter(load__date=day)
+        .select_related("load", "client", "client__owner", "sale")
+        .prefetch_related("lines")
+        .order_by("load__created_at", "load_id", "position", "created_at")
+    )
+    for item in items:
+        lines = list(item.lines.all())
+        item.rolls = sum(l.rolls for l in lines)
+        item.kg = sum((l.kg for l in lines if l.kg is not None), Decimal("0"))
+        item.unweighed = any(l.kg is None for l in lines)
+        item.may_set = _may_set_status(user, item)
+        item.mine = user.can_see_all_records or item.client.owner_id == user.pk
+    return items
+
+
+def load_board_save(request):
+    """«Saqlash» on the day board: each stop's method and status as picked. Only
+    stops the user may move are read; a stop not on the page (added since) is left
+    alone. Nothing is saved if a value is not one of the choices."""
+    if request.method != "POST":
+        return redirect(reverse("load_list"))
+    day = _load_day(request.POST.get("sana"))
+    pks = [int(raw) for raw in request.POST.getlist("stop") if _DIGITS.fullmatch(raw)]
+    items = (LoadItem.objects.filter(pk__in=pks, load__date=day)
+             .select_related("client", "load"))
+    changes = []
+    for item in items:
+        if not _may_set_status(request.user, item):
+            continue
+        method = request.POST.get(f"method_{item.pk}", item.method)
+        status = request.POST.get(f"status_{item.pk}", item.status)
+        if method not in LoadItem.Method.values and method != "":
+            messages.error(request, f"{item.client.name} — qanday yetkazilishi noto'g'ri.")
+            return redirect(_load_list_url(day))
+        if status not in LoadItem.Status.values:
+            messages.error(request, f"{item.client.name} — holati noto'g'ri.")
+            return redirect(_load_list_url(day))
+        if (method, status) != (item.method, item.status):
+            changes.append((item, method, status))
+    with transaction.atomic():
+        for item, method, status in changes:
+            item.method, item.status = method, status
+            item.save(update_fields=["method", "status"])
+            AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", item.load_id,
+                            f"Yuk #{item.load_id}, {item.client.name}: "
+                            f"{item.get_method_display() or 'usul tanlanmagan'} — {item.status_label}"[:255])
+    if changes:
+        messages.success(request, f"Saqlandi — {len(changes)} ta mijoz.")
+    else:
+        messages.info(request, "O'zgarish yo'q.")
+    return redirect(_load_list_url(day))
 
 
 UZ_WEEKDAYS = ["Dushanba", "Seshanba", "Chorshanba", "Payshanba", "Juma", "Shanba", "Yakshanba"]
@@ -11431,7 +11498,7 @@ def _save_load_order(request, load, items):
     """Save the order exactly as the page posted it: `stop` = item pk, in visiting
     order. Anything the page could not have shown is refused rather than guessed at
     — a stale tab is reloaded, not half-saved."""
-    located = {i.pk: i for i in items if i.client.has_location}
+    located = {i.pk: i for i in items if i.on_route and i.client.has_location}
     order = []
     for raw in request.POST.getlist("stop"):
         try:
@@ -11500,10 +11567,13 @@ def _set_start(request, load):
     start undone («Bekor qilish»)."""
     if not _may_change_load(request.user, load):
         raise PermissionDenied
+    truck_stops = load.items.filter(method=LoadItem.Method.TRUCK)
     if request.POST.get("clear"):
         if load.started_at:
             load.started_at = None
             load.save(update_fields=["started_at"])
+            # Back on the truck, not yet gone.
+            truck_stops.filter(status=LoadItem.Status.SENT).update(status=LoadItem.Status.LOADING)
             AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                             f"Yuk #{load.pk}: jo'natish bekor qilindi")
         return redirect(_load_url(load))
@@ -11519,6 +11589,9 @@ def _set_start(request, load):
         return redirect(_load_url(load))
     load.started_at = started
     load.save(update_fields=["started_at"])
+    # The truck's stops are on their way — one source with the load's «Yo'lda».
+    truck_stops.filter(status__in=[LoadItem.Status.NEW, LoadItem.Status.LOADING]) \
+        .update(status=LoadItem.Status.SENT)
     AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                     f"Yuk #{load.pk}: jo'nadi — {timezone.localtime(started):%d.%m.%Y %H:%M}")
     messages.success(request, f"Yuk jo'natildi: {timezone.localtime(started):%H:%M}.")
@@ -11637,7 +11710,8 @@ def _render_load_detail(request, load, items, posted_new=None):
         "line_count": len(lines),
         "roll_breakdown": _roll_breakdown(lines),
         "confirmed": sum(1 for i in items if i.sale_id),
-        "missing": [_mark_mine(i.client, i.mine) for i in items if not i.client.has_location],
+        "missing": [_mark_mine(i.client, i.mine) for i in items
+                    if i.on_route and not i.client.has_location],
         "clients": [c for c in clients if c.pk not in in_load],
         "products": Product.objects.filter(is_active=True).order_by("name"),
         "purposes": LoadItem.Purpose.choices,
@@ -11682,7 +11756,8 @@ def load_route(request, pk):
     crm/routing.py suggests, worked out afresh each time; trucks are chosen by
     `_load_groups`. Every stop needs a joylashuv first."""
     load = get_object_or_404(Load, pk=pk)
-    items = _load_items(load, request.user)
+    # Only the stops the truck goes to — not pickups, Yandex or buyurtma.
+    items = [i for i in _load_items(load, request.user) if i.on_route]
     warehouse = Warehouse.load()
     missing = [i.client for i in items if not i.client.has_location]
     routes, error, by_road, road_note = [], "", False, ""

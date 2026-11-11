@@ -2037,6 +2037,26 @@ tbody tr:hover td.sticky-col {
   color: var(--accent);
 }
 
+/* Yetkazish stop status — waiting grey, buyurtma amber, on the truck blue,
+   gone violet, delivered green. */
+.badge-st-new { background: var(--surface-2); color: var(--text-muted); }
+.badge-st-order { background: var(--warning-soft); color: var(--warning); }
+.badge-st-loading { background: var(--accent-soft); color: var(--accent); }
+.badge-st-sent { background: var(--violet-soft); color: var(--violet); }
+.badge-st-done { background: var(--success-soft); color: var(--success); }
+
+/* Yetkazish day board: every stop of the day with how it goes and where it stands. */
+.board { margin-top: 20px; }
+.board-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.board-title { font-size: 15px; margin: 0; }
+.board-table select { min-width: 150px; }
+
 /* Signed money — income green, outflow red, sale (receivable) blue */
 .amt-in {
   color: var(--success);

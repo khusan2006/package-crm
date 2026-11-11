@@ -1201,3 +1201,104 @@ def test_a_line_without_metr_or_mikron_does_not_offer_them(db, seller_user, pake
     form = SaleItemForm(instance=line)
     assert "micron" not in form.fields and "size" not in form.fields
     assert "micron" not in SaleItemForm().fields  # a new line never asks either
+
+
+# --- the day board: how each stop goes and where it stands ----------------------------
+
+TRUCK, PICKUP, YANDEX = "truck", "pickup", "yandex"
+
+
+def board(client, user, day=None):
+    return get(client, user, f"/yetkazish/?sana={(day or TODAY()).isoformat()}")
+
+
+def set_status(client, user, *changes, day=None):
+    """Post the board: each change is (item, method, status)."""
+    client.force_login(user)
+    data = {"sana": (day or TODAY()).isoformat(), "stop": [i.pk for i, *_ in changes]}
+    for item, method, status in changes:
+        data[f"method_{item.pk}"] = method
+        data[f"status_{item.pk}"] = status
+    return client.post("/yetkazish/holat/", data)
+
+
+def test_the_board_shows_every_stop_of_the_day_across_loads(client, admin_user, seller_user,
+                                                            load, paket):
+    other = Load.objects.create(date=TODAY(), created_by=admin_user)
+    stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    stop(other, make_client(seller_user, "Bobur"), (paket, 2, 40))
+    stop(Load.objects.create(date=TODAY() + timedelta(days=1)), make_client(seller_user, "Ertaga"),
+         (paket, 1))
+    resp = board(client, admin_user)
+    assert [i.client.name for i in resp.context["board"]] == ["Anvar", "Bobur"]
+    body = resp.content.decode()
+    assert f'href="/yetkazish/{other.pk}/"' in body and "tortilmagan" in body
+
+
+def test_new_stops_go_by_truck_and_wait(load, seller_user, paket):
+    item = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    assert (item.method, item.status, item.on_route) == (TRUCK, "new", True)
+
+
+def test_saving_the_board_sets_method_and_status(client, admin_user, seller_user, load, paket):
+    a = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    b = stop(load, make_client(seller_user, "Bobur"), (paket, 3))
+    resp = set_status(client, admin_user, (a, PICKUP, "done"), (b, YANDEX, "sent"))
+    assert resp.url == f"/yetkazish/?sana={TODAY().isoformat()}"
+    a.refresh_from_db(), b.refresh_from_db()
+    assert (a.method, a.status, a.status_label) == (PICKUP, "done", "Olib ketdi")
+    assert (b.status_label, b.on_route) == ("Yandexdan jo'natildi", False)
+    assert AuditLog.objects.filter(target_type="Yuk", summary__contains="Olib ketdi").exists()
+
+
+def test_a_wrong_value_saves_nothing(client, admin_user, seller_user, load, paket):
+    a = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    b = stop(load, make_client(seller_user, "Bobur"), (paket, 3))
+    set_status(client, admin_user, (a, PICKUP, "done"), (b, TRUCK, "flying"))
+    a.refresh_from_db()
+    assert (a.method, a.status) == (TRUCK, "new")
+
+
+def test_a_seller_moves_only_their_own_clients(client, seller_user, other_seller, load, paket):
+    mine = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    theirs = stop(load, make_client(other_seller, "Begona"), (paket, 3))
+    body = board(client, seller_user).content.decode()
+    assert f'name="status_{mine.pk}"' in body and f'name="status_{theirs.pk}"' not in body
+    set_status(client, seller_user, (mine, PICKUP, "done"), (theirs, PICKUP, "done"))
+    mine.refresh_from_db(), theirs.refresh_from_db()
+    assert mine.status == "done" and theirs.status == "new"
+
+
+def test_the_status_still_moves_after_the_sale(client, admin_user, load, weighed):
+    save(client, admin_user, load, confirm=str(weighed.pk))
+    set_status(client, admin_user, (weighed, TRUCK, "done"))
+    weighed.refresh_from_db()
+    assert weighed.sale and weighed.status == "done"
+
+
+def test_only_truck_stops_with_goods_in_hand_are_routed(client, admin_user, load, three):
+    a, b, c = three
+    set_status(client, admin_user, (a, PICKUP, "new"), (b, TRUCK, "order"))
+    assert names(route(client, admin_user, load)) == ["C"]
+    # Saving the order takes the routed stops only — not «Tartib eskirgan».
+    client.post(f"/yetkazish/{load.pk}/", {"action": "save", "stop": [c.pk]})
+    load.refresh_from_db()
+    assert load.ordered_at is not None
+
+
+def test_a_pickup_without_a_location_does_not_block_the_route(client, admin_user, seller_user,
+                                                               load, three, paket):
+    nowhere = stop(load, make_client(seller_user, "Joysiz"), (paket, 1))
+    set_status(client, admin_user, (nowhere, PICKUP, "new"))
+    resp = route(client, admin_user, load)
+    assert resp.context["missing"] == [] and len(names(resp)) == 3
+
+
+def test_sending_the_truck_marks_its_stops_sent(client, admin_user, load, three):
+    a, b, c = three
+    set_status(client, admin_user, (a, PICKUP, "new"), (b, TRUCK, "loading"))
+    start(client, admin_user, load)
+    statuses = dict(load.items.values_list("pk", "status"))
+    assert (statuses[a.pk], statuses[b.pk], statuses[c.pk]) == ("new", "sent", "sent")
+    start(client, admin_user, load, clear="1")
+    assert set(load.items.filter(method=TRUCK).values_list("status", flat=True)) == {"loading"}
