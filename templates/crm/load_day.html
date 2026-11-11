@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% load crm_extras l10n %}
+{% block title %}Yetkazish · Paket CRM{% endblock %}
+{% block topbar_title %}Yetkazish{% endblock %}
+{% block fab %}<a class="fab" href="#add-client" data-open-add><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Mijoz qo'shish</a>{% endblock %}
+{% block content %}
+
+{% comment %}
+  Kunning yetkazishi — kun o'zi yuk. Mijozlar yo'laklarda: qanday ketishi hali
+  tanlanmagan; o'zi olib ketadi / Yandex; omborda yo'q (buyurtma); mashinada
+  (marshrut tartibida, raqamlangan). Qator bosilsa ochiladi: mahsulotlar, kg va
+  ✓ Sotuvga. Holat tugmalari ham shu formada — yozilgan kg yo'qolmaydi.
+{% endcomment %}
+<div class="table-toolbar">
+  <div class="toolbar-left">
+    <div class="month-pick" role="group" aria-label="Kun tanlash">
+      <a class="datebar-btn" href="?sana={{ prev_day }}" title="Oldingi kun" aria-label="Oldingi kun">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </a>
+      <form method="get" action="{% url 'load_list' %}" class="month-pick-form">
+        <input type="date" name="sana" value="{{ day|date:'Y-m-d' }}" aria-label="Sana" onchange="this.form.submit()">
+        <noscript><button type="submit" class="btn btn-sm">Ko'rsat</button></noscript>
+      </form>
+      <a class="datebar-btn" href="{% url 'load_list' %}?sana={{ next_day }}" title="Keyingi kun" aria-label="Keyingi kun">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </a>
+    </div>
+    {% if not is_today %}<a class="btn btn-sm btn-ghost" href="{% url 'load_list' %}">Bugun</a>{% endif %}
+  </div>
+  <div class="toolbar-right">
+    {% if items %}
+    <span class="day-progress" title="Yakunlangan: {{ done }} / {{ items|length }}">
+      <span class="day-progress-txt">{{ items|length }} mijoz · <strong>{{ done }}</strong> yakunlandi</span>
+      <span class="day-progress-bar"><span style="width: {{ done_pct|unlocalize }}%"></span></span>
+    </span>
+    {% endif %}
+    {% if user.is_admin_role %}<a class="btn btn-sm btn-ghost" href="{% url 'truck_list' %}">Mashinalar</a>{% endif %}
+  </div>
+</div>
+
+<form method="post" action="{% url 'load_day_save' %}" class="day-form" data-load-items{% if failed %} data-unsaved{% endif %}>
+  {% csrf_token %}
+  <input type="hidden" name="action" value="items">
+  <input type="hidden" name="sana" value="{{ day|date:'Y-m-d' }}">
+  {% comment %}The form's default button. Enter in a box presses the FIRST submit
+  button of a form — without this, that would be a row's step or ✓.{% endcomment %}
+  <button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true">Saqlash</button>
+
+  <details class="lane-add" id="add-client"{% if adding or not items %} open{% endif %}>
+    <summary class="lane-add-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Mijoz qo'shish</summary>
+    <p class="muted lane-add-hint">Mijoz, maqsad, mahsulot va rulon — kg keyin, tortilgach.</p>
+    <div class="new-rows" data-new-rows>
+      {% for row in new_rows %}{% include "crm/_load_new_row.html" with row=row %}{% endfor %}
+    </div>
+    <button type="button" class="new-row-add" data-new-row-add><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Yana mijoz</button>
+  </details>
+  <template data-new-row-template>{% include "crm/_load_new_row.html" with row=None %}</template>
+  <template data-add-line-template>{% include "crm/_load_add_line.html" with prefix="__PREFIX__" row=None %}</template>
+  <datalist id="load-sizes">{% for v in size_suggestions %}<option value="{{ v }}">{% endfor %}</datalist>
+  <datalist id="load-microns">{% for v in micron_suggestions %}<option value="{{ v }}">{% endfor %}</datalist>
+
+  {% if not items %}
+  <div class="card"><p class="muted">{{ day|date:"d.m.Y" }} uchun hali mijoz yo'q — yuqorida qo'shing.</p></div>
+  {% endif %}
+
+  <div class="stops">
+  {% if lanes.undecided %}
+  <section class="lane lane-undecided">
+    <h2 class="lane-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>Qanday ketishini tanlang <span class="lane-count">{{ lanes.undecided|length }}</span></h2>
+    {% for item in lanes.undecided %}{% include "crm/_day_row.html" with lane="undecided" %}{% endfor %}
+  </section>
+  {% endif %}
+
+  {% if lanes.other %}
+  <section class="lane">
+    <h2 class="lane-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 21v-6h6v6"/></svg>O'zi olib ketadi va Yandex <span class="lane-count">{{ lanes.other|length }}</span></h2>
+    {% for item in lanes.other %}{% include "crm/_day_row.html" with lane="other" %}{% endfor %}
+  </section>
+  {% endif %}
+
+  {% if lanes.order %}
+  <section class="lane lane-order">
+    <h2 class="lane-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><line x1="3" y1="3" x2="21" y2="21"/></svg>Buyurtma — omborda yo'q <span class="lane-count">{{ lanes.order|length }}</span></h2>
+    {% for item in lanes.order %}{% include "crm/_day_row.html" with lane="order" %}{% endfor %}
+  </section>
+  {% endif %}
+
+  {% if lanes.truck %}
+  <section class="lane lane-truck">
+    <h2 class="lane-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>Mashinada yetkaziladi <span class="lane-count">{{ lanes.truck|length }}</span>
+      <span class="lane-head-sub">{% if truck_kg %}{{ truck_kg|floatformat:"0g" }} kg{% endif %}{% if truck_unweighed %} · <span class="route-pending">{{ truck_unweighed }} tasi tortilmagan</span>{% endif %}{% if load.started_at %} · <span class="badge badge-st-sent">Yo'lda — jo'nagan {{ load.started_at|date:"H:i" }}</span>{% endif %}</span>
+      <a class="lane-head-link" href="#route">Marshrut va jo'natish</a>
+    </h2>
+    {% if roll_breakdown %}
+    <details class="lane-rolls">
+      <summary>Mashinaga ortiladi — rulonlar</summary>
+      <ul class="kpi-breakdown">
+        {% for r in roll_breakdown %}
+        <li style="--share: {{ r.share }}%">
+          <span class="kb-count">{{ r.rolls }}<small>ta</small></span>
+          <span class="kb-name">{{ r.product }}</span>
+          {% if r.size or r.micron %}<span class="kb-tags">{% if r.size %}<span class="kb-tag" title="Metr">{{ r.size }}</span>{% endif %}{% if r.micron %}<span class="kb-tag" title="Mikron">{{ r.micron }}<small>mk</small></span>{% endif %}</span>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+    {% for item in lanes.truck %}{% include "crm/_day_row.html" with lane="truck" %}{% endfor %}
+  </section>
+  {% endif %}
+  </div>
+
+  <div class="items-actions day-save">
+    <span class="route-dirty" data-items-dirty{% if not failed %} hidden{% endif %}>O'zgartirildi — saqlang.</span>
+    <button type="submit" class="btn">Saqlash</button>
+  </div>
+</form>
+
+{% if load and lanes.truck %}
+<section class="lane-route" id="route">
+  {% if missing %}
+  <div class="card">
+    <div class="card-head"><h2>Joylashuvi yo'q mijozlar · {{ missing|length }}</h2></div>
+    <p class="muted">Marshrut uchun mashinada ketadigan har bir mijozning joylashuvi kerak.</p>
+    <ul class="route-missing">
+      {% for c in missing %}
+      <li>
+        <span><strong>{{ c.name }}</strong>{% if c.address %} <span class="cell-sub">{{ c.address }}</span>{% endif %}</span>
+        {% if c.mine %}<a class="btn btn-sm" href="{% url 'client_edit' c.pk %}" data-modal>Joylashuv qo'shish</a>{% else %}<span class="muted">{{ c.owner }} qo'shadi</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  <div class="card load-route-card" data-load-route data-url="{% url 'load_route' load.pk %}"{% if auto_route %} data-auto{% endif %}>
+    <div class="load-route-start" data-route-start>
+      <div>
+        <h2>Marshrut</h2>
+        <p class="muted">Ombordan «Mashinada» mijozlarga eng qisqa yo'l, mashina(lar) va haydovchiga xabar.</p>
+      </div>
+      <button type="button" class="btn" data-route-build>
+        <span class="btn-spinner" aria-hidden="true"></span>
+        <span data-route-build-label>Marshrut tuzish</span>
+      </button>
+    </div>
+    <p class="route-share-stale" data-route-failed hidden role="alert">Marshrutni olib bo'lmadi — qaytadan urinib ko'ring.</p>
+    <span class="visually-hidden" data-route-status role="status" aria-live="polite"></span>
+    <div data-route-slot></div>
+    {% comment %}«Jo'natish»: when the truck left. Now by default — the box follows the
+    clock until it is touched. Its clients become «Yo'lda».{% endcomment %}
+    {% if may_change_load %}
+    <form method="post" action="{% url 'load_detail' load.pk %}" class="load-start{% if load.started_at %} is-started{% endif %}" data-load-start>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="start">
+      <label class="load-start-label" for="load-started-at">{% if load.started_at %}Jo'nagan{% else %}Jo'nash vaqti{% endif %}</label>
+      <input type="datetime-local" id="load-started-at" name="started_at" class="load-start-input"
+             value="{% if load.started_at %}{{ load.started_at|date:'Y-m-d\TH:i' }}{% else %}{% now 'Y-m-d\TH:i' %}{% endif %}"
+             max="{% now 'Y-m-d' %}T23:59"{% if not load.started_at %} data-load-start-now{% endif %} required>
+      {% if load.started_at %}
+      <button type="submit" class="btn btn-sm btn-ghost">Vaqtni saqlash</button>
+      <button type="submit" class="btn btn-sm btn-ghost" name="clear" value="1" formnovalidate>Bekor qilish</button>
+      {% else %}
+      <button type="submit" class="btn btn-sm">Jo'natish</button>
+      {% endif %}
+    </form>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+<script>
+  // «Mijoz qo'shish» (the button below): open the add section and go to its client box.
+  document.addEventListener('click', function (e) {
+    var link = e.target.closest && e.target.closest('[data-open-add]');
+    if (!link) { return; }
+    var add = document.getElementById('add-client');
+    if (!add) { return; }
+    e.preventDefault();
+    add.open = true;
+    add.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    var box = add.querySelector('.combobox-input, select');
+    if (box) { setTimeout(function () { box.focus(); }, 250); }
+  });
+</script>
+<script src="{% static_v 'js/route.js' %}" defer></script>
+<script src="{% static_v 'js/load.js' %}" defer></script>
+{% endblock %}

@@ -1,0 +1,49 @@
+{% load l10n %}
+{% comment %}
+  One client on the day page. The line shows who, what, kg and what to do next —
+  the step buttons (or, while undecided, how it leaves). Opening the row shows its
+  products, kg and ✓ Sotuvga (`_load_stop.html`) right there. Every button sits in
+  the day form, so whatever was typed is saved together with it.
+{% endcomment %}
+<details class="lane-row st-{{ item.status }}" id="stop-{{ item.pk|unlocalize }}"{% if item.open %} open{% endif %}>
+  <summary class="lane-line">
+    {% if item.n %}<span class="lane-n" title="Marshrutdagi tartibi">{{ item.n }}</span>{% else %}<span class="lane-n is-none" aria-hidden="true"></span>{% endif %}
+    <span class="lane-who">
+      <strong>{{ item.client.name }}</strong>
+      <span class="cell-sub">{{ item.client.owner }}{% if item.client.phone %} · {{ item.client.phone }}{% endif %}{% if item.purpose != "deliver" %} · {{ item.get_purpose_display }}{% endif %}</span>
+    </span>
+    <span class="lane-what">{{ item.products|default:"—" }}{% if item.rolls %}<span class="cell-sub">{{ item.rolls }} rulon</span>{% endif %}</span>
+    <span class="lane-kg">{% if item.kg %}{{ item.kg|floatformat:"-3g" }} kg{% else %}—{% endif %}{% if item.unweighed %}<span class="cell-sub route-pending">tortilmagan</span>{% endif %}</span>
+    <span class="lane-act">
+      {% if not item.may_set %}
+        <span class="badge badge-st-{{ item.status }}">{{ item.status_label }}</span>
+      {% elif lane == "undecided" %}
+        <button type="submit" name="quick" value="{{ item.pk|unlocalize }}:truck:new" class="lane-btn">Mashinada</button>
+        <button type="submit" name="quick" value="{{ item.pk|unlocalize }}:pickup:new" class="lane-btn">O'zi oladi</button>
+        <button type="submit" name="quick" value="{{ item.pk|unlocalize }}:yandex:new" class="lane-btn">Yandex</button>
+      {% elif lane == "order" %}
+        <button type="submit" name="quick" value="{{ item.pk|unlocalize }}:{{ item.method }}:new" class="lane-btn">Omborga keldi</button>
+      {% else %}
+        <span class="steps" role="group" aria-label="{{ item.client.name }} — holati">
+          {% for step in item.steps %}<button type="submit" name="quick" value="{{ item.pk|unlocalize }}:{{ item.method }}:{{ step.value }}" class="step{% if step.state %} is-{{ step.state }}{% endif %}"{% if step.state == "now" %} aria-current="step"{% endif %}>{{ step.label }}</button>{% endfor %}
+        </span>
+      {% endif %}
+    </span>
+    <span class="lane-sale">{% if item.sale %}{% if item.mine %}<a class="badge badge-paid" href="{% url 'sale_detail' item.sale.pk %}" title="Sotuvni ochish">✓ #{{ item.sale.pk|unlocalize }}</a>{% else %}<span class="badge badge-paid">✓ #{{ item.sale.pk|unlocalize }}</span>{% endif %}{% endif %}</span>
+    <span class="lane-open" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
+  </summary>
+  <div class="lane-editor">
+    {% if item.may_set %}
+    <div class="lane-how" role="group" aria-label="{{ item.client.name }} — qanday ketadi">
+      <span class="lane-how-label">Qanday ketadi:</span>
+      {% for value, label in methods %}<button type="submit" name="quick" value="{{ item.pk|unlocalize }}:{{ value }}:new" class="lane-btn{% if item.method == value %} is-on{% endif %}"{% if item.method == value %} aria-pressed="true"{% endif %}>{{ label }}</button>{% endfor %}
+      {% if item.status == "order" %}
+      <button type="submit" name="quick" value="{{ item.pk|unlocalize }}:{{ item.method }}:new" class="lane-btn">Omborga keldi</button>
+      {% else %}
+      <button type="submit" name="quick" value="{{ item.pk|unlocalize }}:{{ item.method }}:order" class="lane-btn is-warn">Omborda yo'q — buyurtma</button>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% include "crm/_load_stop.html" %}
+  </div>
+</details>

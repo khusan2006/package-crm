@@ -182,17 +182,36 @@ def test_only_the_loads_creator_or_an_admin_changes_the_load(client, admin_user,
 
 # --- the day's loads ----------------------------------------------------------------
 
-def test_a_day_lists_its_loads_with_totals(client, admin_user, seller_user, paket, plyonka):
+def day_page(client, user, day=None):
+    return get(client, user, f"/yetkazish/?sana={(day or TODAY()).isoformat()}")
+
+
+def lane(resp, name):
+    return [i.client.name for i in resp.context["lanes"][name]]
+
+
+def test_the_day_page_shows_every_client_of_the_day_in_lanes(client, admin_user, seller_user,
+                                                             paket):
     a = Load.objects.create(date=TODAY())
-    stop(a, make_client(seller_user, "X", 0.01), (paket, 4, 100), (plyonka, 2))
-    stop(a, make_client(seller_user, "Y", 0.02), (paket, 6))
-    Load.objects.create(date=TODAY())
-    Load.objects.create(date=TODAY() - timedelta(days=1))
-    loads = list(get(client, admin_user, "/yetkazish/").context["loads"])
-    assert len(loads) == 2
-    first = loads[0]
-    assert (first.client_count, first.roll_total, first.kg_total, first.unweighed, first.confirmed) == (
-        2, 12, Decimal(100), 2, 0)
+    b = Load.objects.create(date=TODAY())
+    stop(a, make_client(seller_user, "Mashina"), (paket, 4, 100))
+    item = stop(b, make_client(seller_user, "Olib"), (paket, 2))
+    item.method = "pickup"
+    item.save()
+    item = stop(a, make_client(seller_user, "Yangi"), (paket, 1))
+    item.method = ""
+    item.save()
+    item = stop(a, make_client(seller_user, "Kutadi"), (paket, 1))
+    item.status = "order"
+    item.save()
+    stop(Load.objects.create(date=TODAY() - timedelta(days=1)), make_client(seller_user, "Kecha"),
+         (paket, 1))
+    resp = day_page(client, admin_user)
+    assert (lane(resp, "truck"), lane(resp, "other"), lane(resp, "undecided"), lane(resp, "order")) == (
+        ["Mashina"], ["Olib"], ["Yangi"], ["Kutadi"])
+    assert resp.context["truck_kg"] == Decimal("100")
+    # The Yuk's old address shows the same day.
+    assert lane(detail(client, admin_user, a), "other") == ["Olib"]
 
 
 # --- stops and product lines --------------------------------------------------------
@@ -1222,51 +1241,6 @@ def set_status(client, user, *changes, day=None):
     return client.post("/yetkazish/holat/", data)
 
 
-def test_the_board_shows_every_stop_of_the_day_across_loads(client, admin_user, seller_user,
-                                                            load, paket):
-    other = Load.objects.create(date=TODAY(), created_by=admin_user)
-    stop(load, make_client(seller_user, "Anvar"), (paket, 3))
-    stop(other, make_client(seller_user, "Bobur"), (paket, 2, 40))
-    stop(Load.objects.create(date=TODAY() + timedelta(days=1)), make_client(seller_user, "Ertaga"),
-         (paket, 1))
-    resp = board(client, admin_user)
-    assert [[i.client.name for i in l.board] for l in resp.context["loads"]] == [["Anvar"], ["Bobur"]]
-    body = resp.content.decode()
-    assert f'href="/yetkazish/{other.pk}/"' in body and "tortilmagan" in body
-
-
-def rows(resp):
-    return [i.client.name for l in resp.context["loads"] for i in l.board]
-
-
-def test_status_chips_count_and_filter(client, admin_user, seller_user, load, paket):
-    a = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
-    b = stop(load, make_client(seller_user, "Bobur"), (paket, 3))
-    stop(load, make_client(seller_user, "Vali"), (paket, 3))
-    set_status(client, admin_user, (a, PICKUP, "done"), (b, "", "new"))
-    resp = board(client, admin_user)
-    chips = {c["label"]: c["count"] for c in resp.context["chips"]}
-    assert (chips["Hammasi"], chips["Kutilmoqda"], chips["Yetkazildi"], chips["Usul tanlanmagan"]) == (
-        3, 2, 1, 1)
-    day = TODAY().isoformat()
-    assert rows(client.get(f"/yetkazish/?sana={day}&holat=done")) == ["Anvar"]
-    assert rows(client.get(f"/yetkazish/?sana={day}&holat=usulsiz")) == ["Bobur"]
-    assert rows(client.get(f"/yetkazish/?sana={day}&holat=bogus")) == ["Anvar", "Bobur", "Vali"]
-
-
-def test_the_search_finds_a_client_by_name_or_phone(client, admin_user, seller_user, load, paket):
-    anvar = make_client(seller_user, "Anvar")
-    anvar.phone = "+998 90 123 45 67"
-    anvar.save()
-    stop(load, anvar, (paket, 3))
-    stop(load, make_client(seller_user, "Bobur"), (paket, 3))
-    client.force_login(admin_user)
-    day = TODAY().isoformat()
-    assert rows(client.get(f"/yetkazish/?sana={day}&q=bob")) == ["Bobur"]
-    assert rows(client.get(f"/yetkazish/?sana={day}&q=901234567")) == ["Anvar"]
-    assert "topilmadi" in client.get(f"/yetkazish/?sana={day}&q=yoq").content.decode()
-
-
 def test_a_row_change_comes_back_to_the_same_view_at_that_row(client, admin_user, seller_user,
                                                              load, paket):
     a = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
@@ -1303,14 +1277,65 @@ def test_a_wrong_value_saves_nothing(client, admin_user, seller_user, load, pake
     assert (a.method, a.status) == (TRUCK, "new")
 
 
+def day_save(client, user, day=None, **extra):
+    """Post the day page's form as it stands, overridden by `extra`."""
+    day = day or TODAY()
+    client.force_login(user)
+    data = {"action": "items", "sana": day.isoformat()}
+    for load in Load.objects.filter(date=day):
+        data.update({k: v for k, v in form_of(load).items() if k != "action"})
+    data.update(extra)
+    return client.post("/yetkazish/kun/", data)
+
+
 def test_a_seller_moves_only_their_own_clients(client, seller_user, other_seller, load, paket):
     mine = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
     theirs = stop(load, make_client(other_seller, "Begona"), (paket, 3))
-    body = board(client, seller_user).content.decode()
-    assert f'name="status_{mine.pk}"' in body and f'name="status_{theirs.pk}"' not in body
-    set_status(client, seller_user, (mine, PICKUP, "done"), (theirs, PICKUP, "done"))
+    body = day_page(client, seller_user).content.decode()
+    assert f'value="{mine.pk}:truck:loading"' in body and f'value="{theirs.pk}:' not in body
+    assert day_save(client, seller_user, quick=f"{theirs.pk}:pickup:done").status_code == 403
+    day_save(client, seller_user, quick=f"{mine.pk}:pickup:done")
     mine.refresh_from_db(), theirs.refresh_from_db()
-    assert mine.status == "done" and theirs.status == "new"
+    assert (mine.method, mine.status, theirs.status) == ("pickup", "done", "new")
+
+
+def test_a_step_button_saves_what_was_typed_too(client, admin_user, seller_user, load, paket):
+    item = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    line = item.lines.get()
+    resp = day_save(client, admin_user, **{f"kg_{line.pk}": "55", "quick": f"{item.pk}:truck:loading"})
+    assert resp.url == f"/yetkazish/?sana={TODAY().isoformat()}#stop-{item.pk}"
+    line.refresh_from_db(), item.refresh_from_db()
+    assert (line.kg, item.status) == (Decimal("55"), "loading")
+
+
+def test_a_wrong_step_changes_nothing(client, admin_user, seller_user, load, paket):
+    item = stop(load, make_client(seller_user, "Anvar"), (paket, 3))
+    day_save(client, admin_user, quick=f"{item.pk}:truck:flying")
+    item.refresh_from_db()
+    assert item.status == "new"
+
+
+def test_the_first_client_of_an_empty_day_makes_its_yuk(client, admin_user, seller_user, paket):
+    day = TODAY() + timedelta(days=1)
+    c = make_client(seller_user, "Anvar")
+    resp = day_save(client, admin_user, day=day, new_client=[c.pk], new_purpose=[DELIVER],
+                    new_product=[paket.pk], new_rolls=["5"])
+    assert resp.url == f"/yetkazish/?sana={day.isoformat()}"
+    item = LoadItem.objects.get()
+    assert (item.load.date, item.client, item.method) == (day, c, TRUCK)
+    # Nothing typed on an empty day makes no Yuk... but opening it doesn't either.
+    day_page(client, admin_user, day + timedelta(days=1))
+    assert Load.objects.count() == 1
+
+
+def test_any_client_of_the_day_is_confirmed_from_the_day_page(client, admin_user, seller_user,
+                                                              load, paket):
+    second = Load.objects.create(date=TODAY(), created_by=admin_user)
+    item = stop(second, make_client(seller_user, "Anvar"), (paket, 3, 70))
+    resp = day_save(client, admin_user, confirm=str(item.pk))
+    sale = Sale.objects.get()
+    assert (sale.date, sale.note) == (TODAY(), f"Yuk #{second.pk}")
+    assert resp.url == f"/yetkazish/?sana={TODAY().isoformat()}&ochiq={item.pk}#stop-{item.pk}"
 
 
 def test_the_status_still_moves_after_the_sale(client, admin_user, load, weighed):

@@ -10719,69 +10719,8 @@ BOARD_NO_METHOD = "usulsiz"
 
 
 def load_list(request):
-    """Yetkazish: the day's stops across all its loads, grouped by Yuk — each with
-    how it leaves (Qanday) and where it stands (Holati), set right in the row.
-    Chips filter by status (with counts), the search box by client; a load's header
-    carries its totals and how many of its stops are delivered."""
-    day = _load_day(request.GET.get("sana"))
-    q = (request.GET.get("q") or "").strip()[:100]
-    holat = request.GET.get("holat", "")
-    if holat not in LoadItem.Status.values and holat != BOARD_NO_METHOD:
-        holat = ""
-    loads = list(
-        Load.objects.filter(date=day).select_related("created_by")
-        .annotate(
-            client_count=Count("items", distinct=True),
-            roll_total=Sum("items__lines__rolls"),
-            kg_total=Sum("items__lines__kg"),
-            unweighed=Count("items__lines", filter=Q(items__lines__kg__isnull=True)),
-            confirmed=Count("items", filter=Q(items__sale__isnull=False), distinct=True),
-            delivered=Count("items", filter=Q(items__status=LoadItem.Status.DONE), distinct=True),
-        )
-        .order_by("created_at")
-    )
-    stops = LoadItem.objects.filter(load__date=day)
-    if q:
-        stops = _client_search(stops, q, base="client")
-    counts = dict(stops.values("status").annotate(n=Count("pk")).values_list("status", "n"))
-    no_method = stops.filter(method="").count()
-    if holat == BOARD_NO_METHOD:
-        stops = stops.filter(method="")
-    elif holat:
-        stops = stops.filter(status=holat)
-    by_load = {}
-    for item in _board_items(stops, request.user):
-        by_load.setdefault(item.load_id, []).append(item)
-    for load in loads:
-        load.board = by_load.get(load.pk, [])
-        load.may_delete = not load.confirmed and _may_change_load(request.user, load)
-        load.done_pct = round(load.delivered * 100 / load.client_count) if load.client_count else 0
-    filtering = bool(q or holat)
-
-    def chip(value, label, count, alert=False):
-        url = f"?sana={day.isoformat()}" + (f"&holat={value}" if value else "") + \
-              (f"&q={quote(q)}" if q else "")
-        return {"label": label, "count": count, "url": url, "active": holat == value,
-                "alert": alert}
-
-    chips = [chip("", "Hammasi", sum(counts.values()))]
-    chips += [chip(value, label, counts.get(value, 0)) for value, label in LoadItem.Status.choices]
-    if no_method:
-        chips.append(chip(BOARD_NO_METHOD, "Usul tanlanmagan", no_method, alert=True))
-    return render(request, "crm/load_list.html", {
-        "day": day,
-        "prev_day": (day - timedelta(days=1)).isoformat(),
-        "next_day": (day + timedelta(days=1)).isoformat(),
-        "is_today": day == timezone.localdate(),
-        "loads": [l for l in loads if l.board or not filtering],
-        "has_loads": bool(loads),
-        "filtering": filtering,
-        "q": q,
-        "holat": holat,
-        "chips": chips,
-        "methods": LoadItem.Method.choices,
-        "statuses": LoadItem.Status.choices,
-    })
+    """Yetkazish: the day's page (`_render_day`)."""
+    return _render_day(request, _load_day(request.GET.get("sana")))
 
 
 def _may_set_status(user, item):
@@ -10789,29 +10728,6 @@ def _may_set_status(user, item):
     seller. Unlike the stop's contents, this stays open after ✓ — the sale is made
     before the goods have left."""
     return user.can_see_all_records or item.client.owner_id == user.pk
-
-
-def _board_items(stops, user):
-    """The board's rows: each stop with its products in a line, rulon, kg, the sum
-    of what is weighed (or the sale's total once ✓), and whether this user may move
-    it."""
-    items = list(
-        stops.select_related("load", "client", "client__owner", "sale")
-        .prefetch_related("lines__product", "sale__items")
-        .order_by("load__created_at", "load_id", "position", "created_at")
-    )
-    for item in items:
-        lines = list(item.lines.all())
-        names = [l.product.name for l in lines]
-        item.products = (names[0] + (f" +{len(names) - 1}" if len(names) > 1 else "")) if names else ""
-        item.rolls = sum(l.rolls for l in lines)
-        item.kg = sum((l.kg for l in lines if l.kg is not None), Decimal("0"))
-        item.unweighed = any(l.kg is None for l in lines)
-        item.amount = (item.sale.total_price if item.sale
-                       else sum((l.kg * l.price for l in lines if l.kg is not None), Decimal("0")))
-        item.may_set = _may_set_status(user, item)
-        item.mine = user.can_see_all_records or item.client.owner_id == user.pk
-    return items
 
 
 def load_board_save(request):
@@ -11441,7 +11357,7 @@ def _save_load_items(request, load, items):
     plan, posted_new, problems = _read_load_items(request, load, items, products)
     if problems:
         messages.error(request, "Saqlanmadi — qizil kataklarni to'g'rilang: " + "; ".join(problems))
-        return _render_load_detail(request, load, items, posted_new=posted_new)
+        return _render_day(request, load.date, items, posted_new=posted_new)
     try:
         with transaction.atomic():
             _write_load_plan(load, plan)
@@ -11457,11 +11373,48 @@ def _save_load_items(request, load, items):
     confirm = request.POST.get("confirm", "")
     if _DIGITS.fullmatch(confirm):
         return _confirm_stop(request, load, int(confirm))
+    quick = request.POST.get("quick", "")
+    if quick:
+        return _quick_status(request, load, items, quick, saved=bool(parts))
     if parts:
         messages.success(request, "Saqlandi.")
     else:
         messages.info(request, "O'zgarish yo'q.")
-    return redirect(_load_url(load))
+    return redirect(_day_url(load.date))
+
+
+def _day_url(day, opened=None):
+    """The day page, optionally with one client's row open (and scrolled to)."""
+    url = _load_list_url(day)
+    return url + (f"&ochiq={opened}#stop-{opened}" if opened else "")
+
+
+def _quick_status(request, load, items, raw, saved):
+    """A row's step button (Ortilmoqda, Yo'lda, Olib ketdi…) or how-it-leaves button
+    (Mashinada, O'zi oladi, Yandex): "<stop>:<method>:<status>". Pressed inside the
+    day form, so whatever was typed is saved first and nothing is lost."""
+    pk, _, rest = raw.partition(":")
+    method, _, status = rest.partition(":")
+    item = next((i for i in items if str(i.pk) == pk), None)
+    if item is None:
+        messages.error(request, "Bu mijoz kunda topilmadi — sahifa yangilandi.")
+        return redirect(_day_url(load.date))
+    if not _may_set_status(request.user, item):
+        raise PermissionDenied
+    if (method not in LoadItem.Method.values and method != "") or status not in LoadItem.Status.values:
+        messages.error(request, f"{item.client.name} — holat noto'g'ri.")
+        return redirect(_day_url(load.date))
+    if (method, status) != (item.method, item.status):
+        item.method, item.status = method, status
+        item.save(update_fields=["method", "status"])
+        label = item.get_method_display() or "usul tanlanmagan"
+        AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", item.load_id,
+                        f"Yuk #{item.load_id}, {item.client.name}: {label} — {item.status_label}"[:255])
+        messages.success(request, f"{item.client.name}: {item.status_label}."
+                         + (" Boshqa o'zgarishlar ham saqlandi." if saved else ""))
+    elif saved:
+        messages.success(request, "Saqlandi.")
+    return redirect(_load_list_url(load.date) + f"#stop-{item.pk}")
 
 
 def _confirm_stop(request, load, item_pk):
@@ -11469,30 +11422,32 @@ def _confirm_stop(request, load, item_pk):
     it (`_finish_new_sale`), and lock the stop. Every line needs its kg first. Run
     under a row lock, so a double click or a second tab can't make two sales."""
     with transaction.atomic():
-        item = (LoadItem.objects.select_for_update().select_related("client", "client__owner")
-                .filter(pk=item_pk, load=load).first())
+        # Any client of the day — the day page holds every Yuk of that date.
+        item = (LoadItem.objects.select_for_update().select_related("client", "client__owner", "load")
+                .filter(pk=item_pk, load__date=load.date).first())
         if item is None:
             messages.error(request, "Bu mijoz yukda topilmadi — sahifa yangilandi.")
-            return redirect(_load_url(load))
+            return redirect(_day_url(load.date))
         name = item.client.name
         if item.sale_id:
             messages.info(request, f"“{name}” allaqachon sotuvga aylangan.")
-            return redirect(_load_url(load))
+            return redirect(_day_url(load.date))
         if not _may_edit_stop(request.user, item):
             raise PermissionDenied
         lines = list(item.lines.select_related("product"))
         if not item.delivers or not lines:
             messages.error(request, f"“{name}”: sotuv uchun mahsulot yo'q.")
-            return redirect(_load_url(load))
+            return redirect(_day_url(load.date))
         unweighed = [l.product.name for l in lines if l.kg is None]
         if unweighed:
             messages.error(request, f"“{name}”: avval kg kiriting — {', '.join(unweighed)}.")
-            return redirect(_load_url(load))
+            return redirect(_day_url(load.date))
         seller = item.client.owner
         if seller.role != User.Role.SALES:
             messages.error(request, f"“{name}” sotuvchiga biriktirilmagan — sotuv kimning "
                                     f"nomiga yozilishi noma'lum. Mijozni sotuvchiga o'tkazing.")
-            return redirect(_load_url(load))
+            return redirect(_day_url(load.date))
+        load = item.load
         sale = Sale(date=load.date, client=item.client, sales_rep=seller,
                     entered_by=request.user,
                     debt_term_days=DEFAULT_DEBT_DAYS, note=f"Yuk #{load.pk}")
@@ -11511,7 +11466,7 @@ def _confirm_stop(request, load, item_pk):
     if applied > 0:
         text += f" Avansdan {applied:,.0f} so'm yechildi."
     messages.success(request, text)
-    return redirect(_load_url(load))
+    return redirect(_day_url(load.date, item.pk))
 
 
 def load_item_delete(request, pk, item_pk):
@@ -11742,8 +11697,18 @@ def _load_groups(load, items, depot, dist, weights):
 
 def _load_items(load, user):
     """The load's stops with their lines, each marked `editable` for this user."""
-    items = list(load.items.select_related("client", "client__owner", "sale")
-                 .prefetch_related("lines__product", "client__phones").order_by("created_at"))
+    return _prep_items(load.items.all(), user)
+
+
+def _day_stops(day, user):
+    """Every stop of the day, across its loads (old days may have several)."""
+    return _prep_items(LoadItem.objects.filter(load__date=day), user)
+
+
+def _prep_items(stops, user):
+    items = list(stops.select_related("load", "client", "client__owner", "sale")
+                 .prefetch_related("lines__product", "client__phones")
+                 .order_by("load__created_at", "created_at"))
     for item in items:
         item.line_list = list(item.lines.all())
         item.editable = _may_edit_stop(user, item)
@@ -11783,16 +11748,62 @@ def _roll_breakdown(lines):
     return rows
 
 
-def _render_load_detail(request, load, items, posted_new=None):
-    """The load's page. After a failed save, `items` carry what was typed and
-    `posted_new` the new rows as posted, so nothing the person entered is lost."""
+#: The steps a stop goes through, by how it leaves — the buttons on its row.
+STOP_STEPS = {
+    LoadItem.Method.TRUCK: [("new", "Rejada"), ("loading", "Ortilmoqda"), ("sent", "Yo'lda"),
+                            ("done", "Yetkazildi")],
+    LoadItem.Method.YANDEX: [("new", "Kutilmoqda"), ("sent", "Jo'natildi"), ("done", "Yetkazildi")],
+    LoadItem.Method.PICKUP: [("new", "Kutilmoqda"), ("done", "Olib ketdi")],
+}
+
+
+def _lanes(items, user):
+    """Sort the day's stops into the page's lanes: not decided yet, picked up or
+    Yandex, waiting for stock, and the truck (in route order, numbered)."""
+    lanes = {"undecided": [], "other": [], "order": [], "truck": []}
+    for item in items:
+        item.may_set = _may_set_status(user, item)
+        steps = STOP_STEPS.get(item.method, [])
+        at = [value for value, _ in steps].index(item.status) if item.status in dict(steps) else -1
+        item.steps = [{"value": value, "label": label,
+                       "state": "done" if n < at or (n == at and value == "done")
+                       else "now" if n == at else ""}
+                      for n, (value, label) in enumerate(steps)]
+        lines = item.line_list
+        names = [l.product.name for l in lines]
+        item.products = (names[0] + (f" +{len(names) - 1}" if len(names) > 1 else "")) if names else ""
+        item.rolls = sum(l.rolls for l in lines)
+        item.kg = sum((l.kg for l in lines if l.kg is not None), Decimal("0"))
+        item.unweighed = any(l.kg is None for l in lines)
+        if item.status == LoadItem.Status.ORDER:
+            lanes["order"].append(item)
+        elif not item.method:
+            lanes["undecided"].append(item)
+        elif item.method == LoadItem.Method.TRUCK:
+            lanes["truck"].append(item)
+        else:
+            lanes["other"].append(item)
+    lanes["truck"].sort(key=lambda i: (i.load.created_at, i.position is None, i.position or 0,
+                                       i.created_at))
+    for n, item in enumerate(lanes["truck"], start=1):
+        item.n = n
+    return lanes
+
+
+def _render_day(request, day, items=None, posted_new=None):
+    """The Yetkazish page for one day: every client of the day in lanes — not
+    decided, the truck (with its route), picked up / Yandex, waiting for stock.
+    Each row opens in place to its products, kg and ✓ Sotuvga; one form saves all.
+    After a failed save, `items` carry what was typed and `posted_new` the new rows
+    as posted, so nothing the person entered is lost."""
     user = request.user
-    in_load = {i.client_id for i in items}
+    if items is None:
+        items = _day_stops(day, user)
+    load = Load.objects.filter(date=day).order_by("created_at").first()
+    in_day = {i.client_id for i in items}
     clients = Client.objects.prefetch_related("phones").order_by("name")
     if not user.can_see_all_records:
         clients = clients.filter(owner=user)
-    lines = [l for i in items if i.delivers for l in i.line_list]
-    kg_known = [l.kg for l in lines if l.kg is not None]
     new_rows = [r for r in (posted_new or [])
                 if r["client"] or r["product"] or r["rolls"] or r["extra"]] or [{"key": "1"}]
     debts = dict(
@@ -11801,40 +11812,65 @@ def _render_load_detail(request, load, items, posted_new=None):
     )
     for item in items:
         item.debt = debts.get(item.client_id) or Decimal("0")
-    return render(request, "crm/load_detail.html", {
+    lanes = _lanes(items, user)
+    truck = lanes["truck"]
+    done = sum(1 for i in items if i.status == LoadItem.Status.DONE)
+    # Which stop to open: the one just changed (?ochiq=), or any a failed save marked.
+    opened = request.GET.get("ochiq", "")
+    for item in items:
+        item.open = (str(item.pk) == opened or posted_new is not None and (
+            getattr(item, "purpose_bad", False)
+            or any(getattr(l, f"{f}_bad", False) for l in item.line_list
+                   for f in ("rolls", "price", "kg", "size", "micron"))))
+    return render(request, "crm/load_day.html", {
+        "day": day,
+        "prev_day": (day - timedelta(days=1)).isoformat(),
+        "next_day": (day + timedelta(days=1)).isoformat(),
+        "is_today": day == timezone.localdate(),
         "load": load,
         "items": items,
-        "may_change_load": _may_change_load(user, load),
-        "roll_total": sum(l.rolls for l in lines),
-        "kg_total": sum(kg_known, Decimal("0")),
-        "unweighed": len(lines) - len(kg_known),
-        "line_count": len(lines),
-        "roll_breakdown": _roll_breakdown(lines),
-        "confirmed": sum(1 for i in items if i.sale_id),
-        "missing": [_mark_mine(i.client, i.mine) for i in items
-                    if i.on_route and not i.client.has_location],
-        "clients": [c for c in clients if c.pk not in in_load],
+        "lanes": lanes,
+        "done": done,
+        "done_pct": round(done * 100 / len(items)) if items else 0,
+        "may_change_load": bool(load) and _may_change_load(user, load),
+        "truck_kg": sum((i.kg for i in truck), Decimal("0")),
+        # What the warehouse loads onto the truck: rulon by product and variant.
+        "roll_breakdown": _roll_breakdown([l for i in truck if i.delivers for l in i.line_list]),
+        "truck_unweighed": sum(1 for i in truck if i.unweighed),
+        "missing": [_mark_mine(i.client, i.mine) for i in truck if not i.client.has_location],
+        "clients": [c for c in clients if c.pk not in in_day],
         "products": Product.objects.filter(is_active=True).order_by("name"),
         "purposes": LoadItem.Purpose.choices,
+        "methods": LoadItem.Method.choices,
         "size_suggestions": SIZE_SUGGESTIONS,
-        "movable": any(i.editable for i in items),
         "micron_suggestions": MICRON_SUGGESTIONS,
         "new_rows": new_rows,
         "failed": posted_new is not None,
-        "auto_route": bool(items) and posted_new is None
+        "adding": posted_new is not None and any(r.get("client") for r in posted_new),
+        "auto_route": bool(load) and bool(truck) and posted_new is None
                       and (bool(load.ordered_at) or bool(request.GET.get("marshrut"))),
     })
 
 
+def load_day_save(request):
+    """The day page's one form: saves every client's boxes and adds the new ones,
+    into the day's Yuk — made here the first time anything is added to the day."""
+    if request.method != "POST":
+        return redirect(reverse("load_list"))
+    day = _load_day(request.POST.get("sana"))
+    load = Load.objects.filter(date=day).order_by("created_at").first()
+    if load is None:
+        load = Load.objects.create(date=day, created_by=request.user)
+        AuditLog.record(request.user, AuditLog.Action.CREATE, "Yuk", load.pk,
+                        f"Yuk #{load.pk} ({load.date:%d.%m.%Y}) yaratildi")
+    return _save_load_items(request, load, _day_stops(day, request.user))
+
+
 def load_detail(request, pk):
-    """One load: its stops — a client, a purpose, product lines with rulon, price
-    and (once weighed) kg — edited in place, new stops added below, and ✓ to turn a
-    stop into a sale. Sellers see everything and change only their own clients'
-    stops. The route isn't worked out here — «Marshrut tuzish» fetches it
-    (`load_route`), so opening the page costs no road lookups; it opens by itself
-    once the order has been saved."""
+    """A Yuk's old address: shows its day's page (the day is the Yuk now). Still
+    takes the Yuk's own posts — the route order, the trucks' strategy, «Jo'natish»
+    — and the day form's save."""
     load = get_object_or_404(Load.objects.select_related("created_by"), pk=pk)
-    items = _load_items(load, request.user)
 
     if request.method == "POST":
         action = request.POST.get("action")
@@ -11845,10 +11881,10 @@ def load_detail(request, pk):
         if action == "start":
             return _set_start(request, load)
         if action == "items":
-            return _save_load_items(request, load, items)
-        return _save_load_order(request, load, items)
+            return _save_load_items(request, load, _day_stops(load.date, request.user))
+        return _save_load_order(request, load, _load_items(load, request.user))
 
-    return _render_load_detail(request, load, items)
+    return _render_day(request, load.date)
 
 
 def load_route(request, pk):

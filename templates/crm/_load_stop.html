@@ -16,8 +16,6 @@
       </span>
     </div>
     <div class="stop-tools">
-      {% if item.method != "truck" %}<span class="badge badge-neutral" title="Marshrutga kirmaydi">{{ item.get_method_display|default:"Usul tanlanmagan" }}</span>{% endif %}
-      {% if item.status != "new" %}<span class="badge badge-st-{{ item.status }}">{{ item.status_label }}</span>{% endif %}
       {% if item.sale %}
       <span class="badge badge-neutral">{{ item.get_purpose_display }}</span>
       {% if item.mine %}<a class="badge badge-paid" href="{% url 'sale_detail' item.sale.pk %}" title="Sotuvni ochish">✓ Sotuv #{{ item.sale.pk|unlocalize }}</a>{% else %}<span class="badge badge-paid">✓ Sotuv #{{ item.sale.pk|unlocalize }}</span>{% endif %}
@@ -29,8 +27,8 @@
       <button type="submit" name="confirm" value="{{ item.pk|unlocalize }}" class="btn btn-sm stop-confirm"
               title="Saqlab, shu mijozni sotuvga aylantirish (hamma kg kiritilgan bo'lishi kerak)">✓ Sotuvga</button>
       {% endif %}
-      <a class="icon-action" href="{% url 'load_move' load.pk %}?mijoz={{ item.pk|unlocalize }}" data-modal title="Boshqa kunga o'tkazish" aria-label="{{ item.client.name }} — boshqa kunga o'tkazish">{% include "crm/_ico_move_day.html" %}</a>
-      <a class="icon-action danger" href="{% url 'load_item_delete' load.pk item.pk %}" data-modal title="Yukdan olib tashlash" aria-label="{{ item.client.name }} — yukdan olib tashlash">{% include "crm/_ico_trash.html" %}</a>
+      <a class="icon-action" href="{% url 'load_move' item.load_id %}?mijoz={{ item.pk|unlocalize }}" data-modal title="Boshqa kunga o'tkazish" aria-label="{{ item.client.name }} — boshqa kunga o'tkazish">{% include "crm/_ico_move_day.html" %}</a>
+      <a class="icon-action danger" href="{% url 'load_item_delete' item.load_id item.pk %}" data-modal title="Yukdan olib tashlash" aria-label="{{ item.client.name }} — yukdan olib tashlash">{% include "crm/_ico_trash.html" %}</a>
       {% else %}
       <span class="badge badge-neutral">{{ item.get_purpose_display }}</span>
       {% endif %}
