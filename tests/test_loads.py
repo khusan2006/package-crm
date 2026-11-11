@@ -1302,3 +1302,58 @@ def test_sending_the_truck_marks_its_stops_sent(client, admin_user, load, three)
     assert (statuses[a.pk], statuses[b.pk], statuses[c.pk]) == ("new", "sent", "sent")
     start(client, admin_user, load, clear="1")
     assert set(load.items.filter(method=TRUCK).values_list("status", flat=True)) == {"loading"}
+
+
+# --- a sale typed in Sotuvlar lands on the board ---------------------------------------
+
+def sell(client, user, buyer, product, day=None, weight="120"):
+    from crm.tests import one_item, sale_post
+    client.force_login(user)
+    data = sale_post(buyer.pk, [one_item(product, weight=weight, price="15000")])
+    if day:
+        data["date"] = day.isoformat()
+    return client.post("/sales/new/", data)
+
+
+def test_a_sale_from_sotuvlar_lands_on_the_board_without_a_method(client, seller_user, paket):
+    anvar = make_client(seller_user, "Anvar")
+    sell(client, seller_user, anvar, paket)
+    sale = Sale.objects.get()
+    item = sale.load_item
+    assert (item.load.date, item.load.note, item.method, item.status) == (
+        TODAY(), "Sotuvlardan", "", "new")
+    line = item.lines.get()
+    assert (line.product, line.kg, line.price) == (paket, Decimal("120"), Decimal("15000"))
+    assert not item.on_route
+    assert "Anvar" in board(client, seller_user).content.decode()
+    assert "Kutilmoqda" in client.get("/sales/").content.decode()
+
+
+def test_it_joins_the_days_existing_load(client, admin_user, seller_user, load, paket):
+    sell(client, seller_user, make_client(seller_user, "Anvar"), paket)
+    assert Sale.objects.get().load_item.load == load
+    assert Load.objects.count() == 1
+
+
+def test_a_planned_stop_takes_the_sale_and_its_lines(client, seller_user, load, paket, plyonka):
+    anvar = make_client(seller_user, "Anvar")
+    planned = stop(load, anvar, (plyonka, 4))
+    sell(client, seller_user, anvar, paket, weight="80")
+    planned.refresh_from_db()
+    assert planned.sale == Sale.objects.get() and planned.method == TRUCK
+    assert [(l.product, l.kg) for l in planned.lines.all()] == [(paket, Decimal("80"))]
+    assert LoadItem.objects.count() == 1
+
+
+def test_a_second_sale_the_same_day_gets_its_own_stop(client, seller_user, paket):
+    anvar = make_client(seller_user, "Anvar")
+    sell(client, seller_user, anvar, paket)
+    sell(client, seller_user, anvar, paket)
+    assert LoadItem.objects.filter(client=anvar, load__date=TODAY()).count() == 2
+    assert Load.objects.filter(date=TODAY()).count() == 2
+
+
+def test_a_backdated_sale_is_not_tracked(client, seller_user, paket):
+    sell(client, seller_user, make_client(seller_user, "Anvar"), paket,
+         day=TODAY() - timedelta(days=3))
+    assert not LoadItem.objects.exists()

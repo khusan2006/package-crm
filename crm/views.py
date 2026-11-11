@@ -2413,7 +2413,7 @@ def sale_list(request):
     base = (
         Sale.objects.visible_to(request.user)
         .real()  # opening-balance carry-overs live on the Qarzlar page, not here
-        .select_related("client", "sales_rep", "entered_by")
+        .select_related("client", "sales_rep", "entered_by", "load_item__load")
         .prefetch_related("items__product")
         .with_balance()
     )
@@ -9824,6 +9824,47 @@ def _finish_new_sale(user, sale, seller, summary_extra=""):
     return applied
 
 
+@transaction.atomic
+def _track_sale_delivery(sale, user):
+    """A sale typed in Sotuvlar for today (or later) goes onto that day's Yetkazish
+    board, so how it leaves and whether it arrived can be followed there.
+
+    - The client already has an open stop that day (planned in a Yuk): the sale
+      becomes that stop's sale, and the stop's lines are replaced by the sale's —
+      the sale is what was actually sold. It keeps its method, so a planned
+      delivery stays on the route.
+    - Otherwise a new stop in the day's first load without this client (a new
+      load «Sotuvlardan» when there is none), with no method picked — it stays
+      off the route until someone sets it on the board.
+
+    Not for backdated sales or opening balances. Returns the stop, or None."""
+    if sale.is_opening or sale.date < timezone.localdate():
+        return None
+    stop = (LoadItem.objects.select_for_update()
+            .filter(load__date=sale.date, client=sale.client, sale__isnull=True)
+            .order_by("load__created_at", "created_at").first())
+    if stop is not None:
+        stop.lines.all().delete()
+        stop.sale = sale
+        if stop.purpose == LoadItem.Purpose.COLLECT:
+            stop.purpose = LoadItem.Purpose.BOTH
+        stop.save(update_fields=["sale", "purpose"])
+    else:
+        load = (Load.objects.filter(date=sale.date).exclude(items__client=sale.client)
+                .order_by("created_at").first())
+        if load is None:
+            load = Load.objects.create(date=sale.date, created_by=user, note="Sotuvlardan")
+        stop = LoadItem.objects.create(load=load, client=sale.client, sale=sale,
+                                       method="", purpose=LoadItem.Purpose.DELIVER)
+    for line in sale.items.select_related("product"):
+        kg = line.weight / 1000 if line.dimension == Sale.Dimension.G else line.weight
+        LoadLine.objects.create(item=stop, product=line.product, rolls=line.rolls or 0,
+                                price=line.price, kg=kg, size=line.size, micron=line.micron)
+    AuditLog.record(user, AuditLog.Action.UPDATE, "Yuk", stop.load_id,
+                    f"Yuk #{stop.load_id}: Sotuv #{sale.pk} ({sale.client.name}) qo'shildi"[:255])
+    return stop
+
+
 def sale_create(request):
     form = SaleForm(
         request.POST or None, user=request.user, initial=_acting_initial(request)
@@ -9840,13 +9881,15 @@ def sale_create(request):
             formset.instance = sale
             formset.save()
             applied = _finish_new_sale(request.user, sale, seller)
+            stop = _track_sale_delivery(sale, request.user)
+            tracked = f" Yetkazishga qo'shildi (Yuk #{stop.load_id})." if stop else ""
             if applied > 0:
                 messages.success(
                     request,
-                    f"Sotuv qo'shildi. Avansdan {applied:,.0f} so'm yechildi.",
+                    f"Sotuv qo'shildi. Avansdan {applied:,.0f} so'm yechildi.{tracked}",
                 )
             else:
-                messages.success(request, "Sotuv qo'shildi (qarz sifatida).")
+                messages.success(request, f"Sotuv qo'shildi (qarz sifatida).{tracked}")
             return form_success(request, reverse("sale_list"))
         return _render_sale_form(request, form, formset, "Yangi sotuv", invalid=True)
     return _render_sale_form(request, form, formset, "Yangi sotuv")
