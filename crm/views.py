@@ -9825,10 +9825,13 @@ def _finish_new_sale(user, sale, seller, summary_extra=""):
     return applied
 
 
-def _copy_sale_lines(stop, sale):
-    """The stop's products become the sale's — what was actually sold. A sale line
-    without a rulon count keeps 0 (shown as no count), never a made-up one."""
-    stop.lines.all().delete()
+def _copy_sale_lines(stop, sale, replace_unsold=False):
+    """The stop's products for this sale become the sale's lines — what was actually
+    sold. Only this sale's products are replaced (and, when a sale first lands on a
+    planned stop, the still-unsold planned ones): a product another sale sold is never
+    touched. A sale line without a rulon count keeps 0 (shown as no count)."""
+    gone = Q(sale=sale) | Q(sale__isnull=True) if replace_unsold else Q(sale=sale)
+    stop.lines.filter(gone).delete()
     for line in sale.items.select_related("product"):
         kg = line.weight / 1000 if line.dimension == Sale.Dimension.G else line.weight
         LoadLine.objects.create(item=stop, product=line.product, rolls=line.rolls or 0,
@@ -9836,30 +9839,35 @@ def _copy_sale_lines(stop, sale):
                                 sale=sale)
 
 
+def _free_stop(stop):
+    """A stop with an unsold product again is not «sold as a whole» any more."""
+    if stop.sale_id and stop.lines.filter(sale__isnull=True).exists():
+        stop.sale = None
+        stop.save(update_fields=["sale"])
+
+
 def _sale_changed_for_delivery(sale, user):
-    """A sale edited in Sotuvlar: its Yetkazish stop follows. Same client — the stop
-    takes the sale's products again. Another client — a stop made for this sale goes
-    with it to the new client's day; a planned one is let go (unlocked) instead."""
-    stop = LoadItem.objects.filter(sale=sale).first()
+    """A sale edited in Sotuvlar: the products it sold on the board follow.
+
+    Same client and day — they become the sale's lines again (other sales' products on
+    that stop are left alone). Another client or another day — a stop made just for
+    this sale goes with it; on a planned stop the products are let go (unsold again)."""
+    line = LoadLine.objects.filter(sale=sale).select_related("item__load").first()
+    stop = line.item if line else LoadItem.objects.filter(sale=sale).select_related("load").first()
     if stop is None:
-        # Sold product by product: a one-line sale keeps its one product in step.
-        lines = list(LoadLine.objects.filter(sale=sale))
-        items = list(sale.items.all())
-        if len(lines) == 1 and len(items) == 1:
-            line, it = lines[0], items[0]
-            line.product, line.price = it.product, it.price
-            line.kg = it.weight / 1000 if it.dimension == Sale.Dimension.G else it.weight
-            line.rolls = it.rolls or line.rolls
-            line.save(update_fields=["product", "price", "kg", "rolls"])
         return
-    if stop.client_id == sale.client_id:
+    if stop.client_id == sale.client_id and stop.load.date == sale.date:
         _copy_sale_lines(stop, sale)
-    elif stop.via_sotuvlar:
+        return
+    only_this = not stop.lines.exclude(sale=sale).exists()
+    if stop.via_sotuvlar and only_this:
         stop.delete()
         _track_sale_delivery(sale, user)
     else:
-        stop.sale = None
-        stop.save(update_fields=["sale"])
+        LoadLine.objects.filter(item=stop, sale=sale).update(sale=None)
+        if stop.sale_id == sale.pk:
+            stop.sale = None
+            stop.save(update_fields=["sale"])
 
 
 @transaction.atomic
@@ -9881,8 +9889,12 @@ def _track_sale_delivery(sale, user):
     if sale.date == timezone.localdate():
         # Yesterday's open stop for this client comes over first, so the sale lands on it.
         _carry_over(sale.date, user)
-    stop = (LoadItem.objects.select_for_update()
+    # An open stop of the client that day — not one already partly sold (that one's
+    # products belong to other sales) nor a cancelled one.
+    stop = (LoadItem.objects.select_for_update(of=("self",))
             .filter(load__date=sale.date, client=sale.client, sale__isnull=True)
+            .exclude(status=LoadItem.Status.CANCEL)
+            .exclude(Exists(LoadLine.objects.filter(item=OuterRef("pk"), sale__isnull=False)))
             .order_by("load__created_at", "created_at").first())
     if stop is not None:
         stop.sale = sale
@@ -9897,7 +9909,7 @@ def _track_sale_delivery(sale, user):
         stop = LoadItem.objects.create(load=load, client=sale.client, sale=sale,
                                        method="", purpose=LoadItem.Purpose.DELIVER,
                                        via_sotuvlar=True)
-    _copy_sale_lines(stop, sale)
+    _copy_sale_lines(stop, sale, replace_unsold=True)
     AuditLog.record(user, AuditLog.Action.UPDATE, "Yuk", stop.load_id,
                     f"Yuk #{stop.load_id}: Sotuv #{sale.pk} ({sale.client.name}) qo'shildi"[:255])
     return stop
@@ -10506,7 +10518,13 @@ def sale_delete(request, pk):
             # A Yetkazish stop made just for this sale goes too; a planned one (or a ✓)
             # is unlocked instead — its delivery may still be on.
             LoadItem.objects.filter(sale=sale, via_sotuvlar=True).delete()
+            touched = list(LoadItem.objects.filter(Q(sale=sale) | Q(lines__sale=sale)).distinct())
             sale.delete()  # items, payments and returns cascade with it
+            # Its products are unsold again: a stop still marked sold by another of its
+            # sales opens up, so they can be sold from the board.
+            for stop in touched:
+                stop.refresh_from_db()
+                _free_stop(stop)
             # Freed or now-orphaned advance allocations settle back into balance.
             _reconcile_client_advance(client, seller)
             # Its payments went with it, and the client's other deadlines may have

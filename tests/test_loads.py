@@ -1884,3 +1884,68 @@ def test_carry_over_leaves_sold_products_on_their_day(client, admin_user, seller
     today = LoadLine.objects.get(product=plyonka).item
     assert today.load.date == TODAY() and today.carried_from == yesterday.date
     assert lane(resp, "truck") == ["Anvar"]
+
+
+# --- audit 2: a sale never wipes another sale's products ----------------------------------
+
+def test_a_sotuvlar_sale_does_not_land_on_a_partly_sold_stop(client, admin_user, seller_user,
+                                                            two_products, paket, plyonka):
+    item = two_products
+    bag = item.lines.get(product=paket)
+    day_save(client, admin_user, confirm_line=str(bag.pk))
+    first = Sale.objects.get()
+    sell(client, seller_user, item.client, plyonka, weight="30")
+    bag.refresh_from_db(), item.refresh_from_db()
+    assert bag.sale == first and first.delivery_stop == item     # untouched
+    assert item.lines.count() == 2 and item.sale is None
+    second = Sale.objects.exclude(pk=first.pk).get()
+    assert second.delivery_stop != item                         # its own row
+
+
+def test_editing_the_second_sale_keeps_the_first_ones_product(client, admin_user, seller_user,
+                                                             two_products, paket, plyonka):
+    item = two_products
+    day_save(client, admin_user, confirm_line=str(item.lines.get(product=paket).pk))
+    day_save(client, admin_user, confirm=str(item.pk))
+    first, second = Sale.objects.order_by("pk")
+    edit_sale(client, admin_user, second, weight="33")
+    assert first.load_lines.count() == 1
+    assert item.lines.get(sale=second).kg == Decimal("33")
+
+
+def test_deleting_the_first_sale_opens_the_stop_again(client, admin_user, two_products, paket):
+    item = two_products
+    day_save(client, admin_user, confirm_line=str(item.lines.get(product=paket).pk))
+    day_save(client, admin_user, confirm=str(item.pk))
+    first = Sale.objects.order_by("pk").first()
+    client.post(f"/sales/{first.pk}/delete/")
+    item.refresh_from_db()
+    bag = item.lines.get(product=paket)
+    assert bag.sale is None and item.sale is None
+    assert f'name="kg_{bag.pk}"' in day_page(client, admin_user).content.decode()
+
+
+def test_moving_a_sale_to_another_client_frees_its_products(client, admin_user, seller_user, load,
+                                                            weighed):
+    save(client, admin_user, load, confirm=str(weighed.pk))
+    sale = Sale.objects.get()
+    other = make_client(seller_user, "Boshqa")
+    from crm.tests import one_item, sale_post
+    items = list(sale.items.all())
+    rows = [{**one_item(i.product, weight=str(i.weight), price=str(int(i.price))), "id": i.pk}
+            for i in items]
+    data = sale_post(other.pk, rows, date=sale.date.isoformat())
+    data["items-INITIAL_FORMS"] = str(len(rows))
+    client.post(f"/sales/{sale.pk}/edit/", data)
+    weighed.refresh_from_db()
+    assert weighed.sale is None and not weighed.lines.filter(sale__isnull=False).exists()
+
+
+def test_a_sotuvlar_sale_skips_a_cancelled_stop(client, seller_user, load, paket):
+    anvar = make_client(seller_user, "Anvar")
+    cancelled = stop(load, anvar, (paket, 1))
+    cancelled.status = "cancel"
+    cancelled.save()
+    sell(client, seller_user, anvar, paket)
+    cancelled.refresh_from_db()
+    assert cancelled.sale is None and Sale.objects.get().delivery_stop != cancelled
