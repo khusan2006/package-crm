@@ -7270,7 +7270,8 @@ select.lane-status.st-cancel { border-color: var(--border); color: var(--text-mu
 /* kg | unit | ✓ — one joined control. */
 .kg-group {
   display: flex; align-items: stretch; height: 36px;
-  border: 1px solid var(--border); border-radius: 10px; background: var(--surface); overflow: hidden;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+  /* Not overflow:hidden — the kg calculator's «= 149,5 kg» hangs below the box. */
 }
 .kg-group:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .kg-group.is-bad { border-color: var(--danger); }
@@ -7286,7 +7287,7 @@ select.lane-status.st-cancel { border-color: var(--border); color: var(--text-mu
 }
 .kg-group .line-sell {
   flex: 0 0 38px; width: 38px; height: auto; border: 0; border-left: 1px solid var(--border);
-  border-radius: 0; background: var(--surface-2); color: var(--accent); font-weight: 800;
+  border-radius: 0 9px 9px 0; background: var(--surface-2); color: var(--accent); font-weight: 800;
 }
 .kg-group .line-sell:hover { background: var(--accent); color: #fff; }
 .kg-group.is-text {
@@ -7304,3 +7305,4 @@ select.lane-status.st-cancel { border-color: var(--border); color: var(--text-mu
   .lane-row.no-n .lane-line { grid-template-columns: minmax(0, 1fr) auto 32px; }
   .lane-line-item { grid-template-columns: minmax(0, 1fr) 150px; }
 }
+.kg-group .kg-sum { z-index: 4; }
