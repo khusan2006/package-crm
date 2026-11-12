@@ -336,9 +336,9 @@ def test_a_client_moves_to_tomorrow_from_its_own_icon(login, admin_user, seller_
     dialog.wait_for()
     submit = dialog.locator("[data-move-submit]")
     assert submit.inner_text() == "1 ta mijozni o'tkazish"
-    dialog.locator("[data-move-all]").click()
-    assert submit.inner_text() == "2 ta mijozni o'tkazish"
-    dialog.locator(f'input[name=move][value="{b.pk}"]').uncheck()
+    # Opened from Anvar's row: only Anvar's order is in it.
+    assert dialog.locator(f'input[name=move][value="{b.pk}"]').count() == 0
+    assert dialog.locator("[data-move-all]").count() == 0
     dialog.locator(f'input[name=move][value="{a.pk}"]').uncheck()
     assert submit.is_disabled()
     dialog.locator(f'input[name=move][value="{a.pk}"]').check()

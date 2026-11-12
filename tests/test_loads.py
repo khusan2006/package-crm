@@ -975,8 +975,21 @@ def test_the_dialog_opens_with_the_client_ticked(client, admin_user, seller_user
                       HTTP_X_REQUESTED_WITH="XMLHttpRequest")
     body = resp.content.decode()
     assert resp.status_code == 200
-    assert f'value="{a.pk}" checked' in body and f'value="{b.pk}" checked' not in body
-    assert 'value="tomorrow" checked' in body and "Yangi yuk" in body
+    # Opened from Anvar's row: Anvar's order only — nobody else is listed.
+    assert f'value="{a.pk}" checked' in body and f'name="move" value="{b.pk}"' not in body
+    assert 'value="tomorrow" checked' in body and "Ertaga" in body and "Yangi yuk" not in body
+
+
+def test_the_dialog_shows_each_day_once(client, admin_user, seller_user, load, paket):
+    a = stop(load, make_client(seller_user, "Anvar"), (paket, 5))
+    tomorrow = TODAY() + timedelta(days=1)
+    Load.objects.create(date=tomorrow)
+    Load.objects.create(date=tomorrow)
+    client.force_login(admin_user)
+    body = client.get(f"/yetkazish/{load.pk}/boshqa-kunga/?mijoz={a.pk}",
+                      HTTP_X_REQUESTED_WITH="XMLHttpRequest").content.decode()
+    assert body.count('name="target"') == 2          # tomorrow (once) and «Boshqa kun»
+    assert 'value="tomorrow"' not in body             # tomorrow already planned: no second card
 
 
 def test_clients_move_to_a_new_load_tomorrow(client, admin_user, seller_user, load, paket, plyonka):

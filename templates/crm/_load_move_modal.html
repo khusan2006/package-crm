@@ -9,13 +9,14 @@
   <h2>{{ title }}</h2>
   <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
 </div>
-<p class="field-hint">Yuk #{{ load.pk|unlocalize }} · {{ load.date|date:"d.m.Y" }}. Mijozlar mahsulotlari, narxi va kg'i bilan o'tadi.</p>
+<p class="field-hint">{{ load.date|date:"d.m.Y" }} dan. {% if single %}Belgilangan mahsulotlar{% else %}Mijozlar mahsulotlari{% endif %} narxi va kg'i bilan o'tadi.</p>
 <form method="post" action="{% url 'load_move' load.pk %}" class="move-dialog" data-move-dialog>
   {% csrf_token %}
+  {% if single %}<input type="hidden" name="faqat" value="{{ single.pk|unlocalize }}">{% endif %}
   {% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
 
   <fieldset class="move-step">
-    <legend><span class="move-step-n" aria-hidden="true">1</span>Kimlar?</legend>
+    <legend><span class="move-step-n" aria-hidden="true">1</span>{% if single %}Qaysi mahsulotlar?{% else %}Kimlar?{% endif %}</legend>
     <div class="move-who">
       {% for item in items %}
       <div class="move-who-client" data-move-client>
@@ -51,16 +52,18 @@
       {% for t in targets %}
       <label class="move-card">
         <input type="radio" name="target" value="{{ t.pk|unlocalize }}"{% if target == t.pk|stringformat:"d" %} checked{% endif %}>
-        <span class="move-card-body"><strong>Yuk #{{ t.pk|unlocalize }} <span class="move-card-tag">{{ t.n }} mijoz</span></strong><span class="move-card-day">{{ t.label }}</span>{% if t.note %}<span class="cell-sub">{{ t.note|truncatechars:34 }}</span>{% endif %}</span>
+        <span class="move-card-body"><strong>{{ t.label }}</strong><span class="move-card-day"><span class="move-card-tag">{{ t.n }} mijoz</span></span></span>
       </label>
       {% endfor %}
+      {% if not tomorrow_planned %}
       <label class="move-card">
         <input type="radio" name="target" value="tomorrow"{% if target == "tomorrow" %} checked{% endif %}>
-        <span class="move-card-body"><strong>Yangi yuk</strong><span class="move-card-day">{{ tomorrow_label }}</span></span>
+        <span class="move-card-body"><strong>{{ tomorrow_label }}</strong><span class="move-card-day">hali mijoz yo'q</span></span>
       </label>
+      {% endif %}
       <label class="move-card move-card--date">
         <input type="radio" name="target" value="other"{% if target == "other" %} checked{% endif %} data-move-other-radio>
-        <span class="move-card-body"><strong>Yangi yuk</strong><span class="move-card-day">boshqa sanaga</span>
+        <span class="move-card-body"><strong>Boshqa kun</strong><span class="move-card-day">sanani tanlang</span>
           <input type="date" name="sana" value="{{ other_day }}" aria-label="Boshqa sana" data-move-other></span>
       </label>
     </div>

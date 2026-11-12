@@ -10873,16 +10873,30 @@ def load_move(request, pk):
     the products added to its stop there, unless that stop is already a sale."""
     load = get_object_or_404(Load, pk=pk)
     items = [i for i in _load_items(load, request.user) if i.editable]
+    # Opened from a client's own row: that client's order only, not the whole day.
+    only = request.GET.get("mijoz", "") if request.method != "POST" else request.POST.get("faqat", "")
+    if _DIGITS.fullmatch(only):
+        items = [i for i in items if str(i.pk) == only]
     if not items:
         raise PermissionDenied
     tomorrow = max(load.date, timezone.localdate()) + timedelta(days=1)
-    targets = list(Load.objects.filter(date__gte=min(load.date, timezone.localdate()))
-                   .exclude(pk=load.pk).annotate(n=Count("items")).order_by("date", "pk")[:12])
+    # One card per day — the day is the Yuk (a day with two Yuk shows as one, joining
+    # its first); not the day it is on already.
+    by_day = {}
+    for t in (Load.objects.filter(date__gte=min(load.date, timezone.localdate()))
+              .exclude(date=load.date).annotate(n=Count("items")).order_by("date", "created_at")):
+        if t.date in by_day:
+            by_day[t.date].n += t.n
+        else:
+            by_day[t.date] = t
+    targets = list(by_day.values())[:12]
     for t in targets:
         t.label = _day_label(t.date)
-    context = {"load": load, "items": items, "targets": targets,
+    single = items[0] if _DIGITS.fullmatch(only) else None
+    context = {"load": load, "items": items, "targets": targets, "single": single,
+               "tomorrow_planned": any(t.date == tomorrow for t in targets),
                "tomorrow": tomorrow, "tomorrow_label": _day_label(tomorrow),
-               "title": "Boshqa kunga o'tkazish"}
+               "title": f"{single.client.name} — boshqa kunga" if single else "Boshqa kunga o'tkazish"}
 
     for item in items:
         # Products already sold stay where they are; only the rest can move.

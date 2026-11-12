@@ -456,6 +456,9 @@
           sentBoxes.push([el, el.value]);
         });
         if (!sentBoxes.length) { return; }
+        // On their way: a ✓ or status sent before this save lands still takes them along
+        // (else ✓ could reach the server first and find no kg).
+        sentBoxes.forEach(function (pair) { pair[0].dataset.inflight = '1'; });
         note(stop, 'Saqlanmoqda…');
         // getAttribute: the form's hidden «action» field shadows form.action.
         saving = fetch(items.getAttribute('action'), {
@@ -503,6 +506,7 @@
         }).catch(function () {
           note(stop, 'Saqlanmadi — internet? Qayta urinib ko\'ring.', true);
         }).then(function () {
+          sentBoxes.forEach(function (pair) { delete pair[0].dataset.inflight; });
           saving = null;
           if (pending.length) { save(pending.shift()); }
         });
@@ -515,7 +519,8 @@
           if (always.indexOf(el.name) !== -1 || el === submitter) { return; }
           var keep = false;
           if (scope && scope.contains(el)) {
-            keep = scope.id === 'add-client' || /^addline_/.test(el.name) || changed(el);
+            keep = scope.id === 'add-client' || /^addline_/.test(el.name) || changed(el)
+              || 'inflight' in el.dataset;
           } else if (scope && scope.id === 'add-client' && /^addline_/.test(el.name)) {
             keep = true;  // «Qo'shish» also puts in products added to saved clients
           }
