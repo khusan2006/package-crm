@@ -341,7 +341,11 @@ lights it up). Built from the lines on the page, in their order (script below).{
       var name = (strong.childNodes[0] && strong.childNodes[0].textContent || strong.textContent).trim();
       var a = document.createElement('a');
       a.href = '#' + row.id;
-      a.className = 'client-chip st-' + (Array.prototype.find.call(row.classList, function (c) { return c.indexOf('st-') === 0; }) || '').slice(3);
+      // Painted by sale: sold green, partly sold light green, still an order amber
+      // (cancelled stays grey, crossed out).
+      var cancelled = row.classList.contains('st-cancel');
+      a.className = 'client-chip ' + (cancelled ? 'is-cancel' : 'is-sold-' + (row.dataset.sold || 'none'));
+      a.title = cancelled ? 'Bekor qilindi' : { all: 'Sotuvga aylangan', part: 'Qisman sotilgan', none: 'Hali buyurtma' }[row.dataset.sold || 'none'];
       a.textContent = name;
       nav.appendChild(a);
     });

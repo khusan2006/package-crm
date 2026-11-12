@@ -8,7 +8,7 @@
   form; what each one sends is limited to this client (load.js).
 {% endcomment %}
 {% with pk=item.pk|unlocalize %}
-<div class="lane-row st-{{ item.status }}{% if item.open %} is-open{% endif %}{% if not item.n %} no-n{% endif %}" id="stop-{{ pk }}">
+<div class="lane-row st-{{ item.status }}{% if item.open %} is-open{% endif %}{% if not item.n %} no-n{% endif %}" id="stop-{{ pk }}" data-sold="{% if item.sale or item.sold_count and not item.unsold_count %}all{% elif item.sold_count %}part{% else %}none{% endif %}">
   <div class="lane-line">
     {% if item.n %}<span class="lane-n" title="Marshrutdagi tartibi">{{ item.n }}</span>{% endif %}
     <button type="button" class="lane-who" data-toggle-row aria-expanded="{% if item.open %}true{% else %}false{% endif %}" aria-controls="ed-{{ pk }}" title="Batafsil: mahsulotlar, metr/mikron, narx">

@@ -2587,3 +2587,16 @@ def test_adding_a_missing_location_opens_the_clients_form(client, admin_user, se
     body = day_page(client, admin_user).content.decode()
     assert f'href="/clients/{joysiz.pk}/edit/" data-modal>Joylashuv qo' in body
     assert client.get(f"/clients/{joysiz.pk}/edit/").status_code == 200
+
+
+def test_each_line_says_how_much_of_it_is_sold(client, admin_user, seller_user, load, paket,
+                                                plyonka):
+    """The client buttons are painted from this: sold, partly sold, still an order."""
+    sold = stop(load, make_client(seller_user, "Sotilgan"), (paket, 1, 10))
+    part = stop(load, make_client(seller_user, "Qisman"), (paket, 1, 10), (plyonka, 1, 5))
+    stop(load, make_client(seller_user, "Buyurtma"), (paket, 1))
+    day_save(client, admin_user, confirm=str(sold.pk))
+    day_save(client, admin_user, confirm_line=str(part.lines.get(product=paket).pk))
+    body = day_page(client, admin_user).content.decode()
+    assert body.count('data-sold="all"') == 1 and body.count('data-sold="part"') == 1
+    assert body.count('data-sold="none"') == 1

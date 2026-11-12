@@ -7569,3 +7569,12 @@ a.sold-chip:hover { background: var(--success-soft); color: var(--success); }
 @keyframes row-flash { 0%, 60% { box-shadow: 0 0 0 3px var(--accent-ring); } 100% { box-shadow: none; } }
 .lane-row.is-flash { animation: row-flash 1.6s ease; }
 @media (max-width: 700px) { .day-clients { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; } }
+
+/* Client buttons painted by sale (replaces the status dot). */
+.client-chip::before { display: none; }
+.client-chip.is-sold-all { background: var(--success); border-color: var(--success); color: #fff; }
+.client-chip.is-sold-part { background: var(--success-soft); border-color: var(--success); color: var(--success); }
+.client-chip.is-sold-none { background: var(--warning-soft); border-color: var(--warning); color: var(--warning); }
+.client-chip.is-cancel { background: var(--surface-2); color: var(--text-muted); text-decoration: line-through; }
+.client-chip.is-sold-all:hover { filter: brightness(0.93); color: #fff; }
+.client-chip.is-sold-part:hover, .client-chip.is-sold-none:hover { filter: brightness(0.96); }
