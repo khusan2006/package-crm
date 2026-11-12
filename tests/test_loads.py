@@ -403,7 +403,7 @@ def test_confirming_a_stop_makes_the_sale(client, admin_user, seller_user, load,
     assert weighed.sale == sale
     assert (sale.date, sale.client, sale.sales_rep, sale.note) == (
         load.date, weighed.client, seller_user, f"Yuk #{load.pk}")
-    assert sale.debt_term_days == 7 and sale.debt_deadline == load.date + timedelta(days=7)
+    assert sale.debt_term_days == 14 and sale.debt_deadline == load.date + timedelta(days=14)
     lines = {i.product.name: i for i in sale.items.all()}
     assert (lines["Paket"].weight, lines["Paket"].rolls, lines["Paket"].price, lines["Paket"].cost_price) == (
         Decimal("120"), 5, Decimal("15000"), Decimal("10000"))

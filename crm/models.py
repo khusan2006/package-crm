@@ -38,7 +38,7 @@ SUNDAY = 6
 # How long a receipt is given to be paid when nobody says otherwise. It lives here
 # rather than in forms.py because the Sale model itself needs it: a receipt written
 # by an import or a fixture still has to carry a term.
-DEFAULT_DEBT_DAYS = 7
+DEFAULT_DEBT_DAYS = 14
 
 # Reusable money aggregates for SaleItem querysets
 REVENUE = ExpressionWrapper(F("weight") * F("price"), output_field=MONEY)

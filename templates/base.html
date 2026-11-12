@@ -1842,7 +1842,7 @@
   // (SaleForm.clean computes the same date); this is a live hint only.
   (function () {
     var MONTHS = ['Yanvar', 'Fevral', 'Mart', 'Aprel', 'May', 'Iyun', 'Iyul', 'Avgust', 'Sentabr', 'Oktabr', 'Noyabr', 'Dekabr'];
-    var DEFAULT_DAYS = 7;  // mirrors DEFAULT_DEBT_DAYS in crm/forms.py
+    var DEFAULT_DAYS = 14;  // mirrors DEFAULT_DEBT_DAYS in crm/models.py
     function parseIso(s) {
       var p = (s || '').split('-');
       return p.length === 3 ? new Date(+p[0], +p[1] - 1, +p[2]) : null;

@@ -199,11 +199,11 @@ class DebtTests(BaseSetup):
         self.assertTrue(sale.is_outstanding)
         self.assertEqual(sale.payments.count(), 0)
 
-    def test_blank_days_defaults_to_seven_days(self):
+    def test_blank_days_defaults_to_fourteen_days(self):
         self.client.force_login(self.sales1)
         self.client.post(reverse("sale_create"), self._sale_data(debt_days=""))
         sale = Sale.objects.latest("created_at")
-        self.assertEqual(sale.debt_deadline, timezone.localdate() + timedelta(days=7))
+        self.assertEqual(sale.debt_deadline, timezone.localdate() + timedelta(days=14))
 
     def test_debt_days_sets_deadline(self):
         self.client.force_login(self.sales1)
@@ -344,8 +344,10 @@ class DebtTermRestartTests(BaseSetup):
         sale = self._overdue_sale()
         self.client.force_login(self.sales1)
         self.client.post(reverse("sale_pay", args=[sale.pk]), {"amount": "100000", "method": "cash"})
+        # The edit form arrives with the agreed term already in the days box.
         data = sale_post(
-            self.client1.pk, [one_item(self.product, weight="10")], date=sale.date.isoformat()
+            self.client1.pk, [one_item(self.product, weight="10")],
+            date=sale.date.isoformat(), debt_days=str(sale.term_days),
         )
         data["items-INITIAL_FORMS"] = "1"
         data["items-0-id"] = str(sale.items.get().pk)
