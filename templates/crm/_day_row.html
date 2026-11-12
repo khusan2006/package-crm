@@ -14,6 +14,9 @@
     <button type="button" class="lane-who" data-toggle-row aria-expanded="{% if item.open %}true{% else %}false{% endif %}" aria-controls="ed-{{ pk }}" title="Batafsil: mahsulotlar, metr/mikron, narx">
       <strong>{{ item.client.name }}{% if item.carried_from %} <span class="badge badge-st-order lane-carried" title="{{ item.carried_from|date:'d.m.Y' }} kuni rejada edi">{{ item.carried_label }}</span>{% endif %}{% if item.unsold %} <span class="badge badge-cancelled lane-carried" title="Mahsulot ketdi, lekin sotuv yozilmagan: kg kiriting va ✓ Sotuvga bosing">Sotuv yozilmagan</span>{% endif %}</strong>
       <span class="cell-sub">{{ item.client.owner }}{% if item.client.phone %} · {{ item.client.phone }}{% endif %}{% if item.purpose != "deliver" %} · {{ item.get_purpose_display }}{% endif %}</span>
+      {% comment %}Whether the client's location is saved — the route needs it; a missing
+      one is added from the opened row («Joylashuv qo'shish»).{% endcomment %}
+      <span class="loc-flag{% if not item.client.has_location %} is-missing{% endif %}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>{% if item.client.has_location %}joylashuv bor{% else %}joylashuv yo'q{% endif %}</span>
     </button>
     {% comment %}Each product on its own line with its kg box — weighing is done from the
     list. A box saves as it is left.{% endcomment %}

@@ -2555,3 +2555,22 @@ def test_moving_a_sotuvlar_sale_to_an_earlier_day_moves_its_stop(client, admin_u
     client.force_login(admin_user)
     client.post(f"/sales/{sale.pk}/edit/", data)
     assert Sale.objects.get().delivery_stop.load.date == earlier
+
+
+def test_each_line_says_whether_the_location_is_saved(client, admin_user, seller_user, load,
+                                                      paket):
+    stop(load, make_client(seller_user, "Joyli", 0.01), (paket, 1))
+    stop(load, make_client(seller_user, "Joysiz"), (paket, 1))
+    body = day_page(client, admin_user).content.decode()
+    assert body.count('class="loc-flag"') == 1 and body.count('class="loc-flag is-missing"') == 1
+    assert "joylashuv yo&#x27;q" in body or "joylashuv yo'q" in body
+
+
+def test_adding_a_missing_location_opens_the_clients_form(client, admin_user, seller_user, load,
+                                                          paket):
+    """«Joylashuv qo'shish» opened the map page, which is a 404 for a client without one."""
+    joysiz = make_client(seller_user, "Joysiz")
+    stop(load, joysiz, (paket, 1))
+    body = day_page(client, admin_user).content.decode()
+    assert f'href="/clients/{joysiz.pk}/edit/" data-modal>Joylashuv qo' in body
+    assert client.get(f"/clients/{joysiz.pk}/edit/").status_code == 200

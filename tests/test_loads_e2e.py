@@ -58,6 +58,12 @@ def open_add(page):
         add.locator("[data-new-row]").first.wait_for()
 
 
+def add_for_today(page):
+    """«Qaysi kunga» defaults to tomorrow (orders are written the day before); these
+    tests add to the day on screen."""
+    page.fill("[name=new_sana]", timezone.localdate().isoformat())
+
+
 def pick(page, row, nth, text):
     """Type into the nth picker of a row and choose the matching option."""
     row.locator(".combobox-input").nth(nth).fill(text)
@@ -94,6 +100,7 @@ def test_add_stops_by_keyboard_and_save(login, admin_user, seller_user, live_ser
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
     open_add(page)
+    add_for_today(page)
 
     row = page.locator("[data-new-row]").first
     pick(page, row, 0, "Botir plast")          # client → focus moves to its product
@@ -254,6 +261,7 @@ def test_a_new_client_gets_a_second_product_with_metr_and_mikron(login, admin_us
     page = login(admin_user)
     page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
     open_add(page)
+    add_for_today(page)
     block = page.locator("[data-new-row]").first
     first = block.locator(".new-stop-first")
     pick(page, block, 0, "Anvar")
@@ -396,6 +404,7 @@ def test_another_product_starts_as_a_copy_of_the_last(login, admin_user, seller_
 
     # A new client: «+ Mahsulot» copies the row above it.
     open_add(page)
+    add_for_today(page)
     block = page.locator("[data-new-row]").first
     first = block.locator(".new-stop-first")
     pick(page, block, 0, "Bobur")
