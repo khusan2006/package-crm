@@ -11842,6 +11842,12 @@ def _amount(item, debt):
 
 @transaction.atomic
 def _save_load_order(request, load, items):
+    if not request.user.can_see_all_records:
+        raise PermissionDenied
+    return _save_load_order_checked(request, load, items)
+
+
+def _save_load_order_checked(request, load, items):
     """Save the order exactly as the page posted it: `stop` = item pk, in visiting
     order. Anything the page could not have shown is refused rather than guessed at
     — a stale tab is reloaded, not half-saved."""
@@ -11887,6 +11893,8 @@ def _save_load_order(request, load, items):
 
 def _reset_load_order(request, load):
     """«Tavsiya etilgan tartib» on a saved order: forget it, back to the suggestion."""
+    if not request.user.can_see_all_records:
+        raise PermissionDenied
     if load.ordered_at:
         LoadItem.objects.filter(load__date=load.date).update(position=None, route_group=None)
         load.ordered_at = None
@@ -11899,6 +11907,8 @@ def _reset_load_order(request, load):
 
 
 def _set_strategy(request, load):
+    if not request.user.can_see_all_records:
+        raise PermissionDenied
     raw = request.POST.get("strategy")
     if raw in Load.Strategy.values and raw != load.strategy:
         load.strategy = raw
@@ -11996,12 +12006,12 @@ def _day_stops(day, user):
     return _prep_items(LoadItem.objects.filter(load__date=day), user)
 
 
-def _moved_on(day):
+def _moved_on(day, user):
     """The clients this day had that weren't finished and went on to a later day
     («Kechagidan») — gone from the day's lanes, so shown at its foot with where they
     are now: a day's record keeps every client it had (its sale in Sotuvlar is still
     dated this day)."""
-    stops = list(LoadItem.objects.filter(carried_from__lte=day, load__date__gt=day)
+    stops = list(_visible_stops(LoadItem.objects.filter(carried_from__lte=day, load__date__gt=day), user)
                  .select_related("load", "client", "client__owner")
                  .prefetch_related("lines__product").order_by("load__date", "created_at"))
     for stop in stops:
@@ -12029,7 +12039,13 @@ def _ahead_stops(day, user):
     return stops
 
 
+def _visible_stops(stops, user):
+    """Yetkazish shows a seller their own clients only; admins/managers see everyone's."""
+    return stops if user.can_see_all_records else stops.filter(client__owner=user)
+
+
 def _prep_items(stops, user):
+    stops = _visible_stops(stops, user)
     items = list(stops.select_related("load", "client", "client__owner", "sale")
                  .prefetch_related("lines__product", "lines__sale", "client__phones")
                  .order_by("load__created_at", "created_at"))
@@ -12430,7 +12446,9 @@ def _render_day(request, day, items=None, posted_new=None, ahead=None):
         "tab": tab,
         "status": status,
         "shown": shown,
-        "show_route": bool(truck) and (tab in ("", "truck")) and not status,
+        # The route is the whole day's truck — a seller sees only their own clients,
+        # so it is for admins/managers.
+        "show_route": user.can_see_all_records and bool(truck) and (tab in ("", "truck")) and not status,
         "day": day,
         "day_label": _day_label(day),
         # The arrows and «Bugun» keep the open tab.
@@ -12443,7 +12461,7 @@ def _render_day(request, day, items=None, posted_new=None, ahead=None):
         "items": items,
         "lanes": lanes,
         "ahead_groups": ahead_groups,
-        "moved_on": _moved_on(day) if not tab and not status else [],
+        "moved_on": _moved_on(day, user) if not tab and not status else [],
         # Today's page asks about the orders an earlier day passed without.
         "waiting": _waiting(day, user) if day == timezone.localdate() else [],
         "tomorrow": (day + timedelta(days=1)).isoformat(),
@@ -12540,6 +12558,8 @@ def load_route(request, pk):
     order, the map and the driver's message. Until the order is saved it's the one
     crm/routing.py suggests, worked out afresh each time; trucks are chosen by
     `_load_groups`. Every stop needs a joylashuv first."""
+    if not request.user.can_see_all_records:
+        raise PermissionDenied  # the whole day's truck: not a seller's partial list
     load = get_object_or_404(Load, pk=pk)
     # Only the stops the truck still goes to — not pickups, Yandex, buyurtma or ones
     # already delivered — across the whole day (a second Yuk of the date included).

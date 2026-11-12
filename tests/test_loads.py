@@ -183,14 +183,15 @@ def test_trucks_and_warehouse_stay_admin_only(client, manager, seller_user):
         assert get(client, user, "/mashinalar/").status_code == 403
 
 
-def test_a_seller_sees_other_sellers_stops_but_cannot_edit_them(client, seller_user, other_seller,
-                                                                load, paket):
+def test_a_seller_sees_only_their_own_clients(client, seller_user, other_seller, admin_user,
+                                              load, paket):
+    """Yetkazish shows a seller their own clients only; admins/managers see all."""
     mine = stop(load, make_client(seller_user, "Meniki", 0.01), (paket, 5))
     theirs = stop(load, make_client(other_seller, "Begona", 0.02), (paket, 7))
     body = detail(client, seller_user, load).content.decode()
-    assert "Begona" in body and "Meniki" in body
+    assert "Meniki" in body and "Begona" not in body
     assert f'name="purpose_{mine.pk}"' in body
-    assert f'name="purpose_{theirs.pk}"' not in body  # read-only for this seller
+    assert "Begona" in detail(client, admin_user, load).content.decode()
     their_line = theirs.lines.get()
     # A forged post for the other seller's stop changes nothing.
     save(client, seller_user, load, **{f"purpose_{theirs.pk}": DELIVER,
@@ -658,9 +659,8 @@ def test_a_seller_gets_no_links_into_another_sellers_client(client, seller_user,
     save(client, admin_user, load, confirm=str(theirs.pk))
     sale = Sale.objects.get()
     body = detail(client, seller_user, load).content.decode()
-    assert f"/clients/{theirs_client.pk}/location/" not in body
-    assert f"/sales/{sale.pk}/" not in body and f"Sotuv #{sale.pk}" in body
-    assert f"/clients/{nowhere.pk}/edit/" not in body
+    assert f'id="stop-{theirs.pk}"' not in body       # not on this seller's list at all
+    assert f"/sales/{sale.pk}/" not in body and f"/clients/{nowhere.pk}/edit/" not in body
     # An admin, who can open them, still gets the links.
     admin_body = detail(client, admin_user, load).content.decode()
     assert f"/sales/{sale.pk}/" in admin_body and f"/clients/{nowhere.pk}/edit/" in admin_body
@@ -1337,7 +1337,7 @@ def test_a_seller_moves_only_their_own_clients(client, seller_user, other_seller
     theirs = stop(load, make_client(other_seller, "Begona"), (paket, 3))
     body = day_page(client, seller_user).content.decode()
     assert f'data-quick="{mine.pk}"' in body and f'data-quick="{theirs.pk}"' not in body
-    assert day_save(client, seller_user, quick=f"{theirs.pk}:pickup:done").status_code == 403
+    day_save(client, seller_user, quick=f"{theirs.pk}:pickup:done")   # a forged one: not theirs to see
     day_save(client, seller_user, quick=f"{mine.pk}:pickup:done")
     mine.refresh_from_db(), theirs.refresh_from_db()
     assert (mine.method, mine.status, theirs.status) == ("pickup", "done", "new")
@@ -2600,3 +2600,23 @@ def test_each_line_says_how_much_of_it_is_sold(client, admin_user, seller_user, 
     body = day_page(client, admin_user).content.decode()
     assert body.count('data-sold="all"') == 1 and body.count('data-sold="part"') == 1
     assert body.count('data-sold="none"') == 1
+
+
+
+def test_the_route_and_jonatish_are_for_admins_and_managers(client, seller_user, manager, load,
+                                                            warehouse, paket):
+    stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 1))
+    client.force_login(seller_user)
+    assert client.get(f"/yetkazish/{load.pk}/marshrut/").status_code == 403
+    assert client.post(f"/yetkazish/{load.pk}/", {"action": "save", "stop": []}).status_code == 403
+    assert client.post(f"/yetkazish/{load.pk}/", {"action": "reset"}).status_code == 403
+    assert client.post(f"/yetkazish/{load.pk}/", {"action": "strategy", "strategy": "fast"}).status_code == 403
+    assert day_page(client, seller_user).context["show_route"] is False
+    assert day_page(client, manager).context["show_route"] is True
+
+
+def test_a_sellers_counts_and_buttons_are_their_own(client, seller_user, other_seller, load, paket):
+    stop(load, make_client(seller_user, "Meniki"), (paket, 1))
+    stop(load, make_client(other_seller, "Begona"), (paket, 1))
+    resp = day_page(client, seller_user)
+    assert {t["label"]: t["count"] for t in resp.context["tabs"]}["Hammasi"] == 1
