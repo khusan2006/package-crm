@@ -100,6 +100,10 @@ stand. Counts are for the whole day («Buyurtmalar» with the later days).{% end
 {% endif %}
 {% endif %}
 
+{% comment %}Every client on this tab, as a button: a click scrolls to its line (and
+lights it up). Built from the lines on the page, in their order (script below).{% endcomment %}
+<nav class="day-clients" data-client-jump aria-label="Mijozga o'tish" hidden></nav>
+
 <form method="post" action="{% url 'load_day_save' %}" class="day-form" data-load-items data-autosave{% if failed %} data-unsaved{% endif %}>
   {% csrf_token %}
   <input type="hidden" name="action" value="items">
@@ -322,6 +326,39 @@ stand. Counts are for the whole day («Buyurtmalar» with the later days).{% end
     });
     box.addEventListener('click', function (e) { if (e.target === box) { box.close(); } });
     if (window.location.hash === '#kutilayotgan') { open(); }
+  })();
+</script>
+<script>
+  // The client buttons: one per line on the page; a click brings that line to the
+  // middle of the screen and lights it up for a moment.
+  (function () {
+    var nav = document.querySelector('[data-client-jump]');
+    if (!nav) { return; }
+    var rows = document.querySelectorAll('.day-form .lane-row[id^="stop-"]');
+    rows.forEach(function (row) {
+      var strong = row.querySelector('.lane-who strong');
+      if (!strong) { return; }
+      var name = (strong.childNodes[0] && strong.childNodes[0].textContent || strong.textContent).trim();
+      var a = document.createElement('a');
+      a.href = '#' + row.id;
+      a.className = 'client-chip st-' + (Array.prototype.find.call(row.classList, function (c) { return c.indexOf('st-') === 0; }) || '').slice(3);
+      a.textContent = name;
+      nav.appendChild(a);
+    });
+    if (!nav.children.length) { return; }
+    nav.hidden = false;
+    nav.addEventListener('click', function (e) {
+      var chip = e.target.closest('a.client-chip');
+      if (!chip) { return; }
+      e.preventDefault();
+      var row = document.getElementById(chip.getAttribute('href').slice(1));
+      if (!row) { return; }
+      row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      history.replaceState(null, '', '#' + row.id);
+      row.classList.remove('is-flash');
+      void row.offsetWidth;  // restart the light-up if clicked again
+      row.classList.add('is-flash');
+    });
   })();
 </script>
 <script src="{% static_v 'js/route.js' %}" defer></script>

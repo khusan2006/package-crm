@@ -573,3 +573,18 @@ def test_a_stray_product_copy_does_not_save_itself(login, admin_user, seller_use
     page.mouse.click(5, 300)                           # …and is left as it was
     page.wait_for_timeout(600)
     assert a.lines.count() == 1
+
+
+def test_a_client_button_scrolls_to_that_client(login, admin_user, seller_user, live_server, db,
+                                                paket):
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    rows = [stop(load, Client.objects.create(name=f"Mijoz {n}", owner=seller_user), paket)
+            for n in range(12)]
+    page = login(admin_user)
+    page.set_viewport_size({"width": 1280, "height": 700})
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    chips = page.locator("[data-client-jump] a.client-chip")
+    assert chips.count() == 12 and chips.nth(11).inner_text() == "Mijoz 11"
+    chips.nth(11).click()
+    page.wait_for_function(f"(() => {{ const r = document.getElementById('stop-{rows[11].pk}')"
+                           ".getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()")

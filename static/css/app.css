@@ -7548,3 +7548,24 @@ a.sold-chip:hover { background: var(--success-soft); color: var(--success); }
 }
 .loc-flag svg { width: 12px; height: 12px; }
 .loc-flag.is-missing { color: var(--danger); }
+
+/* Client buttons under the status tabs: a click scrolls to that client. */
+.day-clients { display: flex; flex-wrap: wrap; gap: 6px; margin: -6px 0 18px; }
+.day-clients[hidden] { display: none; }
+.client-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+  border: 1px solid var(--border); border-radius: var(--r-pill); background: var(--surface);
+  font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; text-decoration: none;
+}
+.client-chip::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint);
+}
+.client-chip.st-order::before { background: var(--warning); }
+.client-chip.st-loading::before { background: var(--accent); }
+.client-chip.st-sent::before { background: var(--violet); }
+.client-chip.st-done::before { background: var(--success); }
+.client-chip.st-cancel { color: var(--text-muted); text-decoration: line-through; }
+.client-chip:hover { border-color: var(--accent); color: var(--accent); }
+@keyframes row-flash { 0%, 60% { box-shadow: 0 0 0 3px var(--accent-ring); } 100% { box-shadow: none; } }
+.lane-row.is-flash { animation: row-flash 1.6s ease; }
+@media (max-width: 700px) { .day-clients { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; } }
