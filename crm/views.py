@@ -10870,7 +10870,8 @@ def load_move(request, pk):
     products, prices and any kg — or only some of its products (the unticked ones
     stay: the order is divided between the days). It joins the end of a saved order
     there and loses its truck choice here. A client already in the target load gets
-    the products added to its stop there, unless that stop is already a sale."""
+    the products added to its stop there; when that stop is already a sale, it goes
+    in as a row of its own (in the day's next Yuk — a client is once per Yuk)."""
     load = get_object_or_404(Load, pk=pk)
     items = [i for i in _load_items(load, request.user) if i.editable]
     # Opened from a client's own row: that client's order only, not the whole day.
@@ -10966,7 +10967,7 @@ def load_move(request, pk):
     else:
         return refuse("Qayerga o'tkazishni tanlang.", "tomorrow")
 
-    moved, staying = [], []
+    moved = []
     with transaction.atomic():
         if target is None:
             # The day is the Yuk: a day that already has one is joined, not split.
@@ -10989,9 +10990,17 @@ def load_move(request, pk):
         for item, lines in [(i, list(i.line_list)) for i in whole] + parts:
             is_whole = item in whole
             existing = there.get(item.client_id)
+            dest = target
             if existing is not None and existing.sale_id:
-                staying.append(item.client.name)
-                continue
+                # Already sold there: this is another order of that day — a row of
+                # its own, in the day's next Yuk.
+                dest, made = _free_load(target.date, item.client, request.user,
+                                        note=f"Yuk #{load.pk} ({load.date:%d.%m.%Y}) dan o'tkazilgan")
+                if made:
+                    AuditLog.record(request.user, AuditLog.Action.CREATE, "Yuk", dest.pk,
+                                    f"Yuk #{dest.pk} ({dest.date:%d.%m.%Y}) yaratildi — "
+                                    f"Yuk #{load.pk} dan o'tkazish uchun")
+                existing = None
             line_pks = [l.pk for l in lines]
             if existing is not None:
                 # Already going that day: the products join its stop there.
@@ -11003,16 +11012,18 @@ def load_move(request, pk):
                     item.delete()
             elif is_whole:
                 LoadItem.objects.filter(pk=item.pk, load=load, sale__isnull=True).update(
-                    load=target, position=next_position(), route_group=None)
+                    load=dest, position=next_position(), route_group=None)
                 # Loaded or on the way today, it isn't on another day: it starts over
                 # there (an order waiting for stock stays one).
                 LoadItem.objects.filter(pk=item.pk, status__in=[
                     LoadItem.Status.LOADING, LoadItem.Status.SENT]).update(status=LoadItem.Status.NEW)
             else:
-                there[item.client_id] = LoadItem.objects.create(
-                    load=target, client=item.client, purpose=LoadItem.Purpose.DELIVER,
+                new_stop = LoadItem.objects.create(
+                    load=dest, client=item.client, purpose=LoadItem.Purpose.DELIVER,
                     method=item.method, position=next_position())
-                LoadLine.objects.filter(pk__in=line_pks).update(item=there[item.client_id])
+                if dest == target:
+                    there[item.client_id] = new_stop
+                LoadLine.objects.filter(pk__in=line_pks).update(item=new_stop)
             if not is_whole and len(lines) == len(item.line_list) and not item.has_sold:
                 # «Yetkazish + pul olish» with every product gone: only the money is left.
                 item.purpose = LoadItem.Purpose.COLLECT
@@ -11029,12 +11040,9 @@ def load_move(request, pk):
                             f"Yuk #{target.pk}: Yuk #{load.pk} ({load.date:%d.%m.%Y}) dan "
                             f"o'tkazildi — {'; '.join(moved)}"[:255])
     if moved:
-        split = len([1 for item, _ in parts if item.client.name not in staying])
+        split = len(parts)
         messages.success(request, f"{len(moved)} ta mijoz Yuk #{target.pk} ({target.date:%d.%m.%Y}) "
                                   f"ga o'tkazildi" + (f", {split} tasi qisman." if split else "."))
-    if staying:
-        messages.warning(request, f"Yuk #{target.pk} da bu mijoz sotuvga aylangan — shu yerda qoldi: "
-                                  + ", ".join(staying))
     if request.POST.get("ertaga"):
         return redirect(_day_url(request, load.date) + f"#stop-{request.POST['ertaga']}")
     return form_success(request, _load_url(load))
@@ -11282,10 +11290,11 @@ def _read_load_items(request, load, items, products, target_items=None):
     marked if wrong, so a failed save can show the page again as it was left.
     `items` are every stop the page shows (the later days' orders included);
     `target_items` the stops of the day the new clients go to — a client already
-    there can't be added twice (defaults to `items`).
+    there may be added again (a second order that day): it gets a row of its own,
+    and `plan["again"]` names it (defaults to `items`).
     Returns (plan, problems) — `plan` lists the writes for `_save_load_items`."""
     user = request.user
-    plan = {"stops": [], "lines": [], "drop": [], "add": [], "new": []}
+    plan = {"stops": [], "lines": [], "drop": [], "add": [], "new": [], "again": []}
     problems = []
     if target_items is None:
         target_items = items
@@ -11384,7 +11393,9 @@ def _read_load_items(request, load, items, products, target_items=None):
         if raw_purpose != item.purpose:
             plan["stops"].append((item, raw_purpose))
 
-    in_load = {i.client_id for i in target_items}
+    # Already on that day (not cancelled): added again, as a row of its own — only
+    # said in the message, so a second order isn't typed in by mistake unnoticed.
+    in_load = {i.client_id for i in target_items if i.status != LoadItem.Status.CANCEL}
     picked = set()
     posted_new = []
     rows = _post_rows(request, "new_client", "new_purpose", "new_key", "new_method",
@@ -11412,9 +11423,6 @@ def _read_load_items(request, load, items, products, target_items=None):
         if client is None:
             row["client_bad"] = True
             problems.append(f"{n}-yangi qator — mijoz tanlanmagan")
-        elif client.pk in in_load:
-            row["client_bad"] = True
-            problems.append(f"{client.name} yukda allaqachon bor")
         elif client.pk in picked:
             row["client_bad"] = True
             problems.append(f"{client.name} ikki qatorda tanlangan — bitta qatorga "
@@ -11447,6 +11455,8 @@ def _read_load_items(request, load, items, products, target_items=None):
         if client and not row["client_bad"] and len(problems) == before:
             picked.add(client.pk)
             plan["new"].append((client, purpose, lines, method))
+            if client.pk in in_load:
+                plan["again"].append(client.name)
     if len(target_items) + len(plan["new"]) > LOAD_MAX_ITEMS:
         problems.append(f"bitta yukda ko'pi bilan {LOAD_MAX_ITEMS} ta mijoz bo'ladi — "
                         f"qolganini boshqa yukka qo'shing")
@@ -11457,8 +11467,13 @@ def _read_load_items(request, load, items, products, target_items=None):
     return plan, posted_new, problems
 
 
-def _write_load_plan(load, plan):
-    """Apply what `_read_load_items` read, in one transaction (the caller's)."""
+def _write_load_plan(load, plan, user):
+    """Apply what `_read_load_items` read, in one transaction (the caller's).
+
+    A new client already on `load` (a second or third order of the day) gets a row
+    of its own in the day's next Yuk — a client is once per Yuk, and the day page
+    shows every Yuk of the date as one. `plan["homes"]` gets the Yuk each new client
+    went into, `plan["made"]` the Yuk made for that."""
     for item, purpose in plan["stops"]:
         item.purpose = purpose
         item.save(update_fields=["purpose"])
@@ -11473,11 +11488,20 @@ def _write_load_plan(load, plan):
         _create_load_line(item, line)
     position = ((LoadItem.objects.filter(load__date=load.date).aggregate(m=Max("position"))["m"] or 0)
                 if load.ordered_at else None)
+    plan["homes"], plan["made"] = [], set()
+    # (Only read when someone is added: the day's Yuk may not be saved otherwise.)
+    taken = set(load.items.values_list("client_id", flat=True)) if plan["new"] else set()
     for client, purpose, lines, method in plan["new"]:
         if position is not None:
             position += 1
-        item = LoadItem.objects.create(load=load, client=client, purpose=purpose, position=position,
+        home = load
+        if client.pk in taken:
+            home, made = _free_load(load.date, client, user)
+            if made:
+                plan["made"].add(home.pk)
+        item = LoadItem.objects.create(load=home, client=client, purpose=purpose, position=position,
                                        method=method)
+        plan["homes"].append(home.pk)
         for line in lines:
             _create_load_line(item, line)
 
@@ -11491,7 +11515,8 @@ def _create_load_line(item, line):
 def _plan_summary(load, plan):
     """What a save changed, per Yuk — {load_pk: [parts]}: a client's changes under
     its own Yuk (the later days' orders are edited from today's page too), the new
-    clients under `load`, the Yuk they went into."""
+    clients under the Yuk they went into (`load`, or the day's next one for a client
+    already on it)."""
     by_load = {}
 
     def put(load_id, text):
@@ -11506,9 +11531,9 @@ def _plan_summary(load, plan):
         put(l.item.load_id, f"{l.item.client.name}, {l.product.name} olib tashlandi")
     for i, p, r, *_ in plan["add"]:
         put(i.load_id, f"{i.client.name} + {p.name} {r} rulon")
-    for c, _, lines, _ in plan["new"]:
-        put(load.pk, f"+ {c.name} (" + (", ".join(f"{p.name} {r} rulon" for p, r, *_ in lines)
-                                        or "pul olish") + ")")
+    for (c, _, lines, _), home in zip(plan["new"], plan["homes"]):
+        put(home, f"+ {c.name} (" + (", ".join(f"{p.name} {r} rulon" for p, r, *_ in lines)
+                                     or "pul olish") + ")")
     return by_load
 
 
@@ -11550,7 +11575,7 @@ def _save_load_items(request, load, items, ahead=(), new_load=None, target_items
             if new_load.pk is None and plan["new"]:
                 new_load.save()  # the day's Yuk, made with its first clients
                 created = True
-            _write_load_plan(new_load, plan)
+            _write_load_plan(new_load, plan, request.user)
     except (IntegrityError, DatabaseError):
         # Someone else changed this load at the same moment. Nothing was kept.
         if background:
@@ -11562,7 +11587,7 @@ def _save_load_items(request, load, items, ahead=(), new_load=None, target_items
         return redirect(_day_url(request, load.date))
     summary = _plan_summary(new_load, plan)
     for load_pk, parts in summary.items():
-        if created and load_pk == new_load.pk:
+        if (created and load_pk == new_load.pk) or load_pk in plan["made"]:
             AuditLog.record(request.user, AuditLog.Action.CREATE, "Yuk", load_pk,
                             f"Yuk #{load_pk} ({new_load.date:%d.%m.%Y}) yaratildi: "
                             f"{', '.join(parts)}"[:255])
@@ -11592,6 +11617,9 @@ def _save_load_items(request, load, items, ahead=(), new_load=None, target_items
         other_day = f" — {_day_label(new_load.date)}" if new_load.date != load.date else ""
         messages.success(request, f"Qo'shildi{other_day}: "
                                   f"{', '.join(c.name for c, *_ in plan['new'])}.")
+        if plan["again"]:
+            messages.info(request, f"{', '.join(plan['again'])} — bu kunda oldin ham bor edi: "
+                                   f"yana bitta alohida qator bo'lib qo'shildi.")
     elif parts:
         messages.success(request, "Saqlandi.")
     elif request.POST.get("add"):
@@ -12182,6 +12210,20 @@ def _decorate_stop(item, user):
 CARRY_DAYS = 14
 
 
+def _free_load(day, client, user, note=""):
+    """The day's first Yuk without this client, and whether it was made just now.
+
+    A client is once per Yuk, but may be on a day more than once (a second order, a
+    second sale): the next row goes into the day's next Yuk — a new one when every
+    Yuk of the day has the client, or the day has none yet. The day page shows every
+    Yuk of the date as one, so it reads as one more row of that day."""
+    load = (Load.objects.filter(date=day).exclude(items__client=client)
+            .order_by("created_at").first())
+    if load is not None:
+        return load, False
+    return Load.objects.create(date=day, created_by=user, note=note), True
+
+
 def _bring_to(stops, day, user, restart=False):
     """Move `stops` of earlier days to `day`, marked as carried («Kechagidan», «08.11
     dan»). Each keeps its sale and products; the route order is worked out again. A
@@ -12199,13 +12241,9 @@ def _bring_to(stops, day, user, restart=False):
             here[i.client_id] = i
 
     def free_load(client):
-        # The day's first Yuk without this client (a client is once per Yuk) — a new
-        # one when every Yuk of the day has it, or the day has none yet.
         nonlocal first
-        load = (Load.objects.filter(date=day).exclude(items__client=client)
-                .order_by("created_at").first())
-        if load is None:
-            load = Load.objects.create(date=day, created_by=user, note="Kechagidan" if first else "")
+        load, made = _free_load(day, client, user, note="Kechagidan" if first else "")
+        if made:
             first = first or load
         return load
 
@@ -12377,7 +12415,6 @@ def _render_day(request, day, items=None, posted_new=None, ahead=None):
     if ahead is None:
         ahead = _ahead_stops(day, user)
     load = Load.objects.filter(date=day).order_by("created_at").first()
-    in_day = {i.client_id for i in items}
     clients = Client.objects.prefetch_related("phones").order_by("name")
     if not user.can_see_all_records:
         clients = clients.filter(owner=user)
@@ -12479,7 +12516,9 @@ def _render_day(request, day, items=None, posted_new=None, ahead=None):
         "roll_breakdown": _roll_breakdown([l for i in going if i.delivers for l in i.line_list]),
         "truck_unweighed": sum(1 for i in going if i.unweighed),
         "missing": [_mark_mine(i.client, i.mine) for i in going if not i.client.has_location],
-        "clients": [c for c in clients if c.pk not in in_day],
+        # Every client, those already on the day too: a second order the same day
+        # goes in as a row of its own (`_write_load_plan`).
+        "clients": list(clients),
         "products": Product.objects.filter(is_active=True).order_by("name"),
         # A product picked for a client opens its Narx at what they paid last time
         # (load.js), the same as on the sale form.

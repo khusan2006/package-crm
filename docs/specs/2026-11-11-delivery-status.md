@@ -65,3 +65,14 @@ written, and the sales are dated the next day.
 | A day's record | Clients that went on to a later day stay listed at the foot of their first day («Keyingi kunga o'tganlar»). |
 | Sotuvlar | Every sale typed there, any date (not opening balances), lands on its day's board. `track_sales_delivery --dan` puts the sales typed before this release there; it is not run by the deploy. |
 | Old data (0066) | A ✓-ed stop moves to its sale's date; one never ✓-ed takes the client's sale typed that day or up to 2 days later and moves to its date; one with no sale stays «Bekor qilindi» (0062). |
+
+## Revised 2026-11-13: a client more than once a day
+
+A client could be sold to twice a day but not written in twice. Now:
+
+| Question | Answer |
+|---|---|
+| Same client added again to a day | Allowed — a row of its own (own method, status, ✓ and sale). «Mijoz qo'shish» lists every client; the message says when the client was already on that day. |
+| Where it is stored | Still once per Yuk (`unique_load_client`): the second row goes into the day's next Yuk, a new one when needed (`_free_load`). The day page shows every Yuk of the date as one. |
+| Same client in two new rows of one «Qo'shish» | Still refused — one row, more products with «+ Mahsulot». |
+| «Boshqa kunga» to a day where the client is already sold | Goes as a row of its own (was: stayed). An open stop there still takes the products. |

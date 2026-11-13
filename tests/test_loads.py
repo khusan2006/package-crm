@@ -12,6 +12,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+from django.contrib.messages import get_messages
 from django.core.cache import cache
 from django.utils import timezone
 
@@ -380,12 +381,58 @@ def test_a_failed_save_keeps_everything_typed(client, admin_user, seller_user, l
     assert resp.context["new_rows"][0]["rolls_bad"] and "data-unsaved" in body
 
 
-def test_the_same_client_is_never_twice_in_a_load(client, admin_user, seller_user, load, paket):
+def add_again(client, user, load, c, product, rolls):
+    return save(client, user, load, new_client=[c.pk], new_purpose=[DELIVER],
+                new_product=[product.pk], new_rolls=[rolls])
+
+
+def test_a_client_already_on_the_day_is_added_again_as_its_own_row(client, admin_user,
+                                                                   seller_user, load, paket):
+    """A second (third) order of the same client that day: a row of its own — in the
+    day's next Yuk, as a client is once per Yuk, but on the same day page."""
     c = make_client(seller_user, "Anvar", 0.01)
-    stop(load, c, (paket, 5))
-    resp = save(client, admin_user, load, new_client=[c.pk], new_purpose=[DELIVER],
-                new_product=[paket.pk], new_rolls=["3"])
-    assert resp.status_code == 200 and load.items.count() == 1
+    first = stop(load, c, (paket, 5))
+    assert c in day_page(client, admin_user).context["clients"]  # still pickable
+    resp = add_again(client, admin_user, load, c, paket, "3")
+    assert resp.status_code == 302
+    assert "oldin ham bor edi" in " ".join(str(m) for m in get_messages(resp.wsgi_request))
+    add_again(client, admin_user, load, c, paket, "2")
+    rows = LoadItem.objects.filter(client=c, load__date=load.date).order_by("created_at")
+    assert [list(r.lines.values_list("rolls", flat=True)) for r in rows] == [[5], [3], [2]]
+    assert rows[0] == first and len({r.load_id for r in rows}) == 3  # once per Yuk
+    assert list(load.items.all()) == [first]
+    page = day_page(client, admin_user)
+    assert lane(page, "truck") == ["Anvar"] * 3
+    # The Yuk made for it is in the record, with the client it was made for.
+    extra = rows[1].load
+    assert AuditLog.objects.filter(target_type="Yuk", target_id=extra.pk, action=AuditLog.Action.CREATE,
+                                   summary__contains="Anvar").exists()
+
+
+def test_a_sold_client_takes_a_second_order_and_a_second_sale(client, admin_user, seller_user,
+                                                              load, paket):
+    c = make_client(seller_user, "Anvar", 0.01)
+    first = stop(load, c, (paket, 5, 120))
+    save(client, admin_user, load, confirm=str(first.pk))
+    add_again(client, admin_user, load, c, paket, "3")
+    second = LoadItem.objects.exclude(pk=first.pk).get(client=c)
+    assert second.sale is None
+    line = second.lines.get()
+    save(client, admin_user, load, **{f"kg_{line.pk}": "70", "confirm": str(second.pk)})
+    second.refresh_from_db()
+    first.refresh_from_db()
+    assert first.sale and second.sale and first.sale != second.sale
+    assert sorted(SaleItem.objects.values_list("weight", flat=True)) == [Decimal("70"), Decimal("120")]
+
+
+def test_a_cancelled_client_added_again_is_not_said_to_be_there(client, admin_user, seller_user,
+                                                               load, paket):
+    c = make_client(seller_user, "Anvar", 0.01)
+    gone = stop(load, c, (paket, 5))
+    LoadItem.objects.filter(pk=gone.pk).update(status=LoadItem.Status.CANCEL)
+    resp = add_again(client, admin_user, load, c, paket, "3")
+    assert "oldin ham bor edi" not in " ".join(str(m) for m in get_messages(resp.wsgi_request))
+    assert LoadItem.objects.filter(client=c, load__date=load.date).count() == 2
 
 
 # --- ✓: a stop becomes a sale -------------------------------------------------------
@@ -1137,13 +1184,23 @@ def test_every_product_ticked_moves_the_whole_delivery(client, admin_user, selle
     assert a.load != load and a.lines.count() == 2
 
 
-def test_a_sold_stop_there_takes_nothing(client, admin_user, seller_user, load, paket, weighed):
+def test_a_sold_stop_there_takes_nothing_the_order_is_a_row_of_its_own(client, admin_user,
+                                                                      seller_user, load, paket,
+                                                                      weighed):
+    """Moving to a day where the client's stop is already a sale: the sale's stop
+    takes nothing, and the order goes all the same — another order of that day, a
+    row of its own (in the day's next Yuk), not refused."""
     later = Load.objects.create(date=load.date + timedelta(days=1), created_by=admin_user)
     save(client, admin_user, load, confirm=str(weighed.pk))  # Anvar becomes a sale here…
     LoadItem.objects.filter(pk=weighed.pk).update(load=later)  # …and sits in tomorrow's load
     again = stop(load, weighed.client, (paket, 2))
-    move(client, admin_user, load, [again], target=str(later.pk))
-    assert again.load == load and LoadItem.objects.get(pk=again.pk).load == load
+    resp = move(client, admin_user, load, [again], target=str(later.pk))
+    assert resp.status_code == 302
+    again.refresh_from_db()
+    assert again.load.date == later.date and again.load != later and again.sale is None
+    assert sorted(weighed.lines.values_list("rolls", flat=True)) == [2, 5]  # the sale's own
+    assert list(again.lines.values_list("rolls", flat=True)) == [2]
+    assert not load.items.exists()
 
 
 def test_a_line_from_someone_elses_stop_is_ignored(client, seller_user, other_seller, load, paket, plyonka):
@@ -2405,9 +2462,9 @@ def test_a_client_is_added_to_another_day_from_this_one(client, admin_user, sell
                                    action=AuditLog.Action.CREATE).exists()
     groups = day_page(client, admin_user).context["ahead_groups"]
     assert [i.client.name for g in groups for i in g["rows"]] == ["Anvar"]
-    # Twice on that day: refused, nothing added.
+    # Twice on that day: a second order — a row of its own.
     day_save(client, admin_user, **new)
-    assert LoadItem.objects.filter(load__date=later).count() == 1
+    assert LoadItem.objects.filter(load__date=later, client=anvar).count() == 2
 
 
 def test_cancelled_and_delivered_stops_are_off_the_trucks_count(client, admin_user, seller_user,
