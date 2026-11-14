@@ -11707,6 +11707,9 @@ def _day_url(request, day, opened=None, kg_missing=False, line=None):
     tab, status = _day_tabs(params)
     url += (f"&tur={tab}" if tab else "") + (f"&holat={status}" if status else "")
     url += _day_filter_qs(_day_filters(params, request.user))
+    # The route was open: it comes back open (drawn afresh), not folded away.
+    if params.get("marshrut"):
+        url += "&marshrut=1"
     if not opened:
         return url
     url += f"&kgsiz={opened}" if kg_missing else f"&ochiq={opened}"
@@ -11934,7 +11937,7 @@ def _save_load_order_checked(request, load, items):
             pk = None
         if pk not in located or pk in order:
             messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
-            return redirect(_load_url(load))
+            return redirect(_load_url(load) + "?marshrut=1")
         order.append(pk)
     # The money car's stops, in its order (`car` = item pk): money-only stops only.
     car = []
@@ -11946,15 +11949,15 @@ def _save_load_order_checked(request, load, items):
         if (pk not in located or pk in order or pk in car
                 or located[pk].purpose != LoadItem.Purpose.COLLECT):
             messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
-            return redirect(_load_url(load))
+            return redirect(_load_url(load) + "?marshrut=1")
         car.append(pk)
     if not order and not car:
         messages.error(request, "Saqlash uchun marshrutda mijoz yo'q.")
-        return redirect(_load_url(load))
+        return redirect(_load_url(load) + "?marshrut=1")
     if set(order) | set(car) != set(located):
         # The page was drawn before a client was added or removed — don't save half.
         messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
-        return redirect(_load_url(load))
+        return redirect(_load_url(load) + "?marshrut=1")
     # With two trucks, each stop also says which one it rides with (⇄ moves it).
     routes = request.POST.get("routes", "")
     groups = request.POST.getlist("group")
@@ -11962,7 +11965,7 @@ def _save_load_order_checked(request, load, items):
     if routes == "2" and groups:
         if len(groups) != len(order) or any(g not in ("0", "1") for g in groups):
             messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
-            return redirect(_load_url(load))
+            return redirect(_load_url(load) + "?marshrut=1")
         split = [int(g) for g in groups]
     LoadItem.objects.filter(load__date=load.date).update(position=None, route_group=None,
                                                          money_car=False)
@@ -12109,12 +12112,29 @@ def _allow_money_car(request, load):
     return redirect(_load_url(load) + "?marshrut=1")
 
 
+def start_limit(load):
+    """The latest departure «Jo'nash vaqti» takes: the end of the load's day, or of
+    today when the load's day has passed — the box's `max` says the same."""
+    day = max(load.date, timezone.localdate())
+    return timezone.make_aware(datetime.combine(day, datetime.max.time()).replace(second=0,
+                                                                               microsecond=0))
+
+
+#: How far ahead of the server's clock a «Jo'natish» time still counts as now — a
+#: phone's clock can run a little fast.
+START_SLACK = timedelta(minutes=5)
+
+
 def _set_start(request, load):
-    """«Jo'natish»: the trucks left at the time in the box — now unless changed,
-    since the button may be pressed late. The time can be corrected later, or the
-    start undone («Bekor qilish»)."""
+    """«Jo'nash vaqti» and its button. A time up to now is the departure («Jo'natish»):
+    the trucks left then, their stops become «Yo'lda»; it can be corrected later or
+    undone («Bekor qilish»). A later time is the plan («Vaqtni belgilash», e.g. the
+    evening before): the arrival times count from it and the stops stay «Rejada»
+    until the trucks really leave. An untouched box posts nothing — now, by the
+    server's clock, not the phone's. Every answer goes back to the route."""
     if not _may_change_load(request.user, load):
         raise PermissionDenied
+    back = redirect(_load_url(load) + "?marshrut=1")
     truck_stops = LoadItem.objects.filter(load__date=load.date, method=LoadItem.Method.TRUCK)
     if request.POST.get("clear"):
         if load.started_at:
@@ -12124,26 +12144,47 @@ def _set_start(request, load):
             truck_stops.filter(status=LoadItem.Status.SENT).update(status=LoadItem.Status.LOADING)
             AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                             f"Yuk #{load.pk}: jo'natish bekor qilindi")
-        return redirect(_load_url(load))
-    raw = (request.POST.get("started_at") or "").strip()
+        elif load.planned_start:
+            load.planned_start = None
+            load.save(update_fields=["planned_start"])
+            AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
+                            f"Yuk #{load.pk}: jo'nash rejasi bekor qilindi")
+        return back
+    # «Hozir jo'natish» (a plan was set, the truck leaves now): the box is ignored.
+    raw = "" if request.POST.get("now") else (request.POST.get("started_at") or "").strip()
+    now = timezone.now()
     try:
         started = (timezone.make_aware(datetime.strptime(raw, "%Y-%m-%dT%H:%M")) if raw
-                   else timezone.now().replace(second=0, microsecond=0))
+                   else now.replace(second=0, microsecond=0))
     except ValueError:
         messages.error(request, "Jo'nash vaqti noto'g'ri — sana va soatni tanlang.")
-        return redirect(_load_url(load))
-    if started > timezone.now() + timedelta(minutes=5):
-        messages.error(request, "Jo'nash vaqti kelajakda bo'lishi mumkin emas.")
-        return redirect(_load_url(load))
+        return back
+    if started > now + START_SLACK:
+        if load.started_at:
+            messages.error(request, "Mashina jo'nab bo'lgan — jo'nagan vaqt kelajakda bo'lishi "
+                                    "mumkin emas.")
+            return back
+        if started > start_limit(load):
+            messages.error(request, f"Jo'nash vaqti {timezone.localtime(start_limit(load)):%d.%m} "
+                                    f"dan kechiktirilmasin.")
+            return back
+        load.planned_start = started
+        load.save(update_fields=["planned_start"])
+        AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
+                        f"Yuk #{load.pk}: jo'nash rejasi — {timezone.localtime(started):%d.%m.%Y %H:%M}")
+        messages.success(request, f"Jo'nash vaqti belgilandi: {timezone.localtime(started):%d.%m %H:%M}. "
+                                  f"Mashina jo'naganda «Jo'natish»ni bosing.")
+        return back
     load.started_at = started
-    load.save(update_fields=["started_at"])
+    load.planned_start = None
+    load.save(update_fields=["started_at", "planned_start"])
     # The truck's stops are on their way — one source with the load's «Yo'lda».
     truck_stops.filter(status__in=[LoadItem.Status.NEW, LoadItem.Status.LOADING]) \
         .update(status=LoadItem.Status.SENT)
     AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                     f"Yuk #{load.pk}: jo'nadi — {timezone.localtime(started):%d.%m.%Y %H:%M}")
     messages.success(request, f"Yuk jo'natildi: {timezone.localtime(started):%H:%M}.")
-    return redirect(_load_url(load) + "?marshrut=1")
+    return back
 
 
 def _load_groups(load, items, depot, dist, weights):
@@ -12873,6 +12914,7 @@ def _render_day(request, day, items=None, posted_new=None, ahead=None):
         "done": done,
         "done_pct": round(done * 100 / len(active)) if active else 0,
         "may_change_load": bool(load) and _may_change_load(user, load),
+        "start_max": timezone.localtime(start_limit(load)) if load else None,
         "truck_kg": sum((i.kg for i in going), Decimal("0")),
         # What the warehouse loads onto the truck: rulon by product and variant.
         "roll_breakdown": _roll_breakdown([l for i in going if i.delivers for l in i.line_list]),
@@ -12969,6 +13011,8 @@ def _route_inputs(load, user):
     items = [i for i in _day_stops(load.date, user) if i.on_route]
     warehouse = Warehouse.load()
     ctx = {"items": items, "warehouse": warehouse, "ready": False, "by_road": False,
+           # One clock for the whole answer — the page's live arrival times start from it.
+           "now": timezone.now(),
            "road_note": "", "estimated": False, "unknown": False,
            "missing": [i.client for i in items if not i.client.has_location]}
     if not warehouse.has_location or not items or ctx["missing"]:
@@ -13036,6 +13080,9 @@ def _route_card(load, ctx, truck, group, color, debts, eta_from, money=False):
     arrivals, back = routing.arrival_times(depot, points, eta_from, dist, ctx["detour"])
     for st, at in zip(stops, arrivals):
         st["eta"] = at
+        # Minutes after departure: the page moves the times along with the clock (not
+        # gone yet) or with the time typed in «Jo'nash vaqti», without a reload.
+        st["eta_min"] = round((at - eta_from).total_seconds() / 60)
     google = route_share.google_route_links(depot, points)
     yandex = route_share.yandex_route_link(depot, points)
     name = "Pul olish mashinasi" if money else (truck.name if truck else "")
@@ -13056,6 +13103,7 @@ def _route_card(load, ctx, truck, group, color, debts, eta_from, money=False):
     return {
         "truck": truck, "money": money, "stops": stops, "km": measured.km, "kg": measured.kg,
         "back": back if stops else None,
+        "back_min": round((back - eta_from).total_seconds() / 60) if stops else None,
         "load_pct": min(100, round(measured.kg / capacity * 100)) if capacity else None,
         "over": bool(capacity) and measured.kg > capacity,
         "color": color,
@@ -13115,7 +13163,7 @@ def load_route(request, pk):
             _record_money_car(load, items, [st.key for st in car or []])
         # Arrival times (approximate until GPS): from when the trucks left, or —
         # not gone yet — from now, as if they left this minute.
-        eta_from = load.started_at or timezone.now()
+        eta_from = load.started_at or load.planned_start or ctx["now"]
         for n, (truck, group) in enumerate(groups):
             routes.append(_route_card(load, ctx, truck, group,
                                       ROUTE_COLORS[n % len(ROUTE_COLORS)], debts, eta_from))
@@ -13160,6 +13208,7 @@ def load_route(request, pk):
         "estimated": ctx["estimated"],
         "unknown": ctx["unknown"],
         "strategies": Load.Strategy.choices,
+        "eta_now": ctx["now"],
         "eta_stop_minutes": routing.ETA_STOP_MINUTES,
         "eta_speed": routing.ETA_SPEED_KMH,
         "unweighed": sum(1 for i in items if i.delivers for l in i.line_list if l.kg is None),

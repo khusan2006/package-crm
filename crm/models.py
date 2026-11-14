@@ -2677,6 +2677,10 @@ class Load(models.Model):
     # earlier time when the button is pressed late. The route's arrival times count
     # from it; until it is set they count from the moment the page is opened.
     started_at = models.DateTimeField("Jo'nagan vaqti", null=True, blank=True)
+    # The planned departure, set ahead («Jo'nash vaqti» in the future, e.g. the evening
+    # before): the arrival times count from it until the trucks actually leave
+    # (`started_at`); the stops stay «Rejada» meanwhile.
+    planned_start = models.DateTimeField("Rejadagi jo'nash vaqti", null=True, blank=True)
     # «Pul mashinasisiz»: the day goes without the money car even when the system
     # finds it better. By default the suggested route uses the car whenever it makes
     # the day cheaper (docs/specs/2026-11-13-money-car.md).

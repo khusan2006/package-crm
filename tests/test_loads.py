@@ -1436,11 +1436,110 @@ def test_a_bad_start_time_is_refused(client, admin_user, load, three, raw):
     assert load.started_at is None
 
 
-def test_a_start_in_the_future_is_refused(client, admin_user, load, three):
+def at_local(day, hour, minute=0):
+    return timezone.make_aware(timezone.datetime.combine(day, timezone.datetime.min.time())
+                               + timedelta(hours=hour, minutes=minute))
+
+
+@pytest.fixture
+def tomorrow_load(load):
+    """Planned the evening before: the load goes tomorrow."""
+    load.date = TODAY() + timedelta(days=1)
+    load.save()
+    return load
+
+
+def test_a_later_time_is_the_planned_departure(client, admin_user, tomorrow_load, three):
+    load = tomorrow_load
+    when = at_local(load.date, 9)
+    resp = start(client, admin_user, load, started_at=f"{timezone.localtime(when):%Y-%m-%dT%H:%M}")
+    assert resp.url == f"/yetkazish/{load.pk}/?marshrut=1"
+    load.refresh_from_db()
+    assert load.planned_start == when and load.started_at is None
+    # Nothing has left: the stops stay where they were.
+    assert not LoadItem.objects.filter(status=LoadItem.Status.SENT).exists()
+    resp = route(client, admin_user, load)
+    etas = [s["eta"] for s in resp.context["routes"][0]["stops"]]
+    assert when < etas[0] < etas[1] < etas[2]
+    body = resp.content.decode()
+    assert "09:00 da jo'naydi" in body and f'data-eta-planned="{timezone.localtime(when).isoformat()}"' in body
+    page = detail(client, admin_user, load).content.decode()
+    assert "Jo'naydi 09:00" in page and "Hozir jo'natish" in page and "Rejani bekor qilish" in page
+
+
+def test_a_plan_too_far_ahead_is_refused(client, admin_user, tomorrow_load, three):
+    load = tomorrow_load
+    resp = start(client, admin_user, load,
+                 started_at=f"{at_local(load.date + timedelta(days=1), 9):%Y-%m-%dT%H:%M}")
+    assert resp.url == f"/yetkazish/{load.pk}/?marshrut=1"  # the route stays open
+    load.refresh_from_db()
+    assert load.planned_start is None and load.started_at is None
+
+
+def test_leaving_now_after_a_plan(client, admin_user, tomorrow_load, three):
+    load = tomorrow_load
+    start(client, admin_user, load, started_at=f"{at_local(load.date, 9):%Y-%m-%dT%H:%M}")
+    start(client, admin_user, load, now="1", started_at=f"{at_local(load.date, 9):%Y-%m-%dT%H:%M}")
+    load.refresh_from_db()
+    assert abs(load.started_at - timezone.now()) < timedelta(minutes=1)
+    assert load.planned_start is None
+    assert LoadItem.objects.filter(status=LoadItem.Status.SENT).count() == 3
+
+
+def test_a_plan_can_be_dropped(client, admin_user, tomorrow_load, three):
+    load = tomorrow_load
+    start(client, admin_user, load, started_at=f"{at_local(load.date, 9):%Y-%m-%dT%H:%M}")
+    start(client, admin_user, load, clear="1")
+    load.refresh_from_db()
+    assert load.planned_start is None and load.started_at is None
+
+
+def test_a_departed_loads_time_cannot_move_into_the_future(client, admin_user, load, three):
+    start(client, admin_user, load, started_at="")
+    load.refresh_from_db()
+    left = load.started_at
     later = timezone.localtime() + timedelta(hours=2)
     start(client, admin_user, load, started_at=later.strftime("%Y-%m-%dT%H:%M"))
     load.refresh_from_db()
-    assert load.started_at is None
+    assert load.started_at == left and load.planned_start is None
+
+
+def test_a_phone_clock_a_little_fast_still_means_now(client, admin_user, load, three):
+    ahead = timezone.localtime() + timedelta(minutes=3)
+    start(client, admin_user, load, started_at=ahead.strftime("%Y-%m-%dT%H:%M"))
+    load.refresh_from_db()
+    assert load.started_at is not None and load.planned_start is None
+
+
+def test_a_refused_time_keeps_the_route_open(client, admin_user, load, three):
+    assert start(client, admin_user, load, started_at="kecha").url.endswith("?marshrut=1")
+
+
+def test_arrival_times_can_move_on_the_page(client, admin_user, load, three):
+    """Each time carries its minutes after departure, and the answer the server's
+    clock: load.js moves them with the clock or the time box, without a reload."""
+    resp = route(client, admin_user, load)
+    r = resp.context["routes"][0]
+    body = resp.content.decode()
+    assert 'data-eta-now="' in body
+    for s_ in r["stops"]:
+        assert f'data-eta-min="{s_["eta_min"]}"' in body
+    assert [s_["eta_min"] for s_ in r["stops"]] == sorted(s_["eta_min"] for s_ in r["stops"])
+    assert r["back_min"] > r["stops"][-1]["eta_min"]
+
+
+def test_the_day_forms_sends_keep_the_route_open(client, admin_user, load, three):
+    a = three[0]
+    resp = save(client, admin_user, load, **{f"status_{a.pk}": "loading", "marshrut": "1"})
+    assert "marshrut=1" in resp.url
+    resp = save(client, admin_user, load, **{f"status_{a.pk}": "new"})
+    assert "marshrut=1" not in resp.url
+
+
+def test_a_stale_order_keeps_the_route_open(client, admin_user, load, three):
+    client.force_login(admin_user)
+    resp = client.post(f"/yetkazish/{load.pk}/", {"action": "save", "stop": [three[0].pk]})
+    assert resp.url.endswith("?marshrut=1")
 
 
 def test_a_start_can_be_undone(client, admin_user, load, three):

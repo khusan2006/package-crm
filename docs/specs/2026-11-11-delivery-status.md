@@ -20,6 +20,8 @@ Status: built 2026-11-11, not yet deployed. Builds on
 | What goes on the route | «Yetkazib beriladi» stops that are not «Buyurtma». Pickup, Yandex, unset and buyurtma stops stay off the route and out of the trucks' kg. |
 | Who changes them | Admins/managers, or the client's own seller. Still open after ✓. |
 | «Jo'natish» | Marks the load's truck stops that are kutilmoqda/ortilmoqda as jo'natildi; «Bekor qilish» puts them back to ortilmoqda. |
+| «Jo'nash vaqti» (2026-11-14) | Up to now (5 minutes' slack for a fast phone clock) the time is the departure, as above. A later time, up to the end of the load's day, is the plan (`Load.planned_start`, «Vaqtni belgilash»): arrival times count from it, the board shows «Jo'naydi 09:00», statuses don't change; «Hozir jo'natish» / «Rejani bekor qilish». An untouched box sends nothing, so the server's clock decides "now". Every answer returns to the open route. |
+| Arrival times | Live on the page: each carries its minutes after departure; while not departed they move with the clock (every 30 s) and with the time box, no reload. A background save (kg, product…) redraws an open route unless it has unsaved moves; the day form's sends come back with the route open. |
 | Existing stops | Method «yetkazib beriladi»; those already turned into a sale → «yetkazildi». |
 | Stops added on a Yuk page | «Yetkazib beriladi», kutilmoqda. |
 | Sale typed in Sotuvlar | Dated today or later, not an opening balance → put on that day's board, **with no method** (user's choice). If the client has an open stop that day, the sale becomes its sale and its lines are replaced by the sale's lines (method kept). Else the day's first load without the client, or a new load «Sotuvlardan». |

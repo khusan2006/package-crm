@@ -3,7 +3,10 @@
   «Marshrut tuzish» natijasi — sahifaga JS bilan qo'yiladi (load.js). Mashina(lar),
   tartib, xarita va haydovchiga xabar. Tartib saqlanmaguncha — taklif.
 {% endcomment %}
-<div class="load-route" data-load-route-content>
+{% comment %}The arrival times move without a reload (load.js, «Yetib borish»): each
+time carries its minutes after departure; the departure is the one recorded, else
+the planned one, else now — counted from the server's clock below.{% endcomment %}
+<div class="load-route" data-load-route-content data-eta-now="{{ eta_now|date:'c' }}"{% if load.started_at %} data-eta-started="{{ load.started_at|date:'c' }}"{% elif load.planned_start %} data-eta-planned="{{ load.planned_start|date:'c' }}"{% endif %}>
 {% if error and not routes %}
 <div class="overdue-banner" role="alert">
   <span class="ob-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
@@ -70,8 +73,10 @@ belong to rather than as loose lines above it.{% endcomment %}
     <span class="route-summary-label">Yetib borish</span>
     {% if load.started_at %}
     <strong class="route-summary-value">{{ load.started_at|date:"H:i" }} da jo'nagan</strong>
+    {% elif load.planned_start %}
+    <strong class="route-summary-value" data-eta-label>{{ load.planned_start|date:"H:i" }} da jo'naydi</strong>
     {% else %}
-    <strong class="route-summary-value">Hozir jo'nasa</strong>
+    <strong class="route-summary-value" data-eta-label>Hozir jo'nasa</strong>
     {% endif %}
     <span class="route-summary-sub">Taxminiy vaqtlar: o'rtacha {{ eta_speed }} km/soat, har manzilda {{ eta_stop_minutes }} daqiqa. GPS ulanguncha shunday.</span>
   </div>
@@ -163,7 +168,7 @@ or «Pul mashinasisiz» keeps the day as it is and only says what the car would 
           {% for p in s.client.phones.all %}<span class="cell-sub"><a href="tel:{{ p.phone|cut:' ' }}">{{ p.phone }}</a>{% if p.label %} · {{ p.label }}{% endif %}</span>{% endfor %}
         </span>
         <span class="route-side">
-          {% if s.eta %}<span class="route-eta" data-route-eta title="Taxminiy yetib borish vaqti">≈ {{ s.eta|date:"H:i" }}</span>{% endif %}
+          {% if s.eta %}<span class="route-eta" data-route-eta data-eta-min="{{ s.eta_min|unlocalize }}" title="Taxminiy yetib borish vaqti">≈ {{ s.eta|date:"H:i" }}</span>{% endif %}
           <span class="route-kg">{% if s.item.delivers %}{{ s.rolls }} rulon<span class="cell-sub">{% if s.unknown %}kg noma'lum{% else %}{% if s.estimated %}≈ {% endif %}{{ s.kg|floatformat:"0g" }} kg{% endif %}</span>{% endif %}{% if s.item.collects %}<span class="cell-sub route-collect">pul olish</span>{% endif %}</span>
           <span class="route-moves">
             {% if routes|length > 1 %}<button type="button" class="icon-action route-swap" data-move-truck title="Boshqa mashinaga o'tkazish" aria-label="{{ s.client.name }} — boshqa mashinaga"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>{% endif %}
@@ -174,7 +179,7 @@ or «Pul mashinasisiz» keeps the day as it is and only says what the car would 
       </li>
       {% endfor %}
       <li class="route-stop route-empty" data-route-empty{% if r.stops %} hidden{% endif %}>Bo'sh — bu mashina chiqmaydi. Mijozni ⇄ bilan qaytarish mumkin.</li>
-      <li class="route-stop route-stop--depot" data-route-end><span class="route-n">O</span><span>{{ warehouse.name }} — qaytish</span>{% if r.back %}<span class="route-eta route-eta--back" data-route-eta title="Taxminiy qaytish vaqti">≈ {{ r.back|date:"H:i" }}</span>{% endif %}</li>
+      <li class="route-stop route-stop--depot" data-route-end><span class="route-n">O</span><span>{{ warehouse.name }} — qaytish</span>{% if r.back %}<span class="route-eta route-eta--back" data-route-eta data-eta-min="{{ r.back_min|unlocalize }}" title="Taxminiy qaytish vaqti">≈ {{ r.back|date:"H:i" }}</span>{% endif %}</li>
     </ol>
 
     {% comment %}Haydovchiga: built from the order the server drew — hidden after a move
@@ -207,12 +212,12 @@ carries no goods, so no kg. Its stops are posted as `car` with the order.{% endc
           {% for p in s.client.phones.all %}<span class="cell-sub"><a href="tel:{{ p.phone|cut:' ' }}">{{ p.phone }}</a>{% if p.label %} · {{ p.label }}{% endif %}</span>{% endfor %}
         </span>
         <span class="route-side">
-          {% if s.eta %}<span class="route-eta" title="Taxminiy yetib borish vaqti">≈ {{ s.eta|date:"H:i" }}</span>{% endif %}
+          {% if s.eta %}<span class="route-eta" data-eta-min="{{ s.eta_min|unlocalize }}" title="Taxminiy yetib borish vaqti">≈ {{ s.eta|date:"H:i" }}</span>{% endif %}
           <span class="route-kg"><span class="cell-sub route-collect">{{ s.amount }}</span></span>
         </span>
       </li>
       {% endfor %}
-      <li class="route-stop route-stop--depot"><span class="route-n">O</span><span>{{ warehouse.name }} — qaytish</span>{% if r.back %}<span class="route-eta route-eta--back" title="Taxminiy qaytish vaqti">≈ {{ r.back|date:"H:i" }}</span>{% endif %}</li>
+      <li class="route-stop route-stop--depot"><span class="route-n">O</span><span>{{ warehouse.name }} — qaytish</span>{% if r.back %}<span class="route-eta route-eta--back" data-eta-min="{{ r.back_min|unlocalize }}" title="Taxminiy qaytish vaqti">≈ {{ r.back|date:"H:i" }}</span>{% endif %}</li>
     </ol>
     {% if r.stops %}{% include "crm/_route_share.html" %}{% endif %}
   </section>

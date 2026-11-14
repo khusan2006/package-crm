@@ -155,6 +155,8 @@ lights it up). Built from the lines on the page, in their order (script below).{
   <input type="hidden" name="client" value="{{ filters.client }}">
   <input type="hidden" name="product" value="{{ filters.product }}">
   <input type="hidden" name="rep" value="{{ filters.rep }}">
+  {% comment %}Set to 1 once the route is drawn (load.js): a send comes back with it open.{% endcomment %}
+  <input type="hidden" name="marshrut" value="{{ request.GET.marshrut|default:'' }}">
   {% comment %}The form's default button. Enter in a box presses the FIRST submit
   button of a form — without this, that would be a row's step or ✓.{% endcomment %}
   <button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true">Qo'shish</button>
@@ -237,7 +239,7 @@ lights it up). Built from the lines on the page, in their order (script below).{
   {% if lanes.truck %}
   <section class="lane lane-truck">
     <h2 class="lane-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>Mashinada yetkaziladi <span class="lane-count">{{ lanes.truck|length }}</span>
-      <span class="lane-head-sub">{% if truck_kg %}{{ truck_kg|floatformat:"0g" }} kg{% endif %}{% if truck_unweighed %} · <span class="route-pending">{{ truck_unweighed }} tasi tortilmagan</span>{% endif %}{% if load.started_at %} · <span class="badge badge-st-sent">Yo'lda — jo'nagan {{ load.started_at|date:"H:i" }}</span>{% endif %}</span>
+      <span class="lane-head-sub">{% if truck_kg %}{{ truck_kg|floatformat:"0g" }} kg{% endif %}{% if truck_unweighed %} · <span class="route-pending">{{ truck_unweighed }} tasi tortilmagan</span>{% endif %}{% if load.started_at %} · <span class="badge badge-st-sent">Yo'lda — jo'nagan {{ load.started_at|date:"H:i" }}</span>{% elif load.planned_start %} · <span class="badge badge-warning">Jo'naydi {% if load.planned_start|date:"Y-m-d" != load.date|date:"Y-m-d" %}{{ load.planned_start|date:"d.m" }} {% endif %}{{ load.planned_start|date:"H:i" }}</span>{% endif %}</span>
     </h2>
     {% if roll_breakdown %}{% include "crm/_lane_rolls.html" with rows=roll_breakdown title="Mashinaga ortiladi — rulonlar" %}{% endif %}
     {% for item in lanes.truck %}{% include "crm/_day_row.html" with lane="truck" %}{% endfor %}
@@ -304,21 +306,28 @@ lights it up). Built from the lines on the page, in their order (script below).{
     <p class="route-share-stale" data-route-failed hidden role="alert">Marshrutni olib bo'lmadi — qaytadan urinib ko'ring.</p>
     <span class="visually-hidden" data-route-status role="status" aria-live="polite"></span>
     <div data-route-slot></div>
-    {% comment %}«Jo'natish»: when the truck left. Now by default — the box follows the
-    clock until it is touched. Its clients become «Yo'lda».{% endcomment %}
+    {% comment %}«Jo'nash vaqti»: when the truck leaves. Up to now it is the departure
+    («Jo'natish» — its clients become «Yo'lda»); later, the plan («Vaqtni belgilash»):
+    the arrival times count from it, nothing else changes. Untouched, the box follows
+    the clock and sends nothing — the server takes now. The route's arrival times
+    follow the box as it is changed (load.js).{% endcomment %}
     {% if may_change_load %}
     <form method="post" action="{% url 'load_detail' load.pk %}" class="load-start{% if load.started_at %} is-started{% endif %}" data-load-start>
       {% csrf_token %}
       <input type="hidden" name="action" value="start">
       <label class="load-start-label" for="load-started-at">{% if load.started_at %}Jo'nagan{% else %}Jo'nash vaqti{% endif %}</label>
       <input type="datetime-local" id="load-started-at" name="started_at" class="load-start-input"
-             value="{% if load.started_at %}{{ load.started_at|date:'Y-m-d\TH:i' }}{% else %}{% now 'Y-m-d\TH:i' %}{% endif %}"
-             max="{% now 'Y-m-d' %}T23:59"{% if not load.started_at %} data-load-start-now{% endif %} required>
+             value="{% if load.started_at %}{{ load.started_at|date:'Y-m-d\TH:i' }}{% elif load.planned_start %}{{ load.planned_start|date:'Y-m-d\TH:i' }}{% else %}{% now 'Y-m-d\TH:i' %}{% endif %}"
+             max="{{ start_max|date:'Y-m-d\TH:i' }}"{% if not load.started_at and not load.planned_start %} data-load-start-now{% endif %} required>
       {% if load.started_at %}
       <button type="submit" class="btn btn-sm btn-ghost">Vaqtni saqlash</button>
       <button type="submit" class="btn btn-sm btn-ghost" name="clear" value="1" formnovalidate>Bekor qilish</button>
       {% else %}
-      <button type="submit" class="btn btn-sm">Jo'natish</button>
+      <button type="submit" class="btn btn-sm" data-load-start-submit>Jo'natish</button>
+      {% if load.planned_start %}
+      <button type="submit" class="btn btn-sm btn-ghost" name="now" value="1" formnovalidate>Hozir jo'natish</button>
+      <button type="submit" class="btn btn-sm btn-ghost" name="clear" value="1" formnovalidate>Rejani bekor qilish</button>
+      {% endif %}
       {% endif %}
     </form>
     {% endif %}

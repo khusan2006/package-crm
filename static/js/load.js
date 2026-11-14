@@ -441,7 +441,7 @@
         return plainVal(el.value) !== plainVal(el.defaultValue);
       };
       var always = ['csrfmiddlewaretoken', 'action', 'sana', 'ochiq', 'quick_pick', 'tur', 'holat',
-                    'client', 'product', 'rep'];  // the tab and the filter come back with every send
+                    'client', 'product', 'rep', 'marshrut'];  // the tab and the filter come back with every send
       // Only what this client changed goes — never other clients' boxes as the page
       // last saw them, never the add form. The server keeps every box not sent.
       var save = function (stop) {
@@ -487,6 +487,8 @@
               stop.querySelectorAll('[data-line="' + pk + '"]').forEach(function (el) { el.remove(); });
             });
             note(stop, res.saved ? 'Saqlandi ✓' : '');
+            // kg, products, how it leaves… change the route: an open one is drawn again.
+            if (res.saved) { document.dispatchEvent(new CustomEvent('load:saved')); }
           } else {
             (res.bad || []).forEach(function (name) {
               var box = items.querySelector('[name="' + name + '"]');
@@ -665,23 +667,83 @@
     refreshDirty();
   }
 
-  /* ---------- «Jo'natish» ---------- */
-  // The box shows the time the page was opened; pressed later, «Jo'natish» means
-  // now. So until someone changes it by hand, it is set to the current minute
-  // just before sending.
-  var start = document.querySelector('[data-load-start]');
-  if (start) {
-    var when = start.querySelector('[data-load-start-now]');
-    if (when) {
-      when.addEventListener('input', function () { delete when.dataset.loadStartNow; });
-      start.addEventListener('submit', function () {
-        if (!('loadStartNow' in when.dataset)) { return; }
-        var d = new Date();
-        d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-        when.value = d.toISOString().slice(0, 16);
-      });
+  /* ---------- «Jo'nash vaqti» and the route's arrival times ---------- */
+  // The box follows the clock until it is touched, and then sends nothing: the
+  // server takes now by its own clock (a phone's may be off). A later time is a
+  // plan — the button says «Vaqtni belgilash». The route's arrival times carry their
+  // minutes after departure (data-eta-min) and are redrawn here: every half minute
+  // while the trucks haven't left, and as the box is changed — no reload.
+  var TZ = '+05:00';  // Asia/Tashkent (no summer time): the server's TIME_ZONE
+  var SLACK_MS = 5 * 60 * 1000;  // views.START_SLACK
+  var skew = 0;  // server clock minus this device's, from the route's answer
+  var serverNow = function () { return new Date(Date.now() + skew); };
+  var wall = function (d) { return new Date(d.getTime() + 5 * 3600 * 1000).toISOString().slice(0, 16); };
+  var fromWall = function (v) { return v ? new Date(v + ':00' + TZ) : null; };
+  var startForm = document.querySelector('[data-load-start]');
+  var startBox = startForm && startForm.querySelector('#load-started-at');
+  var following = !!(startBox && 'loadStartNow' in startBox.dataset);
+  var edited = false;
+
+  var paintRoute = function () {
+    var root = document.querySelector('[data-load-route-content]');
+    if (!root) { return; }
+    var at, label;
+    if (edited && startBox && startBox.value) {
+      at = fromWall(startBox.value);
+      label = wall(at).slice(11) + (at - serverNow() > SLACK_MS ? ' da jo\'naydi' : ' da jo\'nasa');
+    } else if (root.dataset.etaStarted) {
+      at = new Date(root.dataset.etaStarted);
+    } else if (root.dataset.etaPlanned) {
+      at = new Date(root.dataset.etaPlanned);
+      label = wall(at).slice(11) + ' da jo\'naydi';
+    } else {
+      at = serverNow();
+      label = 'Hozir jo\'nasa';
     }
+    if (!at || isNaN(at)) { return; }
+    root.querySelectorAll('[data-eta-min]').forEach(function (el) {
+      el.textContent = '≈ ' + wall(new Date(at.getTime() + Number(el.dataset.etaMin) * 60000)).slice(11);
+    });
+    var shown = root.querySelector('[data-eta-label]');
+    if (shown && label) { shown.textContent = label; }
+  };
+
+  var syncStart = function () {
+    var button = startForm && startForm.querySelector('[data-load-start-submit]');
+    if (button) {
+      var when = fromWall(startBox.value);
+      button.textContent = when && when - serverNow() > SLACK_MS ? 'Vaqtni belgilash' : 'Jo\'natish';
+    }
+    paintRoute();
+  };
+
+  if (startBox) {
+    var touch = function () {
+      following = false;
+      edited = true;
+      delete startBox.dataset.loadStartNow;
+      syncStart();
+    };
+    // A date picker may report only `change` — both count as touched.
+    startBox.addEventListener('input', touch);
+    startBox.addEventListener('change', touch);
+    startForm.addEventListener('submit', function () {
+      if (following) { startBox.value = ''; }  // now, by the server's clock
+    });
+    syncStart();
   }
+  setInterval(function () {
+    if (following) { startBox.value = wall(serverNow()); }
+    syncStart();
+  }, 30000);
+  document.addEventListener('route:loaded', function (e) {
+    var root = e.detail && e.detail.querySelector && e.detail.querySelector('[data-load-route-content]');
+    if (root && root.dataset.etaNow) {
+      skew = new Date(root.dataset.etaNow).getTime() - Date.now();
+      if (following) { startBox.value = wall(serverNow()); }
+    }
+    syncStart();
+  });
 
   /* ---------- «Boshqa kunga» dialog ---------- */
   // It arrives in the page's modal, so it is wired by delegation: the button says
@@ -774,7 +836,10 @@
       if (on && status) { status.textContent = 'Marshrut tuzilmoqda…'; }
     };
 
-    var build = function () {
+    // `quiet`: redrawn after a background save — no focus jump, no announcement.
+    var quiet = false;
+    var build = function (again) {
+      quiet = again === true;
       busy(true);
       failedNote.hidden = true;
       fetch(card.getAttribute('data-url'), {
@@ -790,9 +855,12 @@
           if (slot.querySelector('[data-route-form]')) {
             // A route came: the start panel steps aside; focus goes to its summary.
             start.hidden = true;
-            if (status) { status.textContent = 'Marshrut tayyor.'; }
+            if (status) { status.textContent = quiet ? '' : 'Marshrut tayyor.'; }
+            // The day form's sends (a status, ✓, «Qo'shish») come back with it open.
+            var keep = document.querySelector('[name=marshrut]');
+            if (keep) { keep.value = '1'; }
             var summary = slot.querySelector('.route-summary');
-            if (summary) { summary.focus(); }
+            if (summary && !quiet) { summary.focus(); }
           } else {
             // Only a message (no warehouse, missing locations…): keep the button,
             // so it can be tried again once that's fixed.
@@ -817,7 +885,16 @@
       });
     };
 
-    button.addEventListener('click', build);
+    button.addEventListener('click', function () { build(); });
+    // A background save changed the day: draw an open route again — unless it has
+    // moves not saved yet (they'd be lost), then it waits for «Tartibni saqlash».
+    var redraw = null;
+    document.addEventListener('load:saved', function () {
+      var dirty = slot.querySelector('[data-route-dirty]');
+      if (!slot.querySelector('[data-route-form]') || (dirty && !dirty.hidden)) { return; }
+      clearTimeout(redraw);
+      redraw = setTimeout(function () { build(true); }, 600);
+    });
     // «Tavsiya etilgan tartib» on an unsaved order: drop the moves, fetch it again.
     card.addEventListener('click', function (e) {
       if (e.target.closest('[data-route-suggest]')) { build(); }
