@@ -26,6 +26,9 @@
       </label>
       {% if tab %}<input type="hidden" name="tur" value="{{ tab }}">{% endif %}
       {% if status %}<input type="hidden" name="holat" value="{{ status }}">{% endif %}
+      {% if filters.client %}<input type="hidden" name="client" value="{{ filters.client }}">{% endif %}
+      {% if filters.product %}<input type="hidden" name="product" value="{{ filters.product }}">{% endif %}
+      {% if filters.rep %}<input type="hidden" name="rep" value="{{ filters.rep }}">{% endif %}
       <a class="day-pick-arrow" href="{% url 'load_list' %}?sana={{ next_day }}{{ tab_qs }}" title="Keyingi kun" aria-label="Keyingi kun">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
       </a>
@@ -41,6 +44,12 @@
       <span class="visually-hidden">ta jo'natilmagan buyurtma — ochish</span>
     </button>
     {% endif %}
+    {% comment %}«Filtrlash» — the same drawer as every list (mijoz, mahsulot, sotuvchi):
+    only the clients it picks show, on every tab and day it is kept.{% endcomment %}
+    <button type="button" class="btn btn-sm btn-ghost filter-toggle{% if has_filters %} is-active{% endif %}" data-filter-open>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+      Filtrlash{% if filter_count %} <span class="filter-badge">{{ filter_count }}</span>{% endif %}
+    </button>
   </div>
   <div class="toolbar-right">
     {% if total %}
@@ -52,6 +61,14 @@
     {% if user.is_admin_role %}<a class="btn btn-sm btn-ghost" href="{% url 'truck_list' %}">Mashinalar</a>{% endif %}
   </div>
 </div>
+{% if has_filters %}
+<div class="filter-chips day-filter-chips">
+  {% for chip in active_filters %}
+  <span class="chip">{{ chip.label }}: <strong>{{ chip.value }}</strong><a href="{{ chip.remove_url }}" class="chip-x" title="Olib tashlash" aria-label="Olib tashlash">&times;</a></span>
+  {% endfor %}
+  <a href="{{ filter_clear_url }}" class="chip-clear">Tozalash</a>
+</div>
+{% endif %}
 
 {% comment %}The bell's window: the orders an earlier day passed without — each asks
 what happened: today, another day, it did go, or the order was cancelled. Their own
@@ -59,19 +76,41 @@ small forms, outside the day form.{% endcomment %}
 {% if waiting %}
 <dialog class="modal modal--wide" id="waiting-dialog" aria-labelledby="waiting-title">
   <div class="modal-body">
+  {% comment %}The top stays in view while the long list scrolls: the title, ×, and the
+  search — by name (the client's or the seller's, Latin or Cyrillic) and sold or not.
+  The script hides the rows that don't match; nothing is sent.{% endcomment %}
+  <div class="waiting-top">
   <div class="modal-head">
     <h2 id="waiting-title">O'z kunida jo'natilmagan buyurtmalar <span class="lane-count">{{ waiting|length }}</span></h2>
     <button type="button" class="modal-x" data-waiting-close aria-label="Yopish">&times;</button>
   </div>
+  <div class="waiting-tools">
+    <p class="muted waiting-ask">Kuni o'tib ketdi. Sotilganmi, boshqa kunga ko'chirilsinmi yoki zakaz bekor qilindimi?</p>
+    <div class="waiting-find">
+      <label class="toolbar-search waiting-search">
+        <svg class="toolbar-search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="search" placeholder="Ism bo'yicha qidirish…" aria-label="Mijoz yoki sotuvchi ismi bo'yicha qidirish" autocomplete="off" data-waiting-search>
+      </label>
+      <div class="seg" role="group" aria-label="Sotilganmi">
+        <button type="button" class="seg-btn is-active" data-waiting-sold="" aria-pressed="true">Hammasi <span class="seg-count">{{ waiting|length }}</span></button>
+        <button type="button" class="seg-btn" data-waiting-sold="1" aria-pressed="false">Sotilgan <span class="seg-count" data-waiting-count="1">0</span></button>
+        <button type="button" class="seg-btn" data-waiting-sold="0" aria-pressed="false">Sotilmagan <span class="seg-count" data-waiting-count="0">0</span></button>
+      </div>
+    </div>
+  </div>
+  </div>
   <div class="add-dialog-body waiting-body">
-  <p class="muted waiting-ask">Kuni o'tib ketdi. Boshqa kunga ko'chirilsinmi yoki zakaz bekor qilindimi?</p>
+  <p class="muted waiting-none" role="status" hidden>Hech kim topilmadi.</p>
   {% for w in waiting %}
-  <form method="post" action="{% url 'load_item_decide' w.pk|unlocalize %}" class="waiting-row">
+  <form method="post" action="{% url 'load_item_decide' w.pk|unlocalize %}" class="waiting-row" data-find="{{ w.client.name }} {{ w.client.owner }}" data-sold="{% if w.sold %}1{% else %}0{% endif %}">
     {% csrf_token %}
     <span class="moved-who"><strong>{{ w.client.name }}</strong><span class="cell-sub">{{ w.day_label }} kuni edi · {{ w.client.owner }}{% if w.summary %} · {{ w.summary }}{% endif %}</span></span>
     <span class="badge badge-st-{{ w.status }}">{{ w.status_label }}</span>
     {% if w.sold %}<span class="sold-chip" title="Sotuv yozilgan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>Sotildi</span>{% endif %}
     <span class="waiting-acts">
+      {% comment %}It went and was sold, only ✓ was forgotten: tie it to the sale in
+      Sotuvlar, or write one on the day it was sold (load_item_sold).{% endcomment %}
+      {% if w.may_sell %}<a class="btn btn-sm stop-sold-ask" href="{% url 'load_item_sold' w.pk %}?qayer=qongiroq" data-modal title="Sotuvlardagi sotuvga bog'lash yoki sotilgan sanasi bilan sotuv yozish">Sotilgan</a>{% endif %}
       <button type="submit" name="qaror" value="bugun" class="btn btn-sm">Bugunga</button>
       <span class="waiting-other">
         <input type="date" name="sana" value="{{ tomorrow }}" min="{{ tomorrow }}" max="2099-12-31" aria-label="{{ w.client.name }} — qaysi kunga">
@@ -110,9 +149,12 @@ lights it up). Built from the lines on the page, in their order (script below).{
   <input type="hidden" name="sana" value="{{ day|date:'Y-m-d' }}">
   <input type="hidden" name="ochiq" value="">
   <input type="hidden" name="quick_pick" value="">
-  {% comment %}The open tab, so every send comes back to it.{% endcomment %}
+  {% comment %}The open tab and the filter, so every send comes back to them.{% endcomment %}
   <input type="hidden" name="tur" value="{{ tab }}">
   <input type="hidden" name="holat" value="{{ status }}">
+  <input type="hidden" name="client" value="{{ filters.client }}">
+  <input type="hidden" name="product" value="{{ filters.product }}">
+  <input type="hidden" name="rep" value="{{ filters.rep }}">
   {% comment %}The form's default button. Enter in a box presses the FIRST submit
   button of a form — without this, that would be a row's step or ✓.{% endcomment %}
   <button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true">Qo'shish</button>
@@ -324,17 +366,82 @@ lights it up). Built from the lines on the page, in their order (script below).{
       if (e.target.closest && e.target.closest('[data-open-waiting]')) { open(); return; }
       if (e.target.closest && e.target.closest('[data-waiting-close]')) { box.close(); }
     });
-    box.addEventListener('click', function (e) { if (e.target === box) { box.close(); } });
+    // No closing on a click around it: the list is long, and its scrollbar, a drag
+    // that ends outside, or a screenshot tool all "click" the dialog itself — it
+    // shut on them. Only × (or Esc) closes it.
+
+    // Search by name — the client's or the seller's — and sold or not. Names are in
+    // Cyrillic, typing is often in Latin: both sides are folded to the same plain
+    // Latin (х/ҳ/x → h, қ/q → k, no apostrophes) before matching.
+    var search = box.querySelector('[data-waiting-search]');
+    var rows = Array.prototype.slice.call(box.querySelectorAll('.waiting-row'));
+    var none = box.querySelector('.waiting-none');
+    var sold = '';
+    var CYR = { 'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'ғ': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo',
+      'ж': 'j', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'қ': 'k', 'л': 'l', 'м': 'm', 'н': 'n',
+      'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u', 'ў': 'o', 'ф': 'f', 'х': 'h',
+      'ҳ': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sh', 'ъ': '', 'ы': 'i', 'ь': '', 'э': 'e',
+      'ю': 'yu', 'я': 'ya' };
+    var fold = function (text) {
+      return (text || '').toLowerCase()
+        .replace(/[Ѐ-ӿ]/g, function (c) { return c in CYR ? CYR[c] : c; })
+        .replace(/['`ʻʼ‘’]/g, '').replace(/x/g, 'h').replace(/q/g, 'k');
+    };
+    rows.forEach(function (row) { row.dataset.hay = fold(row.dataset.find); });
+    box.querySelectorAll('[data-waiting-count]').forEach(function (count) {
+      count.textContent = rows.filter(function (row) {
+        return row.dataset.sold === count.dataset.waitingCount;
+      }).length;
+    });
+    var apply = function () {
+      var words = fold(search.value).split(/\s+/).filter(Boolean);
+      var shown = 0;
+      rows.forEach(function (row) {
+        var hit = (!sold || row.dataset.sold === sold) && words.every(function (w) {
+          return row.dataset.hay.indexOf(w) !== -1;
+        });
+        row.hidden = !hit;
+        if (hit) { shown += 1; }
+      });
+      none.hidden = shown > 0;
+      // Kept for this tab: each answer reloads the page, back to the list as it was.
+      try { sessionStorage.setItem('waiting-find', JSON.stringify({ q: search.value, sold: sold })); } catch (e) {}
+    };
+    var pick = function (value) {
+      sold = value;
+      box.querySelectorAll('[data-waiting-sold]').forEach(function (b) {
+        var on = b.dataset.waitingSold === value;
+        b.classList.toggle('is-active', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+      apply();
+    };
+    search.addEventListener('input', apply);
+    box.addEventListener('click', function (e) {
+      var b = e.target.closest && e.target.closest('[data-waiting-sold]');
+      if (b) { pick(b.dataset.waitingSold); }
+    });
+    if (window.location.hash === '#kutilayotgan') {
+      // Back from an answer: the search as it was left.
+      try {
+        var kept = JSON.parse(sessionStorage.getItem('waiting-find') || 'null');
+        if (kept) { search.value = kept.q || ''; sold = kept.sold || ''; }
+      } catch (e) {}
+    }
+    pick(sold);
     if (window.location.hash === '#kutilayotgan') { open(); }
   })();
 </script>
 <script>
   // The client buttons: one per line on the page; a click brings that line to the
-  // middle of the screen and lights it up for a moment.
+  // middle of the screen and lights it up for a moment. Grouped by seller, each in a
+  // column of its own (by name: Kamola's on the left, Umida's on the right) — one
+  // seller (a seller's own page) is one plain group with no heading.
   (function () {
     var nav = document.querySelector('[data-client-jump]');
     if (!nav) { return; }
     var rows = document.querySelectorAll('.day-form .lane-row[id^="stop-"]');
+    var groups = {};
     rows.forEach(function (row) {
       var strong = row.querySelector('.lane-who strong');
       if (!strong) { return; }
@@ -347,9 +454,35 @@ lights it up). Built from the lines on the page, in their order (script below).{
       a.className = 'client-chip ' + (cancelled ? 'is-cancel' : 'is-sold-' + (row.dataset.sold || 'none'));
       a.title = cancelled ? 'Bekor qilindi' : { all: 'Sotuvga aylangan', part: 'Qisman sotilgan', none: 'Hali buyurtma' }[row.dataset.sold || 'none'];
       a.textContent = name;
-      nav.appendChild(a);
+      var owner = row.dataset.owner || '';
+      if (!groups[owner]) { groups[owner] = { name: row.dataset.ownerName || '', chips: [] }; }
+      groups[owner].chips.push(a);
     });
-    if (!nav.children.length) { return; }
+    var list = Object.keys(groups).map(function (k) { return groups[k]; });
+    if (!list.length) { return; }
+    list.sort(function (a, b) { return a.name.localeCompare(b.name); });
+    if (list.length === 1) {
+      list[0].chips.forEach(function (a) { nav.appendChild(a); });
+    } else {
+      nav.classList.add('is-split');
+      list.forEach(function (g) {
+        var box = document.createElement('div');
+        box.className = 'day-clients-group';
+        var who = document.createElement('span');
+        who.className = 'day-clients-who';
+        who.textContent = g.name + ' ';
+        var n = document.createElement('span');
+        n.className = 'seg-count';
+        n.textContent = g.chips.length;
+        who.appendChild(n);
+        var chips = document.createElement('div');
+        chips.className = 'day-clients-chips';
+        g.chips.forEach(function (a) { chips.appendChild(a); });
+        box.appendChild(who);
+        box.appendChild(chips);
+        nav.appendChild(box);
+      });
+    }
     nav.hidden = false;
     nav.addEventListener('click', function (e) {
       var chip = e.target.closest('a.client-chip');
@@ -365,6 +498,8 @@ lights it up). Built from the lines on the page, in their order (script below).{
     });
   })();
 </script>
+{% comment %}Outside the day form: the drawer is a form of its own (GET).{% endcomment %}
+{% include "crm/_filter_drawer.html" %}
 <script src="{% static_v 'js/route.js' %}" defer></script>
 <script src="{% static_v 'js/load.js' %}" defer></script>
 {% endblock %}

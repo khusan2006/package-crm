@@ -1850,7 +1850,9 @@ def test_tick_sells_today_and_only_todays_clients(client, admin_user, seller_use
     ahead = stop(Load.objects.create(date=TODAY() + timedelta(days=1)),
                  make_client(seller_user, "Ertaga"), (paket, 2, 40))
     body = day_page(client, admin_user, past.load.date).content.decode()
-    assert f'name="confirm" value="{past.pk}"' not in body and "✓ bugungi ro'yxatda" in body
+    # A day gone by asks «Sotildimi?» instead (load_item_sold), not ✓.
+    assert f'name="confirm" value="{past.pk}"' not in body
+    assert f'href="/yetkazish/sotildi/{past.pk}/"' in body and "Sotildimi?" in body
     body = day_page(client, admin_user, ahead.load.date).content.decode()
     assert f'name="confirm" value="{ahead.pk}"' not in body
     resp = day_save(client, admin_user, day=past.load.date, confirm=str(past.pk))
@@ -1910,6 +1912,224 @@ def test_a_sotuvlar_sale_lands_on_the_carried_stop(client, seller_user, paket):
     sell(client, seller_user, anvar, paket)
     old.refresh_from_db()
     assert old.sale == Sale.objects.get() and old.load.date == TODAY()
+
+
+# --- «Sotildimi?»: ✓ forgotten on a day gone by ------------------------------------------
+
+def sold(client, user, item, ajax=False, **data):
+    """Answer «Sotildimi?» for one order."""
+    client.force_login(user)
+    extra = {"HTTP_X_REQUESTED_WITH": "XMLHttpRequest"} if ajax else {}
+    return client.post(f"/yetkazish/sotildi/{item.pk}/", data, **extra)
+
+
+def test_a_forgotten_tick_is_sold_on_the_date_given(client, admin_user, seller_user, paket):
+    """Its day passed without ✓: on that day's row «Sotildimi?» writes the sale on
+    the date given — that day — and the order is done (out of the bell)."""
+    day = TODAY() - timedelta(days=1)
+    item = stop(Load.objects.create(date=day), make_client(seller_user, "Anvar"), (paket, 2, 47.3))
+    line = item.lines.get()
+    body = get(client, admin_user, f"/yetkazish/sotildi/{item.pk}/").content.decode()
+    assert "Qaysi kuni sotildi?" in body and f'value="{day.isoformat()}"' in body
+    assert "Bu mijozga sotuv yozilgan" not in body
+    resp = sold(client, admin_user, item, sotuv="yangi", sana=day.isoformat(),
+                **{f"kg_{line.pk}": "47,3"})
+    assert resp.status_code == 302 and resp["Location"].endswith(f"#stop-{item.pk}")
+    sale = Sale.objects.get()
+    item.refresh_from_db(), line.refresh_from_db()
+    assert (sale.date, sale.client, sale.sales_rep, sale.entered_by) == (
+        day, item.client, seller_user, admin_user)
+    assert sale.debt_deadline == day + timedelta(days=14)
+    assert (sale.items.get().weight, sale.items.get().rolls) == (Decimal("47.3"), 2)
+    assert (item.sale, item.status, line.sale, item.load.date) == (sale, "done", sale, day)
+    assert day_page(client, admin_user).context["waiting"] == []
+    # Sold: the row is locked, nothing more to ask.
+    body = day_page(client, admin_user, day).content.decode()
+    assert "Sotildimi?" not in body
+    sold(client, admin_user, item, sotuv="yangi", sana=day.isoformat(), **{f"kg_{line.pk}": "47,3"})
+    assert Sale.objects.count() == 1
+
+
+def test_any_day_up_to_today_but_not_after(client, admin_user, seller_user, paket):
+    day = TODAY() - timedelta(days=3)
+    item = stop(Load.objects.create(date=day), make_client(seller_user, "Anvar"), (paket, 2, 40))
+    line = item.lines.get()
+    resp = sold(client, admin_user, item, ajax=True, sotuv="yangi",
+                sana=(TODAY() + timedelta(days=1)).isoformat(), **{f"kg_{line.pk}": "40"})
+    assert resp.status_code == 422 and "bugundan keyingi" in resp.content.decode()
+    assert not Sale.objects.exists()
+    resp = sold(client, admin_user, item, ajax=True, sotuv="yangi", sana=TODAY().isoformat(),
+                **{f"kg_{line.pk}": "40"})
+    assert resp.status_code == 204 and resp["X-Redirect"].endswith(f"#stop-{item.pk}")
+    assert Sale.objects.get().date == TODAY()
+
+
+def test_kg_is_typed_in_the_question(client, admin_user, seller_user, paket, plyonka):
+    item = stop(Load.objects.create(date=TODAY() - timedelta(days=1)),
+                make_client(seller_user, "Anvar"), (paket, 2), (plyonka, 1, 30))
+    a, b = item.lines.order_by("pk")
+    day = item.load.date.isoformat()
+    resp = sold(client, admin_user, item, ajax=True, sotuv="yangi", sana=day,
+                **{f"kg_{a.pk}": "", f"kg_{b.pk}": "30"})
+    assert resp.status_code == 422 and "Kg kiriting: Paket" in resp.content.decode()
+    resp = sold(client, admin_user, item, ajax=True, sotuv="yangi", sana=day,
+                **{f"kg_{a.pk}": "1e3", f"kg_{b.pk}": "30"})
+    body = resp.content.decode()
+    assert "Kg noto&#x27;g&#x27;ri: Paket" in body and 'value="1e3"' in body
+    assert not Sale.objects.exists()
+    sold(client, admin_user, item, sotuv="yangi", sana=day, **{f"kg_{a.pk}": "50+48,5", f"kg_{b.pk}": "30"})
+    weights = {i.product.name: i.weight for i in Sale.objects.get().items.all()}
+    assert weights == {"Paket": Decimal("98.5"), "Plyonka": Decimal("30")}
+    a.refresh_from_db()
+    assert a.kg == Decimal("98.5")
+
+
+def test_a_sale_already_typed_is_tied_not_written_twice(client, admin_user, seller_user, paket):
+    """The sale was typed in Sotuvlar the day the order was written (it landed on that
+    day's board as a row of its own); the order went the next day. «Sotildimi?» offers
+    that sale first: tying the order to it writes nothing new."""
+    anvar = make_client(seller_user, "Anvar")
+    day = TODAY() - timedelta(days=1)
+    item = stop(Load.objects.create(date=day), anvar, (paket, 1, 47.3))
+    sell(client, seller_user, anvar, paket, day=day - timedelta(days=1), weight="47.3")
+    sale = Sale.objects.get()
+    own = sale.load_item
+    assert own.via_sotuvlar and own.load.date == day - timedelta(days=1)
+    resp = get(client, seller_user, f"/yetkazish/sotildi/{item.pk}/")
+    assert [s.pk for s in resp.context["candidates"]] == [sale.pk]
+    assert resp.context["picked"] == str(sale.pk)
+    assert "Bu mijozga sotuv yozilgan" in resp.content.decode()
+    sold(client, seller_user, item, sotuv=str(sale.pk), sana=day.isoformat())
+    assert Sale.objects.count() == 1
+    item.refresh_from_db()
+    assert (item.sale, item.status, item.load.date) == (sale, "done", day)
+    assert [(l.product, l.kg, l.sale) for l in item.lines.all()] == [(paket, Decimal("47.300"), sale)]
+    assert not LoadItem.objects.filter(pk=own.pk).exists()
+    assert day_page(client, seller_user).context["waiting"] == []
+    # Tied to this order now, it is offered to no other.
+    other = stop(Load.objects.create(date=day - timedelta(days=5)), anvar, (paket, 1, 20))
+    assert get(client, seller_user, f"/yetkazish/sotildi/{other.pk}/").context["candidates"] == []
+
+
+def test_a_sale_another_order_holds_is_not_offered(client, admin_user, seller_user, paket):
+    anvar = make_client(seller_user, "Anvar")
+    day = TODAY() - timedelta(days=1)
+    first = stop(Load.objects.create(date=day), anvar, (paket, 1, 40))
+    sold_on_its_day(first, seller_user)
+    second = stop(Load.objects.create(date=day), anvar, (paket, 1, 40))
+    resp = get(client, admin_user, f"/yetkazish/sotildi/{second.pk}/")
+    assert resp.context["candidates"] == [] and resp.context["picked"] == "yangi"
+    # A sale picked by hand that is not on offer is refused.
+    resp = sold(client, admin_user, second, ajax=True, sotuv=str(first.sale_id))
+    assert resp.status_code == 422
+    second.refresh_from_db()
+    assert second.sale is None
+
+
+def test_the_bell_asks_too_and_comes_back_to_it(client, admin_user, seller_user, paket):
+    item = stop(Load.objects.create(date=TODAY() - timedelta(days=2)),
+                make_client(seller_user, "Anvar"), (paket, 2, 40))
+    body = day_page(client, admin_user).content.decode()
+    assert f"/yetkazish/sotildi/{item.pk}/?qayer=qongiroq" in body
+    resp = sold(client, admin_user, item, ajax=True, qayer="qongiroq", sotuv="yangi",
+                sana=item.load.date.isoformat(), **{f"kg_{item.lines.get().pk}": "40"})
+    assert resp.status_code == 204
+    assert resp["X-Redirect"] == f"/yetkazish/?sana={TODAY().isoformat()}#kutilayotgan"
+    assert Sale.objects.get().date == item.load.date
+    assert day_page(client, admin_user).context["waiting"] == []
+
+
+def test_only_the_clients_seller_or_a_manager_says_it_was_sold(client, seller_user, other_seller,
+                                                               manager, paket, load):
+    item = stop(Load.objects.create(date=TODAY() - timedelta(days=1)),
+                make_client(seller_user, "Anvar"), (paket, 2, 40))
+    data = {"sotuv": "yangi", "sana": item.load.date.isoformat(), f"kg_{item.lines.get().pk}": "40"}
+    assert get(client, other_seller, f"/yetkazish/sotildi/{item.pk}/").status_code == 403
+    assert sold(client, other_seller, item, **data).status_code == 403
+    assert not any(w.may_sell for w in day_page(client, other_seller).context["waiting"])
+    # Today's client is ✓-ed on its row, not asked.
+    today = stop(load, make_client(seller_user, "Bugungi"), (paket, 1, 10))
+    sold(client, manager, today, sotuv="yangi", sana=TODAY().isoformat(),
+         **{f"kg_{today.lines.get().pk}": "10"})
+    assert not Sale.objects.exists()
+    sold(client, manager, item, **data)
+    assert Sale.objects.get().sales_rep == seller_user
+
+
+def test_back_on_its_own_day_it_is_not_marked_carried(client, admin_user, seller_user, paket):
+    """Moved on to a later day and back again: on its own day it has no «13.11 dan»."""
+    day = TODAY() - timedelta(days=1)
+    item = stop(Load.objects.create(date=day), make_client(seller_user, "Anvar"), (paket, 1))
+    LoadItem.objects.filter(pk=item.pk).update(carried_from=day)
+    item.refresh_from_db()
+    assert item.carried_label == ""
+    assert f"{day:%d.%m} dan" not in day_page(client, admin_user, day).content.decode()
+
+
+# --- «Filtrlash» beside the day, and the client buttons by seller -----------------------
+
+def test_the_filter_shows_only_the_clients_it_picks(client, admin_user, seller_user, other_seller,
+                                                    load, paket, plyonka, warehouse):
+    anvar = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 2, 40))
+    bobur = stop(load, make_client(seller_user, "Bobur", 0.02), (plyonka, 1, 20))
+    stop(load, make_client(other_seller, "Begona", 0.03), (paket, 1, 10))
+    old = stop(Load.objects.create(date=TODAY() - timedelta(days=1)),
+               make_client(other_seller, "Kechagi"), (paket, 1))
+    url = f"/yetkazish/?sana={TODAY().isoformat()}"
+    resp = get(client, admin_user, url)
+    assert sorted(lane(resp, "truck")) == ["Anvar", "Begona", "Bobur"]
+    assert resp.context["show_route"] and not resp.context["has_filters"]
+    assert "data-filter-open" in resp.content.decode()
+    resp = get(client, admin_user, f"{url}&client={anvar.client_id}")
+    assert lane(resp, "truck") == ["Anvar"] and resp.context["filter_count"] == 1
+    assert not resp.context["show_route"]  # the route is the whole day's
+    body = resp.content.decode()
+    assert "Mijoz: <strong>Anvar</strong>" in body
+    assert f"&client={anvar.client_id}" in resp.context["tabs"][1]["url"]
+    assert f"&client={anvar.client_id}" in resp.context["tab_qs"]
+    resp = get(client, admin_user, f"{url}&product={plyonka.pk}")
+    assert lane(resp, "truck") == ["Bobur"]
+    resp = get(client, admin_user, f"{url}&rep={other_seller.pk}")
+    assert lane(resp, "truck") == ["Begona"]
+    assert [w.pk for w in resp.context["waiting"]] == [old.pk]
+    resp = get(client, admin_user, f"{url}&rep={seller_user.pk}")
+    assert resp.context["waiting"] == []
+    # A seller has no seller filter: they see their own clients anyway.
+    resp = get(client, seller_user, f"{url}&rep={other_seller.pk}")
+    assert sorted(lane(resp, "truck")) == ["Anvar", "Bobur"] and resp.context["reps"] is None
+    assert bobur.pk  # (both of the seller's clients)
+
+
+def test_a_send_comes_back_to_the_filter(client, admin_user, seller_user, load, paket):
+    anvar = stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 2, 40))
+    data = {"action": "items", "sana": TODAY().isoformat(), "confirm": str(anvar.pk),
+            "client": str(anvar.client_id), "product": "", "rep": "abc"}
+    client.force_login(admin_user)
+    resp = client.post("/yetkazish/kun/", data)
+    assert Sale.objects.count() == 1
+    assert f"&client={anvar.client_id}" in resp["Location"] and "rep=" not in resp["Location"]
+
+
+def test_the_bell_has_a_search_by_name_and_sold(client, admin_user, seller_user, paket):
+    """The search itself runs in the page (by name, Latin or Cyrillic, sold or not):
+    each row carries what it is matched on."""
+    yesterday = Load.objects.create(date=TODAY() - timedelta(days=1))
+    sold_one = stop(yesterday, make_client(seller_user, "АНВАР ФАРХАДСКИЙ"), (paket, 1, 40))
+    sold_on_its_day(sold_one, seller_user)
+    stop(yesterday, make_client(seller_user, "ҚОРАСУВ"), (paket, 1))
+    body = day_page(client, admin_user).content.decode()
+    assert "data-waiting-search" in body and 'data-waiting-sold="0"' in body
+    assert f'data-find="АНВАР ФАРХАДСКИЙ {seller_user}" data-sold="1"' in body
+    assert f'data-find="ҚОРАСУВ {seller_user}" data-sold="0"' in body
+
+
+def test_each_row_says_whose_client_it_is(client, admin_user, seller_user, other_seller, load,
+                                          paket):
+    stop(load, make_client(seller_user, "Anvar"), (paket, 1))
+    stop(load, make_client(other_seller, "Begona"), (paket, 1))
+    body = day_page(client, admin_user).content.decode()
+    assert f'data-owner="{seller_user.pk}" data-owner-name="{seller_user}"' in body
+    assert f'data-owner="{other_seller.pk}" data-owner-name="{other_seller}"' in body
 
 
 # --- saving by itself, and changing a line's product ------------------------------------

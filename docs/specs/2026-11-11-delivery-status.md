@@ -76,3 +76,24 @@ A client could be sold to twice a day but not written in twice. Now:
 | Where it is stored | Still once per Yuk (`unique_load_client`): the second row goes into the day's next Yuk, a new one when needed (`_free_load`). The day page shows every Yuk of the date as one. |
 | Same client in two new rows of one «Qo'shish» | Still refused — one row, more products with «+ Mahsulot». |
 | «Boshqa kunga» to a day where the client is already sold | Goes as a row of its own (was: stayed). An open stop there still takes the products. |
+
+## Revised 2026-11-14: «Sotildimi?» — ✓ forgotten on its day
+
+A client went and was sold on 13.11, but ✓ was not pressed; on 14.11 the 13.11 row
+only said «✓ bugungi ro'yxatda», and bringing it to today would date the sale 14.11.
+Its sale had in fact been typed in Sotuvlar the day the order was written (12.11), so
+it landed on 12.11's board, not on the order. (Of the 43 orders in the bell that day,
+39 were sold already and only waited for «Yetkazilgan»; 4 were unsold, this one among
+them.)
+
+| Question | Answer |
+|---|---|
+| Where it is asked | On a past day's row, in place of «✓ bugungi ro'yxatda»: «Sotildimi?». In the bell: «Sotilgan». Both open one dialog (`load_item_sold`). |
+| A sale already in Sotuvlar | The client's sales from 3 days before the order's day up to today that no planned stop holds (on no stop, or alone on a stop Sotuvlar made for them) are offered first, the newest picked. Tying writes no sale: the order takes the sale's lines, the Sotuvlar row goes. |
+| A new sale | «Yangi sotuv» (the only choice when nothing is on offer): the date asked — the order's day by default, any day up to today, never later — and the kg of each unsold product (prefilled, «50+48,5» adds up). The sale is dated that day, its debt term counts from it. |
+| After it | The order is «Yetkazildi» and sold: out of the bell, locked like a ✓-ed one. It stays on its own day. |
+| Who | As ✓: admins/managers or the client's own seller. Today's clients still use ✓. |
+| Also | Moved to a later day and back, a stop no longer shows «13.11 dan» on its own day. A dialog saved on the same page with a #part (the bell, a row) now reloads the page. |
+| «Filtrlash» beside the day | The shared filter drawer: Mijoz, Mahsulot (on any of the stop's lines), Sotuvchi (admins/managers). It narrows the lanes, the counts, the later days' orders, «Keyingi kunga o'tganlar» and the bell, and rides on every tab, arrow and send. The route card hides under a filter (it is the whole day's). Saving is unaffected: a hidden row sends nothing. |
+| Client buttons | Grouped by seller in columns side by side, by name (Kamola left, Umida right); one seller — no heading. |
+| The bell's window | No longer closes on a click around it (its scrollbar, a drag ending outside, a screenshot tool did it); × or Esc closes it. Its title stays in view while the list scrolls. |

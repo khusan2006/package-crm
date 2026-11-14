@@ -8,11 +8,11 @@
   form; what each one sends is limited to this client (load.js).
 {% endcomment %}
 {% with pk=item.pk|unlocalize %}
-<div class="lane-row st-{{ item.status }}{% if item.open %} is-open{% endif %}{% if not item.n %} no-n{% endif %}" id="stop-{{ pk }}" data-sold="{% if item.sale or item.sold_count and not item.unsold_count %}all{% elif item.sold_count %}part{% else %}none{% endif %}">
+<div class="lane-row st-{{ item.status }}{% if item.open %} is-open{% endif %}{% if not item.n %} no-n{% endif %}" id="stop-{{ pk }}" data-owner="{{ item.client.owner_id|unlocalize }}" data-owner-name="{{ item.client.owner }}" data-sold="{% if item.sale or item.sold_count and not item.unsold_count %}all{% elif item.sold_count %}part{% else %}none{% endif %}">
   <div class="lane-line">
     {% if item.n %}<span class="lane-n" title="Marshrutdagi tartibi">{{ item.n }}</span>{% endif %}
     <button type="button" class="lane-who" data-toggle-row aria-expanded="{% if item.open %}true{% else %}false{% endif %}" aria-controls="ed-{{ pk }}" title="Batafsil: mahsulotlar, metr/mikron, narx">
-      <strong>{{ item.client.name }}{% if item.carried_from %} <span class="badge badge-st-order lane-carried" title="{{ item.carried_from|date:'d.m.Y' }} kuni rejada edi">{{ item.carried_label }}</span>{% endif %}{% if item.unsold %} <span class="badge badge-cancelled lane-carried" title="Mahsulot ketdi, lekin sotuv yozilmagan: kg kiriting va ✓ Sotuvga bosing">Sotuv yozilmagan</span>{% endif %}</strong>
+      <strong>{{ item.client.name }}{% if item.carried_label %} <span class="badge badge-st-order lane-carried" title="{{ item.carried_from|date:'d.m.Y' }} kuni rejada edi">{{ item.carried_label }}</span>{% endif %}{% if item.unsold %} <span class="badge badge-cancelled lane-carried" title="Mahsulot ketdi, lekin sotuv yozilmagan: kg kiriting va ✓ Sotuvga bosing">Sotuv yozilmagan</span>{% endif %}</strong>
       <span class="cell-sub">{{ item.client.owner }}{% if item.client.phone %} · {{ item.client.phone }}{% endif %}{% if item.purpose != "deliver" %} · {{ item.get_purpose_display }}{% endif %}</span>
       {% comment %}Whether the client's location is saved — the route needs it; a missing
       one is added from the opened row («Joylashuv qo'shish»).{% endcomment %}
@@ -69,7 +69,11 @@
       {% elif item.sold_count and not item.unsold_count %}<span class="sold-chip" title="Hamma mahsulotlari sotilgan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>Sotildi</span>
       {% elif item.status == "order" %}<span class="muted lane-wait" title="Mahsulot omborga kelgach sotuvga aylantiriladi">Omborda yo'q</span>
       {% elif item.ahead %}<span class="muted lane-wait" title="{{ item.load.date|date:'d.m.Y' }} kuniga — o'sha kuni (yoki shu kunga o'tkazilgach) sotuvga aylantiriladi">{{ item.load.date|date:"d.m" }} kuni</span>
-      {% elif not item.sells_today and item.editable and item.delivers and item.unsold_count and item.status != "cancel" %}<span class="muted lane-wait" title="Sotuv ✓ bosilgan kunning sotuvi bo'ladi — ✓ faqat bugungi ro'yxatda">{% if item.load.date < today %}✓ bugungi ro'yxatda{% else %}{{ item.load.date|date:"d.m" }} kuni ✓{% endif %}</span>
+      {% elif not item.sells_today and item.editable and item.delivers and item.unsold_count and item.status != "cancel" %}
+      {% comment %}A day gone by: ✓ was not pressed then. «Sotildimi?» asks — tie it to
+      the sale already typed in Sotuvlar, or write one on the date it was sold.{% endcomment %}
+      {% if item.load.date < today %}<a class="btn btn-sm stop-confirm stop-sold-ask" href="{% url 'load_item_sold' item.pk %}" data-modal title="O'z kunida ✓ bosilmay qolgan: Sotuvlardagi sotuvga bog'lang yoki sotilgan sanasi bilan sotuv yozing" aria-label="{{ item.client.name }} — sotildimi?">Sotildimi?</a>
+      {% else %}<span class="muted lane-wait" title="Sotuv ✓ bosilgan kunning sotuvi bo'ladi — ✓ o'sha kuni">{{ item.load.date|date:"d.m" }} kuni ✓</span>{% endif %}
       {% elif item.editable and item.delivers and item.unsold_count and item.status != "cancel" %}<button type="submit" name="confirm" value="{{ pk }}" class="btn btn-sm stop-confirm" title="{% if item.sold_count %}Qolgan mahsulotlarni{% else %}Hammasini{% endif %} sotuvga aylantirish (ularning kg'i kiritilgan bo'lishi kerak)" aria-label="{{ item.client.name }} — {% if item.sold_count %}qolganini {% endif %}sotuvga aylantirish">✓ {% if item.sold_count %}Qolganini{% else %}Sotuvga{% endif %}</button>
       {% if item.sold_count %}<button type="submit" name="ertaga" value="{{ pk }}" formaction="{% url 'load_move' item.load_id %}" class="line-tomorrow" title="Sotilmagan mahsulotlarni ertangi kunga o'tkazish — sotilgani bugun qoladi" aria-label="{{ item.client.name }} — qolganini ertaga o'tkazish">Qolganini ertaga →</button>{% endif %}
       {% endif %}

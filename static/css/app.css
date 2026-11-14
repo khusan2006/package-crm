@@ -6933,6 +6933,24 @@ tr:has(.line-drop input:checked) td:not(.row-actions) { text-decoration: line-th
 }
 .move-card--date input[type=date] { margin-top: 6px; height: 32px; padding: 4px 8px; width: 100%; max-width: 180px; }
 .move-dialog .modal-actions .btn:disabled { opacity: 0.55; cursor: default; }
+/* «Sotildimi?»: the sale already typed (tie to it), or a new one on a date. */
+.sold-hint { margin: -2px 0 8px; }
+.sold-options { display: flex; flex-direction: column; gap: 8px; }
+.sold-new-card { margin-bottom: 10px; }
+.sold-new { display: flex; flex-direction: column; gap: 10px; }
+.sold-date { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; }
+.sold-date input[type=date] { height: 36px; padding: 4px 10px; max-width: 200px; }
+.sold-lines { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--r-sm); }
+.sold-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; }
+.sold-line + .sold-line { border-top: 1px solid var(--border); }
+.sold-line-name { display: flex; flex-direction: column; min-width: 0; font-weight: 600; }
+.sold-line .kg-group { flex: 0 0 150px; }
+.sold-new .field-hint { margin: 0; }
+/* The question on a day gone by: amber, it is waiting for an answer. */
+.stop-sold-ask, .lane-sale .stop-confirm.stop-sold-ask {
+  border: 1px solid var(--warning); background: var(--warning-soft); color: var(--warning); white-space: nowrap;
+}
+.stop-sold-ask:hover, .lane-sale .stop-confirm.stop-sold-ask:hover { background: var(--warning); color: #fff; }
 .stop-collect { margin: 10px 0 0; font-size: 13px; color: var(--text-muted); }
 .new-rows-title { margin: 18px 0 0; font-size: 14px; }
 .new-stop select.new-stop-purpose { flex: 0 0 auto; width: auto; max-width: 200px; height: 40px; }
@@ -7579,6 +7597,35 @@ a.sold-chip:hover { background: var(--success-soft); color: var(--success); }
 @keyframes row-flash { 0%, 60% { box-shadow: 0 0 0 3px var(--accent-ring); } 100% { box-shadow: none; } }
 .lane-row.is-flash { animation: row-flash 1.6s ease; }
 @media (max-width: 700px) { .day-clients { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; } }
+/* Two sellers or more: a column each, side by side (Kamola | Umida). */
+.day-clients.is-split {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px 16px;
+  align-items: start;
+}
+.day-clients-group {
+  display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface);
+}
+.day-clients-who { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; }
+.day-clients-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 700px) {
+  .day-clients.is-split { grid-template-columns: 1fr; overflow: visible; }
+  .day-clients-chips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+}
+.day-filter-chips { margin: -4px 0 12px; }
+/* The bell's list is long: its title, × and search stay in view while it scrolls. */
+.waiting-top {
+  position: sticky; top: 0; z-index: 2; background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.waiting-tools { display: flex; flex-direction: column; gap: 8px; padding: 0 22px 12px; }
+.waiting-find { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.waiting-search { flex: 1 1 240px; max-width: 360px; }
+.waiting-find button.seg-btn { border: 0; font: inherit; font-size: 13px; cursor: pointer; }
+.waiting-find button.seg-btn:not(.is-active):not(:hover) { background: transparent; }
+.waiting-row[hidden] { display: none; }
+.waiting-none { margin: 0; padding: 18px 0; text-align: center; }
+@media (max-width: 560px) { .waiting-search { max-width: none; } }
 
 /* Client buttons painted by sale (replaces the status dot). */
 .client-chip::before { display: none; }

@@ -2795,8 +2795,10 @@ class LoadItem(models.Model):
 
     @property
     def carried_label(self):
-        """«Kechagidan» for a stop carried from yesterday, «08.11 dan» from earlier."""
-        if not self.carried_from:
+        """«Kechagidan» for a stop carried from yesterday, «08.11 dan» from earlier.
+        Nothing once it is back on that day (or earlier): moved on and back again, it
+        is on its own day."""
+        if not self.carried_from or self.carried_from >= self.load.date:
             return ""
         if self.carried_from == self.load.date - timedelta(days=1):
             return "Kechagidan"

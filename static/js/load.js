@@ -440,7 +440,8 @@
         }
         return plainVal(el.value) !== plainVal(el.defaultValue);
       };
-      var always = ['csrfmiddlewaretoken', 'action', 'sana', 'ochiq', 'quick_pick', 'tur', 'holat'];
+      var always = ['csrfmiddlewaretoken', 'action', 'sana', 'ochiq', 'quick_pick', 'tur', 'holat',
+                    'client', 'product', 'rep'];  // the tab and the filter come back with every send
       // Only what this client changed goes — never other clients' boxes as the page
       // last saw them, never the add form. The server keeps every box not sent.
       var save = function (stop) {
@@ -727,6 +728,12 @@
   document.addEventListener('focusin', function (e) {
     if (e.target.matches('[data-move-dialog] [data-move-other]')) {
       e.target.closest('[data-move-dialog]').querySelector('[data-move-other-radio]').checked = true;
+    }
+    // «Sotildimi?»: touching the new sale's date or a kg box means a new sale, not
+    // the one already in Sotuvlar.
+    if (e.target.matches('[data-sold-dialog] [data-sold-field]')) {
+      var fresh = e.target.closest('[data-sold-dialog]').querySelector('[data-sold-new]');
+      if (fresh) { fresh.checked = true; }
     }
   });
   document.addEventListener('click', function (e) {

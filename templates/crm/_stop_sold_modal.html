@@ -1,0 +1,68 @@
+{% load l10n %}
+{% comment %}
+  «Sotildimi?»: an order whose day has passed was sold after all (✓ forgotten on its
+  day). When the client already has a sale typed in Sotuvlar around that day, it is
+  offered first — tying the order to it writes nothing new, so nothing is sold twice.
+  Otherwise (or «Yangi sotuv») a sale is written from the order's products on the
+  date picked here: its day by default, any day up to today. load.js picks «Yangi
+  sotuv» as soon as its date or a kg box is touched.
+{% endcomment %}
+<div class="modal-head">
+  <h2>{{ title }}</h2>
+  <button type="button" class="modal-x" data-modal-close aria-label="Yopish">&times;</button>
+</div>
+<p class="field-hint">{{ item.load.date|date:"d.m.Y" }} kuni rejada edi · {{ item.client.owner }}. O'z kunida ✓ bosilmay qolgan bo'lsa, shu yerda yoziladi.</p>
+<form method="post" action="{% url 'load_item_sold' item.pk %}" class="move-dialog sold-dialog" data-sold-dialog>
+  {% csrf_token %}
+  {% if from_bell %}<input type="hidden" name="qayer" value="qongiroq">{% endif %}
+  {% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+
+  {% if candidates %}
+  <fieldset class="move-step">
+    <legend><span class="move-step-n" aria-hidden="true">!</span>Bu mijozga sotuv yozilgan</legend>
+    <p class="field-hint sold-hint">Shu sotuv bo'lsa — yangisini yozmang, shunga bog'lang: qarz ikki marta yozilmaydi.</p>
+    <div class="sold-options">
+      {% for s in candidates %}
+      <label class="move-card">
+        <input type="radio" name="sotuv" value="{{ s.pk|unlocalize }}"{% if picked == s.pk|stringformat:"d" %} checked{% endif %}>
+        <span class="move-card-body"><strong>Sotuv #{{ s.pk|unlocalize }} · {{ s.date|date:"d.m.Y" }}</strong>
+          <span class="move-card-day">{{ s.summary }} · {{ s.total_price|floatformat:"0g" }} so'm</span>
+          <span class="move-card-day">Shu sotuvga bog'lash — yangi sotuv yozilmaydi</span></span>
+      </label>
+      {% endfor %}
+    </div>
+  </fieldset>
+  {% endif %}
+
+  <fieldset class="move-step">
+    {% if candidates %}
+    <legend><span class="move-step-n" aria-hidden="true">+</span>Yoki boshqa sotuv bo'lgan</legend>
+    <label class="move-card sold-new-card">
+      <input type="radio" name="sotuv" value="yangi"{% if picked == "yangi" %} checked{% endif %} data-sold-new>
+      <span class="move-card-body"><strong>Yangi sotuv yozish</strong><span class="move-card-day">shu buyurtma mahsulotlaridan, quyidagi sana bilan</span></span>
+    </label>
+    {% else %}
+    <legend><span class="move-step-n" aria-hidden="true">✓</span>Qaysi kuni sotildi?</legend>
+    <input type="hidden" name="sotuv" value="yangi">
+    {% endif %}
+    <div class="sold-new">
+      <label class="sold-date">Sotilgan sana
+        <input type="date" name="sana" value="{{ sana }}" max="{{ today|date:'Y-m-d' }}" min="2000-01-01" data-sold-field></label>
+      <div class="sold-lines">
+        {% for line in lines %}
+        <label class="sold-line">
+          <span class="sold-line-name">{{ line.product.name }}{% if line.variant_label %} · {{ line.variant_label }}{% endif %}
+            <span class="cell-sub">{% if line.rolls %}{{ line.rolls }} rulon · {% endif %}{{ line.price|floatformat:"0g" }} so'm/kg</span></span>
+          <span class="kg-group"><span class="kg-cell"><input type="text" inputmode="decimal" class="pick-kg" name="kg_{{ line.pk|unlocalize }}" value="{{ line.kg_input }}" placeholder="—" autocomplete="off" aria-label="{{ line.product.name }} — kg" data-sold-field></span><span class="kg-unit" aria-hidden="true">kg</span></span>
+        </label>
+        {% endfor %}
+      </div>
+      <p class="field-hint">Sotuv shu sana bilan yoziladi, qarz muddati ham shu kundan boshlanadi.</p>
+    </div>
+  </fieldset>
+
+  <div class="modal-actions">
+    <button type="submit" class="btn">Saqlash</button>
+    <button type="button" class="btn btn-ghost" data-modal-close>Bekor qilish</button>
+  </div>
+</form>

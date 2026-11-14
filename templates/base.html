@@ -269,6 +269,20 @@
     if (!dlg) { return; }
     var body = document.getElementById('modal-body');
 
+    // After a saved dialog: go where the server said. Back to this same page with
+    // a #part (today's bell, a row) would only scroll, not reload — so reload it.
+    function go(url) {
+      var here = window.location.href;
+      var target = new URL(url || here, here).href;
+      if (target.split('#')[0] === here.split('#')[0]
+          && (target.indexOf('#') > -1 || here.indexOf('#') > -1)) {
+        history.replaceState(null, '', target);
+        window.location.reload();
+        return;
+      }
+      window.location = target;
+    }
+
     function bindForm(form) {
       if (!form) { return; }
       form.addEventListener('submit', function (e) {
@@ -281,7 +295,7 @@
           headers: { 'X-Requested-With': 'XMLHttpRequest' },
         }).then(function (r) {
           if (r.status === 204) {
-            window.location = r.headers.get('X-Redirect') || window.location.href;
+            go(r.headers.get('X-Redirect'));
             return null;
           }
           if (r.headers.get('X-Zakaz-Confirm')) {

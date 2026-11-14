@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Sotildimi? · Paket CRM{% endblock %}
+{% block topbar_title %}Yetkazish{% endblock %}
+{% block content %}
+{% comment %}«Sotildimi?» as a page, for when it is opened without the script.{% endcomment %}
+<div class="card form-card">{% include "crm/_stop_sold_modal.html" %}</div>
+{% endblock %}
