@@ -6968,6 +6968,16 @@ input.pick-variant { width: 84px; max-width: 84px; height: 32px; padding: 5px 8p
 .route-collect { color: var(--warning); }
 .strategy-switch { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
 .strategy-switch .seg-btn { font-size: 12px; }
+/* The money car (pul olish mashinasi): the system's recommendation under the route
+   summary — why the car goes (or would), and the one way to change it. */
+.route-money { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap; margin-top: 12px; padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--warning); background: var(--warning-soft); }
+.route-money-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 260px; }
+.route-money-text strong { color: var(--text); }
+.route-money-text span { color: var(--text-muted); font-size: 13px; }
+.route-money-form { flex: 0 0 auto; }
+.route-money-btn { border-color: var(--warning); color: var(--warning); background: transparent; }
 @media (max-width: 760px) {
   .new-stop { flex-wrap: wrap; }
   .new-stop .combobox { flex: 1 1 100%; max-width: none; }

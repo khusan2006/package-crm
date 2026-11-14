@@ -266,3 +266,104 @@ def test_truck_pairs_come_cheapest_first():
     trucks = [FakeTruck("a", 700), FakeTruck("b", 800), FakeTruck("c", 1000)]
     pairs = routing.truck_pairs(Decimal(1500), trucks)
     assert [[t.name for t in p] for p in pairs] == [["b", "a"], ["c", "a"], ["c", "b"]]
+
+
+# --- the money car (docs/specs/2026-11-13-money-car.md) ------------------------------
+
+def money_day(far=True):
+    """Deliveries east of the warehouse; four money-only stops west (far) or right
+    beside the deliveries (on the way)."""
+    deliveries = [stop(f"d{i}", 0.002 * i, 0.02 + 0.01 * i) for i in range(5)]
+    if far:
+        money = [stop(f"m{i}", 0.002 * i, -0.05 - 0.01 * i, kg=0) for i in range(4)]
+    else:
+        money = [stop(f"m{i}", d.lat - DEPOT[0] + 0.001, d.lng - DEPOT[1], kg=0)
+                 for i, d in enumerate(deliveries[:4])]
+    ordered, _ = order_stops(DEPOT, deliveries + money)
+    return ordered, {s.key for s in money}
+
+
+def test_the_money_car_takes_the_far_money_stops():
+    route, money = money_day(far=True)
+    plan = routing.plan_money_car(DEPOT, [route], money)
+    assert plan is not None
+    assert {s.key for s in plan.car_route} == money
+    assert {s.key for s in plan.truck_routes[0]} == {f"d{i}" for i in range(5)}
+    assert plan.minutes_saved >= 60  # four stops of 15 minutes leave the truck
+    assert plan.gain > 0
+
+
+def test_one_money_stop_on_the_way_needs_no_car():
+    """It saves the truck only its 15 minutes there — less than the car is worth."""
+    deliveries = [stop(f"d{i}", 0, 0.02 + 0.01 * i) for i in range(4)]
+    ordered, _ = order_stops(DEPOT, deliveries + [stop("m", 0.001, 0.035, kg=0)])
+    assert routing.plan_money_car(DEPOT, [ordered], {"m"}) is None
+
+
+def test_money_stops_on_the_way_stay_on_the_truck():
+    """Four of them cost the truck an hour, but sending the car at all costs
+    MONEY_CAR_FIXED_COST on top of its drive: the truck takes them (client's choice,
+    2026-11-13)."""
+    route, money = money_day(far=False)
+    assert routing.plan_money_car(DEPOT, [route], money) is None
+
+
+def test_without_the_fixed_cost_they_would_call_the_car(monkeypatch):
+    monkeypatch.setattr(routing, "MONEY_CAR_FIXED_COST", 0.0)
+    route, money = money_day(far=False)
+    plan = routing.plan_money_car(DEPOT, [route], money)
+    assert plan is not None and plan.km_saved < 0  # the car drives extra
+
+
+def test_no_money_stops_no_car():
+    route, _ = money_day(far=True)
+    assert routing.plan_money_car(DEPOT, [route], set()) is None
+
+
+def test_delivery_stops_never_ride_the_car():
+    route, money = money_day(far=True)
+    plan = routing.plan_money_car(DEPOT, [route], money)
+    assert all(s.key in money for s in plan.car_route)
+
+
+def test_the_gain_is_time_plus_weighed_km():
+    route, money = money_day(far=True)
+    plan = routing.plan_money_car(DEPOT, [route], money, detour=1.3)
+    assert plan.gain == pytest.approx(plan.minutes_saved + routing.KM_WEIGHT * plan.km_saved
+                                      - routing.MONEY_CAR_FIXED_COST)
+
+
+def test_km_count_against_the_car(monkeypatch):
+    """With km weighing heavily enough, the car's own drive outweighs the time."""
+    route, money = money_day(far=False)
+    monkeypatch.setattr(routing, "KM_WEIGHT", 100.0)
+    assert routing.plan_money_car(DEPOT, [route], money) is None
+
+
+def test_money_stops_may_change_truck_without_a_car():
+    """With two trucks, a money stop can move to the other truck — the baseline the
+    car is measured against is the best day without it, not the first plan."""
+    east = [stop(f"e{i}", 0, 0.02 + 0.01 * i) for i in range(3)]
+    west = [stop(f"w{i}", 0, -0.02 - 0.01 * i) for i in range(3)]
+    stray = stop("m", 0, -0.03, kg=0)
+    plan = routing.plan_money_car(DEPOT, [east + [stray], west], {"m"})
+    assert plan is None  # it simply rides the west truck
+
+
+def test_the_money_cars_order_is_a_short_loop():
+    stops = [stop(f"m{i}", 0.01 * ((i * 7) % 5), -0.01 * (i + 1), kg=0) for i in range(6)]
+    ordered = routing.order_money_car(DEPOT, stops)
+    assert sorted(s.key for s in ordered) == sorted(s.key for s in stops)
+    best = min(length(DEPOT, list(p)) for p in permutations(stops))
+    assert length(DEPOT, ordered) <= best * 1.05
+
+
+def test_the_money_car_search_is_fast_on_a_busy_day():
+    rnd = random.Random(7)
+    stops = [stop(f"d{i}", rnd.uniform(-.1, .1), rnd.uniform(-.1, .1)) for i in range(25)]
+    money = [stop(f"m{i}", rnd.uniform(-.1, .1), rnd.uniform(-.1, .1), kg=0) for i in range(20)]
+    ordered, _ = order_stops(DEPOT, stops + money)
+    started = time.perf_counter()
+    plan = routing.plan_money_car(DEPOT, [ordered], {s.key for s in money}, detour=1.3)
+    assert time.perf_counter() - started < 2
+    assert plan is not None and plan.gain > 0

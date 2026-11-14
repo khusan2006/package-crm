@@ -386,7 +386,9 @@
           // mijoz's name is whatever the operator typed.
           var tip = document.createElement('span');
           tip.textContent = s.n + '. ' + s.name;
-          L.marker(at, { icon: pin(Number(s.n), color), title: tip.textContent })
+          // A truck's stops are 1, 2…, the money car's P1, P2…: letters and digits
+          // only, as the label goes into the pin's HTML.
+          L.marker(at, { icon: pin(String(s.n).replace(/[^A-Za-z0-9]/g, ''), color), title: tip.textContent })
             .bindTooltip(tip).addTo(map);
         });
         line.push(data.depot);  // trucks drive back to the warehouse

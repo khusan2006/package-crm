@@ -11012,7 +11012,7 @@ def load_move(request, pk):
                     item.delete()
             elif is_whole:
                 LoadItem.objects.filter(pk=item.pk, load=load, sale__isnull=True).update(
-                    load=dest, position=next_position(), route_group=None)
+                    load=dest, position=next_position(), route_group=None, money_car=False)
                 # Loaded or on the way today, it isn't on another day: it starts over
                 # there (an order waiting for stock stays one).
                 LoadItem.objects.filter(pk=item.pk, status__in=[
@@ -11890,10 +11890,22 @@ def _save_load_order_checked(request, load, items):
             messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
             return redirect(_load_url(load))
         order.append(pk)
-    if not order:
+    # The money car's stops, in its order (`car` = item pk): money-only stops only.
+    car = []
+    for raw in request.POST.getlist("car"):
+        try:
+            pk = int(raw)
+        except ValueError:
+            pk = None
+        if (pk not in located or pk in order or pk in car
+                or located[pk].purpose != LoadItem.Purpose.COLLECT):
+            messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
+            return redirect(_load_url(load))
+        car.append(pk)
+    if not order and not car:
         messages.error(request, "Saqlash uchun marshrutda mijoz yo'q.")
         return redirect(_load_url(load))
-    if set(order) != set(located):
+    if set(order) | set(car) != set(located):
         # The page was drawn before a client was added or removed — don't save half.
         messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
         return redirect(_load_url(load))
@@ -11906,15 +11918,20 @@ def _save_load_order_checked(request, load, items):
             messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
             return redirect(_load_url(load))
         split = [int(g) for g in groups]
-    LoadItem.objects.filter(load__date=load.date).update(position=None, route_group=None)
+    LoadItem.objects.filter(load__date=load.date).update(position=None, route_group=None,
+                                                         money_car=False)
     for n, pk in enumerate(order, start=1):
         LoadItem.objects.filter(pk=pk).update(position=n,
                                               route_group=split[n - 1] if split else None)
+    # The car's stops after the trucks', so the day board numbers its P1, P2… in order.
+    for n, pk in enumerate(car, start=len(order) + 1):
+        LoadItem.objects.filter(pk=pk).update(position=n, money_car=True)
     load.ordered_at = timezone.now()
     load.split_routes = 2 if split else None
     load.save(update_fields=["ordered_at", "split_routes"])
     AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
-                    f"Yuk #{load.pk} tartibi saqlandi — {len(order)} ta manzil")
+                    f"Yuk #{load.pk} tartibi saqlandi — {len(order) + len(car)} ta manzil"
+                    + (f", pul olish mashinasi {len(car)} ta" if car else ""))
     messages.success(request, "Tartib saqlandi.")
     return redirect(_load_url(load) + "?marshrut=1")
 
@@ -11924,7 +11941,9 @@ def _reset_load_order(request, load):
     if not request.user.can_see_all_records:
         raise PermissionDenied
     if load.ordered_at:
-        LoadItem.objects.filter(load__date=load.date).update(position=None, route_group=None)
+        # The money car too: the suggestion decides it afresh.
+        LoadItem.objects.filter(load__date=load.date).update(position=None, route_group=None,
+                                                             money_car=False)
         load.ordered_at = None
         load.split_routes = None
         load.save(update_fields=["ordered_at", "split_routes"])
@@ -11943,6 +11962,104 @@ def _set_strategy(request, load):
         load.save(update_fields=["strategy"])
         AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                         f"Yuk #{load.pk}: mashinalar — {load.get_strategy_display()}")
+    return redirect(_load_url(load) + "?marshrut=1")
+
+
+def money_car_saving(plan):
+    """What the money car changes, in the operator's words: "≈ 50 daq. erta tugaydi ·
+    8 km ko'p yuriladi". Honest both ways — the car often adds km while it saves time."""
+    parts = []
+    minutes = round(plan.minutes_saved)
+    if minutes > 0:
+        parts.append(f"kun ≈ {minutes} daq. erta tugaydi")
+    elif minutes < 0:
+        parts.append(f"kun ≈ {-minutes} daq. kech tugaydi")
+    km = round(plan.km_saved)
+    if km > 0:
+        parts.append(f"{km} km kam yuriladi")
+    elif km < 0:
+        parts.append(f"{-km} km ko'p yuriladi")
+    return " · ".join(parts)
+
+
+@transaction.atomic
+def _use_money_car(request, load):
+    """«Qo'llash»: apply the money car to a day whose order was saved without it (an
+    unsaved suggestion already has it). The money car takes
+    its stops, and the trucks' new order is saved as the day's order (it may differ
+    from the old one: stops left the trucks). Worked out afresh, so a page drawn
+    before the day changed can't apply a stale plan."""
+    if not request.user.can_see_all_records:
+        raise PermissionDenied
+    ctx = _route_inputs(load, request.user)
+    plan = None
+    if ctx["ready"] and ctx["truck_items"]:
+        groups, _ = _load_groups(load, ctx["truck_items"], ctx["depot"], ctx["dist"],
+                                 ctx["weights"])
+        plan = _money_car_plan(load, ctx, groups)
+    if plan is None:
+        messages.error(request, "Pul olish mashinasi hozir foyda bermaydi — kun o'zgargan "
+                                "bo'lishi mumkin. Marshrutni qayta ko'ring.")
+        return redirect(_load_url(load) + "?marshrut=1")
+    LoadItem.objects.filter(load__date=load.date).update(position=None, route_group=None,
+                                                         money_car=False)
+    LoadItem.objects.filter(pk__in=[st.key for st in plan.car_route]).update(money_car=True)
+    two = len(plan.truck_routes) > 1
+    n = 0
+    for group, route in enumerate(plan.truck_routes):
+        for st in route:
+            n += 1
+            LoadItem.objects.filter(pk=st.key).update(position=n,
+                                                      route_group=group if two else None)
+    # The car's order too — after the trucks', so the day board numbers its P1, P2…
+    # as its card does. Saving or resetting the trucks' order leaves it alone.
+    car = routing.order_money_car(ctx["depot"], plan.car_route, dist=ctx["dist"])
+    for st in car:
+        n += 1
+        LoadItem.objects.filter(pk=st.key).update(position=n)
+    load.ordered_at = timezone.now()
+    load.split_routes = len(plan.truck_routes) if two else None
+    load.money_car_off = False
+    load.save(update_fields=["ordered_at", "split_routes", "money_car_off"])
+    saving = money_car_saving(plan)
+    AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
+                    f"Yuk #{load.pk}: pul olish mashinasi — {len(plan.car_route)} ta manzil"
+                    + (f" ({saving})" if saving else ""))
+    messages.success(request, f"Pul olish mashinasi {len(plan.car_route)} ta manzilga boradi"
+                              + (f": {saving}." if saving else "."))
+    return redirect(_load_url(load) + "?marshrut=1")
+
+
+@transaction.atomic
+def _drop_money_car(request, load):
+    """«Pul mashinasisiz»: the day goes without the money car, even where the system
+    finds it better. Stops it had go back to the trucks, and a saved order goes back
+    to the suggestion (it was made with the car)."""
+    if not request.user.can_see_all_records:
+        raise PermissionDenied
+    moved = LoadItem.objects.filter(load__date=load.date, money_car=True).update(money_car=False)
+    if moved:
+        LoadItem.objects.filter(load__date=load.date).update(position=None, route_group=None)
+        load.ordered_at = None
+        load.split_routes = None
+    load.money_car_off = True
+    load.save(update_fields=["ordered_at", "split_routes", "money_car_off"])
+    AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
+                    f"Yuk #{load.pk}: pul olish mashinasisiz")
+    messages.success(request, "Bu kun pul olish mashinasisiz — hammasi yuk mashinasida.")
+    return redirect(_load_url(load) + "?marshrut=1")
+
+
+def _allow_money_car(request, load):
+    """«Pul mashinasini yoqish»: undo «Pul mashinasisiz» — the system may use the car
+    again where it is better."""
+    if not request.user.can_see_all_records:
+        raise PermissionDenied
+    if load.money_car_off:
+        load.money_car_off = False
+        load.save(update_fields=["money_car_off"])
+        AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
+                        f"Yuk #{load.pk}: pul olish mashinasi yana ruxsat etildi")
     return redirect(_load_url(load) + "?marshrut=1")
 
 
@@ -12159,10 +12276,17 @@ def _lanes(items, user, ahead=()):
         _decorate_stop(item, user)
         item.ahead = True
     # The saved route order is day-wide (every Yuk of the date), so is the numbering.
-    lanes["truck"].sort(key=lambda i: (i.position is None, i.position or 0, i.created_at))
-    n = 0
+    # The money car's stops after the trucks', each in its own saved order.
+    lanes["truck"].sort(key=lambda i: (i.rides_money_car, i.position is None, i.position or 0,
+                                       i.created_at))
+    # The money car's stops are numbered apart (P1, P2…): the truck's 1, 2, 3 stay
+    # the truck's order.
+    n = money = 0
     for item in lanes["truck"]:
-        if item.on_route:
+        if item.on_route and item.rides_money_car:
+            money += 1
+            item.n = f"P{money}"
+        elif item.on_route:
             n += 1
             item.n = n
     return lanes
@@ -12285,8 +12409,10 @@ def _bring_to(stops, day, user, restart=False):
         item.carried_from = carried
         item.load = free_load(item.client)
         item.position = item.route_group = None
+        item.money_car = False
         item.status = fresh(item.status)
-        item.save(update_fields=["carried_from", "load", "position", "route_group", "status"])
+        item.save(update_fields=["carried_from", "load", "position", "route_group", "money_car",
+                                 "status"])
         if mate is None:
             here[item.client_id] = item
     if moved and first:
@@ -12585,6 +12711,12 @@ def load_detail(request, pk):
             return _set_strategy(request, load)
         if action == "start":
             return _set_start(request, load)
+        if action == "money_car":
+            return _use_money_car(request, load)
+        if action == "money_car_off":
+            return _drop_money_car(request, load)
+        if action == "money_car_on":
+            return _allow_money_car(request, load)
         if action == "items":
             return _save_day(request, load.date, load)
         return _save_load_order(request, load, _day_stops(load.date, request.user))
@@ -12592,113 +12724,205 @@ def load_detail(request, pk):
     return _render_day(request, load.date)
 
 
+def _route_inputs(load, user):
+    """What the day's route is worked out from: the stops the trucks (or the money
+    car) still go to, the warehouse, distances, weights and debts. Shared by the
+    route fragment and «Pul uchun mashina», so the button applies exactly the plan
+    the page showed. `ready` is False while something is missing (no warehouse
+    location, a client without one, nobody to visit)."""
+    items = [i for i in _day_stops(load.date, user) if i.on_route]
+    warehouse = Warehouse.load()
+    ctx = {"items": items, "warehouse": warehouse, "ready": False, "by_road": False,
+           "road_note": "", "estimated": False, "unknown": False,
+           "missing": [i.client for i in items if not i.client.has_location]}
+    if not warehouse.has_location or not items or ctx["missing"]:
+        return ctx
+    depot = (float(warehouse.latitude), float(warehouse.longitude))
+    dist, by_road, road_note = _road_distance([depot] + [_point(i.client) for i in items])
+    per_roll = _kg_per_roll({l.product_id for i in items for l in i.line_list})
+    weights = {i.pk: _stop_weight(i, per_roll) for i in items}
+    ctx.update(
+        ready=True, depot=depot, dist=dist, by_road=by_road, road_note=road_note,
+        weights=weights, by_pk={i.pk: i for i in items},
+        estimated=any(w[1] for w in weights.values()),
+        unknown=any(w[2] for w in weights.values()),
+        detour=1.0 if by_road else routing.ETA_DETOUR,
+        # While the order isn't saved the system decides the money car afresh each
+        # time (load_route records its choice); a saved order keeps the one it had.
+        truck_items=[i for i in items if not (load.ordered_at and i.rides_money_car)],
+        car_items=[i for i in items if load.ordered_at and i.rides_money_car],
+    )
+    return ctx
+
+
+def _record_money_car(load, items, car_keys):
+    """Write the system's money car choice onto the stops — no button: the day board
+    numbers the car's stops P1, P2… in its order, and the truck's 1, 2… go on. Only
+    stops whose choice changed are written."""
+    order = {key: n for n, key in enumerate(car_keys, start=1)}
+    for item in items:
+        rides = item.pk in order
+        position = order.get(item.pk) if rides else (None if item.money_car else item.position)
+        if item.money_car != rides or (rides and item.position != position):
+            LoadItem.objects.filter(pk=item.pk).update(money_car=rides, position=position)
+            item.money_car, item.position = rides, position
+
+
+def _money_car_plan(load, ctx, groups):
+    """What the money car would save today, or None: only while it isn't in use, the
+    trucks are chosen, and there are money-only stops on them. The suggested route
+    takes it automatically; a saved order or «Pul mashinasisiz» only shows it."""
+    if ctx["car_items"] or not groups or not all(truck for truck, _ in groups):
+        return None
+    money = {i.pk for i in ctx["truck_items"] if i.purpose == LoadItem.Purpose.COLLECT}
+    if not money:
+        return None
+    return routing.plan_money_car(ctx["depot"], [list(g) for _, g in groups], money,
+                                  dist=ctx["dist"], detour=ctx["detour"])
+
+
+def _route_card(load, ctx, truck, group, color, debts, eta_from, money=False):
+    """One vehicle's route as the page shows it: its stops with arrival times and
+    what to collect, its km and load, the map line and the driver's message."""
+    depot, dist, weights, by_pk = ctx["depot"], ctx["dist"], ctx["weights"], ctx["by_pk"]
+    measured = routing.build_route(truck, group, depot, dist=dist)
+    stops = []
+    for k, st in enumerate(group, start=1):
+        item = by_pk[st.key]
+        stops.append({
+            "n": f"P{k}" if money else k, "item": item, "client": item.client,
+            "rolls": sum(l.rolls for l in item.line_list) if item.delivers else 0,
+            "kg": weights[item.pk][0], "estimated": weights[item.pk][1],
+            "unknown": weights[item.pk][2],
+            "amount": _amount(item, debts.get(item.client_id)),
+        })
+    points = [_point(st["client"]) for st in stops]
+    arrivals, back = routing.arrival_times(depot, points, eta_from, dist, ctx["detour"])
+    for st, at in zip(stops, arrivals):
+        st["eta"] = at
+    google = route_share.google_route_links(depot, points)
+    yandex = route_share.yandex_route_link(depot, points)
+    name = "Pul olish mashinasi" if money else (truck.name if truck else "")
+    title = f"Yuk #{load.pk} — {load.date:%d.%m.%Y}" + (f" — {name}" if name else "")
+
+    def driver_stops(map_url):
+        return [{"n": st["n"], "name": st["client"].name, "amount": st["amount"],
+                 "address": st["client"].address, "phone": st["client"].phone,
+                 "map_url": map_url(st["client"])} for st in stops]
+
+    text = route_share.driver_message(title, driver_stops(lambda c: c.google_maps_url),
+                                      google, yandex)
+    # Telegram goes to drivers who open it in Yandex: Yandex links only — each stop
+    # and the whole route (one link, no Google legs) — trimmed to Telegram's length.
+    telegram_text = route_share.fit_for_telegram(
+        title, driver_stops(lambda c: c.yandex_maps_url), yandex)
+    capacity = truck.capacity_kg if truck else None
+    return {
+        "truck": truck, "money": money, "stops": stops, "km": measured.km, "kg": measured.kg,
+        "back": back if stops else None,
+        "load_pct": min(100, round(measured.kg / capacity * 100)) if capacity else None,
+        "over": bool(capacity) and measured.kg > capacity,
+        "color": color,
+        "path": road.path([depot] + points + [depot]) if ctx["by_road"] and points else None,
+        "share": {"text": text, "title": title, "google_links": google,
+                  "yandex_link": yandex,
+                  **route_share.share_urls(text, google[0] if google else yandex,
+                                           telegram_text=telegram_text,
+                                           telegram_link=yandex)},
+    }
+
+
+#: The money car's colour on the map and its card.
+MONEY_CAR_COLOR = "--warning"
+
+
 def load_route(request, pk):
     """«Marshrut tuzish»: the load's route as a page fragment — the truck(s), the
     order, the map and the driver's message. Until the order is saved it's the one
     crm/routing.py suggests, worked out afresh each time; trucks are chosen by
-    `_load_groups`. Every stop needs a joylashuv first."""
+    `_load_groups`. Every stop needs a joylashuv first.
+
+    Money-only stops given to the money car ride its own card, in the order the
+    system finds; while the car isn't in use, «Pul uchun mashina» is offered when it
+    would make the day cheaper (routing.plan_money_car)."""
     if not request.user.can_see_all_records:
         raise PermissionDenied  # the whole day's truck: not a seller's partial list
     load = get_object_or_404(Load, pk=pk)
     # Only the stops the truck still goes to — not pickups, Yandex, buyurtma or ones
     # already delivered — across the whole day (a second Yuk of the date included).
-    items = [i for i in _day_stops(load.date, request.user) if i.on_route]
-    warehouse = Warehouse.load()
-    missing = [i.client for i in items if not i.client.has_location]
-    routes, error, by_road, road_note = [], "", False, ""
-    estimated = unknown = False
+    ctx = _route_inputs(load, request.user)
+    items, warehouse = ctx["items"], ctx["warehouse"]
+    routes, error, money_route, money_offer, money_auto = [], "", None, None, False
     if not warehouse.has_location:
         error = ("Ombor joylashuvi belgilanmagan. Uni Mashinalar sahifasida belgilang."
                  if request.user.is_admin_role else
                  "Ombor joylashuvi belgilanmagan — uni administrator Mashinalar sahifasida "
                  "belgilashi kerak.")
-    elif items and not missing:
-        depot = (float(warehouse.latitude), float(warehouse.longitude))
-        dist, by_road, road_note = _road_distance([depot] + [_point(i.client) for i in items])
-        per_roll = _kg_per_roll({l.product_id for i in items for l in i.line_list})
-        weights = {i.pk: _stop_weight(i, per_roll) for i in items}
-        estimated = any(w[1] for w in weights.values())
-        unknown = any(w[2] for w in weights.values())
+    elif ctx["ready"]:
         debts = dict(
             Sale.objects.filter(client_id__in=[i.client_id for i in items if i.collects])
             .outstanding().values("client_id").annotate(s=Sum("remaining")).values_list("client_id", "s")
         )
-        by_pk = {i.pk: i for i in items}
-        groups, error = _load_groups(load, items, depot, dist, weights)
+        groups, error = ([], "")
+        if ctx["truck_items"]:
+            groups, error = _load_groups(load, ctx["truck_items"], ctx["depot"], ctx["dist"],
+                                         ctx["weights"])
+        money_offer = _money_car_plan(load, ctx, groups)
+        car = None
+        if money_offer and not load.ordered_at and not load.money_car_off:
+            # The system's suggestion: the car goes, as the trucks are chosen — by
+            # what is best. Saving the order saves it; «Pul mashinasisiz» turns it off.
+            money_auto = True
+            groups = [(truck, list(r)) for (truck, _), r in zip(groups, money_offer.truck_routes)]
+            car = list(money_offer.car_route)
+        if not load.ordered_at:
+            _record_money_car(load, items, [st.key for st in car or []])
         # Arrival times (approximate until GPS): from when the trucks left, or —
         # not gone yet — from now, as if they left this minute.
         eta_from = load.started_at or timezone.now()
-        detour = 1.0 if by_road else routing.ETA_DETOUR
         for n, (truck, group) in enumerate(groups):
-            measured = routing.build_route(truck, group, depot, dist=dist)
-            stops = []
-            for k, st in enumerate(group, start=1):
-                item = by_pk[st.key]
-                stops.append({
-                    "n": k, "item": item, "client": item.client,
-                    "rolls": sum(l.rolls for l in item.line_list) if item.delivers else 0,
-                    "kg": weights[item.pk][0], "estimated": weights[item.pk][1],
-                    "unknown": weights[item.pk][2],
-                    "amount": _amount(item, debts.get(item.client_id)),
-                })
-            points = [_point(st["client"]) for st in stops]
-            arrivals, back = routing.arrival_times(depot, points, eta_from, dist, detour)
-            for st, at in zip(stops, arrivals):
-                st["eta"] = at
-            google = route_share.google_route_links(depot, points)
-            yandex = route_share.yandex_route_link(depot, points)
-            title = f"Yuk #{load.pk} — {load.date:%d.%m.%Y}" + (f" — {truck.name}" if truck else "")
+            routes.append(_route_card(load, ctx, truck, group,
+                                      ROUTE_COLORS[n % len(ROUTE_COLORS)], debts, eta_from))
+        if car is None and ctx["car_items"]:
+            car_stops = [routing.Stop(i.pk, *_point(i.client), Decimal("0"))
+                         for i in ctx["car_items"]]
+            if all(i.position is not None for i in ctx["car_items"]):
+                # The order written with «Pul uchun mashina» — the day board's P1, P2….
+                car = sorted(car_stops, key=lambda st: ctx["by_pk"][st.key].position)
+            else:
+                car = routing.order_money_car(ctx["depot"], car_stops, dist=ctx["dist"])
+        if car:
+            money_route = _route_card(load, ctx, None, car, MONEY_CAR_COLOR, debts, eta_from,
+                                      money=True)
 
-            def driver_stops(map_url, stops=stops):
-                return [{"n": st["n"], "name": st["client"].name, "amount": st["amount"],
-                         "address": st["client"].address, "phone": st["client"].phone,
-                         "map_url": map_url(st["client"])} for st in stops]
-
-            text = route_share.driver_message(title, driver_stops(lambda c: c.google_maps_url),
-                                              google, yandex)
-            # Telegram goes to drivers who open it in Yandex: Yandex links only —
-            # each stop and the whole route (one link, no Google legs) — trimmed to
-            # Telegram's message length.
-            telegram_text = route_share.fit_for_telegram(
-                title, driver_stops(lambda c: c.yandex_maps_url), yandex)
-            capacity = truck.capacity_kg if truck else None
-            routes.append({
-                "truck": truck, "stops": stops, "km": measured.km, "kg": measured.kg,
-                "back": back if stops else None,
-                "load_pct": min(100, round(measured.kg / capacity * 100)) if capacity else None,
-                "over": bool(capacity) and measured.kg > capacity,
-                "color": ROUTE_COLORS[n % len(ROUTE_COLORS)],
-                "path": road.path([depot] + points + [depot]) if by_road and points else None,
-                "share": {"text": text, "title": title, "google_links": google,
-                          "yandex_link": yandex,
-                          **route_share.share_urls(text, google[0] if google else yandex,
-                                                   telegram_text=telegram_text,
-                                                   telegram_link=yandex)},
-            })
-
+    cards = routes + ([money_route] if money_route else [])
     map_data = None
-    if routes:
+    if cards:
         map_data = {
             "depot": [float(warehouse.latitude), float(warehouse.longitude)],
             "routes": [{"color": r["color"], "path": r["path"], "stops": [
                 {"n": st["n"], "name": st["client"].name,
                  "lat": _point(st["client"])[0], "lng": _point(st["client"])[1]}
-                for st in r["stops"]]} for r in routes if r["stops"]],
+                for st in r["stops"]]} for r in cards if r["stops"]],
         }
 
     return render(request, "crm/_load_route.html", {
         "load": load,
         "warehouse": warehouse,
-        "missing": missing,
+        "missing": ctx["missing"],
         "routes": routes,
+        "money_route": money_route,
+        "money_offer": money_offer,
+        "money_auto": money_auto,
+        "money_saving": money_car_saving(money_offer) if money_offer else "",
         "going": [r for r in routes if r["stops"]],
-        "km": sum(r["km"] for r in routes),
-        "by_road": by_road,
-        "road_note": road_note,
+        "km": sum(r["km"] for r in cards),
+        "by_road": ctx["by_road"],
+        "road_note": ctx["road_note"],
         "error": error,
         "map_data": map_data,
-        "estimated": estimated,
-        "unknown": unknown,
+        "estimated": ctx["estimated"],
+        "unknown": ctx["unknown"],
         "strategies": Load.Strategy.choices,
         "eta_stop_minutes": routing.ETA_STOP_MINUTES,
         "eta_speed": routing.ETA_SPEED_KMH,

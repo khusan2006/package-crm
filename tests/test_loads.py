@@ -612,6 +612,182 @@ def test_a_money_only_stop_is_on_the_route_with_the_debt(client, admin_user, sel
     assert "pul olish: 1 200 000 so'm" in resp.context["routes"][0]["share"]["text"]
 
 
+@pytest.fixture
+def money_day(load, seller_user, warehouse, paket):
+    """A truck's day east of the warehouse and four debtors to visit west of it."""
+    Truck.objects.create(name="Labo", capacity_kg=5000)
+    east = [stop(load, make_client(seller_user, f"Sharq{i}", 0.02 + 0.01 * i), (paket, 5, 100))
+            for i in range(4)]
+    west = [stop(load, make_client(seller_user, f"Qarz{i}", -0.05 - 0.01 * i), purpose=COLLECT)
+            for i in range(4)]
+    return east, west
+
+
+def post(client, user, load, action, **data):
+    client.force_login(user)
+    return client.post(f"/yetkazish/{load.pk}/", {"action": action, **data})
+
+
+def car_names(resp):
+    return sorted(s["client"].name for s in resp.context["money_route"]["stops"])
+
+
+def test_the_suggestion_sends_the_money_car_by_itself(client, admin_user, load, money_day):
+    """No button: when the car makes the day cheaper, the suggested route has it."""
+    east, west = money_day
+    resp = route(client, admin_user, load)
+    assert resp.context["money_auto"]
+    assert car_names(resp) == sorted(i.client.name for i in west)
+    assert sorted(names(resp)) == sorted(i.client.name for i in east)
+    car = resp.context["money_route"]
+    assert [s["n"] for s in car["stops"]] == ["P1", "P2", "P3", "P4"]
+    assert "Pul olish mashinasi" in car["share"]["title"]
+    assert len(resp.context["map_data"]["routes"]) == 2
+    body = resp.content.decode()
+    assert "Tizim tavsiyasi" in body and "erta tugaydi" in body and "Pul mashinasisiz" in body
+    # …and the day board knows it without anything saved.
+    assert set(LoadItem.objects.filter(money_car=True)) == set(west)
+    numbers = {i.client.name: i.n for i in day_page(client, admin_user).context["lanes"]["truck"]}
+    assert [numbers[s["client"].name] for s in car["stops"]] == ["P1", "P2", "P3", "P4"]
+    assert sorted(numbers[i.client.name] for i in east) == [1, 2, 3, 4]
+
+
+def test_the_suggestion_follows_the_day(client, admin_user, load, money_day):
+    _, west = money_day
+    route(client, admin_user, load)
+    LoadItem.objects.filter(pk__in=[i.pk for i in west[1:]]).delete()  # three debtors fewer
+    resp = route(client, admin_user, load)
+    assert resp.context["money_route"] is None
+    assert not LoadItem.objects.filter(money_car=True).exists()
+
+
+def test_without_the_money_car_for_a_day(client, admin_user, load, money_day):
+    route(client, admin_user, load)
+    resp = post(client, admin_user, load, "money_car_off")
+    assert resp.url == f"/yetkazish/{load.pk}/?marshrut=1"
+    load.refresh_from_db()
+    assert load.money_car_off and not LoadItem.objects.filter(money_car=True).exists()
+    resp = route(client, admin_user, load)
+    assert resp.context["money_route"] is None and len(names(resp)) == 8
+    body = resp.content.decode()
+    assert "pul olish mashinasisiz" in body and "Pul mashinasini yoqish" in body
+    post(client, admin_user, load, "money_car_on")
+    assert route(client, admin_user, load).context["money_auto"]
+
+
+def test_saving_the_order_keeps_the_money_car(client, admin_user, load, money_day):
+    east, west = money_day
+    car = [s["item"].pk for s in route(client, admin_user, load).context["money_route"]["stops"]]
+    post(client, admin_user, load, "save", stop=[i.pk for i in reversed(east)], car=car)
+    load.refresh_from_db()
+    assert load.ordered_at
+    resp = route(client, admin_user, load)
+    assert names(resp) == [i.client.name for i in reversed(east)]
+    assert [s["item"].pk for s in resp.context["money_route"]["stops"]] == car
+    assert not resp.context["money_auto"]
+
+
+def test_a_saved_order_without_the_car_is_only_told(client, admin_user, load, money_day):
+    east, west = money_day
+    post(client, admin_user, load, "save", stop=[i.pk for i in east + west])
+    resp = route(client, admin_user, load)
+    assert resp.context["money_route"] is None and resp.context["money_offer"] is not None
+    assert "Qo'llash" in resp.content.decode()
+    post(client, admin_user, load, "money_car")
+    resp = route(client, admin_user, load)
+    assert car_names(resp) == sorted(i.client.name for i in west)
+    assert AuditLog.objects.filter(summary__contains="pul olish mashinasi").exists()
+
+
+def test_back_to_the_suggestion_decides_the_car_again(client, admin_user, load, money_day):
+    east, west = money_day
+    post(client, admin_user, load, "save", stop=[i.pk for i in east + west])
+    post(client, admin_user, load, "reset")
+    assert route(client, admin_user, load).context["money_auto"]
+
+
+def test_only_money_stops_can_ride_the_car(client, admin_user, load, money_day):
+    east, west = money_day
+    post(client, admin_user, load, "save", stop=[i.pk for i in east[1:] + west], car=[east[0].pk])
+    load.refresh_from_db()
+    assert load.ordered_at is None and not LoadItem.objects.filter(money_car=True).exists()
+
+
+def test_a_stale_apply_changes_nothing(client, admin_user, load, money_day):
+    east, west = money_day
+    post(client, admin_user, load, "save", stop=[i.pk for i in east + west])
+    LoadItem.objects.filter(pk__in=[i.pk for i in west]).delete()  # the day changed
+    post(client, admin_user, load, "money_car")
+    assert not LoadItem.objects.filter(money_car=True).exists()
+
+
+def test_a_money_stop_that_gets_goods_rides_the_truck(client, admin_user, load, money_day, paket):
+    _, west = money_day
+    LoadItem.objects.filter(pk=west[0].pk).update(purpose=BOTH)
+    LoadLine.objects.create(item=west[0], product=paket, rolls=1, price=paket.price,
+                            kg=Decimal("10"))
+    resp = route(client, admin_user, load)
+    assert west[0].client.name in names(resp)
+    assert resp.context["money_route"] is None or west[0].client.name not in car_names(resp)
+
+
+def test_moving_a_money_car_stop_to_another_day_takes_it_off_the_car(client, admin_user, load,
+                                                                      money_day):
+    _, west = money_day
+    route(client, admin_user, load)
+    move(client, admin_user, load, [west[0]], target="tomorrow")
+    west[0].refresh_from_db()
+    assert west[0].load.date != load.date and not west[0].money_car
+
+
+def test_the_money_car_with_two_trucks(client, admin_user, seller_user, load, warehouse, paket):
+    """Two trucks north and south, debtors far west: the car takes them."""
+    Truck.objects.create(name="A", capacity_kg=5000)
+    Truck.objects.create(name="B", capacity_kg=5000)
+    load.strategy = Load.Strategy.FAST
+    load.save()
+    # A full day for each truck: six stops north, six south. Split between them, the
+    # debtors would add two stops (30 minutes) to each — the car saves that.
+    for side, sign in (("N", 1), ("S", -1)):
+        for k in range(6):
+            c = Client.objects.create(name=f"{side}{k}", owner=seller_user,
+                                      latitude=Decimal("41.3") + Decimal(str(sign * (0.03 + 0.005 * k))),
+                                      longitude=Decimal("69.24") + Decimal(str(0.002 * k)))
+            stop(load, c, (paket, 5, 100))
+    west = [stop(load, make_client(seller_user, f"Qarz{i}", -0.05 - 0.01 * i), purpose=COLLECT)
+            for i in range(4)]
+    resp = route(client, admin_user, load)
+    routes = resp.context["routes"]
+    assert sorted(sorted(s["client"].name[0] for s in r["stops"]) for r in routes) == [
+        ["N"] * 6, ["S"] * 6]
+    assert car_names(resp) == sorted(i.client.name for i in west)
+    # Saved as shown, split and all.
+    data = {"routes": "2", "stop": [], "group": [],
+            "car": [s["item"].pk for s in resp.context["money_route"]["stops"]]}
+    for n, r in enumerate(routes):
+        for s_ in r["stops"]:
+            data["stop"].append(s_["item"].pk)
+            data["group"].append(str(n))
+    post(client, admin_user, load, "save", **data)
+    load.refresh_from_db()
+    assert load.split_routes == 2 and LoadItem.objects.filter(money_car=True).count() == 4
+
+
+def test_a_day_left_with_only_the_money_car(client, admin_user, load, money_day):
+    east, west = money_day
+    car = [s["item"].pk for s in route(client, admin_user, load).context["money_route"]["stops"]]
+    post(client, admin_user, load, "save", stop=[i.pk for i in east], car=car)
+    LoadItem.objects.filter(pk__in=[i.pk for i in east]).update(status=LoadItem.Status.DONE)
+    resp = route(client, admin_user, load)
+    assert resp.context["routes"] == [] and len(resp.context["money_route"]["stops"]) == 4
+    assert "Faqat pul olish mashinasi" in resp.content.decode()
+
+
+def test_sellers_cannot_change_the_money_car(client, seller_user, load, money_day):
+    for action in ("money_car", "money_car_off", "money_car_on"):
+        assert post(client, seller_user, load, action).status_code == 403
+
+
 def test_drivers_message_has_rolls_and_kg_when_weighed(client, admin_user, load, three):
     LoadLine.objects.filter(item=three[1]).update(kg=Decimal("250"))
     text = route(client, admin_user, load).context["routes"][0]["share"]["text"]

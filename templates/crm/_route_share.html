@@ -1,0 +1,24 @@
+{% comment %}A route's «Haydovchiga» block: share the driver's message and open the
+route in Google/Yandex. Expects `r` (a route card from views._route_card).{% endcomment %}
+    <div class="route-share" data-route-share>
+      <h3>Haydovchiga</h3>
+      <div class="geo-share" data-geo-share data-share-title="{{ r.share.title }}" data-share-text="{{ r.share.text }}" data-share-url="{% firstof r.share.google_links.0 r.share.yandex_link %}">
+        <button type="button" class="btn geo-share-main" data-share-native hidden>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          Ulashish
+        </button>
+        <div class="geo-share-row">
+          <a class="btn btn-ghost btn-sm" href="{{ r.share.telegram_url }}" target="_blank" rel="noopener">Telegram</a>
+          <a class="btn btn-ghost btn-sm" href="{{ r.share.whatsapp_url }}" target="_blank" rel="noopener">WhatsApp</a>
+          <button type="button" class="btn btn-ghost btn-sm" data-share-copy>Nusxa olish</button>
+        </div>
+        <div class="geo-share-row" title="Marshrutni xaritada ochish">
+          {% for url in r.share.google_links %}
+          <a class="btn btn-ghost btn-sm" href="{{ url }}" target="_blank" rel="noopener">Google Maps{% if r.share.google_links|length > 1 %} · {{ forloop.counter }}-qism{% endif %} ↗</a>
+          {% endfor %}
+          {% if r.share.yandex_link %}<a class="btn btn-ghost btn-sm" href="{{ r.share.yandex_link }}" target="_blank" rel="noopener">Yandex ↗</a>{% endif %}
+        </div>
+        {% if r.share.google_links|length > 1 %}<p class="geo-hint">Google bitta havolada 9 tadan ortiq oraliq nuqtani qabul qilmaydi, shuning uchun marshrut qismlarga bo'lingan: birinchisi tugagan joydan ikkinchisi boshlanadi.</p>{% endif %}
+        <span class="geo-status" data-share-status role="status" aria-live="polite"></span>
+      </div>
+    </div>

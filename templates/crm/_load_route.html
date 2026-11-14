@@ -12,10 +12,10 @@
 {% endif %}
 {% if missing %}
 <p class="route-share-stale" role="status">Marshrut uchun hamma mijozning joylashuvi kerak — yuqoridagi ro'yxatdan qo'shing.</p>
-{% elif not routes and not error %}
+{% elif not routes and not money_route and not error %}
 <p class="muted">Marshrut tuzish uchun yukda mijoz yo'q.</p>
 {% endif %}
-{% if routes %}
+{% if routes or money_route %}
 {% comment %}One summary for the route: distance, truck(s), order — each a labelled
 block — with the order's buttons in the corner. Problems sit in the block they
 belong to rather than as loose lines above it.{% endcomment %}
@@ -29,8 +29,11 @@ belong to rather than as loose lines above it.{% endcomment %}
   <div class="route-summary-item">
     <span class="route-summary-label">Mashina</span>
     {% if routes.0.truck %}
-    <strong class="route-summary-value">{% for r in going %}{{ r.truck.name }}{% if not forloop.last %} + {% endif %}{% endfor %}{% if estimated %} <span class="badge badge-warning" title="Kg hali hammasi tortilmagan — o'tgan sotuvlardagi o'rtacha kg/rulon bo'yicha">taxminiy</span>{% endif %}</strong>
+    <strong class="route-summary-value">{% for r in going %}{{ r.truck.name }}{% if not forloop.last %} + {% endif %}{% endfor %}{% if money_route %} + Pul olish mashinasi{% endif %}{% if estimated %} <span class="badge badge-warning" title="Kg hali hammasi tortilmagan — o'tgan sotuvlardagi o'rtacha kg/rulon bo'yicha">taxminiy</span>{% endif %}</strong>
     <span class="route-summary-sub">{% if going|length < routes|length %}mijozlar qo'lda bitta mashinaga o'tkazilgan{% elif routes|length > 1 %}{% if load.strategy == "fast" %}tezroq tugatish uchun ikkiga bo'lindi{% else %}bittasiga sig'madi — ikkiga bo'lindi{% endif %}{% else %}sig'adiganlarning eng kichigi{% endif %}.{% if estimated %} Tortilgach qayta hisoblanadi.{% endif %}</span>
+    {% elif not routes %}
+    <strong class="route-summary-value">Faqat pul olish mashinasi</strong>
+    <span class="route-summary-sub">Yuk mashinasi boradigan manzil qolmadi.</span>
     {% elif error and estimated %}
     {% comment %}On estimated kg the day before, "doesn't fit" may well change once
     weighed — a warning, not an alarm.{% endcomment %}
@@ -80,6 +83,41 @@ belong to rather than as loose lines above it.{% endcomment %}
     <button type="submit" class="btn btn-sm" form="route-form">Tartibni saqlash</button>
   </div>
 </div>
+{% comment %}The money car (routing.plan_money_car): the system decides it like it
+decides the trucks — in the suggestion it's simply there, with why. A saved order
+or «Pul mashinasisiz» keeps the day as it is and only says what the car would save.{% endcomment %}
+{% if money_route or money_offer %}
+<div class="route-money{% if money_route %} is-on{% endif %}" role="status">
+  <div class="route-money-text">
+    {% if money_route and money_auto %}
+    <strong>✓ Tizim tavsiyasi: pul olish uchun alohida yengil mashina — {{ money_route.stops|length }} ta manzil.</strong>
+    {% if money_saving %}<span>{{ money_saving|capfirst }}. Yuk mashinasi faqat yetkazishga boradi.</span>{% endif %}
+    {% elif money_route %}
+    <strong>Pul olish mashinasi — {{ money_route.stops|length }} ta manzil.</strong>
+    <span>Qarzlarni alohida yengil mashina yig'adi; yuk mashinasi faqat yetkazishga boradi.</span>
+    {% elif load.money_car_off %}
+    <strong>Bu kun pul olish mashinasisiz.</strong>
+    <span>U bilan {{ money_saving }} ({{ money_offer.car_route|length }} ta manzil).</span>
+    {% else %}
+    <strong>Tavsiya: pul olish uchun alohida yengil mashina — {{ money_offer.car_route|length }} ta manzil.</strong>
+    <span>{{ money_saving|capfirst }}. Saqlangan tartibga qo'shiladi.</span>
+    {% endif %}
+  </div>
+  <form method="post" action="{% url 'load_detail' load.pk %}" class="route-money-form">
+    {% csrf_token %}
+    {% if money_route %}
+    <input type="hidden" name="action" value="money_car_off">
+    <button type="submit" class="btn btn-sm btn-ghost">Pul mashinasisiz</button>
+    {% elif load.money_car_off %}
+    <input type="hidden" name="action" value="money_car_on">
+    <button type="submit" class="btn btn-sm route-money-btn">Pul mashinasini yoqish</button>
+    {% else %}
+    <input type="hidden" name="action" value="money_car">
+    <button type="submit" class="btn btn-sm route-money-btn">Qo'llash</button>
+    {% endif %}
+  </form>
+</div>
+{% endif %}
 {% if load.ordered_at %}
 <form method="post" id="route-reset" action="{% url 'load_detail' load.pk %}"
       onsubmit="return confirm('Saqlangan tartib o\'chirilib, tavsiya etilgan tartib qaytadi. Davom etasizmi?')">
@@ -141,34 +179,46 @@ belong to rather than as loose lines above it.{% endcomment %}
 
     {% comment %}Haydovchiga: built from the order the server drew — hidden after a move
     until saved, or the driver would get the old order.{% endcomment %}
-    {% if r.stops %}
-    <div class="route-share" data-route-share>
-      <h3>Haydovchiga</h3>
-      <div class="geo-share" data-geo-share data-share-title="{{ r.share.title }}" data-share-text="{{ r.share.text }}" data-share-url="{% firstof r.share.google_links.0 r.share.yandex_link %}">
-        <button type="button" class="btn geo-share-main" data-share-native hidden>
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
-          Ulashish
-        </button>
-        <div class="geo-share-row">
-          <a class="btn btn-ghost btn-sm" href="{{ r.share.telegram_url }}" target="_blank" rel="noopener">Telegram</a>
-          <a class="btn btn-ghost btn-sm" href="{{ r.share.whatsapp_url }}" target="_blank" rel="noopener">WhatsApp</a>
-          <button type="button" class="btn btn-ghost btn-sm" data-share-copy>Nusxa olish</button>
-        </div>
-        <div class="geo-share-row" title="Marshrutni xaritada ochish">
-          {% for url in r.share.google_links %}
-          <a class="btn btn-ghost btn-sm" href="{{ url }}" target="_blank" rel="noopener">Google Maps{% if r.share.google_links|length > 1 %} · {{ forloop.counter }}-qism{% endif %} ↗</a>
-          {% endfor %}
-          {% if r.share.yandex_link %}<a class="btn btn-ghost btn-sm" href="{{ r.share.yandex_link }}" target="_blank" rel="noopener">Yandex ↗</a>{% endif %}
-        </div>
-        {% if r.share.google_links|length > 1 %}<p class="geo-hint">Google bitta havolada 9 tadan ortiq oraliq nuqtani qabul qilmaydi, shuning uchun marshrut qismlarga bo'lingan: birinchisi tugagan joydan ikkinchisi boshlanadi.</p>{% endif %}
-        <span class="geo-status" data-share-status role="status" aria-live="polite"></span>
-      </div>
-    </div>
-    {% endif %}
+    {% if r.stops %}{% include "crm/_route_share.html" %}{% endif %}
     <p class="muted route-share-stale" data-route-share-stale hidden>O'zgartirildi — haydovchiga yuborishdan oldin saqlang.</p>
   </section>
   {% endfor %}
 </div>
+{% if money_route %}
+{% with r=money_route %}
+{% comment %}The money car's card: its order is the system's (no ↑ ↓ or ⇄) and it
+carries no goods, so no kg. Its stops are posted as `car` with the order.{% endcomment %}
+<div class="route-grid">
+  <section class="card route-card route-card--money" style="--route: var({{ r.color }});">
+    <div class="card-head">
+      <h2><span class="route-dot" aria-hidden="true"></span>Pul olish mashinasi</h2>
+      <span class="muted">{{ r.stops|length }} ta manzil · ≈ {{ r.km|floatformat:1 }} km</span>
+    </div>
+    <ol class="route-stops">
+      <li class="route-stop route-stop--depot"><span class="route-n">O</span><span>{{ warehouse.name }} — jo'nash</span></li>
+      {% for s in r.stops %}
+      <li class="route-stop">
+        <input type="hidden" name="car" value="{{ s.item.pk|unlocalize }}">
+        <span class="route-n">{{ s.n }}</span>
+        <span class="route-body">
+          {% if s.item.mine %}<a href="{% url 'client_location' s.client.pk %}" data-modal><strong>{{ s.client.name }}</strong></a>{% else %}<strong>{{ s.client.name }}</strong>{% endif %}
+          {% if s.client.address %}<span class="cell-sub">{{ s.client.address }}</span>{% endif %}
+          <span class="cell-sub">{% if s.client.phone %}<a href="tel:{{ s.client.phone|cut:' ' }}">{{ s.client.phone }}</a> · {% endif %}{{ s.client.owner }}</span>
+          {% for p in s.client.phones.all %}<span class="cell-sub"><a href="tel:{{ p.phone|cut:' ' }}">{{ p.phone }}</a>{% if p.label %} · {{ p.label }}{% endif %}</span>{% endfor %}
+        </span>
+        <span class="route-side">
+          {% if s.eta %}<span class="route-eta" title="Taxminiy yetib borish vaqti">≈ {{ s.eta|date:"H:i" }}</span>{% endif %}
+          <span class="route-kg"><span class="cell-sub route-collect">{{ s.amount }}</span></span>
+        </span>
+      </li>
+      {% endfor %}
+      <li class="route-stop route-stop--depot"><span class="route-n">O</span><span>{{ warehouse.name }} — qaytish</span>{% if r.back %}<span class="route-eta route-eta--back" title="Taxminiy qaytish vaqti">≈ {{ r.back|date:"H:i" }}</span>{% endif %}</li>
+    </ol>
+    {% if r.stops %}{% include "crm/_route_share.html" %}{% endif %}
+  </section>
+</div>
+{% endwith %}
+{% endif %}
 </form>
 {% endif %}
 </div>

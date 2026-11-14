@@ -2677,6 +2677,10 @@ class Load(models.Model):
     # earlier time when the button is pressed late. The route's arrival times count
     # from it; until it is set they count from the moment the page is opened.
     started_at = models.DateTimeField("Jo'nagan vaqti", null=True, blank=True)
+    # «Pul mashinasisiz»: the day goes without the money car even when the system
+    # finds it better. By default the suggested route uses the car whenever it makes
+    # the day cheaper (docs/specs/2026-11-13-money-car.md).
+    money_car_off = models.BooleanField("Pul olish mashinasisiz", default=False)
 
     class Meta:
         ordering = ["-date", "created_at"]
@@ -2732,6 +2736,10 @@ class LoadItem(models.Model):
     # Which of the load's trucks this stop rides with (0, 1), when the split was set
     # by hand (⇄ on the route) and saved; empty means the system decides.
     route_group = models.PositiveSmallIntegerField("Mashina", null=True, blank=True)
+    # A money-only stop given to the money car (pul olish mashinasi) with «Pul uchun
+    # mashina» on the route: it leaves the trucks' route for the car's. Set and cleared
+    # only by that button (docs/specs/2026-11-13-money-car.md).
+    money_car = models.BooleanField("Pul olish mashinasida", default=False)
     # Set on the Yetkazish day board. Empty method = not decided yet (a sale typed in
     # Sotuvlar lands here without one); stops added on a Yuk page start as TRUCK.
     method = models.CharField("Qanday", max_length=8, choices=Method.choices, blank=True,
@@ -2761,6 +2769,12 @@ class LoadItem(models.Model):
     @property
     def collects(self):
         return self.purpose in (self.Purpose.COLLECT, self.Purpose.BOTH)
+
+    @property
+    def rides_money_car(self):
+        """On the money car's route rather than a truck's. Only while the stop is
+        money-only: one that has goods to deliver again rides a truck."""
+        return self.money_car and self.purpose == self.Purpose.COLLECT
 
     @property
     def on_route(self):

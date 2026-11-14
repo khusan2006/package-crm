@@ -361,3 +361,247 @@ def arrival_times(depot, points, start, dist=distance_km, detour=1.0):
         at += timedelta(minutes=ETA_STOP_MINUTES)
         here = point
     return times, at + drive(here, depot)
+
+
+# ---------------------------------------------------------------------------
+# The money car (pul olish mashinasi)
+#
+# A light car that only collects money. Delivery stops ride the trucks as planned
+# above; a money-only stop can ride any vehicle — a truck that passes by anyway, or
+# the car. Which ones go where (and in what order) is searched for to make the day
+# cheapest: the time until the last vehicle is back at the warehouse, plus the km
+# all of them drive, a km weighing KM_WEIGHT minutes. Design:
+# docs/specs/2026-11-13-money-car.md.
+
+#: How many minutes of the day one km driven is worth — the client puts km first.
+KM_WEIGHT = 2.0
+#: What sending the car at all costs, in the same units (minutes, plus km ×
+#: KM_WEIGHT): a second driver and car out for the day. It keeps the car for days
+#: where it clearly pays off — not for a few money stops the truck passes anyway,
+#: whose 15 minutes each would otherwise already outweigh the car's drive.
+MONEY_CAR_FIXED_COST = 60.0
+#: How many starting points the search tries before keeping the best.
+MONEY_CAR_STARTS = 4
+
+
+@dataclass
+class MoneyCarPlan:
+    """The best day with the car: each truck's stops (in the trucks' given order)
+    and the car's, both in visiting order, and what it saves against the best day
+    without it. Minutes and km are as driven (straight lines times the detour);
+    `gain` is the cost saved net of MONEY_CAR_FIXED_COST."""
+
+    truck_routes: list
+    car_route: list
+    minutes_saved: float
+    km_saved: float
+    gain: float
+
+
+def route_minutes(km, stops, detour=1.0):
+    """How long a route takes: the drive at the average speed plus the time at
+    every stop — the same figures as the arrival times."""
+    return km * detour / ETA_SPEED_KMH * 60 + stops * ETA_STOP_MINUTES
+
+
+def _closed_len(D, stops):
+    tour = [0] + list(stops) + [0]
+    return sum(D[tour[n]][tour[n + 1]] for n in range(len(tour) - 1))
+
+
+def _two_opt(D, tour):
+    """Reverse any stretch of the closed tour that shortens it; True if any did."""
+    changed, improved = False, True
+    last = len(tour) - 2
+    while improved:
+        improved = False
+        for i in range(1, last):
+            for k in range(i + 1, last + 1):
+                a, b, c, d = tour[i - 1], tour[i], tour[k], tour[k + 1]
+                if D[a][c] + D[b][d] - D[a][b] - D[c][d] < -1e-9:
+                    tour[i:k + 1] = reversed(tour[i:k + 1])
+                    improved = changed = True
+    return changed
+
+
+def _or_opt(D, tour):
+    """Move a run of 1–3 stops elsewhere in the closed tour (either way round) when
+    that shortens it; True if a move was made. 2-opt can't do this in one step."""
+    for size in (1, 2, 3):
+        for i in range(1, len(tour) - size):
+            seg = tour[i:i + size]
+            prev, nxt = tour[i - 1], tour[i + size]
+            removed = D[prev][seg[0]] + D[seg[-1]][nxt] - D[prev][nxt]
+            rest = tour[:i] + tour[i + size:]
+            for j in range(len(rest) - 1):
+                if j == i - 1:
+                    continue  # back where it was
+                a, b = rest[j], rest[j + 1]
+                forward = D[a][seg[0]] + D[seg[-1]][b] - D[a][b]
+                backward = D[a][seg[-1]] + D[seg[0]][b] - D[a][b]
+                if min(forward, backward) - removed < -1e-9:
+                    piece = seg if forward <= backward else seg[::-1]
+                    tour[:] = rest[:j + 1] + piece + rest[j + 1:]
+                    return True
+    return False
+
+
+def _improve(D, stops):
+    """A closed route through node indices `stops` from depot node 0, shortened by
+    2-opt and or-opt until neither helps."""
+    tour = [0] + list(stops) + [0]
+    while True:
+        two = _two_opt(D, tour)
+        if not _or_opt(D, tour) and not two:
+            break
+    return tour[1:-1]
+
+
+def _best_insertion(D, stops, node):
+    """(extra km, position) of the cheapest place to add `node` to a closed route."""
+    tour = [0] + list(stops) + [0]
+    best = None
+    for j in range(len(tour) - 1):
+        a, b = tour[j], tour[j + 1]
+        extra = D[a][node] + D[node][b] - D[a][b]
+        if best is None or extra < best[0] - 1e-12:
+            best = (extra, j)
+    return best
+
+
+def _removal(D, stops, node):
+    """km saved by taking `node` out of a closed route."""
+    tour = [0] + list(stops) + [0]
+    i = tour.index(node)
+    a, b = tour[i - 1], tour[i + 1]
+    return D[a][node] + D[node][b] - D[a][b]
+
+
+def _day_cost(lengths, counts, detour, car=None):
+    """The day's cost: when the last vehicle is back, plus the km weighed in, plus
+    MONEY_CAR_FIXED_COST when the car (vehicle index `car`) goes at all."""
+    busy = [route_minutes(km, n, detour) for km, n in zip(lengths, counts) if n]
+    fixed = MONEY_CAR_FIXED_COST if car is not None and counts[car] else 0.0
+    return (max(busy) if busy else 0.0) + KM_WEIGHT * detour * sum(lengths) + fixed
+
+
+def _search(D, routes, movable, vehicles, detour, car=None):
+    """Local search over which vehicle each `movable` node rides: move one node to
+    the cheapest place on another vehicle while that lowers the day's cost, then
+    tidy every route with 2-opt/or-opt, and again until nothing changes. `routes`
+    is a list of node lists, one per vehicle (changed in place); the first
+    `vehicles` of them may take movable nodes; `car` is the money car's index."""
+    lengths = [_closed_len(D, r) for r in routes]
+    while True:
+        moved = True
+        while moved:
+            moved = False
+            cost = _day_cost(lengths, [len(r) for r in routes], detour, car)
+            best = None
+            for v, route in enumerate(routes):
+                for node in route:
+                    if node not in movable:
+                        continue
+                    out = _removal(D, route, node)
+                    for w in range(vehicles):
+                        if w == v:
+                            continue
+                        extra, pos = _best_insertion(D, routes[w], node)
+                        trial = list(lengths)
+                        trial[v] -= out
+                        trial[w] += extra
+                        counts = [len(r) for r in routes]
+                        counts[v] -= 1
+                        counts[w] += 1
+                        delta = _day_cost(trial, counts, detour, car) - cost
+                        if delta < -1e-9 and (best is None or delta < best[0]):
+                            best = (delta, v, node, w, pos, trial)
+            if best:
+                _, v, node, w, pos, lengths = best
+                routes[v].remove(node)
+                routes[w].insert(pos, node)
+                moved = True
+        before = sum(lengths)
+        for n, route in enumerate(routes):
+            routes[n] = _improve(D, route)
+        lengths = [_closed_len(D, r) for r in routes]
+        if sum(lengths) > before - 1e-9:
+            return routes
+
+
+def _starts(D, base, movable, with_car):
+    """Starting points for the search: the trucks as given; every money stop on the
+    car; and each money stop on the vehicle where it's cheapest to add, farthest
+    first (so the far side of the city fills the car)."""
+    starts = [[list(r) for r in base] + ([[]] if with_car else [])]
+    if not with_car:
+        return starts
+    trucks_only = [[n for n in r if n not in movable] for r in base]
+    starts.append(trucks_only + [sorted(movable)])
+    for order in (sorted(movable, key=lambda n: -D[0][n]), sorted(movable, key=lambda n: D[0][n])):
+        routes = [list(r) for r in trucks_only] + [[]]
+        for node in order:
+            options = [(_best_insertion(D, routes[w], node), w) for w in range(len(routes))]
+            (extra, pos), w = min(options, key=lambda o: (o[0][0], o[1]))
+            routes[w].insert(pos, node)
+        starts.append(routes)
+    return starts[:MONEY_CAR_STARTS]
+
+
+def _best_day(D, base, movable, with_car, detour):
+    vehicles = len(base) + (1 if with_car else 0)
+    car = len(base) if with_car else None
+    best = None
+    for routes in _starts(D, base, movable, with_car):
+        routes = _search(D, routes, movable, vehicles, detour, car)
+        lengths = [_closed_len(D, r) for r in routes]
+        cost = _day_cost(lengths, [len(r) for r in routes], detour, car)
+        if best is None or cost < best[0] - 1e-9:
+            best = (cost, routes, lengths)
+    return best
+
+
+def plan_money_car(depot, truck_routes, money_keys, dist=distance_km, detour=1.0):
+    """Whether a money car makes the day cheaper, and how it would go.
+
+    `truck_routes` are the trucks' routes as planned ([[Stop, …], …], one list per
+    truck); `money_keys` the keys of the money-only stops among them — the only ones
+    allowed to change vehicle. The best day without the car (the same search, trucks
+    only) is compared with the best day with it; a MoneyCarPlan is returned when the
+    car makes the day cheaper even after its MONEY_CAR_FIXED_COST, else None."""
+    stops = [s for route in truck_routes for s in route]
+    movable_stops = [s for s in stops if s.key in money_keys]
+    if not truck_routes or not movable_stops:
+        return None
+    D = _matrix([depot] + [s.point for s in stops], dist)
+    index, n = [], 1
+    for route in truck_routes:
+        index.append(list(range(n, n + len(route))))
+        n += len(route)
+    movable = {i + 1 for i, s in enumerate(stops) if s.key in money_keys}
+
+    without = _best_day(D, index, movable, False, detour)
+    with_car = _best_day(D, index, movable, True, detour)
+    if not with_car[1][-1] or without[0] - with_car[0] <= 1e-9:
+        return None
+
+    def minutes(day):
+        _, routes, lengths = day
+        return max(route_minutes(km, len(r), detour) for km, r in zip(lengths, routes) if r)
+
+    return MoneyCarPlan(
+        truck_routes=[[stops[i - 1] for i in r] for r in with_car[1][:-1]],
+        car_route=[stops[i - 1] for i in with_car[1][-1]],
+        minutes_saved=minutes(without) - minutes(with_car),
+        km_saved=(sum(without[2]) - sum(with_car[2])) * detour,
+        gain=without[0] - with_car[0],
+    )
+
+
+def order_money_car(depot, stops, dist=distance_km):
+    """The car's stops in visiting order (a closed loop from the warehouse)."""
+    if not stops:
+        return []
+    D = _matrix([depot] + [s.point for s in stops], dist)
+    first, _ = _order(D, range(1, len(stops) + 1), True)
+    return [stops[i - 1] for i in _improve(D, first)]
