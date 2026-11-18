@@ -108,6 +108,32 @@
       var holder = row.closest('[data-client]');
       return holder ? holder.getAttribute('data-client') || '' : '';
     };
+    /* «Do'kon»: a new client with more than one do'kon (client-shops, by client pk —
+     * views._shop_choices) gets the box beside Maqsad, its main joylashuv picked
+     * first; one with a single place hides it, posting "" (the main one). */
+    var clientShops = (function () {
+      var el = document.getElementById('client-shops');
+      try { return (el && JSON.parse(el.textContent)) || {}; } catch (err) { return {}; }
+    })();
+    var fillShops = function (block) {
+      var box = block && block.querySelector('select[name=new_place]');
+      var picker = block && block.querySelector('select[name=new_client]');
+      if (!box || !picker) { return; }
+      var choices = clientShops[picker.value] || [];
+      var keep = box.value || box.getAttribute('data-place') || '';
+      box.removeAttribute('data-place');
+      box.innerHTML = '';
+      (choices.length ? choices : [['', '']]).forEach(function (c) {
+        var opt = document.createElement('option');
+        opt.value = c[0];
+        opt.textContent = c[1];
+        if (c[0] === keep) { opt.selected = true; }
+        box.appendChild(opt);
+      });
+      box.hidden = !choices.length;
+    };
+    items.querySelectorAll('[data-new-row]').forEach(fillShops);
+
     var lastPriceOf = function (row) {
       var product = productOf(row);
       var client = clientOf(row);
@@ -332,7 +358,10 @@
         var row = t.name === 'new_client' ? t.closest('[data-new-row]') : t.closest('[data-product-row]');
         // Another client (or none): prices the script put in follow them, typed ones
         // stay. A product cleared takes its pill with it.
-        if (row && t.name === 'new_client') { row.querySelectorAll('[data-product-row]').forEach(fillPrice); }
+        if (row && t.name === 'new_client') {
+          row.querySelectorAll('[data-product-row]').forEach(fillPrice);
+          fillShops(row);
+        }
         else if (row && !t.value) { showLastPrice(row); }
         if (t.value && row) {
           if (t.name !== 'new_client') {
@@ -513,7 +542,7 @@
        row staying open. New clients go in with «Qo'shish». */
     if (items.hasAttribute('data-autosave')) {
       var saving = null, pending = [];
-      var savedBox = /^(rolls|price|kg|size|micron|product|purpose)_\d+$/;
+      var savedBox = /^(rolls|price|kg|size|micron|product|purpose|place)_\d+$/;
       var dropBox = /^drop_\d+$/;
       var stopOf = function (el) { return el.closest('.lane-row') || el.closest('.stop'); };
       var note = function (stop, text, bad) {

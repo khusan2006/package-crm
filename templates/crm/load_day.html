@@ -196,6 +196,9 @@ lights it up). Built from the lines on the page, in their order (script below).{
   {% comment %}Each client's last price per product (load.js): a product picked for a
   client opens its Narx at what they paid last time.{% endcomment %}
   {{ client_last_price_json|json_script:"client-last-price-map" }}
+  {% comment %}A client's do'konlar, by client pk (load.js): picking a client with more
+  than one shows the new row's «Do'kon» box.{% endcomment %}
+  {{ client_shops|json_script:"client-shops" }}
   <datalist id="load-sizes">{% for v in size_suggestions %}<option value="{{ v }}">{% endfor %}</datalist>
   <datalist id="load-microns">{% for v in micron_suggestions %}<option value="{{ v }}">{% endfor %}</datalist>
 
@@ -347,6 +350,10 @@ lights it up). Built from the lines on the page, in their order (script below).{
       // Straight into the client box — not the × the dialog would focus first (Enter
       // there would close it). The picker's text box, not the hidden <select> behind it.
       setTimeout(function () {
+        // Already in a box of a row (typed in, picked, moved on — quicker than this
+        // timeout): left where it is, or the cursor would jump back to the client.
+        var here = document.activeElement;
+        if (here && here.closest && here.closest('#add-client [data-new-row]')) { return; }
         var box = add.querySelector('[data-new-row] .combobox-input') || add.querySelector('[data-new-row] select');
         if (box) { box.focus(); }
       }, 50);

@@ -605,3 +605,94 @@ def order_money_car(depot, stops, dist=distance_km):
     D = _matrix([depot] + [s.point for s in stops], dist)
     first, _ = _order(D, range(1, len(stops) + 1), True)
     return [stops[i - 1] for i in _improve(D, first)]
+
+
+# ---------------------------------------------------------------------------
+# A client who can't wait («⚡ Zarur»), and money to pick up on the way («$»).
+# Design: docs/specs/2026-11-18-route-locations.md.
+
+def order_from(start, depot, stops, dist=distance_km):
+    """`stops` in visiting order for a truck that is at `start` and drives back to
+    `depot` after the last one: nearest-neighbour from `start`, then 2-opt with both
+    ends held. What follows a stop put first («Zarur»): the rest goes on from there."""
+    if not stops:
+        return []
+    D = _matrix([start, depot] + [s.point for s in stops], dist)
+    left = list(range(2, len(stops) + 2))
+    tour = [0]
+    while left:
+        here = tour[-1]
+        nxt = min(left, key=lambda j: D[here][j])
+        left.remove(nxt)
+        tour.append(nxt)
+    tour.append(1)
+    improved = True
+    while improved:
+        improved = False
+        for i in range(1, len(tour) - 2):
+            for k in range(i + 1, len(tour) - 1):
+                a, b, c, d = tour[i - 1], tour[i], tour[k], tour[k + 1]
+                if D[a][c] + D[b][d] - D[a][b] - D[c][d] < -1e-9:
+                    tour[i:k + 1] = reversed(tour[i:k + 1])
+                    improved = True
+    return [stops[j - 2] for j in tour[1:-1]]
+
+
+def urgent_first(depot, stops, urgent, dist=distance_km):
+    """A truck's `stops` with the urgent ones first — `urgent` lists their keys, the
+    most urgent first — and the rest ordered on from the last of them, back to the
+    depot. Unchanged when none of `urgent` is among `stops`."""
+    by_key = {s.key: s for s in stops}
+    first = [by_key[k] for k in urgent if k in by_key]
+    if not first:
+        return list(stops)
+    taken = {s.key for s in first}
+    return first + order_from(first[-1].point, depot,
+                              [s for s in stops if s.key not in taken], dist)
+
+
+def cheapest_insert(depot, stops, point, dist=distance_km):
+    """Where `point` adds the least to a closed route through `stops` from `depot`:
+    (index to insert it at, extra km). Index 0 is straight from the depot."""
+    path = [depot] + [s.point for s in stops] + [depot]
+    best = None
+    for i in range(len(path) - 1):
+        extra = dist(path[i], point) + dist(point, path[i + 1]) - dist(path[i], path[i + 1])
+        if best is None or extra < best[1] - 1e-12:
+            best = (i, extra)
+    return best
+
+
+#: «$ Yo'l-yo'lakay»: a debtor not on the day is shown on the route when calling on
+#: them adds at most this many km to a vehicle's route (straight line — about 1.3×
+#: that by road), at most ON_WAY_MAX of them, the nearest first.
+ON_WAY_KM = 2.0
+ON_WAY_MAX = 12
+
+
+@dataclass(frozen=True)
+class OnWay:
+    """A place the route passes close by: which route, after how many of its stops
+    (0 = right out of the depot), and the km it adds."""
+
+    key: object
+    route: int
+    after: int
+    km: float
+
+
+def on_way(depot, routes, places, dist=distance_km, limit_km=ON_WAY_KM, most=ON_WAY_MAX):
+    """Places near the routes. `routes` are lists of Stops (closed loops from the
+    depot); `places` are (key, (lat, lng)) where each key is a (who, which) pair — a
+    client may have several do'konlar, and only the one costing least is kept. Those
+    adding at most `limit_km`, nearest first, at most `most`."""
+    best = {}
+    for r, stops in enumerate(routes):
+        if not stops:
+            continue
+        for key, point in places:
+            after, km = cheapest_insert(depot, stops, point, dist)
+            who = key[0]
+            if km <= limit_km and (who not in best or km < best[who].km):
+                best[who] = OnWay(key, r, after, km)
+    return sorted(best.values(), key=lambda w: w.km)[:most]

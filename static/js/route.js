@@ -78,6 +78,25 @@
       swap.focus();
     });
 
+    // «⇅ Teskari»: the driver wants to start from the far end — the card's stops in the
+    // opposite order («Zarur» ones stay first), saved at once: one press, no «Saqlash».
+    form.addEventListener('click', function (e) {
+      var rev = e.target.closest('[data-route-reverse]');
+      if (!rev) { return; }
+      e.preventDefault();
+      var card = rev.closest('.route-card');
+      var end = card.querySelector('[data-route-end]');
+      var stops = Array.prototype.slice.call(card.querySelectorAll('[data-route-stop], [data-car-stop]'));
+      var rest = stops.filter(function (li) { return !li.hasAttribute('data-urgent'); });
+      if (!end || rest.length < 2) { return; }
+      rest.reverse().forEach(function (li) { end.parentNode.insertBefore(li, end); });
+      if (card.hasAttribute('data-route-truck')) { renumber(card); }
+      var why = form.querySelector('[data-route-why]');
+      if (why) { why.value = 'reverse'; }
+      rev.disabled = true;
+      if (form.requestSubmit) { form.requestSubmit(); } else { form.submit(); }
+    });
+
     form.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-move]');
       if (!btn) { return; }

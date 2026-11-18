@@ -1990,6 +1990,25 @@
       var addBtn = gone.closest('[data-xphones]').querySelector('[data-xphones-add]');
       gone.remove();
       addBtn.focus();
+      return;
+    }
+    // Boshqa do'konlar: the same, each row with a joylashuv picker — geo.js wires the
+    // new row's map on `geo:enhance` (a cloned template row has no listeners).
+    var shopAdd = e.target.closest && e.target.closest('[data-xshops-add]');
+    if (shopAdd) {
+      var shops = shopAdd.closest('[data-xshops]');
+      var shop = shops.querySelector('[data-xshops-template]').content.firstElementChild.cloneNode(true);
+      shops.querySelector('[data-xshops-rows]').appendChild(shop);
+      document.dispatchEvent(new CustomEvent('geo:enhance', { detail: shop }));
+      shop.querySelector('input[type=text]').focus();
+      return;
+    }
+    var shopRemove = e.target.closest && e.target.closest('[data-xshops-remove]');
+    if (shopRemove) {
+      var shopGone = shopRemove.closest('[data-xshops-row]');
+      var shopAddBtn = shopGone.closest('[data-xshops]').querySelector('[data-xshops-add]');
+      shopGone.remove();
+      shopAddBtn.focus();
     }
   });
 

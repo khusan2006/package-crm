@@ -30,6 +30,20 @@
         <span class="stop-field-value">{{ item.get_purpose_display }}</span>
         {% endif %}
       </label>
+      {% comment %}Which of the client's do'konlar the truck goes to — only for a client
+      with more than one (mijoz formasidagi «Boshqa do'konlar»).{% endcomment %}
+      {% if item.shop_choices %}
+      <label class="stop-field">
+        <span class="stop-field-label">Do'kon</span>
+        {% if item.editable %}
+        <select name="place_{{ item.pk|unlocalize }}" class="stop-purpose{% if item.place_bad %} is-bad{% endif %}" aria-label="{{ item.client.name }} — qaysi do'kon"{% if item.place_bad %} aria-invalid="true"{% endif %}>
+          {% for value, label in item.shop_choices %}<option value="{{ value }}"{% if value == item.place_input %} selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+        {% else %}
+        {% for value, label in item.shop_choices %}{% if value == item.place_input %}<span class="stop-field-value">{{ label }}</span>{% endif %}{% endfor %}
+        {% endif %}
+      </label>
+      {% endif %}
       {% if item.sale %}
       {% if item.mine %}<a class="badge badge-paid" href="{% url 'sale_detail' item.sale.pk %}" title="Sotuvni ochish">✓ Sotuv #{{ item.sale.pk|unlocalize }}</a>{% else %}<span class="badge badge-paid">✓ Sotuv #{{ item.sale.pk|unlocalize }}</span>{% endif %}
       {% endif %}

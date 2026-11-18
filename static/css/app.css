@@ -5434,10 +5434,42 @@ a.cell-loc--map:hover { color: var(--accent); }
   border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
 }
 .route-pin--depot { background: #1b2430; }
+/* A stop where money is taken: a small «$» on the pin's corner. */
+.route-pin--collect { position: relative; }
+.route-pin--collect::after {
+  content: "$"; position: absolute; right: -7px; top: -7px;
+  width: 14px; height: 14px; border-radius: 50%; display: grid; place-items: center;
+  font: 700 10px/1 system-ui, sans-serif; background: var(--success); color: #fff;
+  border: 1.5px solid #fff;
+}
+/* «Zarur»: a red ring round the pin. */
+.route-pin--urgent { box-shadow: 0 0 0 3px var(--danger), 0 1px 4px rgba(0, 0, 0, 0.35); }
+/* «$ Yo'l-yo'lakay»: a debtor the route passes by — smaller, dashed, not a stop. */
+.route-pin--onway { width: 22px; height: 22px; font-size: 13px; font-weight: 700; border-style: dashed; opacity: 0.92; }
 @media (max-width: 640px) {
   .route-map { height: 55vh; min-height: 280px; }
   .route-grid { grid-template-columns: 1fr; }
 }
+/* «⚡ Zarur», «⇅ Teskari» and «$ Yo'l-yo'lakay» on a route card. */
+.route-card .card-head { flex-wrap: wrap; gap: 6px 10px; }
+.route-reverse { margin-left: auto; }
+.route-stop.is-urgent { background: var(--danger-soft); margin: 0 -8px; padding-left: 8px; padding-right: 8px; border-radius: var(--r-sm); }
+.route-urgent-badge { align-self: flex-start; }
+.route-moves .route-urgent { font-size: 14px; }
+.route-moves .route-urgent.is-on { background: var(--danger); color: #fff; border-color: var(--danger); }
+.route-shop { color: var(--text); font-weight: 500; }
+.route-onway { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.route-onway-title { display: flex; align-items: center; gap: 8px; font-size: 14px; margin: 0; }
+.route-onway-ico {
+  width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--success); color: #fff; font-weight: 700; font-size: 13px;
+}
+.route-onway-hint { font-size: 12px; margin: 4px 0 6px; }
+.route-onway-list { list-style: none; margin: 0; padding: 0; }
+.route-onway-item { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); }
+.route-onway-item:first-child { border-top: 0; }
+.route-n--onway { background: var(--success-soft); color: var(--success); border: 1.5px dashed var(--success); }
+.route-onway-add { flex: 0 0 auto; }
 /* Saving and hand corrections on the Yetkazish route. */
 .route-dirty { color: var(--warning); font-weight: 600; }
 .route-dirty[hidden] { display: none; }
@@ -7021,6 +7053,19 @@ input.pick-variant { width: 84px; max-width: 84px; height: 32px; padding: 5px 8p
   .xphones-row input[data-phone] { grid-column: 1; }
   .xphones-row .xphones-remove { grid-row: 1 / span 2; grid-column: 2; }
 }
+
+/* Joylashuv oynasi — boshqa do'konlar, each with its own map links. */
+.geo-shops { margin-top: 12px; }
+.geo-shops-title { font-size: 14px; margin: 0 0 6px; }
+.geo-shops-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.geo-shops-list li { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); }
+
+/* Mijoz formasi — boshqa do'konlar: each a card with its note, × and the same
+   joylashuv picker as the main one. */
+.xshops-rows { display: grid; gap: 10px; }
+.xshops-row { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); }
+.xshops-head { display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 8px; align-items: center; }
+.xshops-head input { min-width: 0; }
 
 
 /* ---------- Yetkazish day page: lanes ----------

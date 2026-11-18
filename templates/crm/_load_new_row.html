@@ -21,6 +21,12 @@ exactly as it was left; a fresh row has key "__KEY__", which the script replaces
     <select name="new_method" class="new-stop-purpose" aria-label="Qanday ketadi" tabindex="-1">
       {% for value, label in methods %}<option value="{{ value }}"{% if value == row.method %} selected{% endif %}>{{ label }}</option>{% endfor %}
     </select>
+    {% comment %}Which do'kon — only shown for a client with more than one: load.js fills
+    it from the client-shops data when the client is picked (data-place: the one posted
+    before a failed save). Empty = the main joylashuv.{% endcomment %}
+    <select name="new_place" class="new-stop-purpose new-stop-place" aria-label="Do'kon" tabindex="-1" data-place="{{ row.place|default:'' }}" hidden>
+      <option value=""></option>
+    </select>
     <button type="button" class="icon-action new-row-remove" data-new-row-remove title="Mijozni olib tashlash" aria-label="Mijozni olib tashlash" tabindex="-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
   </div>
   <div class="new-stop-lines" data-new-lines>

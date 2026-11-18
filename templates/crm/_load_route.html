@@ -140,12 +140,17 @@ or «Pul mashinasisiz» keeps the day as it is and only says what the car would 
 {% csrf_token %}
 <input type="hidden" name="action" value="save">
 <input type="hidden" name="routes" value="{{ routes|length }}">
+{% comment %}What the save is for, for the audit line — «⇅ Teskari» sets it (route.js).{% endcomment %}
+<input type="hidden" name="why" value="" data-route-why>
 <div class="route-grid">
   {% for r in routes %}
   <section class="card route-card" style="--route: var({{ r.color }});" data-route-truck>
     <div class="card-head">
       <h2><span class="route-dot" aria-hidden="true"></span>{% if r.truck %}{{ r.truck.name }}{% else %}Marshrut{% endif %}</h2>
       <span class="muted"><span data-route-count>{{ r.stops|length }}</span> ta manzil · ≈ {{ r.km|floatformat:1 }} km</span>
+      {% comment %}The driver starts from the far end: the stops in the opposite order —
+      «Zarur» ones stay first — and saved at once (route.js).{% endcomment %}
+      {% if r.stops|length > 1 %}<button type="button" class="btn btn-sm btn-ghost route-reverse" data-route-reverse title="Tartibni teskari qilish — oxirgi manzildan boshlab, va saqlash">⇅ Teskari</button>{% endif %}
     </div>
     {% if r.truck %}
     <div class="route-load{% if r.over %} is-over{% endif %}" title="Yuk / sig'im" data-route-load data-capacity="{{ r.truck.capacity_kg|unlocalize }}">
@@ -157,20 +162,22 @@ or «Pul mashinasisiz» keeps the day as it is and only says what the car would 
     <ol class="route-stops">
       <li class="route-stop route-stop--depot"><span class="route-n">O</span><span>{{ warehouse.name }} — jo'nash</span></li>
       {% for s in r.stops %}
-      <li class="route-stop" data-route-stop data-kg="{{ s.kg|unlocalize }}">
+      <li class="route-stop{% if s.urgent %} is-urgent{% endif %}" data-route-stop data-kg="{{ s.kg|unlocalize }}"{% if s.urgent %} data-urgent{% endif %}>
         <input type="hidden" name="stop" value="{{ s.item.pk|unlocalize }}">
         <input type="hidden" name="group" value="{{ forloop.parentloop.counter0 }}" data-route-group>
         <span class="route-n" data-route-n>{{ s.n }}</span>
         <span class="route-body">
+          {% if s.urgent %}<span class="badge badge-danger route-urgent-badge" title="Mijoz shoshilyapti — shu mashinada birinchi">⚡ Zarur</span>{% endif %}
           {% if s.item.mine %}<a href="{% url 'client_location' s.client.pk %}" data-modal><strong>{{ s.client.name }}</strong></a>{% else %}<strong>{{ s.client.name }}</strong>{% endif %}
-          {% if s.client.address %}<span class="cell-sub">{{ s.client.address }}</span>{% endif %}
-          <span class="cell-sub">{% if s.client.phone %}<a href="tel:{{ s.client.phone|cut:' ' }}">{{ s.client.phone }}</a> · {% endif %}{{ s.client.owner }}</span>
-          {% for p in s.client.phones.all %}<span class="cell-sub"><a href="tel:{{ p.phone|cut:' ' }}">{{ p.phone }}</a>{% if p.label %} · {{ p.label }}{% endif %}</span>{% endfor %}
+          {% include "crm/_route_stop_place.html" %}
         </span>
         <span class="route-side">
           {% if s.eta %}<span class="route-eta" data-route-eta data-eta-min="{{ s.eta_min|unlocalize }}" title="Taxminiy yetib borish vaqti">≈ {{ s.eta|date:"H:i" }}</span>{% endif %}
           <span class="route-kg">{% if s.item.delivers %}{{ s.rolls }} rulon<span class="cell-sub">{% if s.unknown %}kg noma'lum{% else %}{% if s.estimated %}≈ {% endif %}{{ s.kg|floatformat:"0g" }} kg{% endif %}</span>{% endif %}{% if s.item.collects %}<span class="cell-sub route-collect">pul olish</span>{% endif %}</span>
           <span class="route-moves">
+            {% comment %}«Zarur»: this stop first on its truck, the rest on from it —
+            saved at once with the order as it stands. Pressed again: unmarked.{% endcomment %}
+            <button type="submit" name="urgent" value="{{ s.item.pk|unlocalize }}" class="icon-action route-urgent{% if s.urgent %} is-on{% endif %}" title="{% if s.urgent %}«Zarur» belgisini olib tashlash{% else %}Zarur — navbatsiz birinchi; qolganlari undan keyin{% endif %}" aria-label="{{ s.client.name }} — {% if s.urgent %}zarur belgisini olib tashlash{% else %}zarur, birinchi{% endif %}" aria-pressed="{% if s.urgent %}true{% else %}false{% endif %}">⚡</button>
             {% if routes|length > 1 %}<button type="button" class="icon-action route-swap" data-move-truck title="Boshqa mashinaga o'tkazish" aria-label="{{ s.client.name }} — boshqa mashinaga"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>{% endif %}
             <button type="button" class="icon-action" data-move="up" title="Oldinroq" aria-label="{{ s.client.name }} — oldinroq"{% if forloop.first %} disabled{% endif %}>↑</button>
             <button type="button" class="icon-action" data-move="down" title="Keyinroq" aria-label="{{ s.client.name }} — keyinroq"{% if forloop.last %} disabled{% endif %}>↓</button>
@@ -182,6 +189,7 @@ or «Pul mashinasisiz» keeps the day as it is and only says what the car would 
       <li class="route-stop route-stop--depot" data-route-end><span class="route-n">O</span><span>{{ warehouse.name }} — qaytish</span>{% if r.back %}<span class="route-eta route-eta--back" data-route-eta data-eta-min="{{ r.back_min|unlocalize }}" title="Taxminiy qaytish vaqti">≈ {{ r.back|date:"H:i" }}</span>{% endif %}</li>
     </ol>
 
+    {% include "crm/_route_on_way.html" %}
     {% comment %}Haydovchiga: built from the order the server drew — hidden after a move
     until saved, or the driver would get the old order.{% endcomment %}
     {% if r.stops %}{% include "crm/_route_share.html" %}{% endif %}
@@ -198,18 +206,17 @@ carries no goods, so no kg. Its stops are posted as `car` with the order.{% endc
     <div class="card-head">
       <h2><span class="route-dot" aria-hidden="true"></span>Pul olish mashinasi</h2>
       <span class="muted">{{ r.stops|length }} ta manzil · ≈ {{ r.km|floatformat:1 }} km</span>
+      {% if r.stops|length > 1 %}<button type="button" class="btn btn-sm btn-ghost route-reverse" data-route-reverse title="Tartibni teskari qilish — oxirgi manzildan boshlab, va saqlash">⇅ Teskari</button>{% endif %}
     </div>
     <ol class="route-stops">
       <li class="route-stop route-stop--depot"><span class="route-n">O</span><span>{{ warehouse.name }} — jo'nash</span></li>
       {% for s in r.stops %}
-      <li class="route-stop">
+      <li class="route-stop" data-car-stop>
         <input type="hidden" name="car" value="{{ s.item.pk|unlocalize }}">
         <span class="route-n">{{ s.n }}</span>
         <span class="route-body">
           {% if s.item.mine %}<a href="{% url 'client_location' s.client.pk %}" data-modal><strong>{{ s.client.name }}</strong></a>{% else %}<strong>{{ s.client.name }}</strong>{% endif %}
-          {% if s.client.address %}<span class="cell-sub">{{ s.client.address }}</span>{% endif %}
-          <span class="cell-sub">{% if s.client.phone %}<a href="tel:{{ s.client.phone|cut:' ' }}">{{ s.client.phone }}</a> · {% endif %}{{ s.client.owner }}</span>
-          {% for p in s.client.phones.all %}<span class="cell-sub"><a href="tel:{{ p.phone|cut:' ' }}">{{ p.phone }}</a>{% if p.label %} · {{ p.label }}{% endif %}</span>{% endfor %}
+          {% include "crm/_route_stop_place.html" %}
         </span>
         <span class="route-side">
           {% if s.eta %}<span class="route-eta" data-eta-min="{{ s.eta_min|unlocalize }}" title="Taxminiy yetib borish vaqti">≈ {{ s.eta|date:"H:i" }}</span>{% endif %}
@@ -217,8 +224,9 @@ carries no goods, so no kg. Its stops are posted as `car` with the order.{% endc
         </span>
       </li>
       {% endfor %}
-      <li class="route-stop route-stop--depot"><span class="route-n">O</span><span>{{ warehouse.name }} — qaytish</span>{% if r.back %}<span class="route-eta route-eta--back" data-eta-min="{{ r.back_min|unlocalize }}" title="Taxminiy qaytish vaqti">≈ {{ r.back|date:"H:i" }}</span>{% endif %}</li>
+      <li class="route-stop route-stop--depot" data-route-end><span class="route-n">O</span><span>{{ warehouse.name }} — qaytish</span>{% if r.back %}<span class="route-eta route-eta--back" data-eta-min="{{ r.back_min|unlocalize }}" title="Taxminiy qaytish vaqti">≈ {{ r.back|date:"H:i" }}</span>{% endif %}</li>
     </ol>
+    {% include "crm/_route_on_way.html" %}
     {% if r.stops %}{% include "crm/_route_share.html" %}{% endif %}
   </section>
 </div>

@@ -17,6 +17,7 @@ from .utils import UZ_MONTH_NAMES, uz_month
 from .models import (
     DEFAULT_DEBT_DAYS,
     Client,
+    ClientLocation,
     ClientPhone,
     Employee,
     Expense,
@@ -317,6 +318,101 @@ class ExtraPhonesField(forms.Field):
             return True
 
 
+#: How many do'konlar besides the main joylashuv one mijoz may have — a guard against
+#: a runaway form; the clients asking for this have two or three.
+SHOPS_MAX = 10
+
+
+class ShopList(list):
+    """[{"id", "location", "note"}, …] — a client's other do'konlar as the form holds
+    them. Reads "Chorsu (41.3, 69.24), …" in the audit line."""
+
+    def __str__(self):
+        return ", ".join(f"{r['note']} ({r['location']})" if r["note"] else r["location"]
+                         for r in self)
+
+
+class ShopsWidget(forms.Widget):
+    """Rows of «qaysi do'kon» + a joylashuv picker, with × on each and «+ Do'kon»
+    below. Posts three parallel lists, `<name>_id`, `<name>_note` and
+    `<name>_location`, one per row; rows the script adds come from the hidden
+    template row (its picker wired by geo.js on `geo:enhance`)."""
+
+    template_name = "crm/widgets/shops.html"
+
+    def value_from_datadict(self, data, files, name):
+        if not hasattr(data, "getlist"):
+            return []
+        ids = data.getlist(f"{name}_id")
+        notes = data.getlist(f"{name}_note")
+        places = data.getlist(f"{name}_location")
+        n = max(len(ids), len(notes), len(places))
+
+        def pad(xs):
+            return list(xs) + [""] * (n - len(xs))
+
+        return [{"id": i, "note": note, "location": place}
+                for i, note, place in zip(pad(ids), pad(notes), pad(places))]
+
+    def value_omitted_from_data(self, data, files, name):
+        return False  # no rows posted = every other do'kon removed
+
+    def get_context(self, name, value, attrs):
+        context = super().get_context(name, value, attrs)
+        picker = LocationPickerWidget()
+        context["rows"] = [{**row, "picker": picker.render(f"{name}_location", row["location"])}
+                           for row in (value or [])]
+        context["blank"] = {"id": "", "note": "", "location": "",
+                            "picker": picker.render(f"{name}_location", "")}
+        return context
+
+    def render(self, name, value, attrs=None, renderer=None):
+        # Through the project's template engine, as LocationPickerWidget does.
+        return render_to_string(self.template_name, self.get_context(name, value, attrs))
+
+
+class ShopsField(forms.Field):
+    """The client's other do'konlar: empty rows dropped, a row with a note but no
+    place refused, each place read like the main joylashuv. Each row keeps its id so
+    saving updates a do'kon in place — the stops sent there keep pointing at it."""
+
+    widget = ShopsWidget
+
+    def to_python(self, value):
+        rows = ShopList()
+        for row in value or []:
+            note = (row.get("note") or "").strip()
+            raw = (row.get("location") or "").strip()
+            pk = str(row.get("id") or "")
+            if not raw:
+                if note:
+                    raise forms.ValidationError(f"«{note}» uchun joylashuvni kiriting.")
+                continue
+            if len(note) > 200:
+                raise forms.ValidationError("Do'kon izohi juda uzun.")
+            point, text = _read_location(raw)
+            rows.append({"id": int(pk) if pk.isdigit() else None, "note": note,
+                         "location": text, "point": point})
+        if len(rows) > SHOPS_MAX:
+            raise forms.ValidationError(f"Ko'pi bilan {SHOPS_MAX} ta boshqa do'kon.")
+        return rows
+
+    def prepare_value(self, value):
+        return [{"id": "" if r.get("id") is None else r["id"], "note": r.get("note", ""),
+                 "location": r.get("location", "")} for r in (value or [])]
+
+    def has_changed(self, initial, data):
+        try:
+            now = self.to_python(data)
+        except forms.ValidationError:
+            return True
+
+        def key(rows):
+            return [(r.get("note", ""), r.get("location", "")) for r in rows or []]
+
+        return key(initial) != key(now)
+
+
 class ClientForm(forms.ModelForm):
     allow_duplicate = forms.BooleanField(
         label="Bir xil nomli mijoz bo'lsa ham, baribir qo'shilsin",
@@ -330,10 +426,15 @@ class ClientForm(forms.ModelForm):
         help_text="Google Maps, Yandex, 2GIS havolasi yoki koordinata — "
                   "qaysi biri qulay bo'lsa.",
         widget=LocationPickerWidget())
+    shops = ShopsField(
+        label="Boshqa do'konlar", required=False,
+        help_text="Mijozning yana do'konlari bo'lsa — har biri o'z joylashuvi va izohi bilan. "
+                  "Yetkazishda qaysi do'konga borishi tanlanadi.")
 
     class Meta:
         model = Client
-        fields = ["name", "company", "owner", "phone", "extra_phones", "address", "location", "notes"]
+        fields = ["name", "company", "owner", "phone", "extra_phones", "address", "location",
+                  "location_note", "shops", "notes"]
         widgets = {"notes": forms.Textarea(attrs={"rows": 3})}
 
     def __init__(self, *args, user=None, check_duplicates=True, **kwargs):
@@ -343,6 +444,11 @@ class ClientForm(forms.ModelForm):
         # On the form's own initial, not the field's: form_changes reads the "before"
         # side of the audit line from `form.initial`.
         self.initial.setdefault("location", self.instance.coordinates)
+        self.initial.setdefault("shops", ShopList(
+            {"id": s.pk, "note": s.note, "location": s.coordinates}
+            for s in self.instance.locations.all()) if self.instance.pk else ShopList())
+        self.fields["location_note"].widget.attrs.update(
+            placeholder="Qaysi joy — masalan, Chorsu, asosiy do'kon", maxlength="200")
         self.initial.setdefault("extra_phones", PhoneList(
             (p.phone, p.label) for p in self.instance.phones.all()) if self.instance.pk else PhoneList())
         self._point = None
@@ -372,6 +478,9 @@ class ClientForm(forms.ModelForm):
 
     def clean(self):
         cleaned = super().clean()
+        if cleaned.get("shops") and not cleaned.get("location"):
+            self.add_error("shops", "Avval asosiy joylashuvni kiriting — boshqa do'konlar "
+                                    "undan keyin qo'shiladi.")
         if not self.check_duplicates or cleaned.get("allow_duplicate"):
             return cleaned
         match = Client.find_duplicate(
@@ -396,11 +505,32 @@ class ClientForm(forms.ModelForm):
         self._point, text = _read_location(self.cleaned_data.get("location"))
         return text
 
+    def save_shops(self, client):
+        """Write the other do'konlar as the form has them, in place: a kept row is
+        updated (its stops still go there), a removed one deleted (its stops go back
+        to the main joylashuv), a new one added. Call after the client is saved when
+        saving with commit=False."""
+        existing = {s.pk: s for s in client.locations.all()}
+        kept = set()
+        for row in self.cleaned_data.get("shops") or []:
+            lat, lng = row["point"]
+            shop = existing.get(row["id"])
+            if shop is None or shop.pk in kept:
+                ClientLocation.objects.create(client=client, note=row["note"],
+                                              latitude=lat, longitude=lng)
+                continue
+            kept.add(shop.pk)
+            if (shop.note, shop.latitude, shop.longitude) != (row["note"], lat, lng):
+                shop.note, shop.latitude, shop.longitude = row["note"], lat, lng
+                shop.save(update_fields=["note", "latitude", "longitude"])
+        client.locations.filter(pk__in=set(existing) - kept).delete()
+
     def save(self, commit=True):
         self.instance.latitude, self.instance.longitude = self._point or (None, None)
         client = super().save(commit)
         if commit:
             self.save_phones(client)
+            self.save_shops(client)
         return client
 
 

@@ -1270,6 +1270,7 @@ def client_create(request):
                 client.owner = request.user
             client.save()
             form.save_phones(client)
+            form.save_shops(client)
             AuditLog.record(
                 request.user, AuditLog.Action.CREATE, "Mijoz", client.pk,
                 f"{client.name} qo'shildi (mas'ul: {client.owner})",
@@ -11011,8 +11012,10 @@ def load_move(request, pk):
                 if is_whole:
                     item.delete()
             elif is_whole:
+                # «Zarur» was for that day's trip: on another day it starts unmarked.
                 LoadItem.objects.filter(pk=item.pk, load=load, sale__isnull=True).update(
-                    load=dest, position=next_position(), route_group=None, money_car=False)
+                    load=dest, position=next_position(), route_group=None, money_car=False,
+                    urgent_at=None)
                 # Loaded or on the way today, it isn't on another day: it starts over
                 # there (an order waiting for stock stays one).
                 LoadItem.objects.filter(pk=item.pk, status__in=[
@@ -11020,7 +11023,7 @@ def load_move(request, pk):
             else:
                 new_stop = LoadItem.objects.create(
                     load=dest, client=item.client, purpose=LoadItem.Purpose.DELIVER,
-                    method=item.method, position=next_position())
+                    method=item.method, position=next_position(), location=item.location)
                 if dest == target:
                     there[item.client_id] = new_stop
                 LoadLine.objects.filter(pk__in=line_pks).update(item=new_stop)
@@ -11292,6 +11295,32 @@ def _post_rows(request, *names):
     return [tuple(v.strip() for v in row) for row in zip_longest(*lists, fillvalue="")]
 
 
+def _shop_of(client, raw):
+    """The do'kon a posted `place` names: None for the main joylashuv (empty), the
+    ClientLocation when it is this client's, False when it isn't."""
+    if not raw:
+        return None
+    return next((s for s in client.shops if str(s.pk) == raw), False)
+
+
+def _shop_choices(client):
+    """[(value, label)] of a client's places for a «Do'kon» box — the main joylashuv
+    ("") first, then each other do'kon — or [] when the client has only the one."""
+    shops = client.shops
+    if not shops:
+        return []
+    main = "Asosiy" + (f" — {client.location_note}" if client.location_note else "")
+    return [("", main)] + [(str(s.pk), s.note or f"{n}-do'kon")
+                           for n, s in enumerate(shops, start=2)]
+
+
+def _shop_label(client, shop):
+    """A do'kon in words: its note, or «asosiy» for the main joylashuv."""
+    if shop is None:
+        return "asosiy" + (f" ({client.location_note})" if client.location_note else "")
+    return shop.note or shop.coordinates
+
+
 def _read_load_items(request, load, items, products, target_items=None):
     """Read Yuk tarkibi as posted, without saving anything.
 
@@ -11305,7 +11334,8 @@ def _read_load_items(request, load, items, products, target_items=None):
     and `plan["again"]` names it (defaults to `items`).
     Returns (plan, problems) — `plan` lists the writes for `_save_load_items`."""
     user = request.user
-    plan = {"stops": [], "lines": [], "drop": [], "add": [], "new": [], "again": []}
+    plan = {"stops": [], "lines": [], "drop": [], "add": [], "new": [], "again": [],
+            "places": []}
     problems = []
     if target_items is None:
         target_items = items
@@ -11318,6 +11348,17 @@ def _read_load_items(request, load, items, products, target_items=None):
         if not item.editable:
             continue
         name = item.client.name
+        # Which do'kon («Do'kon», only for a client with more than one): read on its
+        # own — a stop whose shop alone was changed sends nothing else.
+        raw_place = request.POST.get(f"place_{item.pk}")
+        if raw_place is not None:
+            item.place_input = raw_place
+            shop = _shop_of(item.client, raw_place)
+            if shop is False:
+                item.place_bad = True
+                problems.append(f"{name} — do'kon")
+            elif shop != item.location:
+                plan["places"].append((item, shop))
         # Only the clients the page sent anything for are read, and of those only the
         # boxes it sent: a box not sent keeps what is saved. So a page opened a while
         # ago can't put its old values over what someone else typed since, and one
@@ -11409,13 +11450,14 @@ def _read_load_items(request, load, items, products, target_items=None):
     in_load = {i.client_id for i in target_items if i.status != LoadItem.Status.CANCEL}
     picked = set()
     posted_new = []
-    rows = _post_rows(request, "new_client", "new_purpose", "new_key", "new_method",
+    rows = _post_rows(request, "new_client", "new_purpose", "new_key", "new_method", "new_place",
                       *(f"new_{f}" for f in ROW_FIELDS))
-    for n, (raw_client, raw_purpose, raw_key, raw_method, *first) in enumerate(rows, start=1):
+    for n, (raw_client, raw_purpose, raw_key, raw_method, raw_place, *first) in enumerate(rows,
+                                                                                       start=1):
         # How it leaves, picked as the client is added; our truck when not said.
         method = raw_method if raw_method in LoadItem.Method.values else LoadItem.Method.TRUCK
         row = {"client": raw_client, "purpose": raw_purpose or LoadItem.Purpose.DELIVER,
-               "method": method,
+               "method": method, "place": raw_place,
                "key": raw_key if NEW_KEY.fullmatch(raw_key) else str(n), "client_bad": False}
         posted_new.append(row)
         # The first product sits on the row itself; «+ Mahsulot» adds more under it,
@@ -11463,9 +11505,12 @@ def _read_load_items(request, load, items, products, target_items=None):
         row.update(product_rows[0])
         # Empty extra rows are dropped from the echo; a typed one comes back as typed.
         row["extra"] = [r for raw, r in zip(raws[1:], product_rows[1:]) if any(raw)]
+        # The do'kon picked in the row; one that isn't this client's (the client was
+        # changed after picking it) is the main joylashuv rather than an error.
+        shop = _shop_of(client, raw_place) if client else None
         if client and not row["client_bad"] and len(problems) == before:
             picked.add(client.pk)
-            plan["new"].append((client, purpose, lines, method))
+            plan["new"].append((client, purpose, lines, method, shop or None))
             if client.pk in in_load:
                 plan["again"].append(client.name)
     if len(target_items) + len(plan["new"]) > LOAD_MAX_ITEMS:
@@ -11488,6 +11533,9 @@ def _write_load_plan(load, plan, user):
     for item, purpose in plan["stops"]:
         item.purpose = purpose
         item.save(update_fields=["purpose"])
+    for item, shop in plan["places"]:
+        item.location = shop
+        item.save(update_fields=["location"])
     for line in plan["drop"]:
         line.delete()
     for line, values in plan["lines"]:
@@ -11502,7 +11550,7 @@ def _write_load_plan(load, plan, user):
     plan["homes"], plan["made"] = [], set()
     # (Only read when someone is added: the day's Yuk may not be saved otherwise.)
     taken = set(load.items.values_list("client_id", flat=True)) if plan["new"] else set()
-    for client, purpose, lines, method in plan["new"]:
+    for client, purpose, lines, method, shop in plan["new"]:
         if position is not None:
             position += 1
         home = load
@@ -11511,7 +11559,7 @@ def _write_load_plan(load, plan, user):
             if made:
                 plan["made"].add(home.pk)
         item = LoadItem.objects.create(load=home, client=client, purpose=purpose, position=position,
-                                       method=method)
+                                       method=method, location=shop)
         plan["homes"].append(home.pk)
         for line in lines:
             _create_load_line(item, line)
@@ -11535,6 +11583,8 @@ def _plan_summary(load, plan):
 
     for i, _ in plan["stops"]:
         put(i.load_id, f"{i.client.name}: {i.get_purpose_display()}")
+    for i, shop in plan["places"]:
+        put(i.load_id, f"{i.client.name}: do'kon — {_shop_label(i.client, shop)}")
     for l, v in plan["lines"]:
         put(l.item.load_id, f"{l.item.client.name}, {v['product'].name}: {v['rolls']} rulon"
             + (f" {v['kg']:f} kg" if v["kg"] is not None else ""))
@@ -11542,7 +11592,7 @@ def _plan_summary(load, plan):
         put(l.item.load_id, f"{l.item.client.name}, {l.product.name} olib tashlandi")
     for i, p, r, *_ in plan["add"]:
         put(i.load_id, f"{i.client.name} + {p.name} {r} rulon")
-    for (c, _, lines, _), home in zip(plan["new"], plan["homes"]):
+    for (c, _, lines, *_), home in zip(plan["new"], plan["homes"]):
         put(home, f"+ {c.name} (" + (", ".join(f"{p.name} {r} rulon" for p, r, *_ in lines)
                                      or "pul olish") + ")")
     return by_load
@@ -11648,6 +11698,8 @@ def _bad_boxes(items):
     for item in items:
         if getattr(item, "purpose_bad", False):
             bad.append(f"purpose_{item.pk}")
+        if getattr(item, "place_bad", False):
+            bad.append(f"place_{item.pk}")
         for line in item.line_list:
             bad += [f"{f}_{line.pk}" for f in ("product", "rolls", "price", "kg", "size", "micron")
                     if getattr(line, f"{f}_bad", False)]
@@ -11939,7 +11991,7 @@ def _save_load_order_checked(request, load, items):
     """Save the order exactly as the page posted it: `stop` = item pk, in visiting
     order. Anything the page could not have shown is refused rather than guessed at
     — a stale tab is reloaded, not half-saved."""
-    located = {i.pk: i for i in items if i.on_route and i.client.has_location}
+    located = {i.pk: i for i in items if i.on_route and i.place.has_location}
     order = []
     for raw in request.POST.getlist("stop"):
         try:
@@ -11978,6 +12030,21 @@ def _save_load_order_checked(request, load, items):
             messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
             return redirect(_load_url(load) + "?marshrut=1")
         split = [int(g) for g in groups]
+    # The buttons that save the order with one change made to it: «⚡ Zarur» on a stop,
+    # «+ Marshrutga» on a debtor the route passes by, «⇅ Teskari» (done on the page).
+    why, said = "", "Tartib saqlandi."
+    if request.POST.get("urgent"):
+        changed = _press_urgent(request, located, order, split, request.POST["urgent"])
+        if changed is None:
+            return redirect(_load_url(load) + "?marshrut=1")
+        order, why, said = changed
+    elif request.POST.get("onway"):
+        changed = _press_on_way(request, load, located, order, car, split, request.POST["onway"])
+        if changed is None:
+            return redirect(_load_url(load) + "?marshrut=1")
+        order, car, split, why, said = changed
+    elif request.POST.get("why") == "reverse":
+        why, said = "teskari qilindi", "Tartib teskari qilindi va saqlandi."
     LoadItem.objects.filter(load__date=load.date).update(position=None, route_group=None,
                                                          money_car=False)
     for n, pk in enumerate(order, start=1):
@@ -11990,10 +12057,115 @@ def _save_load_order_checked(request, load, items):
     load.split_routes = 2 if split else None
     load.save(update_fields=["ordered_at", "split_routes"])
     AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
-                    f"Yuk #{load.pk} tartibi saqlandi — {len(order) + len(car)} ta manzil"
-                    + (f", pul olish mashinasi {len(car)} ta" if car else ""))
-    messages.success(request, "Tartib saqlandi.")
+                    (f"Yuk #{load.pk} tartibi saqlandi — {len(order) + len(car)} ta manzil"
+                     + (f", pul olish mashinasi {len(car)} ta" if car else "")
+                     + (f"; {why}" if why else ""))[:255])
+    messages.success(request, said)
     return redirect(_load_url(load) + "?marshrut=1")
+
+
+def _route_depot():
+    """The warehouse as a (lat, lng) point, or None while it has no location."""
+    warehouse = Warehouse.load()
+    if not warehouse.has_location:
+        return None
+    return (float(warehouse.latitude), float(warehouse.longitude))
+
+
+def _urgent_keys(stops):
+    """The keys of the urgent ones among `stops` (each a LoadItem), most urgent —
+    pressed last — first."""
+    return [i.pk for i in sorted((i for i in stops if i.urgent_at),
+                                 key=lambda i: i.urgent_at, reverse=True)]
+
+
+def _press_urgent(request, located, order, split, raw):
+    """«⚡ Zarur» on a truck's stop: it goes first on its truck — before the ones marked
+    earlier — and the rest of that truck is ordered on from it. Pressed again on a
+    stop already marked, the mark comes off and the order stays as it is. Returns
+    (order, audit note, message), or None after saying why it can't."""
+    pk = int(raw) if _DIGITS.fullmatch(raw) else None
+    if pk not in order:
+        messages.error(request, "Bu mijoz yuk mashinasi marshrutida emas — sahifa yangilandi.")
+        return None
+    item = located[pk]
+    name = item.client.name
+    if item.urgent_at:
+        LoadItem.objects.filter(pk=pk).update(urgent_at=None)
+        return order, f"{name} — zarur belgisi olib tashlandi", f"{name} — «Zarur» olib tashlandi."
+    depot = _route_depot()
+    if depot is None:
+        messages.error(request, "Ombor joylashuvi belgilanmagan.")
+        return None
+    item.urgent_at = timezone.now()
+    LoadItem.objects.filter(pk=pk).update(urgent_at=item.urgent_at)
+    group_of = {p: (split[n] if split else 0) for n, p in enumerate(order)}
+    members = [p for p in order if group_of[p] == group_of[pk]]
+    stops = [routing.Stop(p, *_point(located[p].place), Decimal("0")) for p in members]
+    dist, *_ = _road_distance([depot] + [s.point for s in stops])
+    ordered = iter(st.key for st in routing.urgent_first(
+        depot, stops, _urgent_keys(located[p] for p in members), dist))
+    # Each slot of that truck takes the next of its new order; the other truck's stay.
+    order = [next(ordered) if group_of[p] == group_of[pk] else p for p in order]
+    return (order, f"{name} — zarur, birinchi",
+            f"{name} — zarur: birinchi bo'lib boriladi, qolganlari undan keyin.")
+
+
+def _press_on_way(request, load, located, order, car, split, raw):
+    """«+ Marshrutga» on a debtor the route passes by: a money-only stop for them is
+    added to the day, at the place on a vehicle's route where it costs least.
+    `raw` is "<client>:<do'kon>" (an empty do'kon is the main joylashuv). Returns
+    (order, car, split, audit note, message), or None after saying why it can't."""
+    client_raw, _, shop_raw = raw.partition(":")
+    client = (Client.objects.prefetch_related("locations").filter(pk=client_raw).first()
+              if _DIGITS.fullmatch(client_raw) else None)
+    shop = _shop_of(client, shop_raw) if client else False
+    depot = _route_depot()
+    if client is None or shop is False or depot is None:
+        messages.error(request, "Bu mijoz topilmadi — sahifa yangilandi.")
+        return None
+    place = shop or client
+    if not place.has_location:
+        messages.error(request, f"{client.name} — joylashuvi yo'q.")
+        return None
+    if LoadItem.objects.filter(load__date=load.date, client=client).exclude(
+            status=LoadItem.Status.CANCEL).exists():
+        messages.info(request, f"{client.name} bu kunda allaqachon bor.")
+        return None
+    point = _point(place)
+    # The vehicle it costs least on: each truck, and the money car when it goes.
+    group_of = {p: (split[n] if split else 0) for n, p in enumerate(order)}
+    trucks = sorted(set(group_of.values()))
+    routes = [[p for p in order if group_of[p] == g] for g in trucks]
+    if car:
+        routes.append(list(car))
+    best = None
+    for r, members in enumerate(routes):
+        stops = [routing.Stop(p, *_point(located[p].place), Decimal("0")) for p in members]
+        at, km = routing.cheapest_insert(depot, stops, point)
+        if best is None or km < best[2]:
+            best = (r, at, km)
+    r, at, km = best
+    home, made = _free_load(load.date, client, request.user)
+    item = LoadItem.objects.create(load=home, client=client, purpose=LoadItem.Purpose.COLLECT,
+                                   method=LoadItem.Method.TRUCK, location=shop or None)
+    AuditLog.record(request.user, AuditLog.Action.CREATE if made else AuditLog.Action.UPDATE,
+                    "Yuk", home.pk,
+                    f"Yuk #{home.pk}: + {client.name} (pul olish, yo'l-yo'lakay)"[:255])
+    members = routes[r]
+    if car and r == len(routes) - 1:
+        car = car[:at] + [item.pk] + car[at:]
+    else:
+        # Into the flat order beside its truck's stops: before the stop it goes ahead
+        # of, or after that truck's last one.
+        slot = (order.index(members[at]) if at < len(members)
+                else (order.index(members[-1]) + 1 if members else len(order)))
+        order = order[:slot] + [item.pk] + order[slot:]
+        if split:
+            split = split[:slot] + [trucks[r]] + split[slot:]
+    km_text = f"{km:.1f}".replace(".", ",")
+    return (order, car, split, f"{client.name} yo'l-yo'lakay qo'shildi",
+            f"{client.name} marshrutga qo'shildi — yo'l-yo'lakay pul olish (+{km_text} km).")
 
 
 def _reset_load_order(request, load):
@@ -12066,7 +12238,10 @@ def _use_money_car(request, load):
     LoadItem.objects.filter(pk__in=[st.key for st in plan.car_route]).update(money_car=True)
     two = len(plan.truck_routes) > 1
     n = 0
-    for group, route in enumerate(plan.truck_routes):
+    by_pk = ctx["by_pk"]
+    truck_routes = [route for _, route in _urgent_groups(
+        [(None, list(r)) for r in plan.truck_routes], by_pk, ctx["depot"], ctx["dist"])]
+    for group, route in enumerate(truck_routes):
         for st in route:
             n += 1
             LoadItem.objects.filter(pk=st.key).update(position=n,
@@ -12209,7 +12384,7 @@ def _load_groups(load, items, depot, dist, weights):
     the trucks with ⇄) is kept while the system still sends that many trucks; a stop
     added since rides where the system put it."""
     by_pk = {i.pk: i for i in items}
-    stops = [routing.Stop(i.pk, *_point(i.client), weights[i.pk][0]) for i in items]
+    stops = [routing.Stop(i.pk, *_point(i.place), weights[i.pk][0]) for i in items]
     groups, error = None, ""
     if not any(weights[i.pk][2] for i in items):
         try:
@@ -12236,7 +12411,18 @@ def _load_groups(load, items, depot, dist, weights):
         groups = [(truck, sorted(group, key=lambda st: (by_pk[st.key].position is None,
                                                         by_pk[st.key].position or 0)))
                   for truck, group in groups]
+    else:
+        groups = _urgent_groups(groups, by_pk, depot, dist)
     return groups, error
+
+
+def _urgent_groups(groups, by_pk, depot, dist):
+    """The suggestion with «⚡ Zarur» kept: in each truck the urgent stops go first
+    (the one marked last first) and the rest on from them. A saved order is the
+    operator's and is left alone — pressing Zarur saves one already arranged."""
+    return [(truck, routing.urgent_first(depot, group,
+                                         _urgent_keys(by_pk[st.key] for st in group), dist))
+            for truck, group in groups]
 
 
 def _load_items(load, user):
@@ -12289,8 +12475,9 @@ def _visible_stops(stops, user):
 
 def _prep_items(stops, user):
     stops = _visible_stops(stops, user)
-    items = list(stops.select_related("load", "client", "client__owner", "sale")
-                 .prefetch_related("lines__product", "lines__sale", "client__phones")
+    items = list(stops.select_related("load", "client", "client__owner", "sale", "location")
+                 .prefetch_related("lines__product", "lines__sale", "client__phones",
+                                   "client__locations")
                  .order_by("load__created_at", "created_at"))
     for item in items:
         item.line_list = list(item.lines.all())
@@ -12299,6 +12486,8 @@ def _prep_items(stops, user):
         # sees other sellers' stops in a shared load, but not their clients' records.
         item.mine = user.can_see_all_records or item.client.owner_id == user.pk
         item.purpose_input = item.purpose
+        item.place_input = str(item.location_id or "")
+        item.shop_choices = _shop_choices(item.client)
         item.added_input = []
         for line in item.line_list:
             line.rolls_input = str(line.rolls)
@@ -12487,6 +12676,7 @@ def _bring_to(stops, day, user, restart=False):
                 mate = LoadItem.objects.create(
                     load=free_load(item.client), client=item.client,
                     purpose=LoadItem.Purpose.DELIVER, method=item.method,
+                    location=item.location,
                     # A delivered one stays delivered (and «Sotuv yozilmagan»): the
                     # truck doesn't go again.
                     status=fresh(item.status), carried_from=carried)
@@ -12508,9 +12698,10 @@ def _bring_to(stops, day, user, restart=False):
         item.load = free_load(item.client)
         item.position = item.route_group = None
         item.money_car = False
+        item.urgent_at = None
         item.status = fresh(item.status)
         item.save(update_fields=["carried_from", "load", "position", "route_group", "money_car",
-                                 "status"])
+                                 "urgent_at", "status"])
         if mate is None:
             here[item.client_id] = item
     if moved and first:
@@ -12824,9 +13015,10 @@ def _render_day(request, day, items=None, posted_new=None, ahead=None):
         ahead = [i for i in ahead if _in_day_filter(i, filters)]
     filter_qs = _day_filter_qs(filters)
     load = Load.objects.filter(date=day).order_by("created_at").first()
-    clients = Client.objects.prefetch_related("phones").order_by("name")
+    clients = Client.objects.prefetch_related("phones", "locations").order_by("name")
     if not user.can_see_all_records:
         clients = clients.filter(owner=user)
+    client_list = list(clients)
     new_rows = [r for r in (posted_new or [])
                 if r["client"] or r["product"] or r["rolls"] or r["extra"]] or [{"key": "1"}]
     everything = list(items) + list(ahead)
@@ -12930,10 +13122,13 @@ def _render_day(request, day, items=None, posted_new=None, ahead=None):
         # What the warehouse loads onto the truck: rulon by product and variant.
         "roll_breakdown": _roll_breakdown([l for i in going if i.delivers for l in i.line_list]),
         "truck_unweighed": sum(1 for i in going if i.unweighed),
-        "missing": [_mark_mine(i.client, i.mine) for i in going if not i.client.has_location],
+        "missing": [_mark_mine(i.client, i.mine) for i in going if not i.place.has_location],
         # Every client, those already on the day too: a second order the same day
         # goes in as a row of its own (`_write_load_plan`).
-        "clients": list(clients),
+        "clients": client_list,
+        # «Mijoz qo'shish»: a client with more than one do'kon gets a «Do'kon» box once
+        # picked (load.js) — its choices, by client pk.
+        "client_shops": {c.pk: choices for c in client_list if (choices := _shop_choices(c))},
         "products": _pick_ordered_products(),
         # A product picked for a client opens its Narx at what they paid last time
         # (load.js), the same as on the sale form.
@@ -13025,11 +13220,11 @@ def _route_inputs(load, user):
            # One clock for the whole answer — the page's live arrival times start from it.
            "now": timezone.now(),
            "road_note": "", "estimated": False, "unknown": False,
-           "missing": [i.client for i in items if not i.client.has_location]}
+           "missing": [i.client for i in items if not i.place.has_location]}
     if not warehouse.has_location or not items or ctx["missing"]:
         return ctx
     depot = (float(warehouse.latitude), float(warehouse.longitude))
-    dist, by_road, road_note = _road_distance([depot] + [_point(i.client) for i in items])
+    dist, by_road, road_note = _road_distance([depot] + [_point(i.place) for i in items])
     per_roll = _kg_per_roll({l.product_id for i in items for l in i.line_list})
     weights = {i.pk: _stop_weight(i, per_roll) for i in items}
     ctx.update(
@@ -13082,12 +13277,16 @@ def _route_card(load, ctx, truck, group, color, debts, eta_from, money=False):
         item = by_pk[st.key]
         stops.append({
             "n": f"P{k}" if money else k, "item": item, "client": item.client,
+            "place": item.place,
+            # Which do'kon, for a client with more than one.
+            "shop": (item.place_note or "asosiy do'kon") if item.shop_choices else "",
+            "urgent": bool(item.urgent_at),
             "rolls": sum(l.rolls for l in item.line_list) if item.delivers else 0,
             "kg": weights[item.pk][0], "estimated": weights[item.pk][1],
             "unknown": weights[item.pk][2],
             "amount": _amount(item, debts.get(item.client_id)),
         })
-    points = [_point(st["client"]) for st in stops]
+    points = [_point(st["place"]) for st in stops]
     arrivals, back = routing.arrival_times(depot, points, eta_from, dist, ctx["detour"])
     for st, at in zip(stops, arrivals):
         st["eta"] = at
@@ -13100,9 +13299,15 @@ def _route_card(load, ctx, truck, group, color, debts, eta_from, money=False):
     title = f"Yuk #{load.pk} — {load.date:%d.%m.%Y}" + (f" — {name}" if name else "")
 
     def driver_stops(map_url):
-        return [{"n": st["n"], "name": st["client"].name, "amount": st["amount"],
-                 "address": st["client"].address, "phone": st["client"].phone,
-                 "map_url": map_url(st["client"])} for st in stops]
+        # «⚡ ZARUR» in front of a client who asked to be first; the do'kon after the
+        # name when the client has more than one — its address is the main one's.
+        return [{"n": st["n"],
+                 "name": ("⚡ ZARUR — " if st["urgent"] else "") + st["client"].name
+                 + (f" ({st['shop']})" if st["shop"] else ""),
+                 "amount": st["amount"],
+                 "address": "" if st["item"].location_id else st["client"].address,
+                 "phone": st["client"].phone,
+                 "map_url": map_url(st["place"])} for st in stops]
 
     text = route_share.driver_message(title, driver_stops(lambda c: c.google_maps_url),
                                       google, yandex)
@@ -13129,6 +13334,52 @@ def _route_card(load, ctx, truck, group, color, debts, eta_from, money=False):
 
 #: The money car's colour on the map and its card.
 MONEY_CAR_COLOR = "--warning"
+
+
+def _on_way(load, ctx, cards):
+    """«$ Yo'l-yo'lakay»: debtors not on the day whose place — the main joylashuv or
+    another do'kon — a vehicle passes close by (routing.on_way, straight lines). Each
+    goes on the card of the vehicle it costs least on (`card["onway"]`), nearest
+    first, to be added with «+ Marshrutga». The route is admins'/managers' only, so
+    every seller's debtors are offered."""
+    on_day = (LoadItem.objects.filter(load__date=load.date)
+              .exclude(status=LoadItem.Status.CANCEL).values("client_id"))
+    debts = dict(Sale.objects.outstanding().exclude(client_id__in=on_day)
+                 .values("client_id").annotate(s=Sum("remaining")).filter(s__gt=0)
+                 .values_list("client_id", "s"))
+    if not debts:
+        return []
+    clients = {c.pk: c for c in Client.objects.filter(pk__in=list(debts))
+               .select_related("owner").prefetch_related("locations", "phones")}
+    places = []
+    for c in clients.values():
+        if c.has_location:
+            places.append(((c.pk, None), _point(c)))
+        places += [((c.pk, shop.pk), _point(shop)) for shop in c.shops]
+    if not places:
+        return []
+    routes = [[routing.Stop(st["item"].pk, *_point(st["place"]), Decimal("0"))
+               for st in card["stops"]] for card in cards]
+    shops = {s.pk: s for c in clients.values() for s in c.shops}
+    result = []
+    for w in routing.on_way(ctx["depot"], routes, places):
+        client, shop = clients[w.key[0]], shops.get(w.key[1])
+        card = cards[w.route]
+        stops = card["stops"]
+        if w.after == 0:
+            at = "ombordan chiqqach"
+        elif w.after >= len(stops):
+            at = "omborga qaytishda"
+        else:
+            at = f"{stops[w.after - 1]['n']}-manzildan keyin"
+        debt = debts[client.pk]
+        entry = {"client": client, "shop": shop, "point": _point(shop or client),
+                 "debt": debt, "debt_text": f"{debt:,.0f}".replace(",", " "),
+                 "km": w.km, "at": at,
+                 "minutes": round(routing.route_minutes(w.km, 1, routing.ETA_DETOUR))}
+        card.setdefault("onway", []).append(entry)
+        result.append(entry)
+    return result
 
 
 def load_route(request, pk):
@@ -13168,7 +13419,9 @@ def load_route(request, pk):
             # The system's suggestion: the car goes, as the trucks are chosen — by
             # what is best. Saving the order saves it; «Pul mashinasisiz» turns it off.
             money_auto = True
-            groups = [(truck, list(r)) for (truck, _), r in zip(groups, money_offer.truck_routes)]
+            groups = _urgent_groups(
+                [(truck, list(r)) for (truck, _), r in zip(groups, money_offer.truck_routes)],
+                ctx["by_pk"], ctx["depot"], ctx["dist"])
             car = list(money_offer.car_route)
         if not load.ordered_at:
             _record_money_car(load, items, [st.key for st in car or []])
@@ -13179,7 +13432,7 @@ def load_route(request, pk):
             routes.append(_route_card(load, ctx, truck, group,
                                       ROUTE_COLORS[n % len(ROUTE_COLORS)], debts, eta_from))
         if car is None and ctx["car_items"]:
-            car_stops = [routing.Stop(i.pk, *_point(i.client), Decimal("0"))
+            car_stops = [routing.Stop(i.pk, *_point(i.place), Decimal("0"))
                          for i in ctx["car_items"]]
             if all(i.position is not None for i in ctx["car_items"]):
                 # The order written with «Pul uchun mashina» — the day board's P1, P2….
@@ -13192,13 +13445,18 @@ def load_route(request, pk):
 
     cards = routes + ([money_route] if money_route else [])
     map_data = None
+    on_way = _on_way(load, ctx, cards) if cards else []
     if cards:
         map_data = {
             "depot": [float(warehouse.latitude), float(warehouse.longitude)],
             "routes": [{"color": r["color"], "path": r["path"], "stops": [
-                {"n": st["n"], "name": st["client"].name,
-                 "lat": _point(st["client"])[0], "lng": _point(st["client"])[1]}
+                {"n": st["n"], "name": st["client"].name, "collect": st["item"].collects,
+                 "urgent": st["urgent"],
+                 "lat": _point(st["place"])[0], "lng": _point(st["place"])[1]}
                 for st in r["stops"]]} for r in cards if r["stops"]],
+            # «$»: debtors the route passes close by (not on the day yet).
+            "onway": [{"name": w["client"].name, "debt": w["debt_text"],
+                       "lat": w["point"][0], "lng": w["point"][1]} for w in on_way],
         }
 
     return render(request, "crm/_load_route.html", {
@@ -13210,6 +13468,7 @@ def load_route(request, pk):
         "money_offer": money_offer,
         "money_auto": money_auto,
         "money_saving": money_car_saving(money_offer) if money_offer else "",
+        "on_way": on_way,
         "going": [r for r in routes if r["stops"]],
         "km": sum(r["km"] for r in cards),
         "by_road": ctx["by_road"],

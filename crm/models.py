@@ -69,7 +69,44 @@ RETURN_WEIGHT_KG = Case(
 )
 
 
-class Client(models.Model):
+class MapPoint:
+    """A place on the map with `latitude` / `longitude` (both or neither): the
+    mijoz's main joylashuv and each of their other do'konlar read the same way."""
+
+    @property
+    def has_location(self):
+        return self.latitude is not None and self.longitude is not None
+
+    @property
+    def _lat(self):
+        return f"{self.latitude.normalize():f}"  # 41.300000 → "41.3"
+
+    @property
+    def _lng(self):
+        return f"{self.longitude.normalize():f}"
+
+    @property
+    def coordinates(self):
+        """"41.311081, 69.240562" — the form every map app accepts pasted back."""
+        return f"{self._lat}, {self._lng}" if self.has_location else ""
+
+    @property
+    def google_maps_url(self):
+        return f"https://www.google.com/maps?q={self._lat},{self._lng}"
+
+    @property
+    def yandex_maps_url(self):
+        # Yandex writes the point longitude first.
+        return f"https://yandex.uz/maps/?pt={self._lng},{self._lat}&z=17&l=map"
+
+    @property
+    def yandex_route_url(self):
+        """Yandex navigation from wherever the phone is to the place — what the QR
+        on the yuk xati opens. rtext is "from~to"; an empty "from" is "here"."""
+        return f"https://yandex.uz/maps/?rtext=~{self._lat},{self._lng}&rtt=auto"
+
+
+class Client(MapPoint, models.Model):
     name = models.CharField("Ismi", max_length=200)
     company = models.CharField("Kompaniya", max_length=200, blank=True)
     phone = models.CharField("Telefon", max_length=30, blank=True)
@@ -80,6 +117,9 @@ class Client(models.Model):
                                    null=True, blank=True)
     longitude = models.DecimalField("Uzunlik", max_digits=9, decimal_places=6,
                                     null=True, blank=True)
+    # What the main joylashuv is («Chorsu, asosiy do'kon») — shown beside it, and to
+    # tell it from the other do'konlar (`locations`) a delivery may go to instead.
+    location_note = models.CharField("Joylashuv izohi", max_length=200, blank=True)
     notes = models.TextField("Izoh", blank=True)
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -107,10 +147,6 @@ class Client(models.Model):
         return qs.first()
 
     @property
-    def has_location(self):
-        return self.latitude is not None and self.longitude is not None
-
-    @property
     def search_text(self):
         """What a client picker matches typed words against: name, company, phone,
         the extra phones and whose they are, and address, lowercased, plus a
@@ -128,35 +164,34 @@ class Client(models.Model):
         return " · ".join(p for p in (self.phone, self.address) if p)
 
     @property
-    def _lat(self):
-        return f"{self.latitude.normalize():f}"  # 41.300000 → "41.3"
-
-    @property
-    def _lng(self):
-        return f"{self.longitude.normalize():f}"
-
-    @property
-    def coordinates(self):
-        """"41.311081, 69.240562" — the form every map app accepts pasted back."""
-        return f"{self._lat}, {self._lng}" if self.has_location else ""
-
-    @property
-    def google_maps_url(self):
-        return f"https://www.google.com/maps?q={self._lat},{self._lng}"
-
-    @property
-    def yandex_maps_url(self):
-        # Yandex writes the point longitude first.
-        return f"https://yandex.uz/maps/?pt={self._lng},{self._lat}&z=17&l=map"
-
-    @property
-    def yandex_route_url(self):
-        """Yandex navigation from wherever the phone is to the client — what the QR
-        on the yuk xati opens. rtext is "from~to"; an empty "from" is "here"."""
-        return f"https://yandex.uz/maps/?rtext=~{self._lat},{self._lng}&rtt=auto"
+    def shops(self):
+        """The other do'konlar, in order — prefetch `locations` where many are listed."""
+        return list(self.locations.all())
 
     def __str__(self):
         return self.name
+
+
+class ClientLocation(MapPoint, models.Model):
+    """One more do'kon of a mijoz, beside the main joylashuv on `Client` itself: a
+    client with two or three shops gets the goods (or is asked for money) at the one
+    a stop names (`LoadItem.location`). Always a point — a row with no place isn't
+    kept. The note says which shop it is («Chorsu bozori, 2-do'kon»)."""
+
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="locations",
+                               verbose_name="Mijoz")
+    note = models.CharField("Izoh", max_length=200, blank=True)
+    latitude = models.DecimalField("Kenglik", max_digits=9, decimal_places=6)
+    longitude = models.DecimalField("Uzunlik", max_digits=9, decimal_places=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["pk"]
+        verbose_name = "Mijoz do'koni"
+        verbose_name_plural = "Mijoz do'konlari"
+
+    def __str__(self):
+        return f"{self.client} — {self.note or self.coordinates}"
 
 
 class ClientPhone(models.Model):
@@ -2744,6 +2779,14 @@ class LoadItem(models.Model):
     # mashina» on the route: it leaves the trucks' route for the car's. Set and cleared
     # only by that button (docs/specs/2026-11-13-money-car.md).
     money_car = models.BooleanField("Pul olish mashinasida", default=False)
+    # Which of the client's do'konlar the truck goes to; empty is the main joylashuv
+    # (`Client.latitude`). Removing that do'kon from the client sends it there again.
+    location = models.ForeignKey(ClientLocation, on_delete=models.SET_NULL, null=True,
+                                 blank=True, related_name="load_items", verbose_name="Do'kon")
+    # «⚡ Zarur»: the client asked to be first. The route goes there before anyone else
+    # of its truck and on from there (newest first when several are); set and cleared
+    # with the button on the route (docs/specs/2026-11-18-route-locations.md).
+    urgent_at = models.DateTimeField("Zarur deb belgilangan", null=True, blank=True)
     # Set on the Yetkazish day board. Empty method = not decided yet (a sale typed in
     # Sotuvlar lands here without one); stops added on a Yuk page start as TRUCK.
     method = models.CharField("Qanday", max_length=8, choices=Method.choices, blank=True,
@@ -2773,6 +2816,21 @@ class LoadItem(models.Model):
     @property
     def collects(self):
         return self.purpose in (self.Purpose.COLLECT, self.Purpose.BOTH)
+
+    @property
+    def place(self):
+        """Where the truck goes: the do'kon the stop names, else the client's main
+        joylashuv. Both read as a MapPoint (has_location, coordinates, map links).
+        select_related `location` wherever many are listed."""
+        return self.location or self.client
+
+    @property
+    def place_note(self):
+        """Which do'kon, in words — the shop's note, or the main one's; "" when the
+        client has a single place and said nothing about it."""
+        if self.location_id:
+            return self.location.note or "Boshqa do'kon"
+        return self.client.location_note
 
     @property
     def rides_money_car(self):

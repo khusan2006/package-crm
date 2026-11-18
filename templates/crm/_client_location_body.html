@@ -12,8 +12,28 @@ operator usually wants one app and not a menu.
     {% if client.address %}<dt>Manzil</dt><dd>{{ client.address }}</dd>{% endif %}
     {% if client.phone %}<dt>Telefon</dt><dd>{{ client.phone }}</dd>{% endif %}
     {% for p in client.phones.all %}<dt>{{ p.label|default:"Telefon" }}</dt><dd>{{ p.phone }}</dd>{% endfor %}
+    {% if client.location_note %}<dt>Izoh</dt><dd>{{ client.location_note }}</dd>{% endif %}
     <dt>Koordinata</dt><dd><code>{{ client.coordinates }}</code></dd>
   </dl>
+  {% comment %}The client's other do'konlar — each with its own map links; a delivery
+  picks one on the Yetkazish page («Do'kon»).{% endcomment %}
+  {% with shops=client.shops %}{% if shops %}
+  <div class="geo-shops">
+    <h3 class="geo-shops-title">Boshqa do'konlar</h3>
+    <ul class="geo-shops-list">
+      {% for shop in shops %}
+      <li>
+        <strong>{{ shop.note|default:"Do'kon" }}</strong>
+        <code class="cell-sub">{{ shop.coordinates }}</code>
+        <span class="geo-share-row">
+          <a class="btn btn-ghost btn-sm" href="{{ shop.google_maps_url }}" target="_blank" rel="noopener">Google Maps ↗</a>
+          <a class="btn btn-ghost btn-sm" href="{{ shop.yandex_maps_url }}" target="_blank" rel="noopener">Yandex Maps ↗</a>
+        </span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}{% endwith %}
 
   <div class="geo-share" data-geo-share data-share-title="{{ client.name }}" data-share-text="{{ share_text }}" data-share-url="{{ client.google_maps_url }}">
     <button type="button" class="btn geo-share-main" data-share-native hidden>

@@ -388,7 +388,9 @@
           tip.textContent = s.n + '. ' + s.name;
           // A truck's stops are 1, 2…, the money car's P1, P2…: letters and digits
           // only, as the label goes into the pin's HTML.
-          L.marker(at, { icon: pin(String(s.n).replace(/[^A-Za-z0-9]/g, ''), color), title: tip.textContent })
+          // A stop where money is taken wears a small «$»; a «Zarur» one a red ring.
+          var extra = (s.collect ? 'route-pin--collect ' : '') + (s.urgent ? 'route-pin--urgent' : '');
+          L.marker(at, { icon: pin(String(s.n).replace(/[^A-Za-z0-9]/g, ''), color, extra), title: tip.textContent })
             .bindTooltip(tip).addTo(map);
         });
         line.push(data.depot);  // trucks drive back to the warehouse
@@ -397,6 +399,16 @@
         var drawn = route.path && route.path.length > 1 ? route.path : line;
         drawn.forEach(function (at) { bounds.extend(at); });
         L.polyline(drawn, { color: color, weight: 4, opacity: 0.75 }).addTo(map);
+      });
+      // «$ Yo'l-yo'lakay»: debtors the route passes close by, not on it — money that
+      // can be picked up on the way.
+      var green = cssColor('--success');
+      (data.onway || []).forEach(function (w) {
+        var tip = document.createElement('span');
+        tip.textContent = '$ ' + w.name + ' — qarz ' + w.debt + " so'm";
+        L.marker([w.lat, w.lng], { icon: pin('$', green, 'route-pin--onway'), title: tip.textContent })
+          .bindTooltip(tip).addTo(map);
+        bounds.extend([w.lat, w.lng]);
       });
       // Leaflet measures its box when the map is made, which can be before the page
       // has finished laying it out — a fit then frames the route for the wrong size
@@ -501,6 +513,8 @@
   document.addEventListener('modal:loaded', function (e) { enhance(e.detail || document); });
   // A load's route arrives after the page has loaded («Marshrut tuzish»).
   document.addEventListener('route:loaded', function (e) { enhance(e.detail || document); });
+  // A row added to a form by script (a client's «+ Do'kon», base.html).
+  document.addEventListener('geo:enhance', function (e) { enhance(e.detail || document); });
 
   // A form that comes back with errors is swapped into the modal WITHOUT a
   // modal:loaded (base.html's bindForm), so a bad link would leave the picker's

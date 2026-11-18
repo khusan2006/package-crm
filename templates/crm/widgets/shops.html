@@ -1,0 +1,13 @@
+{% comment %}
+A client's other do'konlar: one row per shop — which shop it is (the note), × and its
+joylashuv picker, the same one as the main joylashuv. «+ Do'kon» adds a row from the
+<template> below (wired in base.html; geo.js wires the new picker on `geo:enhance`).
+Each row keeps its id, so saving updates the shop in place. Empty rows are dropped.
+{% endcomment %}
+<div class="xshops" data-xshops>
+  <div class="xshops-rows" data-xshops-rows>
+    {% for row in rows %}{% include "crm/widgets/_shop_row.html" with name=widget.name %}{% endfor %}
+  </div>
+  <template data-xshops-template>{% include "crm/widgets/_shop_row.html" with name=widget.name row=blank %}</template>
+  <button type="button" class="line-add xphones-add" data-xshops-add><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Do'kon</button>
+</div>

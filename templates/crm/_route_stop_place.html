@@ -1,0 +1,7 @@
+{% comment %}Under a route stop's name: which do'kon (for a client with more than one),
+the address — the main joylashuv's, so not shown when the truck goes to another
+do'kon — and the phones.{% endcomment %}
+{% if s.shop %}<span class="cell-sub route-shop" title="Mijozning qaysi do'koni">📍 {{ s.shop }}</span>{% endif %}
+{% if s.client.address and not s.item.location_id %}<span class="cell-sub">{{ s.client.address }}</span>{% endif %}
+<span class="cell-sub">{% if s.client.phone %}<a href="tel:{{ s.client.phone|cut:' ' }}">{{ s.client.phone }}</a> · {% endif %}{{ s.client.owner }}</span>
+{% for p in s.client.phones.all %}<span class="cell-sub"><a href="tel:{{ p.phone|cut:' ' }}">{{ p.phone }}</a>{% if p.label %} · {{ p.label }}{% endif %}</span>{% endfor %}
