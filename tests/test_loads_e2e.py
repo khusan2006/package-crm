@@ -103,13 +103,15 @@ def test_add_stops_by_keyboard_and_save(login, admin_user, seller_user, live_ser
     add_for_today(page)
 
     row = page.locator("[data-new-row]").first
-    pick(page, row, 0, "Botir plast")          # client → focus moves to its product
+    pick(page, row, 0, "Botir plast")          # client picked; Tab → its product
+    page.keyboard.press("Tab")
     assert row.locator(".combobox-input").nth(1).evaluate("el => el === document.activeElement")
-    pick(page, row, 1, "Paket katta")          # product → focus moves to its rulon
+    pick(page, row, 1, "Paket katta")          # a bag: no metr / mikron — Tab → rulon
+    page.keyboard.press("Tab")
     rolls = row.locator("[name=new_rolls]")
     assert rolls.evaluate("el => el === document.activeElement")
     rolls.type("12")
-    rolls.press("Enter")                       # a new row, not a submit
+    page.click("[data-new-row-add]")           # «Yana mijoz»: one more client row
     assert page.locator("[data-new-row]").count() == 2
 
     second = page.locator("[data-new-row]").nth(1)
@@ -120,6 +122,89 @@ def test_add_stops_by_keyboard_and_save(login, admin_user, seller_user, live_ser
     stops = {i.client.name: i for i in load.items.all()}
     assert stops["Botir plast"].lines.get().rolls == 12
     assert stops["Anvar savdo"].purpose == "collect" and not stops["Anvar savdo"].lines.exists()
+
+
+def test_add_modal_by_keys_n_tab_enter(login, admin_user, seller_user, live_server, db, paket):
+    """N opens «Mijoz qo'shish»; Tab goes client → product → metr → mikron → rulon,
+    a picker taking what was typed; Enter adds and the modal is gone."""
+    plyonka = Product.objects.create(name="Plyonka", sku="P2", cost_price=1, price=Decimal("26000"),
+                                     has_size=True, has_micron=True)
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    Client.objects.create(name="Botir plast", owner=seller_user)
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    page.keyboard.press("n")
+    page.wait_for_function("document.activeElement && document.activeElement.classList.contains('combobox-input')")
+    add_for_today(page)
+    row = page.locator("[data-new-row]").first
+    client_box = row.locator(".combobox-input").first
+    client_box.focus()
+    active = "el => el === document.activeElement"
+    page.keyboard.type("yoq")
+    page.keyboard.press("Tab")                         # «Topilmadi»: stays, typing kept
+    assert client_box.evaluate(active) and client_box.input_value() == "yoq"
+    client_box.fill("")
+    page.keyboard.type("botir")
+    page.keyboard.press("Enter")                       # picked with Enter — on to the product…
+    assert row.locator("select[name=new_client]").input_value() != ""
+    product_box = row.locator(".combobox-input").nth(1)
+    assert product_box.evaluate(active)
+    page.keyboard.press("Tab")                         # …and a Tab out of habit doesn't skip it
+    assert product_box.evaluate(active)
+    page.keyboard.type("plyon")
+    page.keyboard.press("Tab")                         # picks Plyonka, on to metr
+    assert row.locator("select[name=new_product]").input_value() == str(plyonka.pk)
+    assert row.locator("[name=new_size]").evaluate(active)
+    page.keyboard.type("2м")
+    page.keyboard.press("Tab")
+    assert row.locator("[name=new_micron]").evaluate(active)
+    page.keyboard.type("08")
+    page.keyboard.press("Tab")
+    assert row.locator("[name=new_rolls]").evaluate(active)
+    page.keyboard.type("4")
+    page.keyboard.press("Enter")                       # «Qo'shish»
+    page.wait_for_selector("text=Qo'shildi")
+    assert not page.locator("#add-client").evaluate("el => el.open")
+    line = load.items.get().lines.get()
+    assert (line.product_id, line.size, line.micron, line.rolls) == (plyonka.pk, "2м", "08", 4)
+
+
+def test_add_modal_enter_picks_and_moves_on(login, admin_user, seller_user, live_server, db, paket):
+    """Enter in a picker picks and goes to the next box — client → product → rulon (a
+    bag has no metr / mikron); Enter there adds."""
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    Client.objects.create(name="Botir plast", owner=seller_user)
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    open_add(page)
+    add_for_today(page)
+    row = page.locator("[data-new-row]").first
+    active = "el => el === document.activeElement"
+    row.locator(".combobox-input").first.focus()
+    page.keyboard.type("botir")
+    page.keyboard.press("Enter")
+    assert row.locator(".combobox-input").nth(1).evaluate(active)
+    page.keyboard.type("paket")
+    page.keyboard.press("Enter")
+    rolls = row.locator("[name=new_rolls]")
+    assert rolls.evaluate(active)
+    page.keyboard.type("7")
+    page.keyboard.press("Enter")
+    page.wait_for_selector("text=Qo'shildi")
+    assert load.items.get().lines.get().rolls == 7
+
+
+def test_n_does_not_open_the_modal_while_typing(login, admin_user, seller_user, live_server, db,
+                                                paket):
+    load = Load.objects.create(date=timezone.localdate(), created_by=admin_user)
+    item = stop(load, Client.objects.create(name="Anvar", owner=seller_user), paket)
+    page = login(admin_user)
+    page.goto(f"{live_server.url}/yetkazish/{load.pk}/")
+    open_row(page, item)
+    box = page.locator(f'[name="kg_{item.lines.get().pk}"]')
+    box.focus()
+    page.keyboard.press("n")
+    assert not page.locator("#add-client").evaluate("el => el.open")
 
 
 def test_type_kg_and_tick_turns_the_stop_into_a_sale(login, admin_user, seller_user, live_server,
@@ -266,8 +351,9 @@ def test_a_new_client_gets_a_second_product_with_metr_and_mikron(login, admin_us
     first = block.locator(".new-stop-first")
     pick(page, block, 0, "Anvar")
     pick(page, first, 0, "Paket katta")
-    # A bag has no metr / mikron: greyed out, and focus skips to the rulon.
+    # A bag has no metr / mikron: greyed out, and Tab skips them to the rulon.
     assert first.locator("[name=new_size]").evaluate("el => el.readOnly")
+    page.keyboard.press("Tab")
     assert first.locator("[name=new_rolls]").evaluate("el => el === document.activeElement")
     first.locator("[name=new_rolls]").fill("4")
 
@@ -276,7 +362,8 @@ def test_a_new_client_gets_a_second_product_with_metr_and_mikron(login, admin_us
     pick(page, extra, 0, "ОҚ плёнка")
     size = extra.locator("input[name$=_size]")
     assert not size.evaluate("el => el.readOnly")
-    assert size.evaluate("el => el === document.activeElement")  # a film: on to its metr
+    page.keyboard.press("Tab")
+    assert size.evaluate("el => el === document.activeElement")  # a film: Tab → its metr
     size.fill("1,5м")
     extra.locator("input[name$=_micron]").fill("05")
     extra.locator("input[name$=_rolls]").fill("2")

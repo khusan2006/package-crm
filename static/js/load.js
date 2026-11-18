@@ -5,9 +5,9 @@
  * products («+ Mahsulot» under the row adds another), «+ Yana mijoz» adds another
  * client, × drops one. Metr / mikron boxes are greyed out unless the picked product
  * comes in them. Picking a client moves to its product, a product to its first open
- * box; Enter in the last new rulon adds the next row. Enter never
- * submits the form. Leaving with unsaved changes asks first; "unsaved" is what
- * actually differs from what was saved.
+ * box — except in «Mijoz qo'shish», where Tab goes client → product → metr → mikron →
+ * rulon and Enter is «Qo'shish»; elsewhere Enter never submits the form. Leaving with unsaved
+ * changes asks first; "unsaved" is what actually differs from what was saved.
  *
  * Marshrut (data-load-route): «Marshrut tuzish» fetches the route fragment and
  * shows a loading state until it is on the page and its map is drawn.
@@ -214,6 +214,7 @@
       }
       holder.appendChild(row);
       if (window.enhanceComboboxes) { window.enhanceComboboxes(row); }
+      keysOnly(row);
       syncVariants(row);
       showLastPrice(row);
       var open = from && row.querySelector('[data-variant]:not([readonly])');
@@ -299,8 +300,31 @@
       refreshDirty();
     });
 
-    // Picked (mouse or keys): the red mark goes, and on to the next box — a client
-    // to its product, a product to its rulon.
+    // The box after a picker: a client's product; a product's metr when it comes in
+    // it, else its mikron, else its rulon.
+    var nextAfter = function (select) {
+      if (select.name === 'new_client') {
+        var block = select.closest('[data-new-row]');
+        var product = block && block.querySelector('select[name=new_product]');
+        var wrap = product && product.closest('.combobox');
+        return wrap ? wrap.querySelector('.combobox-input') : product;
+      }
+      var line = select.closest('[data-product-row]');
+      return line && line.querySelector('input[type=text]:not(.combobox-input):not([data-money]):not([readonly])');
+    };
+    // `byEnter`: the box is marked, so a Tab pressed straight after (out of habit,
+    // "Enter picks, Tab moves") does not jump past it — see the keydown below.
+    var moveAfter = function (select, byEnter) {
+      var box = nextAfter(select);
+      if (!box) { return; }
+      box.focus();
+      if (!box.classList.contains('combobox-input')) { box.select(); }  // a picker selects itself
+      if (byEnter) { box.dataset.arrived = '1'; }
+    };
+
+    // Picked: the red mark goes, and on to the next box — a client to its product, a
+    // product to its metr / rulon. In «Mijoz qo'shish» only a pick by keys (Enter,
+    // Tab) moves on; one by mouse stays, and Tab then moves one box.
     items.addEventListener('change', function (e) {
       var t = e.target;
       if (t.matches('select[data-combobox]')) {
@@ -311,26 +335,100 @@
         if (row && t.name === 'new_client') { row.querySelectorAll('[data-product-row]').forEach(fillPrice); }
         else if (row && !t.value) { showLastPrice(row); }
         if (t.value && row) {
-          if (t.name === 'new_client') {
-            var productBox = row.querySelector('select[name=new_product]');
-            var box = productBox && productBox.closest('.combobox') ? productBox.closest('.combobox').querySelector('.combobox-input') : productBox;
-            if (box) { box.focus(); }
-          } else {
+          if (t.name !== 'new_client') {
             // A product: the client's last price for it (else the catalogue price)
             // goes in the Narx box — unless a price was typed by hand, which is
             // never overwritten.
             fillPrice(row);
             syncVariants(row.parentNode);
-            // On to metr when the product comes in it, else straight to rulon.
-            var rolls = row.querySelector('input[type=text]:not(.combobox-input):not([data-money]):not([readonly])');
-            if (rolls) { rolls.focus(); rolls.select(); }
           }
+          if (!inAdd(t) || keyPick) { moveAfter(t, keyPick === 'Enter'); }
         }
       }
       refreshDirty();
     });
 
+    /* «Mijoz qo'shish» by keys. Tab goes client → product → metr → mikron → rulon →
+     * narx, one box per Tab (the purpose / method dropdowns and × are out of the Tab
+     * order). In a picker, Enter or Tab takes what was typed (Enter: the first row
+     * even untyped) and moves on to the next box; Enter on a picker that already holds
+     * its pick just moves on. A Tab straight after an Enter that moved the cursor into
+     * an empty box stays there — else "Enter, then Tab" skipped the product. Enter in
+     * any other box is «Qo'shish»: saved, and the page comes back with the modal
+     * closed (open again, with the red boxes, if something was wrong). */
+    var addDialog = document.getElementById('add-client');
+    var addSubmit = addDialog && addDialog.querySelector('button[type=submit][name=add]');
+    var inAdd = function (el) { return !!(addDialog && addDialog.contains(el)); };
+    // 'Enter' / 'Tab' while that key is being handled in a picker of the modal — the
+    // pick it makes (in the combobox's own handler or below) then moves on. Set in
+    // the capture phase, before the combobox sees the key.
+    var keyPick = '';
     items.addEventListener('keydown', function (e) {
+      if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey && inAdd(e.target) &&
+          e.target.matches('.combobox-input')) {
+        keyPick = e.key;
+        setTimeout(function () { keyPick = ''; }, 0);
+      }
+    }, true);
+    // A box the cursor was moved into by Enter: empty and untouched, the next Tab stays.
+    var emptyBox = function (box) {
+      var picker = box.closest('.combobox');
+      if (picker) {
+        var select = picker.querySelector('select');
+        return !(select && select.value) && !box.value.trim();
+      }
+      return !box.value.trim();
+    };
+    items.addEventListener('input', function (e) { if (e.target.dataset) { delete e.target.dataset.arrived; } });
+    items.addEventListener('focusout', function (e) { if (e.target.dataset) { delete e.target.dataset.arrived; } });
+    // What was typed into a picker — '' when the box still shows its pick, or is empty.
+    var typedIn = function (picker, input) {
+      var select = picker.querySelector('select');
+      var shown = select && select.options[select.selectedIndex];
+      var typed = input.value.trim();
+      return typed && !(shown && typed === shown.textContent.trim()) ? typed : '';
+    };
+    // The highlighted option, else the first match of what was typed; false when
+    // nothing was typed or nothing matches.
+    var pickTyped = function (picker, input) {
+      var pop = picker.querySelector('.combobox-pop:not([hidden])');
+      if (!pop) { return false; }
+      var hit = pop.querySelector('.combobox-option.is-active') ||
+        (typedIn(picker, input) && pop.querySelector('.combobox-option'));
+      if (!hit) { return false; }
+      hit.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      return true;
+    };
+    var addNow = function () {
+      if (!addSubmit || submitting) { return; }
+      if (items.requestSubmit) { items.requestSubmit(addSubmit); } else { addSubmit.click(); }
+    };
+    // An added product row's × is out of the modal's Tab order too (from narx, Tab
+    // goes on to «+ Mahsulot»). The rows back after a refused add, and every new one.
+    function keysOnly(scope) {
+      if (!inAdd(scope)) { return; }
+      scope.querySelectorAll('[data-add-line-row] [data-new-row-remove]')
+        .forEach(function (b) { b.tabIndex = -1; });
+    }
+    if (addDialog) { keysOnly(addDialog); }
+
+    items.addEventListener('keydown', function (e) {
+      if (e.key === 'Tab') {
+        if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || !inAdd(e.target)) { return; }
+        var here = e.target;
+        if (here.dataset.arrived) {
+          delete here.dataset.arrived;
+          // Enter already brought the cursor here: this Tab doesn't skip the box.
+          if (emptyBox(here)) { e.preventDefault(); return; }
+        }
+        var tabPicker = here.matches('.combobox-input') && here.closest('.combobox');
+        if (!tabPicker) { return; }
+        // Picked: it moved on by itself (the change handler) — Tab's own step would be
+        // a second one. Typed but «Topilmadi»: the cursor stays — Tab doesn't throw the
+        // typing away and leave the box empty. Nothing typed: Tab's own step.
+        if (pickTyped(tabPicker, here) || typedIn(tabPicker, here)) { e.preventDefault(); }
+        return;
+      }
       if (e.key !== 'Enter' || !e.target.matches('input')) { return; }
       var picker = e.target.closest('.combobox');
       if (picker) {
@@ -339,17 +437,21 @@
         // the list shows one — typing "botir" + Enter means Botir.
         if (e.defaultPrevented) { return; }
         e.preventDefault();
+        if (inAdd(e.target)) {
+          // In the modal: what was typed is picked (and on to the next box). A picker
+          // that already holds its pick keeps it — Enter just moves on, never swaps it
+          // for the first row, never adds.
+          if (pickTyped(picker, e.target)) { return; }
+          var held = picker.querySelector('select');
+          if (held && held.value) { moveAfter(held, true); return; }
+        }
         var first = picker.querySelector('.combobox-pop:not([hidden]) .combobox-option');
         if (first) { first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })); }
         return;
       }
       e.preventDefault();  // never a surprise submit
       if (e.target.matches('input.pick-kg')) { settleKg(e.target); return; }
-      if (e.target.matches('[data-new-row] [name=new_rolls]')) {
-        var row = e.target.closest('[data-new-row]');
-        var next = row.nextElementSibling;
-        if (next) { focusClient(next); } else { addRow(); }
-      }
+      if (inAdd(e.target)) { addNow(); }
     });
 
     // Kg works like a calculator: weighing roll by roll, they type "50+48,5+51"

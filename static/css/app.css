@@ -7176,6 +7176,21 @@ input.pick-variant { width: 84px; max-width: 84px; height: 32px; padding: 5px 8p
 .lane-add-head::-webkit-details-marker { display: none; }
 .lane-add-head svg { width: 18px; height: 18px; }
 .lane-add-hint { margin: 0 0 10px; }
+/* «Tab — keyingi katak, Enter — qo'shish»: the modal's keys. */
+.add-keys-hint { white-space: nowrap; }
+.add-keys-hint kbd {
+  display: inline-block;
+  padding: 0 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+/* On a phone there is no Tab / Enter to speak of. */
+@media (max-width: 700px) { .add-keys-hint { display: none; } }
 
 .lane-route { margin-top: 18px; scroll-margin-top: 70px; }
 .lane-row { scroll-margin-top: 80px; }

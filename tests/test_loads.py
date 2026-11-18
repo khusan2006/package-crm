@@ -3077,6 +3077,17 @@ def test_adding_on_todays_page_goes_to_tomorrow(client, admin_user, load):
     assert day_page(client, admin_user, later).context["new_day"] == later.isoformat()
 
 
+def test_day_page_lists_oq_qora_kok_first(client, admin_user, load):
+    """The day page's product pickers start with ОҚ, ҚОРА, КЎК (the ones picked most);
+    every other active product follows by name, an inactive one not at all."""
+    for n, name in enumerate(("Яшил", "КЎК", "Ақ қоп", "ҚОРА", "ОҚ ҚОП", "ОҚ")):
+        Product.objects.create(name=name, sku=f"T{n}", cost_price=1, price=Decimal("10000"))
+    Product.objects.create(name="Эски", sku="T-old", cost_price=1, price=1, is_active=False)
+    names = [p.name for p in day_page(client, admin_user).context["products"]]
+    assert names[:3] == ["ОҚ", "ҚОРА", "КЎК"]
+    assert names[3:] == sorted(names[3:]) and "Эски" not in names
+
+
 def test_older_sales_are_put_on_the_board_by_command(seller_user, paket):
     """track_sales_delivery: the sales typed before the board tracked them get their
     stop (today and later unless --dan says otherwise); opening balances and sales

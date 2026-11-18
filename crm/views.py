@@ -11206,7 +11206,18 @@ def _new_line_price(raw, product, row):
 #: else may still be typed ("240СМ", "05-08" are real).
 SIZE_SUGGESTIONS = ["1,5м", "2м", "6м"]
 MICRON_SUGGESTIONS = ["015", "01", "08", "06", "05", "04", "03", "02"]
+#: The products picked most, at the top of the day page's product lists in this
+#: order; every other product follows by name.
+PRODUCT_PICK_FIRST = ("ОҚ", "ҚОРА", "КЎК")
 VARIANT_MAX = 20
+
+
+def _pick_ordered_products():
+    """Active products for the day page's pickers: ОҚ, ҚОРА, КЎК first, then the rest
+    by name."""
+    rank = {name: i for i, name in enumerate(PRODUCT_PICK_FIRST)}
+    return sorted(Product.objects.filter(is_active=True),
+                  key=lambda p: (rank.get(p.name.strip().upper(), len(rank)), p.name))
 _BARE_METRES = re.compile(r"[0-9]+(?:[.,][0-9]+)?")
 
 
@@ -12923,7 +12934,7 @@ def _render_day(request, day, items=None, posted_new=None, ahead=None):
         # Every client, those already on the day too: a second order the same day
         # goes in as a row of its own (`_write_load_plan`).
         "clients": list(clients),
-        "products": Product.objects.filter(is_active=True).order_by("name"),
+        "products": _pick_ordered_products(),
         # A product picked for a client opens its Narx at what they paid last time
         # (load.js), the same as on the sale form.
         "client_last_price_json": _client_last_price_map(user),

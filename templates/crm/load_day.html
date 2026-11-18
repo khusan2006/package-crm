@@ -2,7 +2,7 @@
 {% load crm_extras l10n %}
 {% block title %}Yetkazish · Paket CRM{% endblock %}
 {% block topbar_title %}Yetkazish{% endblock %}
-{% block fab %}<a class="fab" href="#add-client" data-open-add><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Mijoz qo'shish</a>{% endblock %}
+{% block fab %}<a class="fab" href="#add-client" data-open-add title="Mijoz qo'shish (N)" aria-keyshortcuts="N"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Mijoz qo'shish</a>{% endblock %}
 {% block content %}
 
 {% comment %}
@@ -178,7 +178,7 @@ lights it up). Built from the lines on the page, in their order (script below).{
           <input type="date" name="new_sana" value="{{ new_day }}" data-default="{{ add_day }}" min="2000-01-01" max="2099-12-31" aria-label="Qaysi kunga">
           {% if is_today %}<span class="muted add-day-hint">yetkaziladigan kun — sukut bo'yicha ertaga</span>{% endif %}
         </label>
-        <p class="muted lane-add-hint">Mijoz, maqsad, qanday ketishi, mahsulot va rulon — kg keyin, tortilgach.</p>
+        <p class="muted lane-add-hint">Mijoz, maqsad, qanday ketishi, mahsulot va rulon — kg keyin, tortilgach. <span class="add-keys-hint"><kbd>Tab</kbd> — keyingi katak, <kbd>Enter</kbd> — qo'shish.</span></p>
         <div class="new-rows" data-new-rows>
           {% for row in new_rows %}{% include "crm/_load_new_row.html" with row=row %}{% endfor %}
         </div>
@@ -363,6 +363,17 @@ lights it up). Built from the lines on the page, in their order (script below).{
     });
     // A click on the dark backdrop around the modal closes it too.
     add.addEventListener('click', function (e) { if (e.target === add) { add.close(); } });
+    // N opens it from the keyboard (the same key on a Russian layout: KeyN) — not
+    // while typing in a box, nor over another window, the menu or the filters.
+    document.addEventListener('keydown', function (e) {
+      if (e.code !== 'KeyN' && e.key !== 'n' && e.key !== 'N') { return; }
+      if (e.ctrlKey || e.altKey || e.metaKey || e.repeat || e.defaultPrevented) { return; }
+      var t = e.target;
+      if (t && (t.isContentEditable || (t.closest && t.closest('input, textarea, select')))) { return; }
+      if (document.querySelector('dialog[open], .filter-drawer.open, .sidebar.open')) { return; }
+      e.preventDefault();
+      open();
+    });
     if (add.hasAttribute('data-open-now')) { open(); }
   })();
   // The bell: its window opens on a click — and again after an answer, while some
