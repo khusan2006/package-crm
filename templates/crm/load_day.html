@@ -50,6 +50,14 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
       Filtrlash{% if filter_count %} <span class="filter-badge">{{ filter_count }}</span>{% endif %}
     </button>
+    {% comment %}«Marshrut» up here too: the route sits at the foot of a long day. It goes
+    down to it and builds it if it isn't yet (load.js); without JS, just the anchor.{% endcomment %}
+    {% if load and show_route %}
+    <a href="#route" class="btn btn-sm btn-ghost" data-route-jump title="Marshrutga o'tish — tuzilmagan bo'lsa tuzib beradi">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
+      Marshrut
+    </a>
+    {% endif %}
   </div>
   <div class="toolbar-right">
     {% if total %}

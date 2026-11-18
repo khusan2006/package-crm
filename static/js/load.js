@@ -1067,6 +1067,15 @@
     card.addEventListener('click', function (e) {
       if (e.target.closest('[data-route-suggest]')) { build(); }
     });
+    // «Marshrut» at the top of the page: down to the route, built if it isn't yet (or
+    // only said what was missing) — no long scroll to the button at the foot.
+    document.querySelectorAll('[data-route-jump]').forEach(function (jump) {
+      jump.addEventListener('click', function (e) {
+        e.preventDefault();
+        (document.getElementById('route') || card).scrollIntoView({ behavior: 'smooth', block: 'start' });
+        if (!slot.querySelector('[data-route-form]') && !button.disabled) { build(); }
+      });
+    });
     if (card.hasAttribute('data-auto')) { build(); }
   }
 })();

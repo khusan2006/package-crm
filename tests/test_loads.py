@@ -3178,6 +3178,15 @@ def test_the_route_and_jonatish_are_for_admins_and_managers(client, seller_user,
     assert day_page(client, manager).context["show_route"] is True
 
 
+def test_the_route_button_is_at_the_top_too(client, seller_user, manager, load, warehouse, paket):
+    """«Marshrut» beside «Filtrlash»: no long scroll down to the route's own button."""
+    stop(load, make_client(seller_user, "Anvar", 0.01), (paket, 1))
+    top = day_page(client, manager).content.decode()
+    assert 'href="#route" class="btn btn-sm btn-ghost" data-route-jump' in top
+    assert 'id="route"' in top
+    assert "data-route-jump" not in day_page(client, seller_user).content.decode()
+
+
 def test_a_sellers_counts_and_buttons_are_their_own(client, seller_user, other_seller, load, paket):
     stop(load, make_client(seller_user, "Meniki"), (paket, 1))
     stop(load, make_client(other_seller, "Begona"), (paket, 1))
