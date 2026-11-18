@@ -50,7 +50,7 @@ belong to rather than as loose lines above it.{% endcomment %}
     <span class="route-summary-sub">Ba'zi mahsulotlarning kg'i ham, o'tgan sotuvlardan taxmini ham yo'q — tortilgach tanlanadi.</span>
     {% endif %}
     {% comment %}How the trucks are used — fill one first, or two in parallel.{% endcomment %}
-    <form method="post" action="{% url 'load_detail' load.pk %}" class="strategy-switch" role="group" aria-label="Mashinalar qanday ishlatilsin">
+    <form method="post" action="{{ route_action }}" class="strategy-switch" role="group" aria-label="Mashinalar qanday ishlatilsin">
       {% csrf_token %}
       <input type="hidden" name="action" value="strategy">
       {% for value, label in strategies %}
@@ -108,7 +108,7 @@ or «Pul mashinasisiz» keeps the day as it is and only says what the car would 
     <span>{{ money_saving|capfirst }}. Saqlangan tartibga qo'shiladi.</span>
     {% endif %}
   </div>
-  <form method="post" action="{% url 'load_detail' load.pk %}" class="route-money-form">
+  <form method="post" action="{{ route_action }}" class="route-money-form">
     {% csrf_token %}
     {% if money_route %}
     <input type="hidden" name="action" value="money_car_off">
@@ -124,7 +124,7 @@ or «Pul mashinasisiz» keeps the day as it is and only says what the car would 
 </div>
 {% endif %}
 {% if load.ordered_at %}
-<form method="post" id="route-reset" action="{% url 'load_detail' load.pk %}"
+<form method="post" id="route-reset" action="{{ route_action }}"
       onsubmit="return confirm('Saqlangan tartib o\'chirilib, tavsiya etilgan tartib qaytadi. Davom etasizmi?')">
   {% csrf_token %}
   <input type="hidden" name="action" value="reset">
@@ -136,7 +136,7 @@ or «Pul mashinasisiz» keeps the day as it is and only says what the car would 
   {{ map_data|json_script:"route-data" }}
 </div>
 
-<form method="post" id="route-form" action="{% url 'load_detail' load.pk %}" data-route-form>
+<form method="post" id="route-form" action="{{ route_action }}" data-route-form>
 {% csrf_token %}
 <input type="hidden" name="action" value="save">
 <input type="hidden" name="routes" value="{{ routes|length }}">

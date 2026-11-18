@@ -15,6 +15,16 @@
 (function () {
   'use strict';
 
+  // A client's line opened or folded: its details show right under it.
+  var setRowOpen = function (row, open) {
+    var toggle = row.querySelector('[data-toggle-row]');
+    var editor = toggle && document.getElementById(toggle.getAttribute('aria-controls'));
+    if (!editor) { return; }
+    editor.hidden = !open;
+    row.classList.toggle('is-open', open);
+    row.querySelectorAll('[data-toggle-row]').forEach(function (b) { b.setAttribute('aria-expanded', String(open)); });
+  };
+
   /* ---------- Yuk tarkibi ---------- */
   var items = document.querySelector('[data-load-items]');
   if (items) {
@@ -765,11 +775,7 @@
         if (!toggle) { return; }
       }
       var row = toggle.closest('.lane-row');
-      var editor = document.getElementById(toggle.getAttribute('aria-controls'));
-      var open = editor.hidden;
-      editor.hidden = !open;
-      row.classList.toggle('is-open', open);
-      row.querySelectorAll('[data-toggle-row]').forEach(function (b) { b.setAttribute('aria-expanded', String(open)); });
+      setRowOpen(row, !row.classList.contains('is-open'));
     });
 
     // The muted «Oxirgi narx» puts the client's last price back into the box — on a
@@ -956,6 +962,63 @@
     .observe(document.getElementById('modal-body') || document.createElement('div'), { childList: true });
   initMoveDialog(document);
 
+  /* ---------- The page stays as it was across a send ----------
+   * Every button that sends the page (a row's step or ✓, «Qo'shish», a dialog, the
+   * route's buttons, «Jo'natish») loads it again: from the top, every row folded, the
+   * route drawn again a moment later. Just before it goes, which rows are open and
+   * where the page stands are kept (sessionStorage, 30 s); the next page of the same
+   * day and tab opens those rows again and stands where this one did. The route
+   * keeps its height until it is drawn, so nothing jumps when it comes; a route
+   * button also notes the part of the route it was in (put back in the same place
+   * on the screen once drawn) and ⚡ its stop. */
+  var STATE_KEY = 'load:state';
+  var ROUTE_PARTS = ['.route-card', '.route-summary', '.route-money', '.load-start'];
+  var pageKey = function () {
+    var day = document.querySelector('.day-pick-input');
+    var tab = document.querySelector('[data-load-items] [name=tur]');
+    return (day ? day.value : '') + '|' + (tab ? tab.value : '');
+  };
+  document.addEventListener('submit', function (e) {
+    var form = e.target;
+    // Not a «Bekor» to a confirm, not a dialog sent in the background, not a search.
+    if (e.defaultPrevented || (form.getAttribute('method') || '').toLowerCase() !== 'post') { return; }
+    var state = {
+      at: Date.now(), page: pageKey(), y: window.scrollY,
+      open: Array.prototype.map.call(document.querySelectorAll('.lane-row.is-open'),
+                                     function (row) { return row.id; })
+    };
+    var route = document.querySelector('[data-load-route]');
+    var routeSlot = route && route.querySelector('[data-route-slot]');
+    if (routeSlot && routeSlot.querySelector('[data-route-form]')) { state.h = routeSlot.offsetHeight; }
+    // «⇅ Teskari» sends without a submit button of its own: route.js names it.
+    var by = e.submitter || form.__submitter || form;
+    if (route && route.contains(by)) {
+      state.stop = by.getAttribute('name') === 'urgent' ? by.getAttribute('value') : '';
+      ROUTE_PARTS.some(function (sel) {
+        var part = by.closest(sel);
+        if (!part) { return false; }
+        state.part = { sel: sel, n: Array.prototype.indexOf.call(route.querySelectorAll(sel), part),
+                       top: part.getBoundingClientRect().top };
+        return true;
+      });
+    }
+    try { sessionStorage.setItem(STATE_KEY, JSON.stringify(state)); } catch (err) {}
+  });
+  var kept = (function () {
+    var state = null;
+    try {
+      state = JSON.parse(sessionStorage.getItem(STATE_KEY));
+      sessionStorage.removeItem(STATE_KEY);
+    } catch (err) { state = null; }
+    return state && Date.now() - state.at < 30000 && state.page === pageKey() ? state : null;
+  })();
+  if (kept) {
+    (kept.open || []).forEach(function (id) {
+      var row = id && document.getElementById(id);
+      if (row && !row.classList.contains('is-open')) { setRowOpen(row, true); }
+    });
+  }
+
   /* ---------- Marshrut tuzish ---------- */
   var card = document.querySelector('[data-load-route]');
   if (card) {
@@ -974,35 +1037,39 @@
       if (on && status) { status.textContent = 'Marshrut tuzilmoqda…'; }
     };
 
-    // Back from a button on the route (route.js keeps where it was): to the stop ⚡ was
-    // pressed on — it has moved, often to the top of its truck — or to the same scroll.
-    // Only just after that send; a route opened later starts at its top as usual.
-    var takeKept = function () {
-      var kept = null;
-      try {
-        kept = JSON.parse(sessionStorage.getItem('route:keep'));
-        sessionStorage.removeItem('route:keep');
-      } catch (err) { kept = null; }
-      return kept && Date.now() - kept.at < 30000 ? kept : null;
+    // Drawn again after a send: its old height is held until it comes, so the page can
+    // stand where the last one did (the end of this file) and nothing below it moves.
+    if (kept && kept.h && card.hasAttribute('data-auto')) {
+      start.hidden = true;
+      slot.style.minHeight = kept.h + 'px';
+      slot.setAttribute('aria-busy', 'true');
+    }
+    var release = function () {
+      slot.style.minHeight = '';
+      slot.removeAttribute('aria-busy');
     };
-    var goBack = function (kept, flash) {
-      var box = kept.stop && slot.querySelector('input[name=stop][value="' + kept.stop + '"]');
+    // Back from a route button: the part of the route it was in, where it stood on the
+    // screen — or for ⚡ its stop (now first on its truck), flashed.
+    var routeKept = kept && (kept.stop || kept.part) ? kept : null;
+    var putBack = function (state) {
+      var box = state.stop && slot.querySelector('input[name=stop][value="' + state.stop + '"]');
       var li = box && box.closest('[data-route-stop]');
       if (li) {
         li.scrollIntoView({ block: 'center' });
-        if (flash) {
-          li.classList.add('route-flash');
-          setTimeout(function () { li.classList.remove('route-flash'); }, 2600);
-        }
-      } else {
-        window.scrollTo(0, kept.y);
+        li.classList.add('route-flash');
+        setTimeout(function () { li.classList.remove('route-flash'); }, 2600);
+        return;
       }
+      var part = state.part && card.querySelectorAll(state.part.sel)[state.part.n];
+      if (part) { window.scrollBy(0, part.getBoundingClientRect().top - state.part.top); }
     };
 
-    // `quiet`: redrawn after a background save — no focus jump, no announcement.
-    var quiet = false;
-    var build = function (again) {
-      quiet = again === true;
+    // `mode` — 'asked': a button asked for it, focus goes to its summary; 'quiet':
+    // drawn again after a background save, nothing moves or is announced; none: drawn
+    // as the page opens — the page stays where it is (the rows being worked on), or
+    // goes back to the route button that sent it. Never pulled down to the route.
+    var build = function (mode) {
+      var quiet = mode === 'quiet';
       busy(true);
       failedNote.hidden = true;
       fetch(card.getAttribute('data-url'), {
@@ -1013,28 +1080,26 @@
         return r.text();
       }).then(function (html) {
         slot.innerHTML = html;
+        release();
+        var drawn = !!slot.querySelector('[data-route-form]');
+        // A route came: the start panel steps aside now, not once the map is drawn,
+        // so nothing shifts afterwards. Only a message (no warehouse, missing
+        // locations…): the button stays, to try again once that's fixed.
+        start.hidden = drawn;
+        if (drawn) {
+          // The day form's sends (a status, ✓, «Qo'shish») come back with it open.
+          var keep = document.querySelector('[name=marshrut]');
+          if (keep) { keep.value = '1'; }
+          var summary = slot.querySelector('.route-summary');
+          if (mode === 'asked' && summary) { summary.focus({ preventScroll: true }); }
+          if (!mode && routeKept) { putBack(routeKept); }
+        } else {
+          idle = 'Qayta urinish';
+        }
+        routeKept = null;
         var map = slot.querySelector('[data-geo-route]');
-        var kept = again === true ? null : takeKept();
-        if (kept) { goBack(kept, false); }
         var done = function () {
-          if (slot.querySelector('[data-route-form]')) {
-            // A route came: the start panel steps aside; focus goes to its summary.
-            start.hidden = true;
-            if (status) { status.textContent = quiet ? '' : 'Marshrut tayyor.'; }
-            // The day form's sends (a status, ✓, «Qo'shish») come back with it open.
-            var keep = document.querySelector('[name=marshrut]');
-            if (keep) { keep.value = '1'; }
-            var summary = slot.querySelector('.route-summary');
-            // Coming back from a route button: stay where it was, not at the summary.
-            if (summary && !quiet) { summary.focus({ preventScroll: !!kept }); }
-            // Again now the start panel above has gone and the map is drawn.
-            if (kept) { goBack(kept, true); }
-          } else {
-            // Only a message (no warehouse, missing locations…): keep the button,
-            // so it can be tried again once that's fixed.
-            idle = 'Qayta urinish';
-            if (status) { status.textContent = ''; }
-          }
+          if (status) { status.textContent = drawn && !quiet ? 'Marshrut tayyor.' : ''; }
           busy(false);
         };
         if (map) {
@@ -1046,6 +1111,10 @@
         document.dispatchEvent(new CustomEvent('route:loaded', { detail: slot }));
         if (!map) { done(); }
       }).catch(function () {
+        release();
+        routeKept = null;
+        // A failed redraw leaves the route that was there; with none, the button again.
+        if (!slot.querySelector('[data-route-form]')) { start.hidden = false; }
         idle = 'Qayta urinish';
         busy(false);
         if (status) { status.textContent = ''; }
@@ -1053,7 +1122,7 @@
       });
     };
 
-    button.addEventListener('click', function () { build(); });
+    button.addEventListener('click', function () { build('asked'); });
     // A background save changed the day: draw an open route again — unless it has
     // moves not saved yet (they'd be lost), then it waits for «Tartibni saqlash».
     var redraw = null;
@@ -1061,11 +1130,11 @@
       var dirty = slot.querySelector('[data-route-dirty]');
       if (!slot.querySelector('[data-route-form]') || (dirty && !dirty.hidden)) { return; }
       clearTimeout(redraw);
-      redraw = setTimeout(function () { build(true); }, 600);
+      redraw = setTimeout(function () { build('quiet'); }, 600);
     });
     // «Tavsiya etilgan tartib» on an unsaved order: drop the moves, fetch it again.
     card.addEventListener('click', function (e) {
-      if (e.target.closest('[data-route-suggest]')) { build(); }
+      if (e.target.closest('[data-route-suggest]')) { build('asked'); }
     });
     // «Marshrut» at the top of the page: down to the route, built if it isn't yet (or
     // only said what was missing) — no long scroll to the button at the foot.
@@ -1073,9 +1142,20 @@
       jump.addEventListener('click', function (e) {
         e.preventDefault();
         (document.getElementById('route') || card).scrollIntoView({ behavior: 'smooth', block: 'start' });
-        if (!slot.querySelector('[data-route-form]') && !button.disabled) { build(); }
+        if (!slot.querySelector('[data-route-form]') && !button.disabled) { build('asked'); }
       });
     });
     if (card.hasAttribute('data-auto')) { build(); }
+  }
+
+  // Back to where the last page stood (see «The page stays as it was» above). The row
+  // the server names (#stop-…) stays in sight: a step may have moved it to another lane.
+  if (kept) {
+    window.scrollTo(0, kept.y);
+    var named = location.hash && document.getElementById(location.hash.slice(1));
+    if (named) {
+      var at = named.getBoundingClientRect();
+      if (at.top < 0 || at.bottom > window.innerHeight) { named.scrollIntoView({ block: 'center' }); }
+    }
   }
 })();

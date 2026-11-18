@@ -303,7 +303,8 @@ lights it up). Built from the lines on the page, in their order (script below).{
     </ul>
   </div>
   {% endif %}
-  <div class="card load-route-card" data-load-route data-url="{% url 'load_route' load.pk %}"{% if auto_route %} data-auto{% endif %}>
+  {% comment %}On «Mashinada» the route's buttons come back to «Mashinada» (?tur=truck).{% endcomment %}
+  <div class="card load-route-card" data-load-route data-url="{% url 'load_route' load.pk %}{% if tab == 'truck' %}?tur=truck{% endif %}"{% if auto_route %} data-auto{% endif %}>
     <div class="load-route-start" data-route-start>
       <div>
         <h2>Marshrut</h2>
@@ -323,7 +324,7 @@ lights it up). Built from the lines on the page, in their order (script below).{
     the clock and sends nothing — the server takes now. The route's arrival times
     follow the box as it is changed (load.js).{% endcomment %}
     {% if may_change_load %}
-    <form method="post" action="{% url 'load_detail' load.pk %}" class="load-start{% if load.started_at %} is-started{% endif %}" data-load-start>
+    <form method="post" action="{% url 'load_detail' load.pk %}{% if tab == 'truck' %}?tur=truck{% endif %}" class="load-start{% if load.started_at %} is-started{% endif %}" data-load-start>
       {% csrf_token %}
       <input type="hidden" name="action" value="start">
       <label class="load-start-label" for="load-started-at">{% if load.started_at %}Jo'nagan{% else %}Jo'nash vaqti{% endif %}</label>

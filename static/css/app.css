@@ -6883,6 +6883,11 @@ input.load-start-input {
 .load-route-start h2 { margin: 0 0 4px; }
 .load-route-start p { margin: 0; }
 .load-route-start[hidden] { display: none; }
+/* After a send the route keeps its old height until it is drawn again (load.js), so
+   the page stands where it did; meanwhile it says so. */
+.load-route-card [data-route-slot][aria-busy="true"]::before {
+  content: "Marshrut tuzilmoqda…"; display: block; padding: 24px 16px; color: var(--text-muted);
+}
 .btn-spinner {
   display: none; width: 14px; height: 14px; border-radius: 50%;
   border: 2px solid currentColor; border-right-color: transparent;

@@ -10824,6 +10824,20 @@ def _load_url(load):
     return reverse("load_detail", args=[load.pk])
 
 
+def _route_tab_qs(params):
+    """"?tur=truck" when the route was opened on «Mashinada», else "" — the route shows
+    on «Hammasi» and «Mashinada» only, and its buttons come back to that same tab."""
+    tab, _ = _day_tabs(params)
+    return "?tur=truck" if tab == "truck" else ""
+
+
+def _route_back(request, load):
+    """Where a route button comes back to: the day with its route open, on the tab it
+    was pressed on (the route's forms post to `_load_url` + `_route_tab_qs`)."""
+    tab_qs = _route_tab_qs(request.GET)
+    return _load_url(load) + (f"{tab_qs}&marshrut=1" if tab_qs else "?marshrut=1")
+
+
 def _load_list_url(day):
     return f"{reverse('load_list')}?sana={day.isoformat()}"
 
@@ -12013,7 +12027,7 @@ def _save_load_order_checked(request, load, items):
             pk = None
         if pk not in located or pk in order:
             messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
-            return redirect(_load_url(load) + "?marshrut=1")
+            return redirect(_route_back(request, load))
         order.append(pk)
     # The money car's stops, in its order (`car` = item pk): money-only stops only.
     car = []
@@ -12025,15 +12039,15 @@ def _save_load_order_checked(request, load, items):
         if (pk not in located or pk in order or pk in car
                 or located[pk].purpose != LoadItem.Purpose.COLLECT):
             messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
-            return redirect(_load_url(load) + "?marshrut=1")
+            return redirect(_route_back(request, load))
         car.append(pk)
     if not order and not car:
         messages.error(request, "Saqlash uchun marshrutda mijoz yo'q.")
-        return redirect(_load_url(load) + "?marshrut=1")
+        return redirect(_route_back(request, load))
     if set(order) | set(car) != set(located):
         # The page was drawn before a client was added or removed — don't save half.
         messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
-        return redirect(_load_url(load) + "?marshrut=1")
+        return redirect(_route_back(request, load))
     # With two trucks (or trips), each stop also says which route it rides with
     # (⇄ moves it to the next one).
     raw_routes = request.POST.get("routes", "")
@@ -12044,7 +12058,7 @@ def _save_load_order_checked(request, load, items):
         allowed = {str(n) for n in range(routes)}
         if len(groups) != len(order) or any(g not in allowed for g in groups):
             messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
-            return redirect(_load_url(load) + "?marshrut=1")
+            return redirect(_route_back(request, load))
         split = [int(g) for g in groups]
     # The buttons that save the order with one change made to it: «⚡ Zarur» on a stop,
     # «+ Marshrutga» on a debtor the route passes by, «⇅ Teskari» (done on the page).
@@ -12052,12 +12066,12 @@ def _save_load_order_checked(request, load, items):
     if request.POST.get("urgent"):
         changed = _press_urgent(request, located, order, split, request.POST["urgent"])
         if changed is None:
-            return redirect(_load_url(load) + "?marshrut=1")
+            return redirect(_route_back(request, load))
         order, why, said = changed
     elif request.POST.get("onway"):
         changed = _press_on_way(request, load, located, order, car, split, request.POST["onway"])
         if changed is None:
-            return redirect(_load_url(load) + "?marshrut=1")
+            return redirect(_route_back(request, load))
         order, car, split, why, said = changed
     elif request.POST.get("why") == "reverse":
         why, said = "teskari qilindi", "Tartib teskari qilindi va saqlandi."
@@ -12077,7 +12091,7 @@ def _save_load_order_checked(request, load, items):
                      + (f", pul olish mashinasi {len(car)} ta" if car else "")
                      + (f"; {why}" if why else ""))[:255])
     messages.success(request, said)
-    return redirect(_load_url(load) + "?marshrut=1")
+    return redirect(_route_back(request, load))
 
 
 def _route_depot():
@@ -12198,7 +12212,7 @@ def _reset_load_order(request, load):
         AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                         f"Yuk #{load.pk} tartibi o'chirildi — tavsiya etilgan tartibga qaytdi")
         messages.success(request, "Tavsiya etilgan tartibga qaytildi. Ma'qul bo'lsa, saqlang.")
-    return redirect(_load_url(load) + "?marshrut=1")
+    return redirect(_route_back(request, load))
 
 
 def _set_strategy(request, load):
@@ -12210,7 +12224,7 @@ def _set_strategy(request, load):
         load.save(update_fields=["strategy"])
         AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                         f"Yuk #{load.pk}: mashinalar — {load.get_strategy_display()}")
-    return redirect(_load_url(load) + "?marshrut=1")
+    return redirect(_route_back(request, load))
 
 
 def money_car_saving(plan):
@@ -12248,7 +12262,7 @@ def _use_money_car(request, load):
     if plan is None:
         messages.error(request, "Pul olish mashinasi hozir foyda bermaydi — kun o'zgargan "
                                 "bo'lishi mumkin. Marshrutni qayta ko'ring.")
-        return redirect(_load_url(load) + "?marshrut=1")
+        return redirect(_route_back(request, load))
     LoadItem.objects.filter(load__date=load.date).update(position=None, route_group=None,
                                                          money_car=False)
     LoadItem.objects.filter(pk__in=[st.key for st in plan.car_route]).update(money_car=True)
@@ -12278,7 +12292,7 @@ def _use_money_car(request, load):
                     + (f" ({saving})" if saving else ""))
     messages.success(request, f"Pul olish mashinasi {len(plan.car_route)} ta manzilga boradi"
                               + (f": {saving}." if saving else "."))
-    return redirect(_load_url(load) + "?marshrut=1")
+    return redirect(_route_back(request, load))
 
 
 @transaction.atomic
@@ -12298,7 +12312,7 @@ def _drop_money_car(request, load):
     AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                     f"Yuk #{load.pk}: pul olish mashinasisiz")
     messages.success(request, "Bu kun pul olish mashinasisiz — hammasi yuk mashinasida.")
-    return redirect(_load_url(load) + "?marshrut=1")
+    return redirect(_route_back(request, load))
 
 
 def _allow_money_car(request, load):
@@ -12311,7 +12325,7 @@ def _allow_money_car(request, load):
         load.save(update_fields=["money_car_off"])
         AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                         f"Yuk #{load.pk}: pul olish mashinasi yana ruxsat etildi")
-    return redirect(_load_url(load) + "?marshrut=1")
+    return redirect(_route_back(request, load))
 
 
 def start_limit(load):
@@ -12336,7 +12350,7 @@ def _set_start(request, load):
     server's clock, not the phone's. Every answer goes back to the route."""
     if not _may_change_load(request.user, load):
         raise PermissionDenied
-    back = redirect(_load_url(load) + "?marshrut=1")
+    back = redirect(_route_back(request, load))
     truck_stops = LoadItem.objects.filter(load__date=load.date, method=LoadItem.Method.TRUCK)
     if request.POST.get("clear"):
         if load.started_at:
@@ -13547,6 +13561,8 @@ def load_route(request, pk):
 
     return render(request, "crm/_load_route.html", {
         "load": load,
+        # Its forms post here, so a button comes back to the tab it was pressed on.
+        "route_action": _load_url(load) + _route_tab_qs(request.GET),
         "warehouse": warehouse,
         "missing": ctx["missing"],
         "routes": routes,

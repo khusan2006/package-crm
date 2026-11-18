@@ -555,6 +555,26 @@ def test_an_unsaved_order_has_a_way_back(client, admin_user, load, three):
     assert "data-route-suggest" in route(client, admin_user, load).content.decode()
 
 
+def test_route_buttons_on_mashinada_come_back_to_mashinada(client, admin_user, load, three):
+    """On «Mashinada» the route's buttons (and «Jo'natish») post with ?tur=truck and come
+    back to that tab — not to «Hammasi», whose longer page puts the route elsewhere."""
+    a, b, c = three
+    day = get(client, admin_user, f"/yetkazish/?sana={TODAY().isoformat()}&tur=truck").content.decode()
+    assert f'data-url="/yetkazish/{load.pk}/marshrut/?tur=truck"' in day
+    assert f'action="/yetkazish/{load.pk}/?tur=truck" class="load-start' in day
+    frag = get(client, admin_user, f"/yetkazish/{load.pk}/marshrut/?tur=truck").content.decode()
+    assert frag.count(f'action="/yetkazish/{load.pk}/?tur=truck"') >= 2  # strategy, order
+    back = f"/yetkazish/{load.pk}/?tur=truck&marshrut=1"
+    resp = client.post(f"/yetkazish/{load.pk}/?tur=truck",
+                       {"action": "save", "stop": [c.pk, a.pk, b.pk]})
+    assert resp.url == back
+    assert client.post(f"/yetkazish/{load.pk}/?tur=truck", {"action": "reset"}).url == back
+    assert client.get(back).context["tab"] == "truck"
+    # «Hammasi» stays as it was.
+    plain = get(client, admin_user, f"/yetkazish/{load.pk}/marshrut/").content.decode()
+    assert f'action="/yetkazish/{load.pk}/"' in plain
+
+
 def test_trucks_wait_for_an_estimate_when_a_product_has_no_history(client, admin_user, load, three):
     Truck.objects.create(name="Labo", capacity_kg=1000)
     resp = route(client, admin_user, load)
