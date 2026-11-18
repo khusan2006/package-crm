@@ -17,7 +17,7 @@ from django.core.cache import cache
 from django.utils import timezone
 
 from accounts.models import User
-from crm import road
+from crm import road, routing
 from crm.models import (
     AuditLog, Client, Load, LoadItem, LoadLine, Payment, Product, Sale, SaleItem, Truck, Warehouse,
 )
@@ -3183,3 +3183,74 @@ def test_a_sellers_counts_and_buttons_are_their_own(client, seller_user, other_s
     stop(load, make_client(other_seller, "Begona"), (paket, 1))
     resp = day_page(client, seller_user)
     assert {t["label"]: t["count"] for t in resp.context["tabs"]}["Hammasi"] == 1
+
+
+# --- trips (reys): more than the trucks take in one go -------------------------------
+
+@pytest.fixture
+def full_trucks(load, seller_user, warehouse, paket):
+    """Two 200 kg trucks and 500 kg to deliver: one truck goes twice."""
+    Truck.objects.create(name="A", capacity_kg=200)
+    Truck.objects.create(name="B", capacity_kg=200)
+    return {name: stop(load, make_client(seller_user, name, dlng), (paket, 5, 100))
+            for name, dlng in (("W1", -0.05), ("W2", -0.04), ("E1", 0.04), ("E2", 0.05),
+                               ("N1", 0.01))}
+
+
+def test_a_full_day_goes_on_a_second_trip(client, admin_user, load, full_trucks):
+    resp = route(client, admin_user, load)
+    routes = resp.context["routes"]
+    assert [r["trip"] for r in routes] == [1, 1, 2]
+    assert not resp.context["error"]
+    assert sorted(s["client"].name for r in routes for s in r["stops"]) == sorted(full_trucks)
+    assert all(r["kg"] <= r["truck"].capacity_kg for r in routes)
+    again = routes[2]
+    first = next(r for r in routes[:2] if r["truck"] == again["truck"])
+    # The 2-reys leaves once the truck is back and loaded again.
+    assert again["leaves"] == first["back"] + timedelta(minutes=routing.ETA_RELOAD_MINUTES)
+    assert again["stops"][0]["eta"] > again["leaves"]
+    body = resp.content.decode()
+    assert f"{again['truck'].name} — 2-reys" in body
+    assert f"{again['truck'].name} (2 reys)" in resp.context["trucks_text"]
+    assert "2-reys" in again["share"]["title"]
+
+
+def test_a_stop_moves_between_three_trip_routes_and_stays(client, admin_user, load, full_trucks):
+    resp = route(client, admin_user, load)
+    stops, groups = [], []
+    for n, r in enumerate(resp.context["routes"]):
+        for s in r["stops"]:
+            stops.append(s["item"].pk)
+            groups.append(str(n))
+    moved = resp.context["routes"][0]["stops"][0]["item"]
+    groups[0] = "2"
+    client.post(f"/yetkazish/{load.pk}/", {"action": "save", "stop": stops, "group": groups,
+                                           "routes": "3"})
+    load.refresh_from_db()
+    assert load.split_routes == 3
+    again = route(client, admin_user, load)
+    assert moved.pk in [s["item"].pk for s in again.context["routes"][2]["stops"]]
+
+
+def test_a_group_past_the_routes_is_refused(client, admin_user, load, full_trucks):
+    resp = route(client, admin_user, load)
+    stops = [s["item"].pk for r in resp.context["routes"] for s in r["stops"]]
+    client.post(f"/yetkazish/{load.pk}/", {"action": "save", "stop": stops,
+                                           "group": ["3"] + ["0"] * (len(stops) - 1),
+                                           "routes": "3"})
+    load.refresh_from_db()
+    assert load.ordered_at is None
+
+
+def test_departure_sends_only_the_first_trip(client, admin_user, load, full_trucks):
+    later = {s["item"].pk for s in route(client, admin_user, load).context["routes"][2]["stops"]}
+    start(client, admin_user, load, started_at="")
+    sent = set(LoadItem.objects.filter(status=LoadItem.Status.SENT).values_list("pk", flat=True))
+    assert later and not sent & later
+    assert sent | later == {i.pk for i in full_trucks.values()}
+
+
+def test_no_money_car_with_trips(client, admin_user, seller_user, load, full_trucks):
+    stop(load, make_client(seller_user, "Qarz", 0.09), purpose=COLLECT)
+    resp = route(client, admin_user, load)
+    assert resp.context["money_route"] is None and resp.context["money_offer"] is None

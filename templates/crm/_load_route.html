@@ -32,8 +32,8 @@ belong to rather than as loose lines above it.{% endcomment %}
   <div class="route-summary-item">
     <span class="route-summary-label">Mashina</span>
     {% if routes.0.truck %}
-    <strong class="route-summary-value">{% for r in going %}{{ r.truck.name }}{% if not forloop.last %} + {% endif %}{% endfor %}{% if money_route %} + Pul olish mashinasi{% endif %}{% if estimated %} <span class="badge badge-warning" title="Kg hali hammasi tortilmagan — o'tgan sotuvlardagi o'rtacha kg/rulon bo'yicha">taxminiy</span>{% endif %}</strong>
-    <span class="route-summary-sub">{% if going|length < routes|length %}mijozlar qo'lda bitta mashinaga o'tkazilgan{% elif routes|length > 1 %}{% if load.strategy == "fast" %}tezroq tugatish uchun ikkiga bo'lindi{% else %}bittasiga sig'madi — ikkiga bo'lindi{% endif %}{% else %}sig'adiganlarning eng kichigi{% endif %}.{% if estimated %} Tortilgach qayta hisoblanadi.{% endif %}</span>
+    <strong class="route-summary-value">{{ trucks_text }}{% if money_route %} + Pul olish mashinasi{% endif %}{% if estimated %} <span class="badge badge-warning" title="Kg hali hammasi tortilmagan — o'tgan sotuvlardagi o'rtacha kg/rulon bo'yicha">taxminiy</span>{% endif %}</strong>
+    <span class="route-summary-sub">{% if trip_count > 1 %}hammasi bir qatnovda sig'madi — {{ trip_count }} reys: mashina qaytib, qayta yuklanadi{% elif going|length < routes|length %}mijozlar qo'lda bitta mashinaga o'tkazilgan{% elif routes|length > 1 %}{% if load.strategy == "fast" %}tezroq tugatish uchun ikkiga bo'lindi{% else %}bittasiga sig'madi — ikkiga bo'lindi{% endif %}{% else %}sig'adiganlarning eng kichigi{% endif %}.{% if estimated %} Tortilgach qayta hisoblanadi.{% endif %}</span>
     {% elif not routes %}
     <strong class="route-summary-value">Faqat pul olish mashinasi</strong>
     <span class="route-summary-sub">Yuk mashinasi boradigan manzil qolmadi.</span>
@@ -65,7 +65,7 @@ belong to rather than as loose lines above it.{% endcomment %}
     <span class="route-summary-sub">{{ load.ordered_at|date:"d.m.Y H:i" }}</span>
     {% else %}
     <strong class="route-summary-value"><span class="badge badge-warning">Taklif</span></strong>
-    <span class="route-summary-sub">kerak bo'lsa ↑ ↓{% if routes|length > 1 %} va ⇄ (boshqa mashinaga){% endif %} bilan o'zgartirib, saqlang</span>
+    <span class="route-summary-sub">kerak bo'lsa ↑ ↓{% if routes|length > 1 %} va ⇄ ({% if trip_count > 1 %}keyingi mashina yoki reysga{% else %}boshqa mashinaga{% endif %}){% endif %} bilan o'zgartirib, saqlang</span>
     {% endif %}
     <span class="route-summary-sub route-dirty" data-route-dirty hidden>O'zgartirildi — saqlang. Xarita, km va vaqtlar saqlangach yangilanadi.</span>
   </div>
@@ -144,7 +144,7 @@ or «Pul mashinasisiz» keeps the day as it is and only says what the car would 
   {% for r in routes %}
   <section class="card route-card" style="--route: var({{ r.color }});" data-route-truck>
     <div class="card-head">
-      <h2><span class="route-dot" aria-hidden="true"></span>{% if r.truck %}{{ r.truck.name }}{% else %}Marshrut{% endif %}</h2>
+      <h2><span class="route-dot" aria-hidden="true"></span>{% if r.truck %}{{ r.truck.name }}{% if r.trip_label %} — {{ r.trip_label }}{% endif %}{% else %}Marshrut{% endif %}</h2>
       <span class="muted"><span data-route-count>{{ r.stops|length }}</span> ta manzil · ≈ {{ r.km|floatformat:1 }} km</span>
     </div>
     {% if r.truck %}
@@ -155,7 +155,7 @@ or «Pul mashinasisiz» keeps the day as it is and only says what the car would 
     <p class="route-over-note" data-route-over{% if not r.over %} hidden{% endif %}>Mashina sig'imidan oshib ketdi.</p>
     {% endif %}
     <ol class="route-stops">
-      <li class="route-stop route-stop--depot"><span class="route-n">O</span><span>{{ warehouse.name }} — jo'nash</span></li>
+      <li class="route-stop route-stop--depot"><span class="route-n">O</span><span>{{ warehouse.name }} — {% if r.trip > 1 %}qaytib, qayta yuklab jo'nash{% else %}jo'nash{% endif %}</span>{% if r.leaves and r.stops %}<span class="route-eta route-eta--back" data-route-eta data-eta-min="{{ r.leaves_min|unlocalize }}" title="Taxminiy jo'nash vaqti: oldingi reysdan qaytib, {{ reload_minutes }} daqiqa yuklanadi">≈ {{ r.leaves|date:"H:i" }}</span>{% endif %}</li>
       {% for s in r.stops %}
       <li class="route-stop" data-route-stop data-kg="{{ s.kg|unlocalize }}">
         <input type="hidden" name="stop" value="{{ s.item.pk|unlocalize }}">
@@ -171,7 +171,7 @@ or «Pul mashinasisiz» keeps the day as it is and only says what the car would 
           {% if s.eta %}<span class="route-eta" data-route-eta data-eta-min="{{ s.eta_min|unlocalize }}" title="Taxminiy yetib borish vaqti">≈ {{ s.eta|date:"H:i" }}</span>{% endif %}
           <span class="route-kg">{% if s.item.delivers %}{{ s.rolls }} rulon<span class="cell-sub">{% if s.unknown %}kg noma'lum{% else %}{% if s.estimated %}≈ {% endif %}{{ s.kg|floatformat:"0g" }} kg{% endif %}</span>{% endif %}{% if s.item.collects %}<span class="cell-sub route-collect">pul olish</span>{% endif %}</span>
           <span class="route-moves">
-            {% if routes|length > 1 %}<button type="button" class="icon-action route-swap" data-move-truck title="Boshqa mashinaga o'tkazish" aria-label="{{ s.client.name }} — boshqa mashinaga"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>{% endif %}
+            {% if routes|length > 1 %}<button type="button" class="icon-action route-swap" data-move-truck title="Keyingi mashina yoki reysga o'tkazish" aria-label="{{ s.client.name }} — keyingi mashina yoki reysga"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>{% endif %}
             <button type="button" class="icon-action" data-move="up" title="Oldinroq" aria-label="{{ s.client.name }} — oldinroq"{% if forloop.first %} disabled{% endif %}>↑</button>
             <button type="button" class="icon-action" data-move="down" title="Keyinroq" aria-label="{{ s.client.name }} — keyinroq"{% if forloop.last %} disabled{% endif %}>↓</button>
           </span>

@@ -16,6 +16,9 @@ The steps, as `plan_routes` runs them:
    wins: each truck gets one side of the city.
 3. Order each truck's stops: nearest-neighbour from the warehouse, then 2-opt —
    reverse any stretch of the route that makes it shorter, until nothing does.
+4. More than the trucks hold in one go (every truck full): trips (reys). Every
+   active truck goes once, and the ones that are back load again for a 2-reys,
+   as few trips as hold it — `plan_trips`. Design: docs/specs/2026-11-18-trips.md.
 
 Distances are straight-line (haversine). Every function takes the distance as a
 parameter, so road distances (OSRM) can replace it later without changing the rest.
@@ -96,7 +99,7 @@ class StopTooHeavy(RoutingError):
 class SplitImpossible(RoutingError):
     def __init__(self):
         super().__init__(
-            "Yukni ikki mashinaga sig'adigan qilib bo'lib bo'lmadi. "
+            "Yukni mashinalarga sig'adigan qilib bo'lib bo'lmadi. "
             "Ba'zi sotuvlarni keyingi kunga qoldiring."
         )
 
@@ -300,8 +303,10 @@ def plan_routes(depot, stops, trucks, return_to_depot=True, dist=distance_km, pr
     objects with `capacity_kg`). By default one truck goes when it holds everything
     (fill one first); `prefer_two` sends two in parallel, each taking one side of the
     city, to finish sooner — falling back to the default when there aren't two trucks
-    or the stops can't be divided. Raises a RoutingError when the day can't be
-    planned automatically; its message says why, for the operator."""
+    or the stops can't be divided. When the trucks can't take it all in one go, they
+    make trips (`plan_trips`): routes come truck by truck within a trip, a truck's
+    1-reys before its 2-reys. Raises a RoutingError when the day can't be planned
+    automatically; its message says why, for the operator."""
     stops = merge_stops(stops)
     if not stops:
         return Plan(routes=[])
@@ -311,7 +316,15 @@ def plan_routes(depot, stops, trucks, return_to_depot=True, dist=distance_km, pr
     too_heavy = [s for s in stops if s.kg > biggest]
     if too_heavy:
         raise StopTooHeavy(too_heavy, biggest)
+    try:
+        return _plan_one_trip(depot, stops, trucks, return_to_depot, dist, prefer_two)
+    except (OverCapacity, SplitImpossible):
+        return plan_trips(depot, stops, trucks, return_to_depot, dist)
 
+
+def _plan_one_trip(depot, stops, trucks, return_to_depot, dist, prefer_two):
+    """One or two trucks, one trip each. Raises OverCapacity or SplitImpossible when
+    that isn't enough."""
     total = sum((s.kg for s in stops), Decimal("0"))
     if prefer_two and len(trucks) >= 2 and len(stops) >= 2:
         for pair in truck_pairs(total, trucks):
@@ -339,6 +352,86 @@ def plan_routes(depot, stops, trucks, return_to_depot=True, dist=distance_km, pr
     raise SplitImpossible()
 
 
+#: The most trips (reys) a truck makes in a day. Past it the day is over capacity
+#: and a person decides what waits — it also keeps the search finite.
+MAX_TRIPS = 4
+
+
+def plan_trips(depot, stops, trucks, return_to_depot=True, dist=distance_km):
+    """The day when the trucks can't take it in one go: trips (reys).
+
+    Every active truck goes on the 1-reys (all of them are needed: the load is more
+    than one trip of the best pair); a truck that is back loads again for a 2-reys,
+    bigger trucks first, and so on — the fewest trips that hold the load. Each trip
+    takes one stretch of the city (the sweep, as in split_two). Routes come trip by
+    trip, so a truck's 1-reys is before its 2-reys; a trip nobody needs is left out.
+    Raises OverCapacity past MAX_TRIPS."""
+    stops = merge_stops(stops)
+    fleet = sorted(trucks, key=lambda t: t.capacity_kg, reverse=True)
+    if not fleet:
+        raise NoTrucks()
+    total = sum((s.kg for s in stops), Decimal("0"))
+    for trips in range(1, MAX_TRIPS + 1):
+        slots = [truck for _ in range(trips) for truck in fleet]
+        if sum(t.capacity_kg for t in slots) < total:
+            continue
+        groups = fill_trips(depot, stops, [t.capacity_kg for t in slots], return_to_depot, dist)
+        if groups is None:
+            continue
+        return Plan(routes=[build_route(t, g, depot, return_to_depot, dist)
+                            for t, g in zip(slots, groups) if g])
+    most = MAX_TRIPS * sum(t.capacity_kg for t in fleet)
+    if total > most:
+        raise OverCapacity(total - most)
+    raise SplitImpossible()
+
+
+def fill_trips(depot, stops, capacities, return_to_depot=True, dist=distance_km):
+    """Divide `stops` among trips of the given capacities, in that order, so each
+    fits: [ordered stops, …] per trip (some may be empty), or None when they can't
+    be divided so.
+
+    The sweep: stops sorted by direction from the warehouse, and from every starting
+    point around that circle each trip takes the next stops while they fit — so each
+    trip is one stretch of the city. The shortest total wins. If no starting point
+    works, the heaviest stops are packed first into whichever trip has most room."""
+    by_angle = sorted(stops, key=lambda s: _bearing(depot, s))
+    n = len(by_angle)
+    D = _matrix([depot] + [s.point for s in by_angle], dist)
+    kg = [s.kg for s in by_angle]
+
+    best = None
+    for start in range(n):
+        groups = [[] for _ in capacities]
+        slot, room = 0, capacities[0]
+        for step in range(n):
+            i = (start + step) % n
+            while slot < len(capacities) and kg[i] > room:
+                slot += 1
+                room = capacities[slot] if slot < len(capacities) else 0
+            if slot == len(capacities):
+                break
+            groups[slot].append(i + 1)
+            room -= kg[i]
+        else:
+            routes = [_order(D, g, return_to_depot) if g else ([], 0.0) for g in groups]
+            km = sum(length for _, length in routes)
+            if best is None or km < best[0] - 1e-9:
+                best = (km, [r for r, _ in routes])
+
+    if best is None:
+        room = list(capacities)
+        groups = [[] for _ in capacities]
+        for i in sorted(range(n), key=lambda i: kg[i], reverse=True):
+            slot = max(range(len(room)), key=lambda k: (room[k], -k))
+            if kg[i] > room[slot]:
+                return None
+            room[slot] -= kg[i]
+            groups[slot].append(i + 1)
+        best = (0.0, [_order(D, g, return_to_depot)[0] if g else [] for g in groups])
+    return [[by_angle[i - 1] for i in route] for route in best[1]]
+
+
 #: Arrival times are estimates until the trucks report GPS: an average city speed
 #: (40 km/h with the traffic lights — the client's own figure), a fixed time at
 #: every stop (unloading, taking the money), and — when distances are straight
@@ -346,6 +439,21 @@ def plan_routes(depot, stops, trucks, return_to_depot=True, dist=distance_km, pr
 ETA_SPEED_KMH = 40
 ETA_STOP_MINUTES = 15
 ETA_DETOUR = 1.3
+#: Minutes at the warehouse between a truck's trips (reys): loading it again.
+ETA_RELOAD_MINUTES = 30
+
+
+def trip_numbers(trucks):
+    """Which reys each route is, from the trucks in route order (plan_trips puts a
+    truck's 1-reys first): [1, 1, 2] for A, B, A. A route with no truck is 1."""
+    seen, numbers = {}, []
+    for truck in trucks:
+        if truck is None:
+            numbers.append(1)
+            continue
+        seen[truck] = seen.get(truck, 0) + 1
+        numbers.append(seen[truck])
+    return numbers
 
 
 def arrival_times(depot, points, start, dist=distance_km, detour=1.0):
