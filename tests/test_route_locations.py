@@ -11,6 +11,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+from django.contrib.messages import get_messages
 from django.utils import timezone
 
 from crm import routing
@@ -213,6 +214,39 @@ def test_a_new_stop_is_added_for_a_dokon(client, admin_user, seller_user, load, 
     assert load.items.get().location == bozor
     assert str(c.pk) in client.get(f"/yetkazish/{load.pk}/").context["client_shops"].__repr__() \
         or c.pk in client.get(f"/yetkazish/{load.pk}/").context["client_shops"]
+
+
+def add_rows(client, user, load, rows):
+    """«Mijoz qo'shish» with several rows: (client, do'kon or None, rolls) each."""
+    client.force_login(user)
+    return client.post(f"/yetkazish/{load.pk}/", {
+        "action": "items", "new_client": [c.pk for c, _, _ in rows],
+        "new_purpose": [DELIVER] * len(rows), "new_key": [str(n) for n in range(1, len(rows) + 1)],
+        "new_method": ["truck"] * len(rows),
+        "new_place": [str(s.pk) if s else "" for _, s, _ in rows],
+        "new_product": [rows[0][2][0].pk] * len(rows), "new_rolls": [str(r[2][1]) for r in rows]})
+
+
+def test_one_client_is_added_for_two_dokonlar_at_once(client, admin_user, seller_user, load, paket):
+    c = make_client(seller_user, "Sarvar", 0.01)
+    bozor = shop(c, "Bozor", 0.02)
+    resp = add_rows(client, admin_user, load, [(c, None, (paket, 3)), (c, bozor, (paket, 5))])
+    assert resp.status_code == 302
+    items = LoadItem.objects.filter(client=c).order_by("pk")
+    assert [(i.location, i.lines.get().rolls) for i in items] == [(None, 3), (bozor, 5)]
+    # A client is once per Yuk: the second row went into the day's next one.
+    assert items[0].load == load and items[1].load != load and items[1].load.date == load.date
+    said = [m.message for m in get_messages(resp.wsgi_request)]
+    assert "Qo'shildi: Sarvar (asosiy), Sarvar (Bozor)." in said
+
+
+def test_one_client_twice_for_the_same_dokon_is_refused(client, admin_user, seller_user, load,
+                                                        paket):
+    c = make_client(seller_user, "Sarvar", 0.01)
+    bozor = shop(c, "Bozor", 0.02)
+    resp = add_rows(client, admin_user, load, [(c, bozor, (paket, 3)), (c, bozor, (paket, 5))])
+    assert resp.status_code == 200 and not LoadItem.objects.exists()
+    assert "bir do&#x27;kon bilan ikki qatorda tanlangan" in resp.content.decode()
 
 
 def test_the_route_goes_to_the_dokon_and_tells_the_driver(client, admin_user, seller_user,

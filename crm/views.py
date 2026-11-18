@@ -11473,13 +11473,22 @@ def _read_load_items(request, load, items, products, target_items=None):
         clients = Client.objects.all() if user.can_see_all_records else Client.objects.filter(owner=user)
         client = clients.filter(pk=raw_client).first() if _DIGITS.fullmatch(raw_client) else None
         label = client.name if client else f"{n}-yangi qator"
+        # The do'kon picked in the row; one that isn't this client's (the client was
+        # changed after picking it) is the main joylashuv rather than an error. One
+        # client may be in two rows for two of their do'konlar — not twice for one.
+        shop = (_shop_of(client, raw_place) or None) if client else None
         if client is None:
             row["client_bad"] = True
             problems.append(f"{n}-yangi qator — mijoz tanlanmagan")
-        elif client.pk in picked:
+        elif (client.pk, shop) in picked:
             row["client_bad"] = True
-            problems.append(f"{client.name} ikki qatorda tanlangan — bitta qatorga "
-                            f"«+ Mahsulot» bilan qo'shing")
+            if client.shops:
+                problems.append(f"{client.name} bir do'kon bilan ikki qatorda tanlangan — "
+                                f"boshqa do'konni tanlang yoki bitta qatorga «+ Mahsulot» "
+                                f"bilan qo'shing")
+            else:
+                problems.append(f"{client.name} ikki qatorda tanlangan — bitta qatorga "
+                                f"«+ Mahsulot» bilan qo'shing")
         purpose = row["purpose"] if row["purpose"] in LoadItem.Purpose.values else LoadItem.Purpose.DELIVER
         before = len(problems)
         lines, product_rows = [], []
@@ -11505,12 +11514,9 @@ def _read_load_items(request, load, items, products, target_items=None):
         row.update(product_rows[0])
         # Empty extra rows are dropped from the echo; a typed one comes back as typed.
         row["extra"] = [r for raw, r in zip(raws[1:], product_rows[1:]) if any(raw)]
-        # The do'kon picked in the row; one that isn't this client's (the client was
-        # changed after picking it) is the main joylashuv rather than an error.
-        shop = _shop_of(client, raw_place) if client else None
         if client and not row["client_bad"] and len(problems) == before:
-            picked.add(client.pk)
-            plan["new"].append((client, purpose, lines, method, shop or None))
+            picked.add((client.pk, shop))
+            plan["new"].append((client, purpose, lines, method, shop))
             if client.pk in in_load:
                 plan["again"].append(client.name)
     if len(target_items) + len(plan["new"]) > LOAD_MAX_ITEMS:
@@ -11558,6 +11564,9 @@ def _write_load_plan(load, plan, user):
             home, made = _free_load(load.date, client, user)
             if made:
                 plan["made"].add(home.pk)
+        # A second row for the same client in this one save (another do'kon) goes into
+        # the day's next Yuk: a client is once per Yuk.
+        taken.add(client.pk)
         item = LoadItem.objects.create(load=home, client=client, purpose=purpose, position=position,
                                        method=method, location=shop)
         plan["homes"].append(home.pk)
@@ -11676,8 +11685,10 @@ def _save_load_items(request, load, items, ahead=(), new_load=None, target_items
         return _quick_status(request, load, everything, quick, saved=bool(parts))
     if plan["new"]:
         other_day = f" — {_day_label(new_load.date)}" if new_load.date != load.date else ""
-        messages.success(request, f"Qo'shildi{other_day}: "
-                                  f"{', '.join(c.name for c, *_ in plan['new'])}.")
+        # A client with several do'konlar is named with the one each row goes to.
+        added = [c.name + (f" ({_shop_label(c, shop)})" if c.shops else "")
+                 for c, _, _, _, shop in plan["new"]]
+        messages.success(request, f"Qo'shildi{other_day}: {', '.join(added)}.")
         if plan["again"]:
             messages.info(request, f"{', '.join(plan['again'])} — bu kunda oldin ham bor edi: "
                                    f"yana bitta alohida qator bo'lib qo'shildi.")

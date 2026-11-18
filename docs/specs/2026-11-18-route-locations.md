@@ -22,6 +22,7 @@ otherwise.
 | Where are the extra shops kept? | The main joylashuv stays on `Client` (`latitude`, `longitude`), with a new `location_note`. Other shops are `ClientLocation` rows: `note` plus a point. |
 | Can a shop exist without a main location? | No. The form asks for the main one first. |
 | Which shop does a delivery go to? | `LoadItem.location`. Empty means the main joylashuv. A «Do'kon» box appears on the day row and in «Mijoz qo'shish», only for a client with more than one place. |
+| Two do'konlar of one client on one day | Yes: «Mijoz qo'shish» takes the client in two rows with different do'konlar (the same do'kon twice is refused). Each row becomes a stop of its own; the second goes into the day's next Yuk (a client is once per Yuk). |
 | A shop is removed from the client | Its stops go back to the main joylashuv (`SET_NULL`). The client form updates kept shops in place, so their stops keep pointing at them. |
 | Teskari | Reverses that vehicle's card and saves at once. «Zarur» stops stay first. |
 | Zarur | `LoadItem.urgent_at`. The pressed stop goes first on its truck, ahead of earlier urgent ones (the newest is first). The rest of that truck is ordered on from it. Pressing it saves the order. Pressing it again clears the mark and keeps the order. |
