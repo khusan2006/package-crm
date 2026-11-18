@@ -4656,6 +4656,60 @@ ul.errorlist li::before {
 }
 
 /* ============================================================
+   Oxirgi xabarlar — the topbar's log of toasts and save notes
+   ============================================================ */
+
+.msglog { position: relative; }
+.msglog-btn { position: relative; }
+.msglog-badge {
+  position: absolute; top: -6px; right: -6px; min-width: 17px; height: 17px; padding: 0 4px;
+  border-radius: var(--r-pill); display: grid; place-items: center;
+  font-size: 10px; font-weight: 700; line-height: 1;
+  background: var(--accent); color: #fff; border: 2px solid var(--surface);
+}
+.msglog-badge.is-error { background: var(--danger); }
+.msglog-badge[hidden] { display: none; }
+.msglog-panel {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 210;
+  width: 380px; max-width: calc(100vw - 24px); max-height: min(70vh, 520px);
+  display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: var(--r); box-shadow: var(--shadow-lg);
+}
+.msglog-panel[hidden] { display: none; }
+.msglog-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+}
+.msglog-list { list-style: none; margin: 0; padding: 4px 0; overflow-y: auto; }
+.msglog-item {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px;
+  padding: 8px 12px 8px 10px; border-left: 3px solid var(--border-strong);
+  font-size: 13px; line-height: 1.4;
+}
+.msglog-item + .msglog-item { border-top: 1px solid var(--border); }
+.msglog-success { border-left-color: var(--success); }
+.msglog-error { border-left-color: var(--danger); }
+.msglog-warning { border-left-color: var(--warning); }
+.msglog-info { border-left-color: var(--accent); }
+.msglog-time { color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.msglog-text { overflow-wrap: anywhere; }
+.msglog-error .msglog-text { color: var(--danger); }
+.msglog-page { grid-column: 2; color: var(--text-faint); font-size: 12px; }
+.msglog-empty { margin: 0; padding: 14px 12px; font-size: 13px; }
+.msglog-empty[hidden] { display: none; }
+@media (max-width: 560px) {
+  .msglog-panel { position: fixed; top: 60px; left: 12px; right: 12px; width: auto; }
+}
+
+/* A route stop the page came back to after «⚡ Zarur» (load.js): a short glow. */
+.route-stop.route-flash { animation: route-flash 2.4s ease; }
+@keyframes route-flash {
+  0%, 40% { box-shadow: 0 0 0 3px var(--accent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* ============================================================
    Toasts
    ============================================================ */
 

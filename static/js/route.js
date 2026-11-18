@@ -117,6 +117,19 @@
       (btn.disabled ? li.querySelector('[data-move]:not([disabled])') : btn).focus();
     });
 
+    // Every button on the route (⚡ Zarur, ⇅ Teskari, «+ Marshrutga», Tartibni saqlash,
+    // the trucks, the money car) sends the page and it comes back from the top. Where
+    // it was is kept for that next page (load.js puts it back once the route is
+    // drawn): the stop ⚡ was pressed on, else the scroll position.
+    var content = scope.querySelector('[data-load-route-content]') || form;
+    content.addEventListener('submit', function (e) {
+      if (e.defaultPrevented) { return; }  // a «confirm» answered with «Bekor»
+      var by = e.submitter;
+      var keep = { at: Date.now(), y: window.scrollY,
+                   stop: by && by.name === 'urgent' ? by.value : '' };
+      try { sessionStorage.setItem('route:keep', JSON.stringify(keep)); } catch (err) {}
+    });
+
     // Leaving with moves not saved loses them; say so, like any unsaved form. Saving
     // the order, or «Qayta hisoblash» (which asks on its own), is not leaving.
     var submitting = false;

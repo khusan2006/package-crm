@@ -176,6 +176,24 @@
             <div class="role">{{ user.get_role_display }}</div>
           </div>
         </div>
+        {% comment %}Oxirgi xabarlar: every toast this browser showed (saqlandi, qo'shildi,
+        xatolar) and the Yetkazish rows' save notes, newest first, with the time — a toast
+        gone before it was read can be read here. Kept in this browser only
+        (localStorage, the script below).{% endcomment %}
+        <div class="msglog" data-msglog>
+          <button type="button" class="icon-btn msglog-btn" data-msglog-toggle aria-expanded="false" aria-controls="msglog-panel" title="Oxirgi xabarlar" aria-label="Oxirgi xabarlar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="13" x2="13" y2="13"/></svg>
+            <span class="msglog-badge" data-msglog-badge hidden></span>
+          </button>
+          <div class="msglog-panel" id="msglog-panel" data-msglog-panel hidden>
+            <div class="msglog-head">
+              <strong>Oxirgi xabarlar</strong>
+              <button type="button" class="btn btn-sm btn-ghost" data-msglog-clear>Tozalash</button>
+            </div>
+            <ol class="msglog-list" data-msglog-list></ol>
+            <p class="msglog-empty muted" data-msglog-empty>Hozircha xabar yo'q.</p>
+          </div>
+        </div>
         <a href="{{ request.get_full_path }}" class="icon-btn" title="Yangilash" aria-label="Ma'lumotni yangilash">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
         </a>
@@ -247,6 +265,107 @@
     });
   })();
 
+  // Oxirgi xabarlar: a log of what the page told the user, newest first, kept in this
+  // browser (localStorage — it may be off or full: then there is simply no log).
+  // window.crmLog(text, level) adds to it: the toasts below, and load.js's row notes.
+  (function () {
+    var KEY = 'crm:msglog', SEEN = 'crm:msglog:seen', MAX = 60;
+    var read = function () {
+      try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { return []; }
+    };
+    var write = function (list) {
+      try { localStorage.setItem(KEY, JSON.stringify(list.slice(0, MAX))); } catch (e) {}
+    };
+    var seenAt = function () {
+      try { return parseInt(localStorage.getItem(SEEN), 10) || 0; } catch (e) { return 0; }
+    };
+    var root = document.querySelector('[data-msglog]');
+    var badge = root && root.querySelector('[data-msglog-badge]');
+    var panel = root && root.querySelector('[data-msglog-panel]');
+    var toggle = root && root.querySelector('[data-msglog-toggle]');
+    var refreshBadge = function () {
+      if (!badge) { return; }
+      var since = seenAt();
+      var fresh = read().filter(function (m) { return m.at > since; });
+      badge.hidden = !fresh.length;
+      badge.textContent = fresh.length > 9 ? '9+' : String(fresh.length);
+      badge.classList.toggle('is-error', fresh.some(function (m) { return m.level === 'error'; }));
+    };
+    var when = function (at) {
+      var d = new Date(at), now = new Date();
+      var hm = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+      return d.toDateString() === now.toDateString() ? hm
+        : ('0' + d.getDate()).slice(-2) + '.' + ('0' + (d.getMonth() + 1)).slice(-2) + ' ' + hm;
+    };
+    var draw = function () {
+      if (!panel) { return; }
+      var list = panel.querySelector('[data-msglog-list]');
+      var items = read();
+      list.innerHTML = '';
+      items.forEach(function (m) {
+        var li = document.createElement('li');
+        li.className = 'msglog-item msglog-' + (m.level || 'info');
+        var time = document.createElement('span');
+        time.className = 'msglog-time';
+        time.textContent = when(m.at);
+        var text = document.createElement('span');
+        text.className = 'msglog-text';
+        text.textContent = m.text;  // as text: it may carry whatever a user typed
+        li.appendChild(time);
+        li.appendChild(text);
+        if (m.page) {
+          var page = document.createElement('span');
+          page.className = 'msglog-page';
+          page.textContent = m.page;
+          li.appendChild(page);
+        }
+        list.appendChild(li);
+      });
+      panel.querySelector('[data-msglog-empty]').hidden = items.length > 0;
+    };
+    window.crmLog = function (text, level) {
+      text = (text || '').trim();
+      if (!text) { return; }
+      var list = read();
+      var title = (document.querySelector('.topbar-title') || {}).textContent || document.title;
+      list.unshift({ at: Date.now(), level: level || 'info', text: text, page: (title || '').trim() });
+      write(list);
+      refreshBadge();
+      if (panel && !panel.hidden) { draw(); }
+    };
+    if (root) {
+      var close = function () {
+        panel.hidden = true;
+        toggle.setAttribute('aria-expanded', 'false');
+      };
+      toggle.addEventListener('click', function () {
+        if (!panel.hidden) { close(); return; }
+        draw();
+        panel.hidden = false;
+        toggle.setAttribute('aria-expanded', 'true');
+        try { localStorage.setItem(SEEN, String(Date.now())); } catch (e) {}
+        refreshBadge();
+      });
+      root.querySelector('[data-msglog-clear]').addEventListener('click', function () {
+        write([]);
+        draw();
+        refreshBadge();
+      });
+      document.addEventListener('click', function (e) {
+        if (!panel.hidden && !root.contains(e.target)) { close(); }
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && !panel.hidden) { close(); toggle.focus(); }
+      });
+      // Another tab of the CRM logged something: the badge follows.
+      window.addEventListener('storage', function (e) { if (e.key === KEY) { refreshBadge(); } });
+      refreshBadge();
+    }
+  })();
+
+  // Toasts: each goes into «Oxirgi xabarlar» as it is shown. An error stays until
+  // closed — it is the one that must be read; the others go by themselves, but not
+  // while the pointer is on them.
   (function () {
     var stack = document.getElementById('toast-stack');
     if (stack) {
@@ -255,9 +374,20 @@
         setTimeout(function () { t.remove(); }, 260);
       };
       Array.prototype.forEach.call(stack.querySelectorAll('.toast'), function (t) {
+        var level = t.classList.contains('toast-error') ? 'error'
+          : t.classList.contains('toast-warning') ? 'warning'
+          : t.classList.contains('toast-success') ? 'success' : 'info';
+        var msg = t.querySelector('.toast-msg');
+        if (window.crmLog && msg) { window.crmLog(msg.textContent, level); }
         var btn = t.querySelector('.toast-close');
         if (btn) { btn.addEventListener('click', function () { dismiss(t); }); }
-        setTimeout(function () { dismiss(t); }, 4500);
+        if (level === 'error') { return; }
+        var wait = level === 'warning' ? 10000 : 7000;
+        var timer = setTimeout(function () { dismiss(t); }, wait);
+        t.addEventListener('mouseenter', function () { clearTimeout(timer); });
+        t.addEventListener('mouseleave', function () {
+          timer = setTimeout(function () { dismiss(t); }, 2500);
+        });
       });
     }
   })();

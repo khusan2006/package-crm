@@ -63,6 +63,30 @@ def test_zarur_puts_a_stop_first(login, admin_user, live_server, load_of_three):
     assert page.locator("[data-route-stop]").first.locator(".route-urgent-badge").is_visible()
 
 
+def test_zarur_keeps_the_page_on_the_stop_and_the_message_in_the_log(login, admin_user,
+                                                                      live_server, load_of_three):
+    """The page comes back where it was — on the stop ⚡ was pressed on — not at its top,
+    and what the server said can be read again under «Oxirgi xabarlar»."""
+    page = login(admin_user)
+    page.set_viewport_size({"width": 1200, "height": 520})
+    open_route(page, live_server, load_of_three)
+    last = page.locator("[data-route-stop]").nth(2)
+    last.scroll_into_view_if_needed()
+    last.locator('button[name="urgent"]').click()
+    page.wait_for_selector("text=birinchi bo'lib boriladi")
+    page.wait_for_selector("[data-route-start]", state="hidden")
+    page.wait_for_function("""() => {
+        const first = document.querySelector('[data-route-stop]');
+        const r = first && first.getBoundingClientRect();
+        return window.scrollY > 0 && r && r.top >= 0 && r.bottom <= window.innerHeight;
+    }""")
+    assert stop_names(page)[0] == "Uzoq"
+    page.click("[data-msglog-toggle]")
+    panel = page.locator("[data-msglog-panel]")
+    assert panel.is_visible()
+    assert "birinchi bo'lib boriladi" in panel.inner_text()
+
+
 def test_the_dokon_box_shows_for_a_client_with_shops(login, admin_user, seller_user, live_server,
                                                      db, paket):
     Warehouse.load()

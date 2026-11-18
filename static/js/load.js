@@ -551,6 +551,13 @@
         n.textContent = text;
         n.classList.toggle('is-bad', !!bad);
         n.hidden = !text;
+        // «Oxirgi xabarlar» (base.html) keeps what each save came to, with whose row.
+        if (window.crmLog && text && text !== 'Saqlanmoqda…') {
+          var row = stop.closest('.lane-row');
+          var who = row && row.querySelector('.lane-who strong');
+          var name = who && who.firstChild ? who.firstChild.textContent.trim() : '';
+          window.crmLog((name ? name + ': ' : '') + text, bad ? 'error' : 'success');
+        }
       };
       // The boxes just sent now count as saved — with the value that was sent, so a
       // box changed again while the save was on its way still counts as changed.
@@ -967,6 +974,31 @@
       if (on && status) { status.textContent = 'Marshrut tuzilmoqda…'; }
     };
 
+    // Back from a button on the route (route.js keeps where it was): to the stop ⚡ was
+    // pressed on — it has moved, often to the top of its truck — or to the same scroll.
+    // Only just after that send; a route opened later starts at its top as usual.
+    var takeKept = function () {
+      var kept = null;
+      try {
+        kept = JSON.parse(sessionStorage.getItem('route:keep'));
+        sessionStorage.removeItem('route:keep');
+      } catch (err) { kept = null; }
+      return kept && Date.now() - kept.at < 30000 ? kept : null;
+    };
+    var goBack = function (kept, flash) {
+      var box = kept.stop && slot.querySelector('input[name=stop][value="' + kept.stop + '"]');
+      var li = box && box.closest('[data-route-stop]');
+      if (li) {
+        li.scrollIntoView({ block: 'center' });
+        if (flash) {
+          li.classList.add('route-flash');
+          setTimeout(function () { li.classList.remove('route-flash'); }, 2600);
+        }
+      } else {
+        window.scrollTo(0, kept.y);
+      }
+    };
+
     // `quiet`: redrawn after a background save — no focus jump, no announcement.
     var quiet = false;
     var build = function (again) {
@@ -982,6 +1014,8 @@
       }).then(function (html) {
         slot.innerHTML = html;
         var map = slot.querySelector('[data-geo-route]');
+        var kept = again === true ? null : takeKept();
+        if (kept) { goBack(kept, false); }
         var done = function () {
           if (slot.querySelector('[data-route-form]')) {
             // A route came: the start panel steps aside; focus goes to its summary.
@@ -991,7 +1025,10 @@
             var keep = document.querySelector('[name=marshrut]');
             if (keep) { keep.value = '1'; }
             var summary = slot.querySelector('.route-summary');
-            if (summary && !quiet) { summary.focus(); }
+            // Coming back from a route button: stay where it was, not at the summary.
+            if (summary && !quiet) { summary.focus({ preventScroll: !!kept }); }
+            // Again now the start panel above has gone and the map is drawn.
+            if (kept) { goBack(kept, true); }
           } else {
             // Only a message (no warehouse, missing locations…): keep the button,
             // so it can be tried again once that's fixed.
