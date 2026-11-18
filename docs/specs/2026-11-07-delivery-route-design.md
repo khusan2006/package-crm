@@ -1,5 +1,9 @@
 # Delivery route planning — design
 
+> **Changed 2026-11-18 — trips (reys).** A day the trucks can't take in one go is no
+> longer «Sig'maydi»: every truck goes, and the ones that come back load again for a
+> 2-reys. See docs/specs/2026-11-18-trips.md.
+>
 > **Changed 2026-11-08 — loads (yuk), not sales.** Delivery is now built from
 > loads put together by hand: an admin or manager creates a load (date, optional
 > truck, note), adds clients with a number of rolls, and enters the kg later once

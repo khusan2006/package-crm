@@ -2,6 +2,7 @@ import calendar
 import math
 import re
 import uuid
+from collections import Counter
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from itertools import zip_longest
@@ -12032,12 +12033,15 @@ def _save_load_order_checked(request, load, items):
         # The page was drawn before a client was added or removed — don't save half.
         messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
         return redirect(_load_url(load) + "?marshrut=1")
-    # With two trucks, each stop also says which one it rides with (⇄ moves it).
-    routes = request.POST.get("routes", "")
+    # With two trucks (or trips), each stop also says which route it rides with
+    # (⇄ moves it to the next one).
+    raw_routes = request.POST.get("routes", "")
+    routes = int(raw_routes) if raw_routes.isdigit() else 0
     groups = request.POST.getlist("group")
     split = None
-    if routes == "2" and groups:
-        if len(groups) != len(order) or any(g not in ("0", "1") for g in groups):
+    if routes >= 2 and groups:
+        allowed = {str(n) for n in range(routes)}
+        if len(groups) != len(order) or any(g not in allowed for g in groups):
             messages.error(request, "Tartib eskirgan — sahifa yangilandi, qaytadan saqlang.")
             return redirect(_load_url(load) + "?marshrut=1")
         split = [int(g) for g in groups]
@@ -12065,7 +12069,7 @@ def _save_load_order_checked(request, load, items):
     for n, pk in enumerate(car, start=len(order) + 1):
         LoadItem.objects.filter(pk=pk).update(position=n, money_car=True)
     load.ordered_at = timezone.now()
-    load.split_routes = 2 if split else None
+    load.split_routes = routes if split else None
     load.save(update_fields=["ordered_at", "split_routes"])
     AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                     (f"Yuk #{load.pk} tartibi saqlandi — {len(order) + len(car)} ta manzil"
@@ -12372,16 +12376,31 @@ def _set_start(request, load):
         messages.success(request, f"Jo'nash vaqti belgilandi: {timezone.localtime(started):%d.%m %H:%M}. "
                                   f"Mashina jo'naganda «Jo'natish»ni bosing.")
         return back
+    later = _later_trip_stops(load, request.user)
     load.started_at = started
     load.planned_start = None
     load.save(update_fields=["started_at", "planned_start"])
-    # The truck's stops are on their way — one source with the load's «Yo'lda».
+    # The truck's stops are on their way — one source with the load's «Yo'lda». Not a
+    # 2-reys: its goods are still in the warehouse until the truck comes back.
     truck_stops.filter(status__in=[LoadItem.Status.NEW, LoadItem.Status.LOADING]) \
-        .update(status=LoadItem.Status.SENT)
+        .exclude(pk__in=later).update(status=LoadItem.Status.SENT)
     AuditLog.record(request.user, AuditLog.Action.UPDATE, "Yuk", load.pk,
                     f"Yuk #{load.pk}: jo'nadi — {timezone.localtime(started):%d.%m.%Y %H:%M}")
     messages.success(request, f"Yuk jo'natildi: {timezone.localtime(started):%H:%M}.")
     return back
+
+
+def _later_trip_stops(load, user):
+    """The stops on a truck's 2-reys (or later) in the day's route: still in the
+    warehouse when the trucks first leave. Empty when the route can't be worked out
+    (a location missing) — then every stop leaves together, as before trips."""
+    ctx = _route_inputs(load, user)
+    if not ctx["ready"] or not ctx["truck_items"]:
+        return set()
+    groups, _ = _load_groups(load, ctx["truck_items"], ctx["depot"], ctx["dist"],
+                             ctx["weights"])
+    trips = routing.trip_numbers([truck for truck, _ in groups])
+    return {st.key for (_, group), trip in zip(groups, trips) if trip > 1 for st in group}
 
 
 def _load_groups(load, items, depot, dist, weights):
@@ -13271,6 +13290,10 @@ def _money_car_plan(load, ctx, groups):
     takes it automatically; a saved order or «Pul mashinasisiz» only shows it."""
     if ctx["car_items"] or not groups or not all(truck for truck, _ in groups):
         return None
+    # Its search takes every route as a vehicle out at the same time; a truck's 2-reys
+    # is the same truck later, so the saving it would show is wrong. Not with trips.
+    if max(routing.trip_numbers([truck for truck, _ in groups])) > 1:
+        return None
     money = {i.pk for i in ctx["truck_items"] if i.purpose == LoadItem.Purpose.COLLECT}
     if not money:
         return None
@@ -13278,9 +13301,15 @@ def _money_car_plan(load, ctx, groups):
                                   dist=ctx["dist"], detour=ctx["detour"])
 
 
-def _route_card(load, ctx, truck, group, color, debts, eta_from, money=False):
+def _route_card(load, ctx, truck, group, color, debts, eta_from, money=False, trip=1,
+                trips=1, trip_start=None):
     """One vehicle's route as the page shows it: its stops with arrival times and
-    what to collect, its km and load, the map line and the driver's message."""
+    what to collect, its km and load, the map line and the driver's message.
+
+    `trip` is which reys this is of the truck's `trips`; a later reys leaves at
+    `trip_start` (the truck back and loaded again). Its times still count in
+    minutes from the day's departure `eta_from`, as the page moves them all on
+    together."""
     depot, dist, weights, by_pk = ctx["depot"], ctx["dist"], ctx["weights"], ctx["by_pk"]
     measured = routing.build_route(truck, group, depot, dist=dist)
     stops = []
@@ -13298,7 +13327,8 @@ def _route_card(load, ctx, truck, group, color, debts, eta_from, money=False):
             "amount": _amount(item, debts.get(item.client_id)),
         })
     points = [_point(st["place"]) for st in stops]
-    arrivals, back = routing.arrival_times(depot, points, eta_from, dist, ctx["detour"])
+    leaves = trip_start or eta_from
+    arrivals, back = routing.arrival_times(depot, points, leaves, dist, ctx["detour"])
     for st, at in zip(stops, arrivals):
         st["eta"] = at
         # Minutes after departure: the page moves the times along with the clock (not
@@ -13307,7 +13337,9 @@ def _route_card(load, ctx, truck, group, color, debts, eta_from, money=False):
     google = route_share.google_route_links(depot, points)
     yandex = route_share.yandex_route_link(depot, points)
     name = "Pul olish mashinasi" if money else (truck.name if truck else "")
-    title = f"Yuk #{load.pk} — {load.date:%d.%m.%Y}" + (f" — {name}" if name else "")
+    trip_label = f"{trip}-reys" if trips > 1 else ""
+    title = (f"Yuk #{load.pk} — {load.date:%d.%m.%Y}" + (f" — {name}" if name else "")
+             + (f" — {trip_label}" if trip_label else ""))
 
     def driver_stops(map_url):
         # «⚡ ZARUR» in front of a client who asked to be first; the do'kon after the
@@ -13329,6 +13361,10 @@ def _route_card(load, ctx, truck, group, color, debts, eta_from, money=False):
     capacity = truck.capacity_kg if truck else None
     return {
         "truck": truck, "money": money, "stops": stops, "km": measured.km, "kg": measured.kg,
+        "trip": trip, "trip_label": trip_label,
+        # When a later reys leaves: shown on its card, as it isn't the day's departure.
+        "leaves": leaves if trip > 1 else None,
+        "leaves_min": round((leaves - eta_from).total_seconds() / 60) if trip > 1 else None,
         "back": back if stops else None,
         "back_min": round((back - eta_from).total_seconds() / 60) if stops else None,
         "load_pct": min(100, round(measured.kg / capacity * 100)) if capacity else None,
@@ -13341,6 +13377,16 @@ def _route_card(load, ctx, truck, group, color, debts, eta_from, money=False):
                                            telegram_text=telegram_text,
                                            telegram_link=yandex)},
     }
+
+
+def _trucks_text(going):
+    """The trucks that go, for the route summary: "A + B", or with trips
+    "A (2 reys) + B"."""
+    trips = {}
+    for r in going:
+        trips[r["truck"]] = trips.get(r["truck"], 0) + 1
+    return " + ".join(truck.name + (f" ({n} reys)" if n > 1 else "")
+                      for truck, n in trips.items() if truck)
 
 
 #: The money car's colour on the map and its card.
@@ -13439,9 +13485,20 @@ def load_route(request, pk):
         # Arrival times (approximate until GPS): from when the trucks left, or —
         # not gone yet — from now, as if they left this minute.
         eta_from = load.started_at or load.planned_start or ctx["now"]
-        for n, (truck, group) in enumerate(groups):
-            routes.append(_route_card(load, ctx, truck, group,
-                                      ROUTE_COLORS[n % len(ROUTE_COLORS)], debts, eta_from))
+        # More than the trucks take in one go: a truck's 2-reys leaves once it is back
+        # from the 1-reys and loaded again. Each truck keeps its colour on every reys.
+        trips = routing.trip_numbers([truck for truck, _ in groups])
+        count = Counter(truck for truck, _ in groups)
+        free, colors = {}, {}
+        for (truck, group), trip in zip(groups, trips):
+            color = colors.setdefault(truck, ROUTE_COLORS[len(colors) % len(ROUTE_COLORS)])
+            card = _route_card(load, ctx, truck, group, color, debts, eta_from, trip=trip,
+                               trips=count[truck] if truck else 1, trip_start=free.get(truck))
+            if truck is not None:
+                # An emptied reys doesn't go: the next one leaves when this one would have.
+                free[truck] = (card["back"] + timedelta(minutes=routing.ETA_RELOAD_MINUTES)
+                               if card["back"] else free.get(truck))
+            routes.append(card)
         if car is None and ctx["car_items"]:
             car_stops = [routing.Stop(i.pk, *_point(i.place), Decimal("0"))
                          for i in ctx["car_items"]]
@@ -13460,8 +13517,11 @@ def load_route(request, pk):
     if cards:
         map_data = {
             "depot": [float(warehouse.latitude), float(warehouse.longitude)],
+            # A later reys numbers its pins "2.1, 2.2…": same truck, same colour, so
+            # the label tells it from the 1-reys.
             "routes": [{"color": r["color"], "path": r["path"], "stops": [
-                {"n": st["n"], "name": st["client"].name, "collect": st["item"].collects,
+                {"n": st["n"] if r["trip"] == 1 else f"{r['trip']}.{st['n']}",
+                 "name": st["client"].name, "collect": st["item"].collects,
                  "urgent": st["urgent"],
                  "lat": _point(st["place"])[0], "lng": _point(st["place"])[1]}
                 for st in r["stops"]]} for r in cards if r["stops"]],
@@ -13481,6 +13541,8 @@ def load_route(request, pk):
         "money_saving": money_car_saving(money_offer) if money_offer else "",
         "on_way": on_way,
         "going": [r for r in routes if r["stops"]],
+        "trucks_text": _trucks_text([r for r in routes if r["stops"]]),
+        "trip_count": max((r["trip"] for r in routes if r["stops"]), default=1),
         "km": sum(r["km"] for r in cards),
         "by_road": ctx["by_road"],
         "road_note": ctx["road_note"],
@@ -13492,5 +13554,6 @@ def load_route(request, pk):
         "eta_now": ctx["now"],
         "eta_stop_minutes": routing.ETA_STOP_MINUTES,
         "eta_speed": routing.ETA_SPEED_KMH,
+        "reload_minutes": routing.ETA_RELOAD_MINUTES,
         "unweighed": sum(1 for i in items if i.delivers for l in i.line_list if l.kg is None),
     })

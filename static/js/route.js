@@ -1,7 +1,7 @@
 /* Yetkazish: hand corrections to a load's route before it is saved.
  *
- * ↑ / ↓ move a stop; with two trucks, ⇄ moves it to the other one (to the end of
- * its list). Each stop carries hidden inputs with its load row and its truck, and
+ * ↑ / ↓ move a stop; with two trucks (or a truck's 2-reys), ⇄ moves it to the next
+ * card, round to the first after the last (to the end of its list). Each stop carries hidden inputs with its load row and its truck, and
  * the form posts them in the order they stand, so "Saqlash" saves exactly what is
  * on screen. A truck may be emptied (everyone goes with the other driver): it then
  * says so, and stays on the page so a stop can be moved back. The map and the km are measured by the server once the order is saved.
@@ -60,7 +60,7 @@
       form.querySelectorAll('[data-route-eta]').forEach(function (el) { el.hidden = true; });
     }
 
-    // ⇄: the stop goes to the end of the other truck's list.
+    // ⇄: the stop goes to the end of the next card's list (another truck or reys).
     form.addEventListener('click', function (e) {
       var swap = e.target.closest('[data-move-truck]');
       if (!swap) { return; }

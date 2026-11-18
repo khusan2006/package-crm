@@ -203,11 +203,15 @@ def test_a_stop_heavier_than_any_truck_is_named():
     assert [s.key for s in err.value.stops] == ["heavy"]
 
 
-def test_loads_that_cannot_be_divided_are_reported():
-    # 18 kg fits in 10 + 10 on paper, but three 6 kg stops can't be divided so.
+def test_loads_that_cannot_be_divided_go_on_a_second_trip():
+    # 18 kg fits in 10 + 10 on paper, but three 6 kg stops can't be divided so:
+    # the third goes on a truck's 2-reys.
     stops = [stop(i, 0.01 * i, 0.01, 6) for i in range(3)]
-    with pytest.raises(SplitImpossible):
-        plan_routes(DEPOT, stops, [FakeTruck("A", 10), FakeTruck("B", 10)])
+    a, b = FakeTruck("A", 10), FakeTruck("B", 10)
+    plan = plan_routes(DEPOT, stops, [a, b])
+    assert len(plan.routes) == 3
+    assert routing.trip_numbers([r.truck for r in plan.routes]) == [1, 1, 2]
+    assert all(r.kg <= r.truck.capacity_kg for r in plan.routes)
 
 
 def test_heaviest_first_packing_keeps_both_trucks_within_capacity():
@@ -367,3 +371,73 @@ def test_the_money_car_search_is_fast_on_a_busy_day():
     plan = routing.plan_money_car(DEPOT, [ordered], {s.key for s in money}, detour=1.3)
     assert time.perf_counter() - started < 2
     assert plan is not None and plan.gain > 0
+
+
+# --- trips (reys): every truck full ---------------------------------------------------
+
+def check_trips(plan, keys):
+    """Everyone exactly once, every trip within its truck, 1-reys before 2-reys."""
+    assert sorted(s.key for r in plan.routes for s in r.stops) == sorted(keys)
+    assert all(r.kg <= r.truck.capacity_kg and r.stops for r in plan.routes)
+    trucks = [r.truck for r in plan.routes]
+    first = {t: trucks.index(t) for t in trucks}
+    for n, trip in enumerate(routing.trip_numbers(trucks)):
+        assert (trip == 1) == (first[trucks[n]] == n)
+
+
+def test_more_than_both_trucks_hold_is_a_second_trip():
+    a, b = FakeTruck("A", 1000), FakeTruck("B", 1000)
+    stops = random_stops(30, seed=7, kg=100)  # 3000 kg: two trucks, one goes twice
+    plan = plan_routes(DEPOT, stops, [a, b])
+    check_trips(plan, range(30))
+    assert routing.trip_numbers([r.truck for r in plan.routes]) == [1, 1, 2]
+
+
+def test_both_trucks_go_twice_when_one_more_trip_is_not_enough():
+    a, b = FakeTruck("A", 1000), FakeTruck("B", 800)
+    stops = random_stops(30, seed=8, kg=100)  # 3000 kg > 1000 + 800 + 1000
+    plan = plan_routes(DEPOT, stops, [a, b], prefer_two=True)
+    check_trips(plan, range(30))
+    assert [r.truck.name for r in plan.routes] == ["A", "B", "A", "B"]
+
+
+def test_every_truck_goes_before_any_goes_twice():
+    trucks = [FakeTruck("A", 1000), FakeTruck("B", 1000), FakeTruck("C", 1000)]
+    stops = random_stops(25, seed=9, kg=100)  # 2500 kg: three trucks, one trip each
+    plan = plan_routes(DEPOT, stops, trucks)
+    check_trips(plan, range(25))
+    assert sorted(r.truck.name for r in plan.routes) == ["A", "B", "C"]
+
+
+def test_one_truck_makes_trips():
+    plan = plan_routes(DEPOT, random_stops(12, seed=10, kg=100), [FakeTruck("A", 500)])
+    check_trips(plan, range(12))
+    assert routing.trip_numbers([r.truck for r in plan.routes]) == [1, 2, 3]
+
+
+def test_each_trip_takes_one_side_of_the_city():
+    east = [stop(f"e{i}", 0.005 * i, 0.08, 100) for i in range(5)]
+    west = [stop(f"w{i}", 0.005 * i, -0.08, 100) for i in range(5)]
+    plan = plan_routes(DEPOT, east + west, [FakeTruck("A", 500)])
+    sides = [{s.key[0] for s in r.stops} for r in plan.routes]
+    assert sorted(map(sorted, sides)) == [["e"], ["w"]]
+
+
+def test_past_the_most_trips_is_over_capacity():
+    trucks = [FakeTruck("A", 100)]
+    stops = random_stops(routing.MAX_TRIPS + 1, seed=11, kg=100)
+    with pytest.raises(OverCapacity) as err:
+        plan_routes(DEPOT, stops, trucks)
+    assert err.value.excess_kg == Decimal(100)
+
+
+def test_trips_plan_quickly():
+    stops = random_stops(60, seed=12, kg=100)  # 6000 kg, 2 × 1500 kg: two trips each
+    started = time.perf_counter()
+    plan = plan_routes(DEPOT, stops, [FakeTruck("A", 1500), FakeTruck("B", 1500)])
+    assert time.perf_counter() - started < 5
+    check_trips(plan, range(60))
+
+
+def test_trip_numbers_count_each_truck_apart():
+    assert routing.trip_numbers(["A", "B", "A", None, "A"]) == [1, 1, 2, 1, 3]
