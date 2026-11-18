@@ -1,13 +1,14 @@
 {% load l10n %}
 {% comment %}«$ Yo'l-yo'lakay pul olish» under a vehicle's stops: debtors who aren't on the
-day and whose place this route passes close by (views._on_way) — what they owe, where
-on the route it fits and what it adds. «+ Marshrutga» adds a money-only stop at that
+day, have money due by it (overdue, or its deadline that day) and whose place this
+route passes close by (views._on_way) — the due amount (and the whole debt when more
+is owed), where on the route it fits and what it adds. «+ Marshrutga» adds a money-only stop at that
 place and saves the order (it is a submit of the route form, so the order on screen
 goes with it).{% endcomment %}
 {% if r.onway %}
 <div class="route-onway">
   <h3 class="route-onway-title"><span class="route-onway-ico" aria-hidden="true">$</span>Yo'l-yo'lakay pul olish</h3>
-  <p class="muted route-onway-hint">Qarzi bor, marshrutga yaqin mijozlar — kerak bo'lsa marshrutga qo'shing.</p>
+  <p class="muted route-onway-hint">Qarz muddati o'tgan yoki shu kuni keladigan, marshrutga yaqin mijozlar — kerak bo'lsa marshrutga qo'shing.</p>
   <ul class="route-onway-list">
     {% for w in r.onway %}
     <li class="route-onway-item">
@@ -15,7 +16,7 @@ goes with it).{% endcomment %}
       <span class="route-body">
         <strong>{{ w.client.name }}</strong>
         {% if w.shop %}<span class="cell-sub route-shop">📍 {{ w.shop.note|default:"Boshqa do'kon" }}</span>{% endif %}
-        <span class="cell-sub"><span class="route-collect">qarz {{ w.debt_text }} so'm</span> · {{ w.at }} · +{{ w.km|floatformat:1 }} km, ≈ {{ w.minutes }} daq</span>
+        <span class="cell-sub"><span class="route-collect">{{ w.debt_text }} so'm — {{ w.due_text }}</span>{% if w.total_text %} (jami qarz {{ w.total_text }}){% endif %} · {{ w.at }} · +{{ w.km|floatformat:1 }} km, ≈ {{ w.minutes }} daq</span>
         <span class="cell-sub">{% if w.client.phone %}<a href="tel:{{ w.client.phone|cut:' ' }}">{{ w.client.phone }}</a> · {% endif %}{{ w.client.owner }}</span>
       </span>
       <button type="submit" name="onway" value="{{ w.client.pk|unlocalize }}:{% if w.shop %}{{ w.shop.pk|unlocalize }}{% endif %}" class="btn btn-sm btn-ghost route-onway-add" title="Pul olish uchun marshrutga qo'shish — yo'lidagi joyiga">+ Marshrutga</button>

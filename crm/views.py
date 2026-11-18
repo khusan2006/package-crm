@@ -19,6 +19,7 @@ from django.db.models import (
     Exists,
     F,
     Max,
+    Min,
     OuterRef,
     ProtectedError,
     Q,
@@ -13398,15 +13399,24 @@ def _on_way(load, ctx, cards):
     another do'kon — a vehicle passes close by (routing.on_way, straight lines). Each
     goes on the card of the vehicle it costs least on (`card["onway"]`), nearest
     first, to be added with «+ Marshrutga». The route is admins'/managers' only, so
-    every seller's debtors are offered."""
+    every seller's debtors are offered.
+
+    Only money that is due by the route's day is asked for: receipts past their
+    deadline, or whose deadline is that very day. A debt still inside its agreed
+    term (bought yesterday on 14 days) isn't, and a client with only such debts isn't
+    offered. The card shows the due amount, with the whole debt beside it when more
+    is owed."""
     on_day = (LoadItem.objects.filter(load__date=load.date)
               .exclude(status=LoadItem.Status.CANCEL).values("client_id"))
-    debts = dict(Sale.objects.outstanding().exclude(client_id__in=on_day)
-                 .values("client_id").annotate(s=Sum("remaining")).filter(s__gt=0)
-                 .values_list("client_id", "s"))
-    if not debts:
+    owed = Sale.objects.outstanding().exclude(client_id__in=on_day)
+    due = {r["client_id"]: r for r in owed.filter(debt_deadline__lte=load.date)
+           .values("client_id").annotate(s=Sum("remaining"), first=Min("debt_deadline"))
+           .filter(s__gt=0)}
+    if not due:
         return []
-    clients = {c.pk: c for c in Client.objects.filter(pk__in=list(debts))
+    totals = dict(owed.filter(client_id__in=list(due)).values("client_id")
+                  .annotate(s=Sum("remaining")).values_list("client_id", "s"))
+    clients = {c.pk: c for c in Client.objects.filter(pk__in=list(due))
                .select_related("owner").prefetch_related("locations", "phones")}
     places = []
     for c in clients.values():
@@ -13429,9 +13439,14 @@ def _on_way(load, ctx, cards):
             at = "omborga qaytishda"
         else:
             at = f"{stops[w.after - 1]['n']}-manzildan keyin"
-        debt = debts[client.pk]
+        debt, first = due[client.pk]["s"], due[client.pk]["first"]
+        total = totals.get(client.pk, debt)
+        late = (load.date - first).days
         entry = {"client": client, "shop": shop, "point": _point(shop or client),
                  "debt": debt, "debt_text": f"{debt:,.0f}".replace(",", " "),
+                 # More owed than is due yet: the whole debt, for the driver to know.
+                 "total_text": f"{total:,.0f}".replace(",", " ") if total > debt else "",
+                 "due_text": f"muddati {late} kun o'tgan" if late > 0 else "muddati shu kuni",
                  "km": w.km, "at": at,
                  "minutes": round(routing.route_minutes(w.km, 1, routing.ETA_DETOUR))}
         card.setdefault("onway", []).append(entry)

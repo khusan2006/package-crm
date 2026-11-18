@@ -29,6 +29,7 @@ otherwise.
 | Zarur on an unsaved suggestion | The suggestion keeps urgent stops first too, including after the money car rearranges the trucks. |
 | Zarur and another day | Moving the stop to another day clears it. |
 | Who sees «$»? | The route, so admins and managers. Debtors are anyone with `Sale.outstanding()` and no stop on the day that isn't cancelled. |
+| Which money is asked for? | Only what is due by the route's day: receipts past `debt_deadline`, or due that very day (client request, 2026-11-18). A debt still inside its term isn't offered. The card shows that amount and «muddati N kun o'tgan» / «muddati shu kuni», plus «jami qarz» when more is owed. |
 | How near is "on the way"? | Adding them costs at most `ON_WAY_KM = 2` km (straight line, about 2.6 km by road), cheapest insertion. At most `ON_WAY_MAX = 12` are shown, nearest first. A client with several places is offered at the place that costs least. |
 | «+ Marshrutga» | Adds a money-only stop (`collect`, by truck) for that client and place at the cheapest point on a vehicle's route, then saves the order as shown. |
 

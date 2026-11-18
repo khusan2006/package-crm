@@ -63,9 +63,11 @@ def stop(load, client, *lines, purpose=DELIVER, **fields):
     return item
 
 
-def owes(client, seller, paket, amount=Decimal("1200000")):
-    """A sale the client hasn't paid: `amount` of debt."""
-    sale = Sale.objects.create(client=client, sales_rep=seller, date=TODAY() - timedelta(days=5))
+def owes(client, seller, paket, amount=Decimal("1200000"), due=-1):
+    """A sale the client hasn't paid: `amount` of debt, its deadline `due` days from
+    today — overdue by default."""
+    sale = Sale.objects.create(client=client, sales_rep=seller, date=TODAY() - timedelta(days=5),
+                               debt_deadline=TODAY() + timedelta(days=due))
     SaleItem.objects.create(sale=sale, product=paket, weight=Decimal("10"), price=amount / 10,
                             cost_price=Decimal("1"))
     return sale
@@ -360,6 +362,39 @@ def test_a_debtor_near_the_route_is_offered(client, admin_user, seller_user, loa
     assert resp.context["map_data"]["onway"][0]["name"] == "Yaqin"
     assert "+ Marshrutga" in resp.content.decode()
     assert paid.name not in offered
+
+
+def test_only_money_due_by_the_day_is_offered(client, admin_user, seller_user, load, loop, paket):
+    """«$» asks only for money due by the route's day: past its deadline, or due that
+    very day. A debt still inside its term isn't asked for — only shown in the whole
+    debt beside the due amount."""
+    late = make_client(seller_user, "Kechikkan", 0.015, dlat=0.001)
+    owes(late, seller_user, paket, due=-3)
+    owes(late, seller_user, paket, Decimal("500000"), due=7)  # not due yet
+    today = make_client(seller_user, "Bugun", 0.015, dlat=0.0015)
+    owes(today, seller_user, paket, Decimal("300000"), due=0)
+    fresh = make_client(seller_user, "Yangi", 0.015, dlat=0.0012)
+    owes(fresh, seller_user, paket, due=10)  # bought on 14 days: nothing due yet
+    resp = route(client, admin_user, load)
+    by_name = {w["client"].name: w for w in resp.context["on_way"]}
+    assert set(by_name) == {"Kechikkan", "Bugun"}
+    assert by_name["Kechikkan"]["debt_text"] == "1 200 000"
+    assert by_name["Kechikkan"]["total_text"] == "1 700 000"
+    assert by_name["Kechikkan"]["due_text"] == "muddati 3 kun o'tgan"
+    assert by_name["Bugun"]["due_text"] == "muddati shu kuni"
+    assert by_name["Bugun"]["total_text"] == ""
+    assert "(jami qarz 1 700 000)" in resp.content.decode()
+
+
+def test_a_route_for_tomorrow_asks_for_what_is_due_tomorrow(client, admin_user, seller_user,
+                                                            load, loop, paket):
+    near = make_client(seller_user, "Ertaga", 0.015, dlat=0.001)
+    owes(near, seller_user, paket, due=1)
+    assert route(client, admin_user, load).context["on_way"] == []
+    Load.objects.filter(pk=load.pk).update(date=TODAY() + timedelta(days=1))
+    load.refresh_from_db()
+    [w] = route(client, admin_user, load).context["on_way"]
+    assert (w["client"], w["due_text"]) == (near, "muddati shu kuni")
 
 
 def test_marshrutga_adds_a_money_stop_where_it_is_on_the_way(client, admin_user, seller_user,
