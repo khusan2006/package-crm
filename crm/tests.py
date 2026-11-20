@@ -498,7 +498,8 @@ class AuthTests(BaseSetup):
         response = self.client.get(reverse("dashboard"))
         self.assertEqual(response.context["overdue_count"], 1)
         self.assertEqual(response.context["overdue_total"], Decimal("240000"))
-        self.assertContains(response, "overdue-banner")
+        # The overdue warning now sits on the debt figure itself, linking to Qarzlar.
+        self.assertContains(response, "dash-overdue")
 
 
 class DashboardNetProfitTests(BaseSetup):
@@ -750,6 +751,51 @@ class DashboardAccuracyTests(BaseSetup):
         for label in ("Bu davrda", "Bugungi holat", "Tushgan pul", "Sof foyda",
                       "Kassadagi pul", "Ishlab chiq. qarz", "Kunlik savdo"):
             self.assertContains(response, label)
+
+
+class DashboardComparisonAndDuesTests(BaseSetup):
+    """The change badges' comparison window and the «Muddati yaqin» list."""
+
+    def test_month_to_date_compares_with_the_same_days_last_month(self):
+        from .views import _previous_window
+        prev_from, prev_to, label = _previous_window(date(2026, 11, 1), date(2026, 11, 20))
+        self.assertEqual((prev_from, prev_to), (date(2026, 10, 1), date(2026, 10, 20)))
+        self.assertIn("o'tgan oy", label)
+
+    def test_month_to_date_clamps_to_a_shorter_month(self):
+        from .views import _previous_window
+        prev_from, prev_to, _ = _previous_window(date(2026, 3, 1), date(2026, 3, 31))
+        self.assertEqual((prev_from, prev_to), (date(2026, 2, 1), date(2026, 2, 28)))
+
+    def test_any_other_window_compares_with_the_stretch_before_it(self):
+        from .views import _previous_window
+        prev_from, prev_to, label = _previous_window(date(2026, 11, 10), date(2026, 11, 16))
+        self.assertEqual((prev_from, prev_to), (date(2026, 11, 3), date(2026, 11, 9)))
+        self.assertIn("7 kun", label)
+
+    def test_change_has_no_badge_without_a_base(self):
+        from .views import _change
+        self.assertIsNone(_change(100, 0))
+        self.assertEqual(_change(150, 100), {"pct": 50, "up": True, "flat": False})
+        self.assertEqual(_change(-50, -100)["up"], True)   # a smaller loss is better
+
+    def test_upcoming_dues_lists_only_the_next_week_per_client(self):
+        today = timezone.localdate()
+        make_sale(self.client1, self.sales1, self.product, is_debt=True,
+                  debt_deadline=today + timedelta(days=2))
+        make_sale(self.client1, self.sales1, self.product, is_debt=True,
+                  debt_deadline=today + timedelta(days=5))
+        make_sale(self.client2, self.sales2, self.product, is_debt=True,
+                  debt_deadline=today + timedelta(days=20))     # too far out
+        make_sale(self.client2, self.sales2, self.product, is_debt=True,
+                  debt_deadline=today - timedelta(days=1))      # already overdue
+        self.client.force_login(self.manager)
+        upcoming = self.client.get(reverse("dashboard")).context["upcoming"]
+        self.assertEqual(upcoming["clients"], 1)
+        self.assertEqual(upcoming["total"], Decimal("480000"))
+        row = upcoming["rows"][0]
+        self.assertEqual(row["count"], 2)
+        self.assertEqual(row["days_left"], 2)                   # the earliest deadline
 
 
 class DayViewTests(BaseSetup):

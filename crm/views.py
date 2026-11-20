@@ -672,6 +672,104 @@ def _kpi_sparklines(flow, scoped, clients_q, months=6):
         "avg": _spark_points(avg),
         "clients": _spark_points(clients),
         "debt": _spark_points(debt),
+        # The same series as plain numbers, for the ApexCharts sparklines that
+        # replace the SVG polylines once the page's script has loaded.
+        "values": {
+            "labels": [UZ_MONTHS_SHORT[mm - 1] for _, mm in buckets],
+            "revenue": revenue,
+            "profit": profit,
+            "avg": avg,
+            "clients": clients,
+            "debt": debt,
+            "count": [cnt_by.get(b, 0) for b in buckets],
+        },
+    }
+
+
+def _previous_window(date_from, date_to):
+    """The window the dashboard compares against, and how to say so.
+
+    Month-to-date (the default: the 1st to some day of one month) is compared with the
+    same days of the month before — 1–20 November against 1–20 October — because the
+    days just before it are the tail of last month, a different trading rhythm. Any
+    other window is compared with the equally long stretch right before it."""
+    if date_from.day == 1 and date_from.year == date_to.year and date_from.month == date_to.month:
+        prev_last = date_from - timedelta(days=1)
+        prev_from = prev_last.replace(day=1)
+        prev_to = prev_last.replace(day=min(date_to.day, prev_last.day))
+        return prev_from, prev_to, "o'tgan oyning shu kunlariga nisbatan"
+    span = (date_to - date_from).days + 1
+    prev_to = date_from - timedelta(days=1)
+    prev_from = prev_to - timedelta(days=span - 1)
+    return prev_from, prev_to, f"oldingi {span} kunga nisbatan"
+
+
+def _change(current, previous):
+    """Percent change for a KPI badge, or None when there is nothing to compare with
+    (a zero base has no meaningful percentage)."""
+    current = Decimal(current or 0)
+    previous = Decimal(previous or 0)
+    if previous == 0:
+        return None
+    pct = float((current - previous) / abs(previous) * 100)
+    return {"pct": round(abs(pct)), "up": pct >= 0, "flat": abs(pct) < 0.5}
+
+
+def _upcoming_dues(open_sales, today, days=7, limit=6):
+    """Debts that fall due in the next `days` days, one row per client: the money to
+    chase this week, before it turns into an overdue figure."""
+    soon = open_sales.filter(
+        debt_deadline__gte=today, debt_deadline__lte=today + timedelta(days=days)
+    ).select_related("client")
+    by_client = {}
+    total = Decimal("0")
+    for sale in soon:
+        rem = sale.remaining or Decimal("0")
+        if rem <= 0:
+            continue
+        total += rem
+        row = by_client.get(sale.client_id)
+        if row is None:
+            row = by_client[sale.client_id] = {
+                "client_id": sale.client_id, "name": sale.client.name,
+                "amount": Decimal("0"), "deadline": sale.debt_deadline, "count": 0,
+            }
+        row["amount"] += rem
+        row["count"] += 1
+        row["deadline"] = min(row["deadline"], sale.debt_deadline)
+    rows = sorted(by_client.values(), key=lambda r: (r["deadline"], -r["amount"]))
+    for row in rows:
+        row["days_left"] = (row["deadline"] - today).days
+    return {"rows": rows[:limit], "total": total, "clients": len(rows), "days": days}
+
+
+def _dashboard_charts(context):
+    """Everything the dashboard's ApexCharts draw, as plain JSON-safe numbers.
+
+    The server still renders every chart as SVG (so the page reads fine before or
+    without the script); this is the same data, handed to `json_script` for the
+    richer client-side charts. Colours stay CSS expressions — the script resolves
+    them against the live theme, so dark mode follows without a reload."""
+    def _series(chart):
+        return [
+            {"label": r["label"], "a": float(r["a"]), "b": float(r["b"]),
+             "dan": r["dan"], "gacha": r["gacha"]}
+            for r in chart["rows"]
+        ]
+
+    def _segments(donut):
+        return [
+            {"key": s["key"], "label": s["label"], "value": float(s["total"]),
+             "color": s["color"]}
+            for s in donut["segments"]
+        ]
+
+    return {
+        "daily": _series(context["daily"]),
+        "monthly": _series(context["monthly"]),
+        "sparks": context["sparks"]["values"],
+        "aging": _segments(context["debt"]["aging_donut"]),
+        "methods": _segments(context["donut"]),
     }
 
 
@@ -1009,6 +1107,13 @@ def dashboard(request):
     realized_profit, period_expenses, net_profit = _kassa_net_profit(
         date_from, date_to, net_rep
     )
+
+    # The same four headline figures for the comparison window, worked out by the very
+    # same helpers so a change badge never compares two different definitions.
+    prev_from, prev_to, compare_label = _previous_window(date_from, date_to)
+    prev_totals = _sale_totals(flow.filter(date__gte=prev_from, date__lte=prev_to).real())
+    prev_received = _kassa_summary(prev_from, prev_to, rep=net_rep)["som"]["income"]
+    prev_net = _kassa_net_profit(prev_from, prev_to, net_rep)[2]
     # Payments as the till counts them: what actually arrived in the window, in the
     # seller's own scope. Feeds both the day-by-day chart and the method donut.
     till_payments = Payment.objects.till_income().filter(currency=Payment.Currency.UZS)
@@ -1087,6 +1192,23 @@ def dashboard(request):
         "next_to": (date_to + timedelta(days=1)).isoformat(),
         "today_iso": today.isoformat(),
     }
+    # Money collected against money sold in the window. Old debts paid now count
+    # too, so it can pass 100% — the bar is capped, the figure is not.
+    received_som = context["received"] or 0
+    context["collect_pct"] = (
+        float(received_som) / float(period_revenue) * 100 if period_revenue else None
+    )
+    context["collect_bar"] = min(context["collect_pct"] or 0, 100)
+    context["changes"] = {
+        "revenue": _change(period_revenue, prev_totals["revenue"]),
+        "received": _change(context["received"], prev_received),
+        "profit": _change(context["period_profit"], prev_totals["profit"]),
+        "net": _change(net_profit, prev_net),
+    }
+    context["compare_label"] = compare_label
+    context["compare_range"] = (prev_from, prev_to)
+    context["upcoming"] = _upcoming_dues(open_sales, today)
+    context["charts"] = _dashboard_charts(context)
     return render(request, "crm/dashboard.html", context)
 
 

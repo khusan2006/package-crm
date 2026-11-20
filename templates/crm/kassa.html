@@ -67,22 +67,22 @@ eslatmasining ko'rinishidan foydalanadi — ikkalasi ham «shu yerga qarang» de
 <p class="section-eyebrow">Shu davr · tanlangan sana bo'yicha</p>
 <div class="kpi-grid kpi-grid--compact kpi-grid--period">
   <div class="kpi kpi--violet">
-    <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v14"/><path d="M5 9l7-7 7 7"/><rect x="4" y="16" width="16" height="6" rx="2"/></svg></span><span class="kpi-label">Topshirilgan</span></div>
+    <div class="kpi-head"><span class="kpi-icon">{% icon "tray-arrow-up" %}</span><span class="kpi-label">Topshirilgan</span></div>
     <div class="kpi-value">{{ summary.remitted|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta" style="display:flex;gap:4px;flex-wrap:wrap;"><a class="btn btn-violet btn-sm" href="{% url 'remittance_create' %}" data-modal>+ Topshirish</a><a class="btn btn-danger btn-sm" href="{% url 'remittance_refund_create' %}" data-modal>Qaytarish</a></div>
   </div>
   <div class="kpi kpi--green">
-    <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span><span class="kpi-label">Foyda topshirilgan</span></div>
+    <div class="kpi-head"><span class="kpi-icon">{% icon "trend-up" %}</span><span class="kpi-label">Foyda topshirilgan</span></div>
     <div class="kpi-value">{{ summary.paid_profit|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta"><a class="btn btn-success btn-sm" href="{% url 'profit_payout_create' %}" data-modal>+ Foyda topshirish</a></div>
   </div>
   <div class="kpi kpi--blue">
-    <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span><span class="kpi-label">Sof foyda</span></div>
+    <div class="kpi-head"><span class="kpi-icon">{% icon "trend-up" %}</span><span class="kpi-label">Sof foyda</span></div>
     <div class="kpi-value">{{ summary.net_profit|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta muted">foyda − chiqim</div>
   </div>
   <div class="kpi kpi--red">
-    <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7 7 7-7"/></svg></span><span class="kpi-label">Chiqim</span></div>
+    <div class="kpi-head"><span class="kpi-icon">{% icon "arrow-circle-down" %}</span><span class="kpi-label">Chiqim</span></div>
     <div class="kpi-value">{{ summary.expense_total|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta muted">benzin, ovqat, ishchi</div>
   </div>
@@ -90,7 +90,7 @@ eslatmasining ko'rinishidan foydalanadi — ikkalasi ham «shu yerga qarang» de
   raqamida ko'rinmaydi. Alohida turmasa, oyiga qancha ketayotgani bilinmay qoladi.
   {% endcomment %}
   <div class="kpi kpi--gold">
-    <div class="kpi-head"><span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/></svg></span><span class="kpi-label">Bank komissiyasi</span></div>
+    <div class="kpi-head"><span class="kpi-icon">{% icon "percent" %}</span><span class="kpi-label">Bank komissiyasi</span></div>
     <div class="kpi-value">{{ summary.commission|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta muted">sotuvchi {{ summary.commission_seller|floatformat:"0g" }} · mijoz {{ summary.commission_client|floatformat:"0g" }}</div>
   </div>

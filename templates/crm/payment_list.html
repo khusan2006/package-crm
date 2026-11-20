@@ -24,7 +24,7 @@
 <div class="kpi-grid">
   <div class="kpi kpi--green">
     <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg></span>
+      <span class="kpi-icon">{% icon "money" %}</span>
       <span class="kpi-label">Jami to'langan</span>
     </div>
     <div class="kpi-value">{{ totals.total|floatformat:"0g" }}<span class="unit">so'm</span></div>
@@ -33,29 +33,32 @@
 
   <div class="kpi kpi--blue">
     <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><circle cx="12" cy="14" r="1.5"/></svg></span>
+      <span class="kpi-icon">{% icon "cash-register" %}</span>
       <span class="kpi-label">Naqd</span>
     </div>
     <div class="kpi-value">{{ totals.cash|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta muted">{{ totals.cash_pct|floatformat:1 }}% to'lovlarning</div>
+    {% include "crm/_kpi_bar.html" with pct=totals.cash_pct %}
   </div>
 
   <div class="kpi kpi--violet">
     <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg></span>
+      <span class="kpi-icon">{% icon "credit-card" %}</span>
       <span class="kpi-label">Karta</span>
     </div>
     <div class="kpi-value">{{ totals.card|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta muted">{{ totals.card_pct|floatformat:1 }}% to'lovlarning</div>
+    {% include "crm/_kpi_bar.html" with pct=totals.card_pct %}
   </div>
 
   <div class="kpi kpi--gold">
     <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v6a8 8 0 0 1-16 0Z"/><path d="M8 20h8"/><path d="M12 14v6"/></svg></span>
+      <span class="kpi-icon">{% icon "bank" %}</span>
       <span class="kpi-label">Bank o'tkazmasi</span>
     </div>
     <div class="kpi-value">{{ totals.transfer|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta muted">{% if totals.commission %}komissiya {{ totals.commission|floatformat:"0g" }} so'm{% else %}{{ totals.transfer_pct|floatformat:1 }}% to'lovlarning{% endif %}</div>
+    {% include "crm/_kpi_bar.html" with pct=totals.transfer_pct %}
   </div>
 </div>
 

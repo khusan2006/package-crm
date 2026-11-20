@@ -22,7 +22,7 @@
 <div class="kpi-grid">
   <div class="kpi kpi--red">
     <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
+      <span class="kpi-icon">{% icon "warning-circle" %}</span>
       <span class="kpi-label">Umumiy qarz</span>
     </div>
     <div class="kpi-value">{{ total|floatformat:"0g" }}<span class="unit">so'm</span></div>
@@ -32,7 +32,7 @@
   {% if advance %}
   <div class="kpi kpi--green">
     <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1v22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>
+      <span class="kpi-icon">{% icon "piggy-bank" %}</span>
       <span class="kpi-label">Avans (kredit)</span>
     </div>
     <div class="kpi-value">{{ advance|floatformat:"0g" }}<span class="unit">so'm</span></div>

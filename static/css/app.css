@@ -7754,3 +7754,717 @@ a.sold-chip:hover { background: var(--success-soft); color: var(--success); }
 .client-chip.is-cancel { background: var(--surface-2); color: var(--text-muted); text-decoration: line-through; }
 .client-chip.is-sold-all:hover { filter: brightness(0.93); color: #fff; }
 .client-chip.is-sold-part:hover, .client-chip.is-sold-none:hover { filter: brightness(0.96); }
+
+/* ApexCharts on the dashboard (static/js/dashboard-charts.js). The server-drawn SVG
+   stays as the fallback; these rules only style the charts that replace it. */
+.kpi-spark--apex {
+  height: 44px;
+  margin: 6px -4px -6px;
+}
+
+.apex-host {
+  min-height: 190px;
+  margin: 0 -6px;
+}
+
+.apex-host[data-apex] .apexcharts-svg {
+  cursor: pointer;
+}
+
+.donut-wrap--apex {
+  width: 196px;
+  height: 196px;
+}
+
+.donut-wrap--apex .apexcharts-pie-area {
+  cursor: pointer;
+}
+
+.apexcharts-tooltip.apexcharts-theme-light,
+.apexcharts-tooltip.apexcharts-theme-dark {
+  background: var(--surface) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg) !important;
+  font-size: 12px;
+}
+
+.apexcharts-tooltip .apexcharts-tooltip-title {
+  background: var(--surface-2) !important;
+  border-bottom: 1px solid var(--border) !important;
+  font-weight: 600;
+}
+
+.apexcharts-tooltip-series-group {
+  padding: 2px 12px !important;
+}
+
+/* ============================================================
+   Dashboard layout (templates/crm/dashboard.html)
+   ============================================================ */
+
+/* 1. Bugungi holat — one card, three columns split by hairlines */
+.dash-position {
+  display: grid;
+  grid-template-columns: 1fr 1.35fr 1fr;
+  padding: 0;
+  overflow: hidden;
+  margin-bottom: 26px;
+}
+
+.dash-pos {
+  --kpi: var(--accent);
+  position: relative;
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 20px 22px;
+  min-width: 0;
+}
+
+.dash-pos + .dash-pos {
+  border-left: 1px solid var(--border);
+}
+
+.dash-pos--green { --kpi: var(--success); }
+.dash-pos--red { --kpi: var(--danger); }
+.dash-pos--gold { --kpi: var(--warning); }
+
+.dash-pos--main {
+  background:
+    radial-gradient(120% 140% at 100% 0%, color-mix(in srgb, var(--kpi) 9%, transparent), transparent 60%);
+}
+
+.dash-pos-icon {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  color: var(--kpi);
+  background: color-mix(in srgb, var(--kpi) 14%, transparent);
+}
+
+.dash-pos-icon svg { width: 22px; height: 22px; }
+
+.dash-pos-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+  position: relative;
+  z-index: 1;
+}
+
+.dash-pos-label,
+.dash-metric-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.dash-pos-value {
+  font-size: 26px;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dash-pos-value small,
+.dash-metric-value small {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--text-faint);
+  margin-left: 4px;
+}
+
+.dash-pos-meta {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.dash-pos-spark.kpi-spark--apex,
+.dash-pos-spark {
+  position: absolute;
+  right: 20px;
+  top: 18px;
+  width: 30%;
+  max-width: 170px;
+  margin: 0;
+  opacity: 0.9;
+}
+
+.dash-overdue {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 5px 10px 5px 9px;
+  border-radius: var(--r-pill);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: filter 0.15s;
+}
+
+.dash-overdue:hover { filter: brightness(0.96); }
+.dash-overdue strong { font-weight: 700; }
+.dash-overdue-sum { font-weight: 700; font-variant-numeric: tabular-nums; }
+.dash-overdue svg { width: 13px; height: 13px; }
+
+.dash-overdue-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent);
+}
+
+/* 2. Bu davrda — the four headline figures sit on top of their own chart */
+.dash-hero {
+  padding: 0;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+
+.dash-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-bottom: 1px solid var(--border);
+}
+
+.dash-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 20px 22px 18px;
+  min-width: 0;
+}
+
+.dash-metric + .dash-metric {
+  border-left: 1px solid var(--border);
+}
+
+.dash-metric-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.dash-metric-label .dot { margin: 0; }
+
+.dash-metric-value {
+  font-size: 25px;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dash-metric-meta {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-metric.is-negative {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--danger) 7%, transparent), transparent);
+}
+
+.dash-metric.is-negative .dash-metric-value { color: var(--danger); }
+
+.dash-collect {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 2px 0 -1px;
+}
+
+.dash-collect-track {
+  flex: 1;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.dash-collect-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--success) 70%, var(--surface)), var(--success));
+}
+
+.dash-collect-pct {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--success);
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-hero-chart {
+  padding: 18px 22px 10px;
+}
+
+.dash-hero-chart-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.dash-hero-chart-head h2 { margin: 0; }
+
+
+.dash-sub {
+  margin: -12px 0 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.donut-block--stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.donut-block--stack .donut-wrap { align-self: center; }
+
+/* 4. Ranked lists (debtors, top clients) */
+.dash-rank {
+  display: flex;
+  flex-direction: column;
+}
+
+.dash-rank-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 8px;
+  margin: 0 -8px;
+  border-radius: var(--r);
+  color: var(--text);
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.dash-rank-row:hover { background: var(--surface-hover); }
+
+.dash-rank-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dash-rank-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-rank-main .hbar-track { display: block; height: 5px; }
+.dash-rank-main .hbar-fill { display: block; height: 100%; }
+
+.dash-rank-value {
+  font-size: 13.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-rank-num {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.dash-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  font-size: 10.5px;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+
+.dash-tag--danger { background: var(--danger-soft); color: var(--danger); }
+
+/* 5. Recent sales as a feed */
+.dash-bottom { grid-template-columns: 1fr 1.3fr; }
+
+.dash-feed { display: flex; flex-direction: column; }
+
+.dash-feed-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 8px;
+  margin: 0 -8px;
+  border-radius: var(--r);
+  color: var(--text);
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.dash-feed-row + .dash-feed-row { border-top: 1px solid var(--border); }
+.dash-feed-row:hover { background: var(--surface-hover); }
+
+.dash-feed-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
+.dash-feed-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-feed-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-feed-end {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.dash-feed-sum {
+  font-size: 13.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1200px) {
+  .dash-metrics { grid-template-columns: repeat(2, 1fr); }
+  .dash-metric:nth-child(3) { border-left: 0; }
+  .dash-metric:nth-child(n + 3) { border-top: 1px solid var(--border); }
+}
+
+@media (max-width: 1000px) {
+  .dash-position { grid-template-columns: 1fr; }
+  .dash-pos + .dash-pos { border-left: 0; border-top: 1px solid var(--border); }
+  .dash-bottom { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 560px) {
+  .dash-metrics { grid-template-columns: 1fr; }
+  .dash-metric + .dash-metric { border-left: 0; border-top: 1px solid var(--border); }
+  .dash-pos, .dash-metric { padding: 16px; }
+  .dash-hero-chart { padding: 14px 12px 6px; }
+  .dash-pos-value { font-size: 23px; }
+  .dash-metric-value { font-size: 22px; }
+  .dash-pos-spark { display: none; }
+}
+
+/* Dashboard, round 2: change badges, «Muddati yaqin», three-column debt row */
+.section-eyebrow-note {
+  margin-left: 10px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-faint);
+}
+
+.dash-delta {
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: var(--r-pill);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.dash-delta.is-up { background: var(--success-soft); color: var(--success); }
+.dash-delta.is-down { background: var(--danger-soft); color: var(--danger); }
+.dash-delta.is-flat { background: var(--surface-2); color: var(--text-muted); }
+
+.dash-metric-label { width: 100%; }
+
+.dash-debt-grid {
+  grid-template-columns: 1.1fr 1fr 1fr;
+}
+
+.dash-debt-grid .donut-block--stack .legend-col { gap: 2px; }
+
+.dash-due-total {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: -6px 0 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed var(--border);
+}
+
+.dash-due-sum {
+  font-size: 22px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-due-sum small {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-faint);
+  margin-left: 4px;
+}
+
+.dash-due-day {
+  min-width: 54px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-due-day.is-soon { background: var(--warning-soft); color: var(--warning); }
+.dash-due-day.is-today { background: var(--danger-soft); color: var(--danger); }
+
+.dash-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 34px 12px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.dash-empty svg {
+  width: 36px;
+  height: 36px;
+  padding: 8px;
+  border-radius: 50%;
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+@media (max-width: 1300px) {
+  .dash-debt-grid { grid-template-columns: 1fr 1fr; }
+  .dash-debt-grid > :first-child { grid-row: span 2; }
+}
+
+@media (max-width: 900px) {
+  .dash-debt-grid { grid-template-columns: 1fr; }
+  .dash-debt-grid > :first-child { grid-row: auto; }
+  .section-eyebrow-note { display: block; margin: 4px 0 0; }
+}
+
+.dash-overdue-mark {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-soft);
+  vertical-align: 1px;
+}
+
+/* ============================================================
+   KPI cards — every page's `.kpi-grid` of `.kpi` cards: separate white cards on
+   a soft shadow (no border lines), a round tinted icon beside the label, the
+   figure, the note, and — where the card is a share — a thin bar
+   (templates/crm/_kpi_bar.html). Markup is shared by every page; this block
+   overrides the older look above.
+   ============================================================ */
+.kpi-grid {
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.kpi-grid--period,
+.kpi-grid--compact,
+.kpi-grid:has(> .kpi:nth-child(5)) {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+
+.kpi-grid > .kpi {
+  display: flex;
+  flex-direction: column;
+  padding: 18px 18px 16px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(20, 30, 50, 0.05), 0 8px 24px rgba(20, 30, 50, 0.07);
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+
+.kpi-grid > .kpi:hover {
+  box-shadow: 0 1px 2px rgba(20, 30, 50, 0.06), 0 12px 30px rgba(20, 30, 50, 0.11);
+}
+
+html[data-theme="dark"] .kpi-grid > .kpi {
+  box-shadow: 0 0 0 1px var(--border), 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.kpi-grid > .kpi::after { display: none; }
+
+.kpi-grid > .kpi > .kpi-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 12px;
+}
+
+.kpi-grid > .kpi .kpi-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--kpi) 14%, transparent);
+  color: var(--kpi);
+}
+
+.kpi-grid > .kpi .kpi-icon svg { width: 18px; height: 18px; }
+
+.kpi-grid > .kpi .kpi-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.kpi-grid > .kpi .kpi-value {
+  font-size: 23px;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.kpi-grid > .kpi .kpi-value .unit {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--text-faint);
+  margin-left: 4px;
+}
+
+.kpi-grid > .kpi .kpi-meta {
+  margin-top: 5px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.kpi-grid > .kpi .kpi-meta:not(.muted) { font-weight: 600; }
+
+/* Share bar — pinned to the card's bottom so bars line up across a row */
+.kpi-bar {
+  margin-top: auto;
+  padding-top: 12px;
+}
+
+.kpi-bar span {
+  display: block;
+  height: 5px;
+  border-radius: 99px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.kpi-bar i {
+  display: block;
+  height: 100%;
+  max-width: 100%;
+  border-radius: inherit;
+  background: var(--kpi);
+}
+
+.kpi-grid > .kpi > .kpi-spark { margin-top: auto; }
+
+/* Five-up rows have narrow cards: a slightly smaller figure keeps it on one line. */
+.kpi-grid--period > .kpi .kpi-value,
+.kpi-grid:has(> .kpi:nth-child(5)) > .kpi .kpi-value,
+.kpi-grid--compact > .kpi .kpi-value { font-size: 21px; }
+
+@media (max-width: 640px) {
+  .kpi-grid { grid-template-columns: 1fr; gap: 10px; }
+  .kpi-grid--period,
+  .kpi-grid--compact,
+  .kpi-grid:has(> .kpi:nth-child(5)) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpi-grid > .kpi { padding: 15px 15px 13px; border-radius: 14px; }
+  .kpi-grid > .kpi .kpi-value { font-size: 21px; }
+  .kpi-grid--period > .kpi .kpi-value,
+  .kpi-grid:has(> .kpi:nth-child(5)) > .kpi .kpi-value,
+  .kpi-grid--compact > .kpi .kpi-value { font-size: 17px; }
+}
+
+/* Dashboard's secondary row is the shared strip; a little more room before «Qarzlar» */
+.dash-secondary { margin-bottom: 26px; }
+.kpi-grid > .kpi > .kpi-spark--apex { margin: 4px -4px -8px; }
+
+
+/* «Bugungi holat» cells size themselves by the strip's own width (the sidebar eats
+   into the page at laptop widths), not the window's; stacking to one column is
+   still the viewport rule above. */
+.dash-position { container-type: inline-size; }
+
+@container (max-width: 900px) {
+  .dash-pos { flex-direction: column; gap: 10px; padding: 16px 18px; }
+  .dash-pos-icon { width: 30px; height: 30px; border-radius: 9px; }
+  .dash-pos-icon svg { width: 18px; height: 18px; }
+  .dash-pos-value { font-size: 21px; }
+  .dash-pos-spark { display: none; }
+}
+
+/* «Bugungi holat» as three floating cards, like every page's KPI cards */
+.dash-position.card {
+  gap: 14px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+
+.dash-position > .dash-pos {
+  border: 0;
+  border-radius: 16px;
+  background-color: var(--surface);
+  box-shadow: 0 1px 2px rgba(20, 30, 50, 0.05), 0 8px 24px rgba(20, 30, 50, 0.07);
+}
+
+html[data-theme="dark"] .dash-position > .dash-pos {
+  box-shadow: 0 0 0 1px var(--border), 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.dash-position .dash-pos-icon { border-radius: 50%; }

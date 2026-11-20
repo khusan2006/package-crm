@@ -8,7 +8,7 @@
 <div class="kpi-grid">
   <div class="kpi kpi--blue">
     <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg></span>
+      <span class="kpi-icon">{% icon "money" %}</span>
       <span class="kpi-label">Jami summa</span>
     </div>
     <div class="kpi-value">{{ totals.revenue|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
@@ -20,7 +20,7 @@
   ayrilgan — jadvaldagi summa qanday hisoblansa, tannarx ham shunday.{% endcomment %}
   <div class="kpi kpi--violet">
     <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
+      <span class="kpi-icon">{% icon "cube" %}</span>
       <span class="kpi-label">Jami tannarx</span>
     </div>
     <div class="kpi-value">{{ totals.cost|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
@@ -29,29 +29,32 @@
 
   <div class="kpi kpi--green">
     <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span>
+      <span class="kpi-icon">{% icon "trend-up" %}</span>
       <span class="kpi-label">Jami foyda</span>
     </div>
     <div class="kpi-value">{{ totals.profit|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta">▲ {{ totals.margin|floatformat:1 }}% foyda ulushi</div>
+    {% include "crm/_kpi_bar.html" with pct=totals.margin %}
   </div>
 
   <div class="kpi kpi--red">
     <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
+      <span class="kpi-icon">{% icon "warning-circle" %}</span>
       <span class="kpi-label">Jami qarz</span>
     </div>
     <div class="kpi-value">{{ totals.debt|default:0|floatformat:"0g" }}<span class="unit">so'm</span></div>
     <div class="kpi-meta">{{ totals.debt_share|floatformat:1 }}% savdo qarzda</div>
+    {% include "crm/_kpi_bar.html" with pct=totals.debt_share %}
   </div>
 
   <div class="kpi kpi--gold">
     <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+      <span class="kpi-icon">{% icon "users-three" %}</span>
       <span class="kpi-label">Qarzdor mijozlar</span>
     </div>
     <div class="kpi-value">{{ totals.debtors }}</div>
     <div class="kpi-meta">{{ totals.debtor_pct|floatformat:1 }}% mijozlar qarzda</div>
+    {% include "crm/_kpi_bar.html" with pct=totals.debtor_pct %}
   </div>
 </div>
 

@@ -8,7 +8,7 @@
 <div class="kpi-grid">
   <div class="kpi kpi--blue">
     <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg></span>
+      <span class="kpi-icon">{% icon "package" %}</span>
       <span class="kpi-label">Sotilgan tovar turlari</span>
     </div>
     <div class="kpi-value">{{ product_count }}<span class="unit">tur</span></div>
@@ -17,7 +17,7 @@
 
   <div class="kpi kpi--green">
     <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span>
+      <span class="kpi-icon">{% icon "trend-up" %}</span>
       <span class="kpi-label">Jami sotilgan</span>
     </div>
     {% comment %}Asosiy sahifadagi «Sotilgan» bilan ayni raqam: qaytgan tovar ayrilgan.
@@ -31,7 +31,7 @@
   emas, sotuv sanasiga yoziladi (yuqoridagi «Jami sotilgan» ham shunday ayiradi).{% endcomment %}
   <div class="kpi kpi--gold">
     <div class="kpi-head">
-      <span class="kpi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg></span>
+      <span class="kpi-icon">{% icon "arrow-u-up-left" %}</span>
       <span class="kpi-label">Qaytgan tovar</span>
     </div>
     <div class="kpi-value">{{ returned_kg|floatformat:"-3g" }}<span class="unit">kg</span></div>

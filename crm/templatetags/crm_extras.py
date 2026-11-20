@@ -1,10 +1,13 @@
 import os
 import re
+from functools import lru_cache
+from pathlib import Path
 
 from django import template
 from django.contrib.staticfiles import finders
 from django.templatetags.static import static
 from django.utils import timezone
+from django.utils.safestring import mark_safe
 
 register = template.Library()
 
@@ -106,3 +109,29 @@ def qs_replace(context, **kwargs):
             params[key] = value
     params.pop("page", None)
     return "?" + params.urlencode()
+
+
+# Phosphor duotone icons (MIT, @phosphor-icons/core 2.1.1), vendored as plain SVG
+# files in crm/icons/. Inlined rather than linked so they take `currentColor`.
+ICON_DIR = Path(__file__).resolve().parent.parent / "icons"
+_ICON_NAME = re.compile(r"^[a-z0-9-]+$")
+
+
+@lru_cache(maxsize=None)
+def _icon_svg(name):
+    if not _ICON_NAME.match(name):
+        raise ValueError(f"Bad icon name {name!r}")
+    path = ICON_DIR / f"{name}.svg"
+    try:
+        svg = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        raise ValueError(f"No icon {name!r} in {ICON_DIR}") from None
+    # Decorative: the label next to it already says what it is.
+    return svg.replace("<svg ", '<svg aria-hidden="true" focusable="false" ', 1)
+
+
+@register.simple_tag
+def icon(name):
+    """Inline a vendored Phosphor icon: {% icon "money" %}. An unknown name fails
+    loudly at render time rather than leaving an empty square."""
+    return mark_safe(_icon_svg(name))
